@@ -1,8 +1,6 @@
 # aglais
 Gaia data analysis platform.
 
-Named after the European peacock butterfly, Aglais io.
-https://en.wikipedia.org/wiki/Aglais_io
-
+Named after the European peacock butterfly, _Aglais io_.
 <a title="Charles J Sharp
  [CC BY-SA 3.0 (https://creativecommons.org/licenses/by-sa/3.0)], via Wikimedia Commons" href="https://commons.wikimedia.org/wiki/File:Peacock_butterfly_(Aglais_io)_2.jpg"><img width="512" alt="Peacock butterfly (Aglais io) 2" src="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a6/Peacock_butterfly_%28Aglais_io%29_2.jpg/512px-Peacock_butterfly_%28Aglais_io%29_2.jpg"></a>

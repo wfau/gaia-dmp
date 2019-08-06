@@ -1,0 +1,1076 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2019, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+# -----------------------------------------------------
+# Create a new SSH key for OpenStack access.
+#[user@desktop]
+
+    ssh-keygen \
+        -t rsa \
+        -C 'Cambridge HPC OpenStack' \
+        -f ${HOME}/.ssh/openstack.cam.ac.uk.rsa
+
+--START--
+Enter passphrase (empty for no passphrase):
+Enter same passphrase again:
+Your identification has been saved in /home/Zarquan/.ssh/dmr.hpc.cam.ac.uk.rsa.
+Your public key has been saved in /home/Zarquan/.ssh/dmr.hpc.cam.ac.uk.rsa.pub.
+The key fingerprint is:
+SHA256:n5J+DL1a4Ly6YPxUGo+f68Gcuhy8IPepFe6vPcX6Q7o Cambridge HPC OpenStack
+The key's randomart image is:
++---[RSA 2048]----+
+|                 |
+|                 |
+|                 |
+|                 |
+|      o So       |
+|   . o %.==.     |
+|  . * O @B+.     |
+|   + X O+*=      |
+|    ..&BEB..     |
++----[SHA256]-----+
+--END--
+
+
+# -----------------------------------------------------
+# Configure our OpenStack settings.
+# https://docs.openstack.org/keystone/queens/user/application_credentials.html
+# https://cumulus.openstack.hpc.cam.ac.uk/identity/application_credentials/
+#[user@desktop]
+
+        cat > "${HOME}/openstack.settings" << EOF
+
+export OS_AUTH_TYPE=v3applicationcredential
+export OS_AUTH_URL=https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_REGION_NAME=RegionOne
+export OS_INTERFACE=public
+export OS_APPLICATION_CREDENTIAL_ID=$(secret 'cam.ac.uk.openstack.CREDENTIAL_ID')
+export OS_APPLICATION_CREDENTIAL_SECRET=$(secret 'cam.ac.uk.openstack.CREDENTIAL_SECRET')
+
+EOF
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    docker run \
+        --rm \
+        --tty \
+        --user "$(id -u)" \
+        --interactive \
+        --hostname openstacker \
+        --env SSH_AUTH_SOCK=/tmp/ssh_auth_sock \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock" \
+        --volume "${HOME}/openstack.settings:/etc/aglais/openstack.settings" \
+        --volume "${HOME}/.ssh/openstack.cam.ac.uk.rsa:/tmp/openstack.cam.ac.uk.rsa" \
+        --volume "${HOME}/.ssh/openstack.cam.ac.uk.rsa.pub:/tmp/openstack.cam.ac.uk.rsa.pub" \
+        phymatopus/openstack-client \
+        bash
+
+# -----------------------------------------------------
+# Load our OpenStack settings.
+#[user@openstacker]
+
+    source '/etc/aglais/openstack.settings'
+
+
+# -----------------------------------------------------
+# Load our OpenStack functions.
+#[user@openstacker]
+
+    source openstack-utils.sh
+
+
+# -----------------------------------------------------
+# Upload our SSH public key.
+#[user@openstacker]
+
+    openstack \
+        keypair create \
+            --public-key /tmp/openstack.cam.ac.uk.rsa.pub \
+            'openstack-cam-ac-uk-rsa'
+
+--START--
++-------------+-------------------------------------------------+
+| Field       | Value                                           |
++-------------+-------------------------------------------------+
+| fingerprint | 27:45:cf:a5:98:69:44:70:ae:c1:01:1c:75:02:1f:42 |
+| name        | openstack-cam-ac-uk-rsa                         |
+| user_id     | 98169f87de174ad4ac98c32e59646488                |
++-------------+-------------------------------------------------+
+--END--
+
+
+# -----------------------------------------------------
+# List our available keys.
+#[user@openstacker]
+
+    openstack \
+        keypair list
+
+--START--
++-------------------------+-------------------------------------------------+
+| Name                    | Fingerprint                                     |
++-------------------------+-------------------------------------------------+
+| openstack-cam-ac-uk-rsa | 27:45:cf:a5:98:69:44:70:ae:c1:01:1c:75:02:1f:42 |
++-------------------------+-------------------------------------------------+
+--END--
+
+
+# -----------------------------------------------------
+# Select the keypair we want to sue.
+#[user@openstacker]
+
+    vmkey=$(
+        openstack \
+            keypair list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("openstack")) | .Name
+            '
+        )
+
+    echo "Keypair [${vmkey}]"
+
+--START--
+Keypair [openstack-cam-ac-uk-rsa]
+--END--
+
+
+# -----------------------------------------------------
+# List the available hosts.
+#[user@openstacker]
+
+    openstack \
+        host list
+
+--START--
+Policy doesn't allow os_compute_api:os-hosts to be performed. (HTTP 403) (Request-ID: req-f55f6490-f318-4998-8cce-4e5383a11e11)
+--END--
+
+
+# -----------------------------------------------------
+# List the available networks.
+#[user@openstacker]
+
+    openstack \
+        network list
+
+--START--
++--------------------------------------+------------------+--------------------------------------+
+| ID                                   | Name             | Subnets                              |
++--------------------------------------+------------------+--------------------------------------+
+| 6581ed7b-0325-4bd7-b6f3-52cd74cdcc4a | ilab-215         | e920dfe7-d8d5-4e02-95f2-fc429ee45027 |
+| a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | internet         | 180dc961-c52f-461a-b241-8f7a30d022a5 |
+| ecb791d5-1022-447a-a79c-8f38a0f5c990 | cumulus-internal | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290 |
++--------------------------------------+------------------+--------------------------------------+
+--END--
+
+# -----------------------------------------------------
+# Select the internal network.
+#[user@openstacker]
+
+    vmnetwork=$(
+        openstack \
+            network list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("cumulus")) | .ID
+            '
+        )
+
+    echo "Network [${vmnetwork}]"
+
+--START--
+Network [ecb791d5-1022-447a-a79c-8f38a0f5c990]
+--END--
+
+
+# -----------------------------------------------------
+# List the available flavours.
+#[user@openstacker]
+
+    openstack \
+        flavor list
+
+--START--
++--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+| ID                                   | Name              |    RAM | Disk | Ephemeral | VCPUs | Is Public |
++--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+| 20061eba-9e88-494c-95a3-41ed77721244 | general.v1.small  |  22528 |   20 |         0 |     6 | True      |
+| 406a17e0-afd0-47d3-a6ad-8b19198bdd97 | general.v1.tiny   |   6144 |   12 |         0 |     2 | True      |
+| 8a821ef8-20b8-4bbb-990b-91198745e7a7 | general.v1.xlarge | 184320 |   20 |       340 |    28 | True      |
+| 996c1c8c-c934-411c-9631-b74eb2829631 | general.v1.medium |  46080 |   20 |        60 |    14 | True      |
+| c4c07f5a-260a-4f22-9530-a09a19aa490a | general.v1.large  |  92160 |   20 |       160 |    28 | True      |
++--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+--END--
+
+
+# -----------------------------------------------------
+# Select the flavor we want.
+#[user@openstacker]
+
+    vmflavor=$(
+        openstack \
+            flavor list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("v1.small")) | .ID
+            '
+        )
+
+    echo "Flavor [${vmflavor}]"
+
+--START--
+Flavor [20061eba-9e88-494c-95a3-41ed77721244]
+--END--
+
+
+# -----------------------------------------------------
+# List the available images.
+#[user@openstacker]
+
+    openstack \
+        image list
+
+--START--
++--------------------------------------+------------------------------+--------+
+| ID                                   | Name                         | Status |
++--------------------------------------+------------------------------+--------+
+| 8b4649c5-9bcb-4e2d-93e7-ea003c17f76a | CentOS7-1901                 | active |
+| 54b02b17-0cb3-4e42-bbec-200c98a6e2f5 | Cirros-0.4.0                 | active |
+| e26a4c9b-8435-41a0-9b94-7cb61dc5b746 | Debian-Stretch-9.9.0         | active |
+| ade3a5aa-a6a3-4761-8eed-083e5ce1f117 | Fedora-30-1.2                | active |
+| 2a541c94-d3a3-4342-84da-9d3aca05bc59 | FedoraAtomic29-20190429      | active |
+| b0b51feb-cc0c-4f34-9d37-9a844fac70ef | Ubuntu-Bionic-18.04-20190513 | active |
+| ee72303b-3de1-41f9-8ef7-396814df480d | openSUSE-Leap-15.1.0         | active |
++--------------------------------------+------------------------------+--------+
+--END--
+
+
+# -----------------------------------------------------
+# Select the image we want.
+#[user@openstacker]
+
+    vmimage=$(
+        openstack \
+            image list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("Fedora-30")) | .ID
+            '
+        )
+
+    echo "Image [${vmimage}]"
+
+--START--
+Image [ade3a5aa-a6a3-4761-8eed-083e5ce1f117]
+--END--
+
+
+# -----------------------------------------------------
+# Create our first instance.
+#[user@openstacker]
+
+    vmname=$(date)
+
+    openstack \
+        server \
+        create \
+        --format json \
+        --image "${vmimage:?}" \
+        --flavor "${vmflavor:?}" \
+        --nic "net-id=${vmnetwork:?}" \
+        --key-name "${vmkey:?}" \
+        "${vmname:?}" \
+        | jq '.' \
+        | tee '/tmp/jsonfile'
+
+
+--START--
+{
+  "OS-EXT-STS:task_state": "scheduling",
+  "addresses": "",
+  "image": "Fedora-30-1.2 (ade3a5aa-a6a3-4761-8eed-083e5ce1f117)",
+  "OS-EXT-STS:vm_state": "building",
+  "OS-SRV-USG:launched_at": null,
+  "flavor": "general.v1.small (20061eba-9e88-494c-95a3-41ed77721244)",
+  "id": "192fe254-e563-46b2-a35c-6333571320a4",
+  "security_groups": "name='default'",
+  "volumes_attached": "",
+  "user_id": "98169f87de174ad4ac98c32e59646488",
+  "OS-DCF:diskConfig": "MANUAL",
+  "accessIPv4": "",
+  "accessIPv6": "",
+  "progress": 0,
+  "OS-EXT-STS:power_state": "NOSTATE",
+  "project_id": "08e24c6d87f94740aa59c172462ed927",
+  "config_drive": "",
+  "status": "BUILD",
+  "updated": "2019-08-05T14:47:16Z",
+  "hostId": "",
+  "OS-SRV-USG:terminated_at": null,
+  "key_name": "openstack-cam-ac-uk-rsa",
+  "properties": "",
+  "OS-EXT-AZ:availability_zone": "",
+  "name": "Mon Aug  5 14:46:00 UTC 2019",
+  "adminPass": "xG2JTBYC35ud",
+  "created": "2019-08-05T14:47:16Z"
+}
+--END--
+
+    vmident=$(
+        jq -r '
+            .id
+            ' '/tmp/jsonfile'
+        )
+
+    echo "VM ident [${vmident}]"
+
+--START--
+VM ident [192fe254-e563-46b2-a35c-6333571320a4]
+--END--
+
+
+# -----------------------------------------------------
+# Check the instance status.
+#[user@openstacker]
+
+    openstack \
+        server show \
+            --format json \
+            "${vmident}" \
+    | jq '.'
+
+--START--
+{
+  "OS-EXT-STS:task_state": null,
+  "addresses": "cumulus-internal=10.218.1.10",
+  "image": "Fedora-30-1.2 (ade3a5aa-a6a3-4761-8eed-083e5ce1f117)",
+  "OS-EXT-STS:vm_state": "active",
+  "OS-SRV-USG:launched_at": "2019-08-05T14:47:50.000000",
+  "flavor": "general.v1.small (20061eba-9e88-494c-95a3-41ed77721244)",
+  "id": "192fe254-e563-46b2-a35c-6333571320a4",
+  "security_groups": "name='default'",
+  "volumes_attached": "",
+  "user_id": "98169f87de174ad4ac98c32e59646488",
+  "OS-DCF:diskConfig": "MANUAL",
+  "accessIPv4": "",
+  "accessIPv6": "",
+  "progress": 0,
+  "OS-EXT-STS:power_state": "Running",
+  "project_id": "08e24c6d87f94740aa59c172462ed927",
+  "config_drive": "",
+  "status": "ACTIVE",
+  "updated": "2019-08-05T14:47:50Z",
+  "hostId": "e1277cd746931ac300fe50621ee920845d99c3428d0dae5deb51c127",
+  "OS-SRV-USG:terminated_at": null,
+  "key_name": "openstack-cam-ac-uk-rsa",
+  "properties": "",
+  "OS-EXT-AZ:availability_zone": "nova",
+  "name": "Mon Aug  5 14:46:00 UTC 2019",
+  "created": "2019-08-05T14:47:16Z"
+}
+--END--
+
+
+# -----------------------------------------------------
+# Test our utility functions.
+#[user@openstacker]
+
+    getvminfo "${vmident}"
+
+    getvmname
+
+--START--
+Mon Aug  5 14:46:00 UTC 2019
+--END--
+
+
+    getvmimage
+
+--START--
+Fedora-30-1.2 (ade3a5aa-a6a3-4761-8eed-083e5ce1f117)
+--END--
+
+
+    getvmflavor
+
+--START--
+general.v1.small (20061eba-9e88-494c-95a3-41ed77721244)
+--END--
+
+
+    getvmaddresses
+
+--START--
+cumulus-internal=10.218.1.10
+--END--
+
+
+    ipaddressmatch \
+        'cumulus-internal' \
+        "$(getvmaddresses)"
+
+--START--
+10.218.1.10
+--END--
+
+
+# -----------------------------------------------------
+# Select the external network.
+#[user@openstacker]
+
+    internet=$(
+        openstack \
+            network list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("internet")) | .ID
+            '
+        )
+
+    echo "Network [${internet}]"
+
+--START--
+Network [a929e8db-1bf4-4a5f-a80c-fabd39d06a26]
+--END--
+
+
+# -----------------------------------------------------
+# Create a public IP address.
+#[user@openstacker]
+
+    floating=$(
+        makefloat "${internet}"
+        )
+
+    echo "Floating [${floating}]"
+
+--START--
+Floating [128.232.224.74]
+--END--
+
+
+# -----------------------------------------------------
+# Attatch the floating address to our server.
+#[user@openstacker]
+
+    vmaddress=$(
+        ipaddressmatch \
+            'cumulus-internal' \
+            "$(getvmaddresses)"
+        )
+
+    linkvmfloat \
+        "${vmident}" \
+        "${vmaddress}" \
+        "${floating}"
+
+
+# -----------------------------------------------------
+# List all our network ports.
+#[user@openstacker]
+
+        openstack \
+            port list
+
+--START--
++--------------------------------------+------+-------------------+----------------------------------------------------------------------------+--------+
+| ID                                   | Name | MAC Address       | Fixed IP Addresses                                                         | Status |
++--------------------------------------+------+-------------------+----------------------------------------------------------------------------+--------+
+| f116ca86-89b1-4322-9b8d-77a5c7de7863 |      | fa:16:3e:3c:2c:b9 | ip_address='10.218.1.10', subnet_id='01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290' | ACTIVE |
++--------------------------------------+------+-------------------+----------------------------------------------------------------------------+--------+
+--END--
+
+
+# -----------------------------------------------------
+# List the network ports connected to our server.
+#[user@openstacker]
+
+        openstack \
+            port list \
+                --server "${vmident}"
+
+--START--
++--------------------------------------+------+-------------------+----------------------------------------------------------------------------+--------+
+| ID                                   | Name | MAC Address       | Fixed IP Addresses                                                         | Status |
++--------------------------------------+------+-------------------+----------------------------------------------------------------------------+--------+
+| f116ca86-89b1-4322-9b8d-77a5c7de7863 |      | fa:16:3e:3c:2c:b9 | ip_address='10.218.1.10', subnet_id='01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290' | ACTIVE |
++--------------------------------------+------+-------------------+----------------------------------------------------------------------------+--------+
+--END--
+
+
+# -----------------------------------------------------
+# Get the details of the first network port.
+#[user@openstacker]
+
+
+    portid=$(
+        openstack \
+            port list \
+                --format json \
+                --server "${vmident}" \
+        | jq -r '.[0] | .ID'
+        )
+
+
+    openstack \
+        port show \
+            "${portid}"
+
+--START--
++-----------------------+----------------------------------------------------------------------------+
+| Field                 | Value                                                                      |
++-----------------------+----------------------------------------------------------------------------+
+| admin_state_up        | UP                                                                         |
+| allowed_address_pairs |                                                                            |
+| binding_host_id       | None                                                                       |
+| binding_profile       | None                                                                       |
+| binding_vif_details   | None                                                                       |
+| binding_vif_type      | None                                                                       |
+| binding_vnic_type     | normal                                                                     |
+| created_at            | 2019-08-05T14:47:19Z                                                       |
+| data_plane_status     | None                                                                       |
+| description           |                                                                            |
+| device_id             | 192fe254-e563-46b2-a35c-6333571320a4                                       |
+| device_owner          | compute:nova                                                               |
+| dns_assignment        | None                                                                       |
+| dns_domain            | None                                                                       |
+| dns_name              | None                                                                       |
+| extra_dhcp_opts       |                                                                            |
+| fixed_ips             | ip_address='10.218.1.10', subnet_id='01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290' |
+| id                    | f116ca86-89b1-4322-9b8d-77a5c7de7863                                       |
+| ip_address            | None                                                                       |
+| mac_address           | fa:16:3e:3c:2c:b9                                                          |
+| name                  |                                                                            |
+| network_id            | ecb791d5-1022-447a-a79c-8f38a0f5c990                                       |
+| option_name           | None                                                                       |
+| option_value          | None                                                                       |
+| port_security_enabled | True                                                                       |
+| project_id            | 08e24c6d87f94740aa59c172462ed927                                           |
+| qos_policy_id         | None                                                                       |
+| revision_number       | 4                                                                          |
+| security_group_ids    | d917cfec-af58-4ee0-8730-62867d79a323                                       |
+| status                | ACTIVE                                                                     |
+| subnet_id             | None                                                                       |
+| tags                  |                                                                            |
+| trunk_details         | None                                                                       |
+| updated_at            | 2019-08-05T14:47:50Z                                                       |
++-----------------------+----------------------------------------------------------------------------+
+--END--
+
+
+# -----------------------------------------------------
+# List our security groups.
+#[user@openstacker]
+
+    openstack \
+        security group list
+
+--START--
++--------------------------------------+---------+------------------------+----------------------------------+
+| ID                                   | Name    | Description            | Project                          |
++--------------------------------------+---------+------------------------+----------------------------------+
+| d917cfec-af58-4ee0-8730-62867d79a323 | default | Default security group | 08e24c6d87f94740aa59c172462ed927 |
++--------------------------------------+---------+------------------------+----------------------------------+
+--END--
+
+
+# -----------------------------------------------------
+# Create a new security group.
+#[user@openstacker]
+
+    openstack \
+        security group create \
+            --format json \
+            'External SSH access' \
+    | jq '.' \
+    | tee /tmp/security.json
+
+--START--
+{
+  "description": "External SSH access",
+  "tags": [],
+  "rules": "created_at='2019-08-05T16:58:27Z', direction='egress', ethertype='IPv6', id='a2e6cf05-acab-4ccf-9496-57c4ddc61ca7', updated_at='2019-08-05T16:58:27Z'\ncreated_at='2019-08-05T16:58:27Z', direction='egress', ethertype='IPv4', id='ad45f4f6-08b6-4649-ac68-73c0c88a389e', updated_at='2019-08-05T16:58:27Z'",
+  "created_at": "2019-08-05T16:58:27Z",
+  "updated_at": "2019-08-05T16:58:27Z",
+  "revision_number": 1,
+  "project_id": "08e24c6d87f94740aa59c172462ed927",
+  "id": "f769767c-2d28-474b-8674-bfaee994cc05",
+  "name": "External SSH access"
+}
+--END
+
+    groupid=$(
+        jq -r "
+            .id
+            " /tmp/security.json
+        )
+
+echo "Group [${groupid}]"
+
+--START--
+Group [f769767c-2d28-474b-8674-bfaee994cc05]
+--END--
+
+
+# -----------------------------------------------------
+# Add rules to allow inbound ssh.
+#[user@openstacker]
+
+    openstack \
+        security group rule create \
+            --ingress \
+            --dst-port 22 \
+            --protocol 'tcp' \
+            --ethertype 'IPv4' \
+            "${groupid}"
+
+--START--
++-------------------+--------------------------------------+
+| Field             | Value                                |
++-------------------+--------------------------------------+
+| created_at        | 2019-08-05T17:11:09Z                 |
+| description       |                                      |
+| direction         | ingress                              |
+| ether_type        | IPv4                                 |
+| id                | a5d540f9-c744-47d6-b170-ee1757ebdea7 |
+| name              | None                                 |
+| port_range_max    | 22                                   |
+| port_range_min    | 22                                   |
+| project_id        | 08e24c6d87f94740aa59c172462ed927     |
+| protocol          | tcp                                  |
+| remote_group_id   | None                                 |
+| remote_ip_prefix  | 0.0.0.0/0                            |
+| revision_number   | 0                                    |
+| security_group_id | f769767c-2d28-474b-8674-bfaee994cc05 |
+| updated_at        | 2019-08-05T17:11:09Z                 |
++-------------------+--------------------------------------+
+--END--
+
+
+    openstack \
+        security group rule create \
+            --ingress \
+            --dst-port 22 \
+            --protocol 'tcp' \
+            --ethertype 'IPv6' \
+            "${groupid}"
+
+--START--
++-------------------+--------------------------------------+
+| Field             | Value                                |
++-------------------+--------------------------------------+
+| created_at        | 2019-08-05T17:11:44Z                 |
+| description       |                                      |
+| direction         | ingress                              |
+| ether_type        | IPv6                                 |
+| id                | 5d685694-3abb-49a6-b817-2a1b53130df1 |
+| name              | None                                 |
+| port_range_max    | 22                                   |
+| port_range_min    | 22                                   |
+| project_id        | 08e24c6d87f94740aa59c172462ed927     |
+| protocol          | tcp                                  |
+| remote_group_id   | None                                 |
+| remote_ip_prefix  | None                                 |
+| revision_number   | 0                                    |
+| security_group_id | f769767c-2d28-474b-8674-bfaee994cc05 |
+| updated_at        | 2019-08-05T17:11:44Z                 |
++-------------------+--------------------------------------+
+--END--
+
+
+# -----------------------------------------------------
+# Add our new security group to our network port.
+#[user@openstacker]
+
+    openstack \
+        port set \
+            --security-group "${groupid}" \
+            "${portid}"
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Try ssh to the server.
+# Can't do this from the container.
+# Need to have a user account in /etc/passwd and a home directory for ssh client to work.
+#[user@desktop]
+
+    sshuser=fedora
+    sshhost=128.232.224.74
+
+    ssh "${sshuser:?}@${sshhost:?}" \
+        '
+        date
+        hostname
+        '
+
+--START--
+Mon  5 Aug 19:25:10 UTC 2019
+mon-aug--5-144600-utc-2019.novalocal
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a container (running as root).
+#[user@desktop]
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --env SSH_AUTH_SOCK=/tmp/ssh_auth_sock \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock" \
+        --volume "${HOME}/openstack.settings:/etc/aglais/openstack.settings" \
+        --volume "${HOME}/.ssh/openstack.cam.ac.uk.rsa:/tmp/openstack.cam.ac.uk.rsa" \
+        --volume "${HOME}/.ssh/openstack.cam.ac.uk.rsa.pub:/tmp/openstack.cam.ac.uk.rsa.pub" \
+        phymatopus/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Load our OpenStack settings.
+#[user@openstacker]
+
+    source '/etc/aglais/openstack.settings'
+
+
+# -----------------------------------------------------
+# Load our OpenStack functions.
+#[user@openstacker]
+
+    source openstack-utils.sh
+
+# -----------------------------------------------------
+# List our active servers.
+#[user@openstacker]
+
+    openstack \
+        server list
+
+--START--
++--------------------------------------+------------------------------+--------+----------------------------------------------+---------------+------------------+
+| ID                                   | Name                         | Status | Networks                                     | Image         | Flavor           |
++--------------------------------------+------------------------------+--------+----------------------------------------------+---------------+------------------+
+| 192fe254-e563-46b2-a35c-6333571320a4 | Mon Aug  5 14:46:00 UTC 2019 | ACTIVE | cumulus-internal=10.218.1.10, 128.232.224.74 | Fedora-30-1.2 | general.v1.small |
++--------------------------------------+------------------------------+--------+----------------------------------------------+---------------+------------------+
+--END--
+
+
+# -----------------------------------------------------
+# Select the first active server.
+#[user@openstacker]
+
+    vmident=$(
+        openstack \
+            server list \
+                --format json \
+        | jq -r '.[0] | .ID'
+        )
+
+    echo "vmident [${vmident}]"
+
+--START--
+vmident [192fe254-e563-46b2-a35c-6333571320a4]
+--END--
+
+
+# -----------------------------------------------------
+# Select the server details.
+#[user@openstacker]
+
+        openstack \
+            server show \
+                "${vmident}"
+
+--START--
++-----------------------------+----------------------------------------------------------+
+| Field                       | Value                                                    |
++-----------------------------+----------------------------------------------------------+
+| OS-DCF:diskConfig           | MANUAL                                                   |
+| OS-EXT-AZ:availability_zone | nova                                                     |
+| OS-EXT-STS:power_state      | Running                                                  |
+| OS-EXT-STS:task_state       | None                                                     |
+| OS-EXT-STS:vm_state         | active                                                   |
+| OS-SRV-USG:launched_at      | 2019-08-05T14:47:50.000000                               |
+| OS-SRV-USG:terminated_at    | None                                                     |
+| accessIPv4                  |                                                          |
+| accessIPv6                  |                                                          |
+| addresses                   | cumulus-internal=10.218.1.10, 128.232.224.74             |
+| config_drive                |                                                          |
+| created                     | 2019-08-05T14:47:16Z                                     |
+| flavor                      | general.v1.small (20061eba-9e88-494c-95a3-41ed77721244)  |
+| hostId                      | e1277cd746931ac300fe50621ee920845d99c3428d0dae5deb51c127 |
+| id                          | 192fe254-e563-46b2-a35c-6333571320a4                     |
+| image                       | Fedora-30-1.2 (ade3a5aa-a6a3-4761-8eed-083e5ce1f117)     |
+| key_name                    | openstack-cam-ac-uk-rsa                                  |
+| name                        | Mon Aug  5 14:46:00 UTC 2019                             |
+| progress                    | 0                                                        |
+| project_id                  | 08e24c6d87f94740aa59c172462ed927                         |
+| properties                  |                                                          |
+| security_groups             | name='default'                                           |
+|                             | name='External SSH access'                               |
+| status                      | ACTIVE                                                   |
+| updated                     | 2019-08-05T14:47:50Z                                     |
+| user_id                     | 98169f87de174ad4ac98c32e59646488                         |
+| volumes_attached            |                                                          |
++-----------------------------+----------------------------------------------------------+
+--END--
+
+
+        openstack \
+            server show \
+                --format json \
+                "${vmident}"
+
+--START--
+{
+  "OS-EXT-STS:task_state": null,
+  "addresses": "cumulus-internal=10.218.1.10, 128.232.224.74",
+  "image": "Fedora-30-1.2 (ade3a5aa-a6a3-4761-8eed-083e5ce1f117)",
+  "OS-EXT-STS:vm_state": "active",
+  "OS-SRV-USG:launched_at": "2019-08-05T14:47:50.000000",
+  "flavor": "general.v1.small (20061eba-9e88-494c-95a3-41ed77721244)",
+  "id": "192fe254-e563-46b2-a35c-6333571320a4",
+  "security_groups": "name='default'\nname='External SSH access'",
+  "volumes_attached": "",
+  "user_id": "98169f87de174ad4ac98c32e59646488",
+  "OS-DCF:diskConfig": "MANUAL",
+  "accessIPv4": "",
+  "accessIPv6": "",
+  "progress": 0,
+  "OS-EXT-STS:power_state": "Running",
+  "project_id": "08e24c6d87f94740aa59c172462ed927",
+  "config_drive": "",
+  "status": "ACTIVE",
+  "updated": "2019-08-05T14:47:50Z",
+  "hostId": "e1277cd746931ac300fe50621ee920845d99c3428d0dae5deb51c127",
+  "OS-SRV-USG:terminated_at": null,
+  "key_name": "openstack-cam-ac-uk-rsa",
+  "properties": "",
+  "OS-EXT-AZ:availability_zone": "nova",
+  "name": "Mon Aug  5 14:46:00 UTC 2019",
+  "created": "2019-08-05T14:47:16Z"
+}
+--END--
+
+
+# -----------------------------------------------------
+# List the network ports connected to our server.
+#[user@openstacker]
+
+        openstack \
+            port list \
+                --server "${vmident}"
+
+--START--
++--------------------------------------+------+-------------------+----------------------------------------------------------------------------+--------+
+| ID                                   | Name | MAC Address       | Fixed IP Addresses                                                         | Status |
++--------------------------------------+------+-------------------+----------------------------------------------------------------------------+--------+
+| f116ca86-89b1-4322-9b8d-77a5c7de7863 |      | fa:16:3e:3c:2c:b9 | ip_address='10.218.1.10', subnet_id='01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290' | ACTIVE |
++--------------------------------------+------+-------------------+----------------------------------------------------------------------------+--------+
+--END--
+
+
+# -----------------------------------------------------
+# Get the details of the first network port.
+#[user@openstacker]
+
+    portid=$(
+        openstack \
+            port list \
+                --format json \
+                --server "${vmident}" \
+        | jq -r '.[0] | .ID'
+        )
+
+    openstack \
+        port show \
+            "${portid}"
+
+--START--
++-----------------------+----------------------------------------------------------------------------+
+| Field                 | Value                                                                      |
++-----------------------+----------------------------------------------------------------------------+
+| admin_state_up        | UP                                                                         |
+| allowed_address_pairs |                                                                            |
+| binding_host_id       | None                                                                       |
+| binding_profile       | None                                                                       |
+| binding_vif_details   | None                                                                       |
+| binding_vif_type      | None                                                                       |
+| binding_vnic_type     | normal                                                                     |
+| created_at            | 2019-08-05T14:47:19Z                                                       |
+| data_plane_status     | None                                                                       |
+| description           |                                                                            |
+| device_id             | 192fe254-e563-46b2-a35c-6333571320a4                                       |
+| device_owner          | compute:nova                                                               |
+| dns_assignment        | None                                                                       |
+| dns_domain            | None                                                                       |
+| dns_name              | None                                                                       |
+| extra_dhcp_opts       |                                                                            |
+| fixed_ips             | ip_address='10.218.1.10', subnet_id='01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290' |
+| id                    | f116ca86-89b1-4322-9b8d-77a5c7de7863                                       |
+| ip_address            | None                                                                       |
+| mac_address           | fa:16:3e:3c:2c:b9                                                          |
+| name                  |                                                                            |
+| network_id            | ecb791d5-1022-447a-a79c-8f38a0f5c990                                       |
+| option_name           | None                                                                       |
+| option_value          | None                                                                       |
+| port_security_enabled | True                                                                       |
+| project_id            | 08e24c6d87f94740aa59c172462ed927                                           |
+| qos_policy_id         | None                                                                       |
+| revision_number       | 5                                                                          |
+| security_group_ids    | d917cfec-af58-4ee0-8730-62867d79a323, f769767c-2d28-474b-8674-bfaee994cc05 |
+| status                | ACTIVE                                                                     |
+| subnet_id             | None                                                                       |
+| tags                  |                                                                            |
+| trunk_details         | None                                                                       |
+| updated_at            | 2019-08-05T19:23:44Z                                                       |
++-----------------------+----------------------------------------------------------------------------+
+--END--
+
+
+# -----------------------------------------------------
+# List the floating addresses linked to that port.
+#[user@openstacker]
+
+        openstack \
+            floating ip list \
+                --port "${portid}"
+
+--START--
++--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+| ID                                   | Floating IP Address | Fixed IP Address | Port                                 | Floating Network                     | Project                          |
++--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+| 699c29bf-a93e-475d-aa13-1c86979d24c3 | 128.232.224.74      | 10.218.1.10      | f116ca86-89b1-4322-9b8d-77a5c7de7863 | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | 08e24c6d87f94740aa59c172462ed927 |
++--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+--END--
+
+
+# -----------------------------------------------------
+# Get the external (floating) IP address linked to that port.
+#[user@openstacker]
+
+    publicip=$(
+        openstack \
+            floating ip list \
+                --format json \
+                --port "${portid}" \
+        | jq -r ' .[0] | ."Floating IP Address" '
+        )
+
+    echo "Public IP [${publicip}]"
+
+--START--
+Public IP [128.232.224.74]
+--END--
+
+
+# -----------------------------------------------------
+# Try ssh using the public IP address.
+#[user@openstacker]
+
+    sshuser=fedora
+
+    ssh "${sshuser:?}@${publicip:?}" \
+        '
+        date
+        hostname
+        '
+
+--START--
+The authenticity of host '128.232.224.74 (128.232.224.74)' can't be established.
+ECDSA key fingerprint is SHA256:BTAetCP0AP6GKOj3LcfVqoveuz2a+0DNCpUET0eupoU.
+ECDSA key fingerprint is MD5:f5:5d:02:dc:56:61:36:0a:75:56:a4:11:78:57:8a:a8.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added '128.232.224.74' (ECDSA) to the list of known hosts.
+Tue 06 Aug 2019 12:49:36 AM UTC
+mon-aug--5-144600-utc-2019.novalocal
+--END--
+
+# -----------------------------------------------------
+# Again, without the key stuff.
+#[user@openstacker]
+
+    ssh "${sshuser:?}@${publicip:?}" \
+        '
+        date
+        hostname
+        '
+
+--START--
+Tue 06 Aug 2019 12:50:16 AM UTC
+mon-aug--5-144600-utc-2019.novalocal
+--END--
+
+
+# -----------------------------------------------------
+# Works because 'root' has a user account and home directory.
+#[user@openstacker]
+
+    cat /etc/passwd | grep root
+
+--START--
+root:x:0:0:root:/root:/bin/bash
+--END--
+
+    ls -al ${HOME}
+
+--START--
+dr-xr-x---. 1 root root  214 Aug  6 00:49 .
+drwxr-xr-x. 1 root root  172 Aug  6 00:33 ..
+-rw-r--r--. 1 root root   18 Feb  9  2018 .bash_logout
+-rw-r--r--. 1 root root  176 Feb  9  2018 .bash_profile
+-rw-r--r--. 1 root root  176 Feb  9  2018 .bashrc
+-rw-r--r--. 1 root root  100 Feb  9  2018 .cshrc
+drwxr-xr-x. 1 root root   64 Aug  6 00:35 .novaclient
+drwx------. 1 root root   22 Aug  6 00:49 .ssh
+-rw-r--r--. 1 root root  129 Feb  9  2018 .tcshrc
+-rw-------. 1 root root 3090 Apr 26  2018 anaconda-ks.cfg
+-rw-r--r--. 1 root root  435 Apr 26  2018 anaconda-post.log
+-rw-------. 1 root root 2841 Apr 26  2018 original-ks.cfg
+--END--
+
+    #
+    # Using adduser in the Docker file.
+    # https://medium.com/better-programming/running-a-container-with-a-non-root-user-e35830d1f42a
+    # Simple, but hard-codes the user id.
+    #
+
+    # We would need a set of pre-defined numeric user id's for the project.
+    # ....
+
+
+
+
+--START--
+--END--
+
+--START--
+--END--
+
+

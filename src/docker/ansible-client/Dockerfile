@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-FROM aglais/fedora:2019.08.06
+FROM aglais/openstack-client:2019.08.06
 MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
 
 #

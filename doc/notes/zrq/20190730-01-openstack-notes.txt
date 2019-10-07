@@ -1,0 +1,620 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2019, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+# -----------------------------------------------------
+# Create a new SSH key for OpenStack access.
+#[user@desktop]
+
+    ssh-keygen \
+        -t rsa \
+        -C 'Cambridge HPC OpenStack' \
+        -f ${HOME}/.ssh/cumulus.cam.ac.uk.rsa
+
+
+
+# -----------------------------------------------------
+# Configure our OpenStack settings.
+# https://docs.openstack.org/keystone/queens/user/application_credentials.html
+# https://cumulus.openstack.hpc.cam.ac.uk/identity/application_credentials/
+#[user@desktop]
+
+        cat > "${HOME}/cumulus.settings" << EOF
+
+export OS_AUTH_TYPE=v3applicationcredential
+export OS_AUTH_URL=https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_REGION_NAME=RegionOne
+export OS_INTERFACE=public
+export OS_APPLICATION_CREDENTIAL_ID=$(secret 'cumulus.cam.ac.uk.CREDENTIAL_ID')
+export OS_APPLICATION_CREDENTIAL_SECRET=$(secret 'cumulus.cam.ac.uk.CREDENTIAL_SECRET')
+
+EOF
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    docker run \
+        --rm \
+        --tty \
+        --user "$(id -u)" \
+        --interactive \
+        --hostname openstacker \
+        --env SSH_AUTH_SOCK=/tmp/ssh_auth_sock \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock" \
+        --volume "${HOME}/cumulus.settings:/etc/aglais/cumulus.settings" \
+        --volume "${HOME}/.ssh/cumulus.cam.ac.uk.rsa:/tmp/cumulus.cam.ac.uk.rsa" \
+        --volume "${HOME}/.ssh/cumulus.cam.ac.uk.rsa.pub:/tmp/cumulus.cam.ac.uk.rsa.pub" \
+        phymatopus/openstack-client \
+        bash
+
+# -----------------------------------------------------
+# Load our OpenStack settings.
+#[user@openstacker]
+
+    source '/etc/aglais/cumulus.settings'
+
+
+# -----------------------------------------------------
+# Load our OpenStack functions.
+#[user@openstacker]
+
+    source openstack-utils.sh
+
+
+# -----------------------------------------------------
+# Upload our SSH public key.
+#[user@openstacker]
+
+    openstack \
+        keypair create \
+            --public-key /tmp/cumulus.cam.ac.uk.rsa.pub \
+            'cumulus-cam-ac-uk-rsa'
+
+
+
+# -----------------------------------------------------
+# List our available keys.
+#[user@openstacker]
+
+    openstack \
+        keypair list
+
+
+
+# -----------------------------------------------------
+# Select the keypair we want to sue.
+#[user@openstacker]
+
+    vmkey=$(
+        openstack \
+            keypair list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("cumulus")) | .Name
+            '
+        )
+
+    echo "Keypair [${vmkey}]"
+
+
+
+# -----------------------------------------------------
+# List the available hosts.
+#[user@openstacker]
+
+    openstack \
+        host list
+
+
+
+# -----------------------------------------------------
+# List the available networks.
+#[user@openstacker]
+
+    openstack \
+        network list
+
+
+# -----------------------------------------------------
+# Select the internal network.
+#[user@openstacker]
+
+    vmnetwork=$(
+        openstack \
+            network list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("cumulus")) | .ID
+            '
+        )
+
+    echo "Network [${vmnetwork}]"
+
+
+
+# -----------------------------------------------------
+# List the available flavours.
+#[user@openstacker]
+
+    openstack \
+        flavor list
+
+
+
+# -----------------------------------------------------
+# Select the flavor we want.
+#[user@openstacker]
+
+    vmflavor=$(
+        openstack \
+            flavor list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("v1.small")) | .ID
+            '
+        )
+
+    echo "Flavor [${vmflavor}]"
+
+
+
+# -----------------------------------------------------
+# List the available images.
+#[user@openstacker]
+
+    openstack \
+        image list
+
+
+
+# -----------------------------------------------------
+# Select the image we want.
+#[user@openstacker]
+
+    vmimage=$(
+        openstack \
+            image list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("Fedora-30")) | .ID
+            '
+        )
+
+    echo "Image [${vmimage}]"
+
+
+
+# -----------------------------------------------------
+# Create our first instance.
+#[user@openstacker]
+
+    vmname=$(date)
+
+    openstack \
+        server \
+        create \
+        --format json \
+        --image "${vmimage:?}" \
+        --flavor "${vmflavor:?}" \
+        --nic "net-id=${vmnetwork:?}" \
+        --key-name "${vmkey:?}" \
+        "${vmname:?}" \
+        | jq '.' \
+        | tee '/tmp/jsonfile'
+
+
+
+    vmident=$(
+        jq -r '
+            .id
+            ' '/tmp/jsonfile'
+        )
+
+    echo "VM ident [${vmident}]"
+
+
+
+# -----------------------------------------------------
+# Check the instance status.
+#[user@openstacker]
+
+    openstack \
+        server show \
+            --format json \
+            "${vmident}" \
+    | jq '.'
+
+
+
+# -----------------------------------------------------
+# Test our utility functions.
+#[user@openstacker]
+
+    getvminfo "${vmident}"
+
+    getvmname
+
+
+
+    getvmimage
+
+
+
+    getvmflavor
+
+
+
+    getvmaddresses
+
+
+
+    ipaddressmatch \
+        'cumulus-internal' \
+        "$(getvmaddresses)"
+
+
+
+# -----------------------------------------------------
+# Select the external network.
+#[user@openstacker]
+
+    internet=$(
+        openstack \
+            network list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("internet")) | .ID
+            '
+        )
+
+    echo "Network [${internet}]"
+
+
+
+# -----------------------------------------------------
+# Create a public IP address.
+#[user@openstacker]
+
+    floating=$(
+        makefloat "${internet}"
+        )
+
+    echo "Floating [${floating}]"
+
+
+
+# -----------------------------------------------------
+# Attatch the floating address to our server.
+#[user@openstacker]
+
+    vmaddress=$(
+        ipaddressmatch \
+            'cumulus-internal' \
+            "$(getvmaddresses)"
+        )
+
+    linkvmfloat \
+        "${vmident}" \
+        "${vmaddress}" \
+        "${floating}"
+
+
+# -----------------------------------------------------
+# List all our network ports.
+#[user@openstacker]
+
+        openstack \
+            port list
+
+
+
+# -----------------------------------------------------
+# List the network ports connected to our server.
+#[user@openstacker]
+
+        openstack \
+            port list \
+                --server "${vmident}"
+
+
+
+# -----------------------------------------------------
+# Get the details of the first network port.
+#[user@openstacker]
+
+    portid=$(
+        openstack \
+            port list \
+                --format json \
+                --server "${vmident}" \
+        | jq -r '.[0] | .ID'
+        )
+
+
+    openstack \
+        port show \
+            "${portid}"
+
+
+
+# -----------------------------------------------------
+# List our security groups.
+#[user@openstacker]
+
+    openstack \
+        security group list
+
+
+
+# -----------------------------------------------------
+# Create a new security group.
+#[user@openstacker]
+
+    openstack \
+        security group create \
+            --format json \
+            'External SSH access' \
+    | jq '.' \
+    | tee /tmp/security.json
+
+    >   --END
+    >   
+    >       groupid=$(
+    >           jq -r "
+    >               .id
+    >               " /tmp/security.json
+    >           )
+    >   
+    >   echo "Group [${groupid}]"
+    >   
+
+
+# -----------------------------------------------------
+# Add rules to allow inbound ssh.
+#[user@openstacker]
+
+    openstack \
+        security group rule create \
+            --ingress \
+            --dst-port 22 \
+            --protocol 'tcp' \
+            --ethertype 'IPv4' \
+            "${groupid}"
+
+
+
+    openstack \
+        security group rule create \
+            --ingress \
+            --dst-port 22 \
+            --protocol 'tcp' \
+            --ethertype 'IPv6' \
+            "${groupid}"
+
+
+
+# -----------------------------------------------------
+# Add our new security group to our network port.
+#[user@openstacker]
+
+    openstack \
+        port set \
+            --security-group "${groupid}" \
+            "${portid}"
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Try ssh to the server.
+# Can't do this from the container.
+# Need to have a user account in /etc/passwd and a home directory for ssh client to work.
+#[user@desktop]
+
+    sshuser=fedora
+    sshhost=128.232.224.74
+
+    ssh "${sshuser:?}@${sshhost:?}" \
+        '
+        date
+        hostname
+        '
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a container (running as root).
+#[user@desktop]
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --env SSH_AUTH_SOCK=/tmp/ssh_auth_sock \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock" \
+        --volume "${HOME}/cumulus.settings:/etc/aglais/cumulus.settings" \
+        --volume "${HOME}/.ssh/cumulus.cam.ac.uk.rsa:/tmp/cumulus.cam.ac.uk.rsa" \
+        --volume "${HOME}/.ssh/cumulus.cam.ac.uk.rsa.pub:/tmp/cumulus.cam.ac.uk.rsa.pub" \
+        phymatopus/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Load our OpenStack settings.
+#[user@openstacker]
+
+    source '/etc/aglais/cumulus.settings'
+
+
+# -----------------------------------------------------
+# Load our OpenStack functions.
+#[user@openstacker]
+
+    source openstack-utils.sh
+
+# -----------------------------------------------------
+# List our active servers.
+#[user@openstacker]
+
+    openstack \
+        server list
+
+
+
+# -----------------------------------------------------
+# Select the first active server.
+#[user@openstacker]
+
+    vmident=$(
+        openstack \
+            server list \
+                --format json \
+        | jq -r '.[0] | .ID'
+        )
+
+    echo "vmident [${vmident}]"
+
+
+
+# -----------------------------------------------------
+# Select the server details.
+#[user@openstacker]
+
+        openstack \
+            server show \
+                "${vmident}"
+
+
+
+        openstack \
+            server show \
+                --format json \
+                "${vmident}"
+
+
+
+# -----------------------------------------------------
+# List the network ports connected to our server.
+#[user@openstacker]
+
+        openstack \
+            port list \
+                --server "${vmident}"
+
+
+
+# -----------------------------------------------------
+# Get the details of the first network port.
+#[user@openstacker]
+
+    portid=$(
+        openstack \
+            port list \
+                --format json \
+                --server "${vmident}" \
+        | jq -r '.[0] | .ID'
+        )
+
+    openstack \
+        port show \
+            "${portid}"
+
+
+
+# -----------------------------------------------------
+# List the floating addresses linked to that port.
+#[user@openstacker]
+
+        openstack \
+            floating ip list \
+                --port "${portid}"
+
+
+
+# -----------------------------------------------------
+# Get the external (floating) IP address linked to that port.
+#[user@openstacker]
+
+    publicip=$(
+        openstack \
+            floating ip list \
+                --format json \
+                --port "${portid}" \
+        | jq -r ' .[0] | ."Floating IP Address" '
+        )
+
+    echo "Public IP [${publicip}]"
+
+
+
+# -----------------------------------------------------
+# Try ssh using the public IP address.
+#[user@openstacker]
+
+    sshuser=fedora
+
+    ssh "${sshuser:?}@${publicip:?}" \
+        '
+        date
+        hostname
+        '
+
+
+# -----------------------------------------------------
+# Again, without the key stuff.
+#[user@openstacker]
+
+    ssh "${sshuser:?}@${publicip:?}" \
+        '
+        date
+        hostname
+        '
+
+
+
+# -----------------------------------------------------
+# Works because 'root' has a user account and home directory.
+#[user@openstacker]
+
+    cat /etc/passwd | grep root
+
+
+    ls -al ${HOME}
+
+
+    #
+    # Using adduser in the Docker file.
+    # https://medium.com/better-programming/running-a-container-with-a-non-root-user-e35830d1f42a
+    # Simple, but hard-codes the user id.
+    #
+
+    # We would need a set of pre-defined numeric user id's for the project.
+    # ....
+
+
+
+
+
+
+

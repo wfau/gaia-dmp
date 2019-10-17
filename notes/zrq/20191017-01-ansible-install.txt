@@ -1,0 +1,1187 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2019, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    #
+    # Cloudera Ansible playbook.
+    # https://github.com/cloudera/cloudera-playbook
+
+    #
+    # OpenStack inventory plugin
+    # https://docs.ansible.com/ansible/latest/plugins/inventory.html
+    # https://docs.ansible.com/ansible/latest/plugins/inventory/openstack.html
+
+
+# -----------------------------------------------------
+# Create our OpenStack settings file.
+# https://docs.openstack.org/keystone/queens/user/application_credentials.html
+# https://cumulus.openstack.hpc.cam.ac.uk/identity/application_credentials/
+#[user@desktop]
+
+    cat > "${HOME}/cumulus.settings" << EOF
+
+export OS_AUTH_TYPE=v3applicationcredential
+export OS_AUTH_URL=https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_REGION_NAME=RegionOne
+export OS_INTERFACE=public
+export OS_APPLICATION_CREDENTIAL_ID=$(secret 'cumulus.cam.ac.uk.CREDENTIAL_ID')
+export OS_APPLICATION_CREDENTIAL_SECRET=$(secret 'cumulus.cam.ac.uk.CREDENTIAL_SECRET')
+
+EOF
+
+
+# -----------------------------------------------------
+# Create a container running as root.
+#[user@desktop]
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname ansible \
+        --env SSH_AUTH_SOCK=/tmp/ssh_auth_sock \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock" \
+        --volume "${HOME}/cumulus.settings:/etc/aglais/cumulus.settings" \
+        --volume "${HOME}/.ssh/cumulus.cam.ac.uk.rsa.pub:/tmp/cumulus.cam.ac.uk.rsa.pub" \
+        --volume "${AGLAIS_CODE}/src/ansible:/var/local/aglais/ansible" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+    >   ....
+
+# -----------------------------------------------------
+# Load our OpenStack settings.
+#[root@ansible]
+
+    source '/etc/aglais/cumulus.settings'
+
+# -----------------------------------------------------
+# Create our Ansible plugin configuration file.
+#[root@ansible]
+
+    # https://docs.openstack.org/python-openstackclient/latest/cli/man/openstack.html#manpage
+    # https://docs.openstack.org/python-openstackclient/latest/configuration/index.html#clouds-yaml
+    # http://jaormx.github.io/2018/spawning-your-first-instance-with-ansible/
+
+    mkdir "${HOME}/.config/"
+    mkdir "${HOME}/.config/openstack/"
+    cat > "${HOME}/.config/openstack/clouds.yaml" << EOF
+
+        clouds:
+          cumulus:
+            auth:
+              auth_url: 'https://cumulus.openstack.hpc.cam.ac.uk:5000/v3'
+              application_credential_id: '${OS_APPLICATION_CREDENTIAL_ID:?}'
+              application_credential_secret: '${OS_APPLICATION_CREDENTIAL_SECRET:?}'
+            region_name: '${OS_REGION_NAME:?}'
+            interface: '${OS_INTERFACE:?}'
+            identity_api_version: ${OS_IDENTITY_API_VERSION:?}
+            auth_type: '${OS_AUTH_TYPE:?}'
+
+EOF
+
+# -----------------------------------------------------
+# Create a playbook to install an OpenStack SSH public key.
+# https://docs.ansible.com/ansible/latest/modules/list_of_cloud_modules.html#openstack
+#[root@ansible]
+
+    cat > "/tmp/01-install-sshkey.yml" << EOF
+---
+- name: Create SSH keypair
+  hosts: localhost
+  tasks:
+    - name: create keypair
+      os_keypair:
+        cloud: cumulus
+        state: present
+        name: 'aglais-ansible'
+        public_key_file: '/tmp/cumulus.cam.ac.uk.rsa.pub'
+        wait: yes
+
+EOF
+
+    ansible-playbook "/tmp/01-install-sshkey.yml"
+
+--START--
+....
+TASK [create keypair]
+changed: [localhost]
+....
+--END--
+
+
+# -----------------------------------------------------
+# Create a playbook to create an OpenStack security group
+# https://docs.ansible.com/ansible/latest/modules/list_of_cloud_modules.html#openstack
+#[root@ansible]
+
+    cat > "/tmp/02-create-security.yml" << EOF
+
+- name: Create a security group
+  hosts: localhost
+  tasks:
+    - name: create security group
+      os_security_group:
+        cloud: cumulus
+        state: present
+        name: 'aglais-public-access'
+
+    - name: create security group rule for SSH
+      os_security_group_rule:
+        cloud: cumulus
+        state: present
+        security_group: 'aglais-public-access'
+        direction: 'ingress'
+        protocol:  'tcp'
+        ethertype: 'IPv4'
+        port_range_min: 22
+        port_range_max: 22
+        remote_ip_prefix: '0.0.0.0/0'
+
+    - name: create security group rule for SSH
+      os_security_group_rule:
+        cloud: cumulus
+        state: present
+        security_group: 'aglais-public-access'
+        direction: 'ingress'
+        protocol:  'tcp'
+        ethertype: 'IPv6'
+        port_range_min: 22
+        port_range_max: 22
+        remote_ip_prefix: '::/0'
+
+EOF
+
+    ansible-playbook "/tmp/02-create-security.yml"
+
+--START--
+....
+TASK [create security group] ****************************************************************************************************************************************************************************************************************
+ok: [localhost]
+
+TASK [create security group rule for SSH] ***************************************************************************************************************************************************************************************************
+changed: [localhost]
+
+TASK [create security group rule for SSH] ***************************************************************************************************************************************************************************************************
+changed: [localhost]
+....
+--END--
+
+
+# -----------------------------------------------------
+# Create a playbook to create an OpenStack instance.
+# https://docs.ansible.com/ansible/latest/modules/list_of_cloud_modules.html#openstack
+#[root@ansible]
+
+    cat > "/tmp/03-create-instance.yml" << EOF
+
+- name: Create a virtual machine
+  hosts: localhost
+  tasks:
+    - name: Create a virtual machine
+      os_server:
+        cloud: cumulus
+        state: present
+        name:  '$(date)'
+        image: 'Fedora-30-1.2'
+        flavor: 'general.v1.small'
+        network: 'cumulus-internal'
+        key_name: 'aglais-ansible'
+        auto_ip: no
+      register:
+        instance
+
+    - debug:
+        var: instance
+
+    - debug:
+        var: instance.id
+
+EOF
+
+    ansible-playbook "/tmp/03-create-instance.yml"
+
+--START--
+....
+TASK [Create a virtual machine]
+changed: [localhost]
+
+TASK [debug]
+ok: [localhost] => {
+    "instance": {
+        "changed": true,
+        "failed": false,
+        "id": "d6f6009e-b8ae-411b-859f-4aa42675d80f",
+        "openstack": {
+            "OS-DCF:diskConfig": "MANUAL",
+            "OS-EXT-AZ:availability_zone": "nova",
+            "OS-EXT-STS:power_state": 1,
+            "OS-EXT-STS:task_state": null,
+            "OS-EXT-STS:vm_state": "active",
+            "OS-SRV-USG:launched_at": "2019-10-17T17:47:22.000000",
+            "OS-SRV-USG:terminated_at": null,
+            "accessIPv4": "10.218.1.11",
+            "accessIPv6": "",
+            "addresses": {
+                "cumulus-internal": [
+                    {
+                        "OS-EXT-IPS-MAC:mac_addr": "fa:16:3e:ee:3c:9d",
+                        "OS-EXT-IPS:type": "fixed",
+                        "addr": "10.218.1.11",
+                        "version": 4
+                    }
+                ]
+            },
+            "adminPass": "qjparsV4iAhs",
+            "az": "nova",
+            "cloud": "cumulus",
+            "config_drive": "",
+            "created": "2019-10-17T17:46:48Z",
+            "disk_config": "MANUAL",
+            "flavor": {
+                "id": "20061eba-9e88-494c-95a3-41ed77721244",
+                "name": "general.v1.small"
+            },
+            "has_config_drive": false,
+            "hostId": "6166ed366a13772652ea211633db8043c668922b8bc0467d6f6d6a79",
+            "host_id": "6166ed366a13772652ea211633db8043c668922b8bc0467d6f6d6a79",
+            "id": "d6f6009e-b8ae-411b-859f-4aa42675d80f",
+            "image": {
+                "id": "ade3a5aa-a6a3-4761-8eed-083e5ce1f117",
+                "name": "Fedora-30-1.2"
+            },
+            "interface_ip": "10.218.1.11",
+            "key_name": "aglais-ansible",
+            "launched_at": "2019-10-17T17:47:22.000000",
+            "location": {
+                "cloud": "cumulus",
+                "project": {
+                    "domain_id": null,
+                    "domain_name": null,
+                    "id": "08e24c6d87f94740aa59c172462ed927",
+                    "name": null
+                },
+                "region_name": "RegionOne",
+                "zone": "nova"
+            },
+            "metadata": {},
+            "name": "Thu Oct 17 17:46:42 UTC 2019",
+            "networks": {},
+            "os-extended-volumes:volumes_attached": [],
+            "power_state": 1,
+            "private_v4": "",
+            "progress": 0,
+            "project_id": "08e24c6d87f94740aa59c172462ed927",
+            "properties": {
+                "OS-DCF:diskConfig": "MANUAL",
+                "OS-EXT-AZ:availability_zone": "nova",
+                "OS-EXT-STS:power_state": 1,
+                "OS-EXT-STS:task_state": null,
+                "OS-EXT-STS:vm_state": "active",
+                "OS-SRV-USG:launched_at": "2019-10-17T17:47:22.000000",
+                "OS-SRV-USG:terminated_at": null,
+                "os-extended-volumes:volumes_attached": []
+            },
+            "public_v4": "10.218.1.11",
+            "public_v6": "",
+            "region": "RegionOne",
+            "security_groups": [
+                {
+                    "description": "Default security group",
+                    "id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                    "location": {
+                        "cloud": "cumulus",
+                        "project": {
+                            "domain_id": null,
+                            "domain_name": null,
+                            "id": "08e24c6d87f94740aa59c172462ed927",
+                            "name": null
+                        },
+                        "region_name": "RegionOne",
+                        "zone": null
+                    },
+                    "name": "default",
+                    "project_id": "08e24c6d87f94740aa59c172462ed927",
+                    "properties": {},
+                    "security_group_rules": [
+                        {
+                            "direction": "ingress",
+                            "ethertype": "IPv4",
+                            "group": {
+                                "name": "default",
+                                "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                            },
+                            "id": "872936f4-f84a-468e-b460-133c146900d2",
+                            "location": {
+                                "cloud": "cumulus",
+                                "project": {
+                                    "domain_id": null,
+                                    "domain_name": null,
+                                    "id": "08e24c6d87f94740aa59c172462ed927",
+                                    "name": null
+                                },
+                                "region_name": "RegionOne",
+                                "zone": null
+                            },
+                            "port_range_max": null,
+                            "port_range_min": null,
+                            "project_id": "",
+                            "properties": {
+                                "group": {
+                                    "name": "default",
+                                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                                }
+                            },
+                            "protocol": null,
+                            "remote_group_id": null,
+                            "remote_ip_prefix": null,
+                            "security_group_id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                            "tenant_id": ""
+                        },
+                        {
+                            "direction": "ingress",
+                            "ethertype": "IPv4",
+                            "group": {
+                                "name": "default",
+                                "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                            },
+                            "id": "a3da14c5-8251-40f1-95fb-abef1bf7a38c",
+                            "location": {
+                                "cloud": "cumulus",
+                                "project": {
+                                    "domain_id": null,
+                                    "domain_name": null,
+                                    "id": "08e24c6d87f94740aa59c172462ed927",
+                                    "name": null
+                                },
+                                "region_name": "RegionOne",
+                                "zone": null
+                            },
+                            "port_range_max": null,
+                            "port_range_min": null,
+                            "project_id": "",
+                            "properties": {
+                                "group": {
+                                    "name": "default",
+                                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                                }
+                            },
+                            "protocol": null,
+                            "remote_group_id": null,
+                            "remote_ip_prefix": null,
+                            "security_group_id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                            "tenant_id": ""
+                        }
+                    ],
+                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                }
+            ],
+            "status": "ACTIVE",
+            "task_state": null,
+            "tenant_id": "08e24c6d87f94740aa59c172462ed927",
+            "terminated_at": null,
+            "updated": "2019-10-17T17:47:22Z",
+            "user_id": "98169f87de174ad4ac98c32e59646488",
+            "vm_state": "active",
+            "volumes": []
+        },
+        "server": {
+            "OS-DCF:diskConfig": "MANUAL",
+            "OS-EXT-AZ:availability_zone": "nova",
+            "OS-EXT-STS:power_state": 1,
+            "OS-EXT-STS:task_state": null,
+            "OS-EXT-STS:vm_state": "active",
+            "OS-SRV-USG:launched_at": "2019-10-17T17:47:22.000000",
+            "OS-SRV-USG:terminated_at": null,
+            "accessIPv4": "10.218.1.11",
+            "accessIPv6": "",
+            "addresses": {
+                "cumulus-internal": [
+                    {
+                        "OS-EXT-IPS-MAC:mac_addr": "fa:16:3e:ee:3c:9d",
+                        "OS-EXT-IPS:type": "fixed",
+                        "addr": "10.218.1.11",
+                        "version": 4
+                    }
+                ]
+            },
+            "adminPass": "qjparsV4iAhs",
+            "az": "nova",
+            "cloud": "cumulus",
+            "config_drive": "",
+            "created": "2019-10-17T17:46:48Z",
+            "disk_config": "MANUAL",
+            "flavor": {
+                "id": "20061eba-9e88-494c-95a3-41ed77721244",
+                "name": "general.v1.small"
+            },
+            "has_config_drive": false,
+            "hostId": "6166ed366a13772652ea211633db8043c668922b8bc0467d6f6d6a79",
+            "host_id": "6166ed366a13772652ea211633db8043c668922b8bc0467d6f6d6a79",
+            "id": "d6f6009e-b8ae-411b-859f-4aa42675d80f",
+            "image": {
+                "id": "ade3a5aa-a6a3-4761-8eed-083e5ce1f117",
+                "name": "Fedora-30-1.2"
+            },
+            "interface_ip": "10.218.1.11",
+            "key_name": "aglais-ansible",
+            "launched_at": "2019-10-17T17:47:22.000000",
+            "location": {
+                "cloud": "cumulus",
+                "project": {
+                    "domain_id": null,
+                    "domain_name": null,
+                    "id": "08e24c6d87f94740aa59c172462ed927",
+                    "name": null
+                },
+                "region_name": "RegionOne",
+                "zone": "nova"
+            },
+            "metadata": {},
+            "name": "Thu Oct 17 17:46:42 UTC 2019",
+            "networks": {},
+            "os-extended-volumes:volumes_attached": [],
+            "power_state": 1,
+            "private_v4": "",
+            "progress": 0,
+            "project_id": "08e24c6d87f94740aa59c172462ed927",
+            "properties": {
+                "OS-DCF:diskConfig": "MANUAL",
+                "OS-EXT-AZ:availability_zone": "nova",
+                "OS-EXT-STS:power_state": 1,
+                "OS-EXT-STS:task_state": null,
+                "OS-EXT-STS:vm_state": "active",
+                "OS-SRV-USG:launched_at": "2019-10-17T17:47:22.000000",
+                "OS-SRV-USG:terminated_at": null,
+                "os-extended-volumes:volumes_attached": []
+            },
+            "public_v4": "10.218.1.11",
+            "public_v6": "",
+            "region": "RegionOne",
+            "security_groups": [
+                {
+                    "description": "Default security group",
+                    "id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                    "location": {
+                        "cloud": "cumulus",
+                        "project": {
+                            "domain_id": null,
+                            "domain_name": null,
+                            "id": "08e24c6d87f94740aa59c172462ed927",
+                            "name": null
+                        },
+                        "region_name": "RegionOne",
+                        "zone": null
+                    },
+                    "name": "default",
+                    "project_id": "08e24c6d87f94740aa59c172462ed927",
+                    "properties": {},
+                    "security_group_rules": [
+                        {
+                            "direction": "ingress",
+                            "ethertype": "IPv4",
+                            "group": {
+                                "name": "default",
+                                "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                            },
+                            "id": "872936f4-f84a-468e-b460-133c146900d2",
+                            "location": {
+                                "cloud": "cumulus",
+                                "project": {
+                                    "domain_id": null,
+                                    "domain_name": null,
+                                    "id": "08e24c6d87f94740aa59c172462ed927",
+                                    "name": null
+                                },
+                                "region_name": "RegionOne",
+                                "zone": null
+                            },
+                            "port_range_max": null,
+                            "port_range_min": null,
+                            "project_id": "",
+                            "properties": {
+                                "group": {
+                                    "name": "default",
+                                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                                }
+                            },
+                            "protocol": null,
+                            "remote_group_id": null,
+                            "remote_ip_prefix": null,
+                            "security_group_id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                            "tenant_id": ""
+                        },
+                        {
+                            "direction": "ingress",
+                            "ethertype": "IPv4",
+                            "group": {
+                                "name": "default",
+                                "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                            },
+                            "id": "a3da14c5-8251-40f1-95fb-abef1bf7a38c",
+                            "location": {
+                                "cloud": "cumulus",
+                                "project": {
+                                    "domain_id": null,
+                                    "domain_name": null,
+                                    "id": "08e24c6d87f94740aa59c172462ed927",
+                                    "name": null
+                                },
+                                "region_name": "RegionOne",
+                                "zone": null
+                            },
+                            "port_range_max": null,
+                            "port_range_min": null,
+                            "project_id": "",
+                            "properties": {
+                                "group": {
+                                    "name": "default",
+                                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                                }
+                            },
+                            "protocol": null,
+                            "remote_group_id": null,
+                            "remote_ip_prefix": null,
+                            "security_group_id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                            "tenant_id": ""
+                        }
+                    ],
+                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                }
+            ],
+            "status": "ACTIVE",
+            "task_state": null,
+            "tenant_id": "08e24c6d87f94740aa59c172462ed927",
+            "terminated_at": null,
+            "updated": "2019-10-17T17:47:22Z",
+            "user_id": "98169f87de174ad4ac98c32e59646488",
+            "vm_state": "active",
+            "volumes": []
+        }
+    }
+}
+
+TASK [debug]
+ok: [localhost] => {
+    "instance.id": "d6f6009e-b8ae-411b-859f-4aa42675d80f"
+}
+----
+--END--
+
+
+# -----------------------------------------------------
+# Create an instance and add a public IP address.
+# https://docs.ansible.com/ansible/latest/modules/list_of_cloud_modules.html#openstack
+#[root@ansible]
+
+    cat > "/tmp/04-create-instance.yml" << EOF
+
+- name: Create a virtual machine
+  hosts: localhost
+  tasks:
+    - name: Create a virtual machine
+      os_server:
+        cloud: 'cumulus'
+        state: present
+        name:  '$(date)'
+        image: 'Fedora-30-1.2'
+        flavor: 'general.v1.small'
+        network: 'cumulus-internal'
+        key_name: 'aglais-ansible'
+        auto_ip: no
+      register:
+        instance
+
+    - debug:
+        var: instance.id
+
+    - name: Add a floating IP address
+      os_floating_ip:
+        cloud: 'cumulus'
+        state: present
+        server: '{{ instance.id }}'
+        network: 'internet'
+        nat_destination: 'cumulus-internal'
+      register:
+        floating
+
+    - debug:
+        var: floating
+
+EOF
+
+    ansible-playbook "/tmp/04-create-instance.yml"
+
+--START--
+....
+TASK [Create a virtual machine]
+changed: [localhost]
+
+TASK [debug]
+ok: [localhost] => {
+    "instance.id": "9a348f46-edd3-4555-b6fd-b4dfffeccd3b"
+}
+
+TASK [Add a floating IP address]
+changed: [localhost]
+
+TASK [debug] ********************************************************************************************************************************************************************************************************************************
+ok: [localhost] => {
+    "floating": {
+        "changed": true,
+        "failed": false,
+        "floating_ip": {
+            "attached": true,
+            "created_at": "2019-10-17T17:51:47Z",
+            "description": "",
+            "dns_domain": "",
+            "dns_name": "",
+            "fixed_ip_address": "10.218.1.22",
+            "floating_ip_address": "128.232.224.73",
+            "floating_network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+            "id": "0a905f1f-6596-4dd9-81e4-0fb406309c68",
+            "location": {
+                "cloud": "cumulus",
+                "project": {
+                    "domain_id": null,
+                    "domain_name": null,
+                    "id": "08e24c6d87f94740aa59c172462ed927",
+                    "name": null
+                },
+                "region_name": "RegionOne",
+                "zone": null
+            },
+            "network": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+            "port": "f916d1e2-153b-4ea5-a3b2-c332619fb06e",
+            "port_details": {
+                "admin_state_up": true,
+                "device_id": "9a348f46-edd3-4555-b6fd-b4dfffeccd3b",
+                "device_owner": "compute:nova",
+                "mac_address": "fa:16:3e:a8:07:28",
+                "name": "",
+                "network_id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+                "status": "ACTIVE"
+            },
+            "port_id": "f916d1e2-153b-4ea5-a3b2-c332619fb06e",
+            "project_id": "08e24c6d87f94740aa59c172462ed927",
+            "properties": {
+                "dns_domain": "",
+                "dns_name": "",
+                "port_details": {
+                    "admin_state_up": true,
+                    "device_id": "9a348f46-edd3-4555-b6fd-b4dfffeccd3b",
+                    "device_owner": "compute:nova",
+                    "mac_address": "fa:16:3e:a8:07:28",
+                    "name": "",
+                    "network_id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+                    "status": "ACTIVE"
+                },
+                "tags": []
+            },
+            "revision_number": 0,
+            "router": "88ec6e37-f6fa-421f-89ea-f2400c1c523a",
+            "router_id": "88ec6e37-f6fa-421f-89ea-f2400c1c523a",
+            "status": "DOWN",
+            "tags": [],
+            "tenant_id": "08e24c6d87f94740aa59c172462ed927",
+            "updated_at": "2019-10-17T17:51:47Z"
+        }
+    }
+}
+....
+--END--
+
+
+# -----------------------------------------------------
+# Create an instance, add a public IP address and a security group.
+# https://docs.ansible.com/ansible/latest/modules/list_of_cloud_modules.html#openstack
+#[root@ansible]
+
+    cat > "/tmp/05-create-instance.yml" << EOF
+
+- name: Create a virtual machine
+  hosts: localhost
+  tasks:
+    - name: Create a virtual machine
+      os_server:
+        cloud: 'cumulus'
+        state: present
+        name:  '$(date)'
+        image: 'Fedora-30-1.2'
+        flavor: 'general.v1.small'
+        network: 'cumulus-internal'
+        key_name: 'aglais-ansible'
+        auto_ip: no
+      register:
+        instance
+
+    - debug:
+        var: instance.id
+
+    - name: Add a floating IP address
+      os_floating_ip:
+        cloud: 'cumulus'
+        state: present
+        server: '{{ instance.id }}'
+        network: 'internet'
+        nat_destination: 'cumulus-internal'
+      register:
+        floating
+
+
+    - name: Apply security group to floating IP address
+      os_port:
+        state: present
+        name: '{{ floating.floating_ip.port }}'
+        security_groups:
+          - 'aglais-public-access'
+
+    - debug:
+        var: instance
+
+    - debug:
+        var: floating.floating_ip.floating_ip_address
+
+EOF
+
+
+    ansible-playbook "/tmp/05-create-instance.yml"
+
+--START--
+....
+TASK [Create a virtual machine]
+changed: [localhost]
+
+TASK [debug]
+ok: [localhost] => {
+    "instance.id": "86c60adc-5ae0-4560-b79e-ae6c97fceb8c"
+}
+
+TASK [Add a floating IP address]
+changed: [localhost]
+
+TASK [Apply security group to floating IP address]
+changed: [localhost]
+
+TASK [debug]
+ok: [localhost] => {
+    "instance": {
+        "changed": true,
+        "failed": false,
+        "id": "86c60adc-5ae0-4560-b79e-ae6c97fceb8c",
+        "openstack": {
+            "OS-DCF:diskConfig": "MANUAL",
+            "OS-EXT-AZ:availability_zone": "nova",
+            "OS-EXT-STS:power_state": 1,
+            "OS-EXT-STS:task_state": null,
+            "OS-EXT-STS:vm_state": "active",
+            "OS-SRV-USG:launched_at": "2019-10-17T18:03:07.000000",
+            "OS-SRV-USG:terminated_at": null,
+            "accessIPv4": "10.218.1.7",
+            "accessIPv6": "",
+            "addresses": {
+                "cumulus-internal": [
+                    {
+                        "OS-EXT-IPS-MAC:mac_addr": "fa:16:3e:a1:2e:b3",
+                        "OS-EXT-IPS:type": "fixed",
+                        "addr": "10.218.1.7",
+                        "version": 4
+                    }
+                ]
+            },
+            "adminPass": "5fcb3k263oGd",
+            "az": "nova",
+            "cloud": "cumulus",
+            "config_drive": "",
+            "created": "2019-10-17T18:02:32Z",
+            "disk_config": "MANUAL",
+            "flavor": {
+                "id": "20061eba-9e88-494c-95a3-41ed77721244",
+                "name": "general.v1.small"
+            },
+            "has_config_drive": false,
+            "hostId": "49f2e0e06be5ba93b14d8dd324c307c238fbe9cdf3d4a42a5919fda9",
+            "host_id": "49f2e0e06be5ba93b14d8dd324c307c238fbe9cdf3d4a42a5919fda9",
+            "id": "86c60adc-5ae0-4560-b79e-ae6c97fceb8c",
+            "image": {
+                "id": "ade3a5aa-a6a3-4761-8eed-083e5ce1f117",
+                "name": "Fedora-30-1.2"
+            },
+            "interface_ip": "10.218.1.7",
+            "key_name": "aglais-ansible",
+            "launched_at": "2019-10-17T18:03:07.000000",
+            "location": {
+                "cloud": "cumulus",
+                "project": {
+                    "domain_id": null,
+                    "domain_name": null,
+                    "id": "08e24c6d87f94740aa59c172462ed927",
+                    "name": null
+                },
+                "region_name": "RegionOne",
+                "zone": "nova"
+            },
+            "metadata": {},
+            "name": "Thu Oct 17 18:02:19 UTC 2019",
+            "networks": {},
+            "os-extended-volumes:volumes_attached": [],
+            "power_state": 1,
+            "private_v4": "",
+            "progress": 0,
+            "project_id": "08e24c6d87f94740aa59c172462ed927",
+            "properties": {
+                "OS-DCF:diskConfig": "MANUAL",
+                "OS-EXT-AZ:availability_zone": "nova",
+                "OS-EXT-STS:power_state": 1,
+                "OS-EXT-STS:task_state": null,
+                "OS-EXT-STS:vm_state": "active",
+                "OS-SRV-USG:launched_at": "2019-10-17T18:03:07.000000",
+                "OS-SRV-USG:terminated_at": null,
+                "os-extended-volumes:volumes_attached": []
+            },
+            "public_v4": "10.218.1.7",
+            "public_v6": "",
+            "region": "RegionOne",
+            "security_groups": [
+                {
+                    "description": "Default security group",
+                    "id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                    "location": {
+                        "cloud": "cumulus",
+                        "project": {
+                            "domain_id": null,
+                            "domain_name": null,
+                            "id": "08e24c6d87f94740aa59c172462ed927",
+                            "name": null
+                        },
+                        "region_name": "RegionOne",
+                        "zone": null
+                    },
+                    "name": "default",
+                    "project_id": "08e24c6d87f94740aa59c172462ed927",
+                    "properties": {},
+                    "security_group_rules": [
+                        {
+                            "direction": "ingress",
+                            "ethertype": "IPv4",
+                            "group": {
+                                "name": "default",
+                                "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                            },
+                            "id": "872936f4-f84a-468e-b460-133c146900d2",
+                            "location": {
+                                "cloud": "cumulus",
+                                "project": {
+                                    "domain_id": null,
+                                    "domain_name": null,
+                                    "id": "08e24c6d87f94740aa59c172462ed927",
+                                    "name": null
+                                },
+                                "region_name": "RegionOne",
+                                "zone": null
+                            },
+                            "port_range_max": null,
+                            "port_range_min": null,
+                            "project_id": "",
+                            "properties": {
+                                "group": {
+                                    "name": "default",
+                                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                                }
+                            },
+                            "protocol": null,
+                            "remote_group_id": null,
+                            "remote_ip_prefix": null,
+                            "security_group_id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                            "tenant_id": ""
+                        },
+                        {
+                            "direction": "ingress",
+                            "ethertype": "IPv4",
+                            "group": {
+                                "name": "default",
+                                "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                            },
+                            "id": "a3da14c5-8251-40f1-95fb-abef1bf7a38c",
+                            "location": {
+                                "cloud": "cumulus",
+                                "project": {
+                                    "domain_id": null,
+                                    "domain_name": null,
+                                    "id": "08e24c6d87f94740aa59c172462ed927",
+                                    "name": null
+                                },
+                                "region_name": "RegionOne",
+                                "zone": null
+                            },
+                            "port_range_max": null,
+                            "port_range_min": null,
+                            "project_id": "",
+                            "properties": {
+                                "group": {
+                                    "name": "default",
+                                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                                }
+                            },
+                            "protocol": null,
+                            "remote_group_id": null,
+                            "remote_ip_prefix": null,
+                            "security_group_id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                            "tenant_id": ""
+                        }
+                    ],
+                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                }
+            ],
+            "status": "ACTIVE",
+            "task_state": null,
+            "tenant_id": "08e24c6d87f94740aa59c172462ed927",
+            "terminated_at": null,
+            "updated": "2019-10-17T18:03:07Z",
+            "user_id": "98169f87de174ad4ac98c32e59646488",
+            "vm_state": "active",
+            "volumes": []
+        },
+        "server": {
+            "OS-DCF:diskConfig": "MANUAL",
+            "OS-EXT-AZ:availability_zone": "nova",
+            "OS-EXT-STS:power_state": 1,
+            "OS-EXT-STS:task_state": null,
+            "OS-EXT-STS:vm_state": "active",
+            "OS-SRV-USG:launched_at": "2019-10-17T18:03:07.000000",
+            "OS-SRV-USG:terminated_at": null,
+            "accessIPv4": "10.218.1.7",
+            "accessIPv6": "",
+            "addresses": {
+                "cumulus-internal": [
+                    {
+                        "OS-EXT-IPS-MAC:mac_addr": "fa:16:3e:a1:2e:b3",
+                        "OS-EXT-IPS:type": "fixed",
+                        "addr": "10.218.1.7",
+                        "version": 4
+                    }
+                ]
+            },
+            "adminPass": "5fcb3k263oGd",
+            "az": "nova",
+            "cloud": "cumulus",
+            "config_drive": "",
+            "created": "2019-10-17T18:02:32Z",
+            "disk_config": "MANUAL",
+            "flavor": {
+                "id": "20061eba-9e88-494c-95a3-41ed77721244",
+                "name": "general.v1.small"
+            },
+            "has_config_drive": false,
+            "hostId": "49f2e0e06be5ba93b14d8dd324c307c238fbe9cdf3d4a42a5919fda9",
+            "host_id": "49f2e0e06be5ba93b14d8dd324c307c238fbe9cdf3d4a42a5919fda9",
+            "id": "86c60adc-5ae0-4560-b79e-ae6c97fceb8c",
+            "image": {
+                "id": "ade3a5aa-a6a3-4761-8eed-083e5ce1f117",
+                "name": "Fedora-30-1.2"
+            },
+            "interface_ip": "10.218.1.7",
+            "key_name": "aglais-ansible",
+            "launched_at": "2019-10-17T18:03:07.000000",
+            "location": {
+                "cloud": "cumulus",
+                "project": {
+                    "domain_id": null,
+                    "domain_name": null,
+                    "id": "08e24c6d87f94740aa59c172462ed927",
+                    "name": null
+                },
+                "region_name": "RegionOne",
+                "zone": "nova"
+            },
+            "metadata": {},
+            "name": "Thu Oct 17 18:02:19 UTC 2019",
+            "networks": {},
+            "os-extended-volumes:volumes_attached": [],
+            "power_state": 1,
+            "private_v4": "",
+            "progress": 0,
+            "project_id": "08e24c6d87f94740aa59c172462ed927",
+            "properties": {
+                "OS-DCF:diskConfig": "MANUAL",
+                "OS-EXT-AZ:availability_zone": "nova",
+                "OS-EXT-STS:power_state": 1,
+                "OS-EXT-STS:task_state": null,
+                "OS-EXT-STS:vm_state": "active",
+                "OS-SRV-USG:launched_at": "2019-10-17T18:03:07.000000",
+                "OS-SRV-USG:terminated_at": null,
+                "os-extended-volumes:volumes_attached": []
+            },
+            "public_v4": "10.218.1.7",
+            "public_v6": "",
+            "region": "RegionOne",
+            "security_groups": [
+                {
+                    "description": "Default security group",
+                    "id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                    "location": {
+                        "cloud": "cumulus",
+                        "project": {
+                            "domain_id": null,
+                            "domain_name": null,
+                            "id": "08e24c6d87f94740aa59c172462ed927",
+                            "name": null
+                        },
+                        "region_name": "RegionOne",
+                        "zone": null
+                    },
+                    "name": "default",
+                    "project_id": "08e24c6d87f94740aa59c172462ed927",
+                    "properties": {},
+                    "security_group_rules": [
+                        {
+                            "direction": "ingress",
+                            "ethertype": "IPv4",
+                            "group": {
+                                "name": "default",
+                                "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                            },
+                            "id": "872936f4-f84a-468e-b460-133c146900d2",
+                            "location": {
+                                "cloud": "cumulus",
+                                "project": {
+                                    "domain_id": null,
+                                    "domain_name": null,
+                                    "id": "08e24c6d87f94740aa59c172462ed927",
+                                    "name": null
+                                },
+                                "region_name": "RegionOne",
+                                "zone": null
+                            },
+                            "port_range_max": null,
+                            "port_range_min": null,
+                            "project_id": "",
+                            "properties": {
+                                "group": {
+                                    "name": "default",
+                                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                                }
+                            },
+                            "protocol": null,
+                            "remote_group_id": null,
+                            "remote_ip_prefix": null,
+                            "security_group_id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                            "tenant_id": ""
+                        },
+                        {
+                            "direction": "ingress",
+                            "ethertype": "IPv4",
+                            "group": {
+                                "name": "default",
+                                "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                            },
+                            "id": "a3da14c5-8251-40f1-95fb-abef1bf7a38c",
+                            "location": {
+                                "cloud": "cumulus",
+                                "project": {
+                                    "domain_id": null,
+                                    "domain_name": null,
+                                    "id": "08e24c6d87f94740aa59c172462ed927",
+                                    "name": null
+                                },
+                                "region_name": "RegionOne",
+                                "zone": null
+                            },
+                            "port_range_max": null,
+                            "port_range_min": null,
+                            "project_id": "",
+                            "properties": {
+                                "group": {
+                                    "name": "default",
+                                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                                }
+                            },
+                            "protocol": null,
+                            "remote_group_id": null,
+                            "remote_ip_prefix": null,
+                            "security_group_id": "d917cfec-af58-4ee0-8730-62867d79a323",
+                            "tenant_id": ""
+                        }
+                    ],
+                    "tenant_id": "08e24c6d87f94740aa59c172462ed927"
+                }
+            ],
+            "status": "ACTIVE",
+            "task_state": null,
+            "tenant_id": "08e24c6d87f94740aa59c172462ed927",
+            "terminated_at": null,
+            "updated": "2019-10-17T18:03:07Z",
+            "user_id": "98169f87de174ad4ac98c32e59646488",
+            "vm_state": "active",
+            "volumes": []
+        }
+    }
+}
+
+TASK [debug]
+ok: [localhost] => {
+    "floating.floating_ip.floating_ip_address": "128.232.224.74"
+}
+....
+--END--
+
+
+# -----------------------------------------------------
+# Check we can login via SSH.
+#[user@desktop]
+
+    ssh fedora@128.232.224.74 \
+        '
+        date
+        hostname
+        id
+        '
+
+--START--
+The authenticity of host '128.232.224.74 (128.232.224.74)' can't be established.
+ECDSA key fingerprint is SHA256:VNi04CC3fVHrpa7tIrCMkOej44JDLNzSsRrJdZysK6g.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added '128.232.224.74' (ECDSA) to the list of known hosts.
+Thu Oct 17 18:05:46 UTC 2019
+thu-oct-17-180219-utc-2019.novalocal
+uid=1000(fedora) gid=1000(fedora) groups=1000(fedora),4(adm),10(wheel),190(systemd-journal) context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+--END--
+
+
+    ssh fedora@128.232.224.74 \
+        '
+        date
+        hostname
+        id
+        '
+
+--START--
+Thu Oct 17 18:06:15 UTC 2019
+thu-oct-17-180219-utc-2019.novalocal
+uid=1000(fedora) gid=1000(fedora) groups=1000(fedora),4(adm),10(wheel),190(systemd-journal) context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+--END--
+
+
+
+
+

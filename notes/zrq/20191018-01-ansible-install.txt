@@ -1,0 +1,566 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2019, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    # Create machines with names.
+    # Use machine names in inventory.
+
+    # Use affinity to spread machines across hosts.
+    # https://raymii.org/s/articles/Openstack_Affinity_Groups-make-sure-instances-are-on-the-same-or-a-different-hypervisor-host.html
+
+
+# -----------------------------------------------------
+# Create our OpenStack settings file.
+# https://docs.openstack.org/keystone/queens/user/application_credentials.html
+# https://cumulus.openstack.hpc.cam.ac.uk/identity/application_credentials/
+#[user@desktop]
+
+    cat > "${HOME}/cumulus.settings" << EOF
+
+export OS_AUTH_TYPE=v3applicationcredential
+export OS_AUTH_URL=https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+export OS_IDENTITY_API_VERSION=3
+export OS_REGION_NAME=RegionOne
+export OS_INTERFACE=public
+export OS_APPLICATION_CREDENTIAL_ID=$(secret 'cumulus.cam.ac.uk.CREDENTIAL_ID')
+export OS_APPLICATION_CREDENTIAL_SECRET=$(secret 'cumulus.cam.ac.uk.CREDENTIAL_SECRET')
+
+EOF
+
+
+# -----------------------------------------------------
+# Create a container running as root.
+#[user@desktop]
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname ansible \
+        --env SSH_AUTH_SOCK=/tmp/ssh_auth_sock \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock" \
+        --volume "${HOME}/cumulus.settings:/etc/aglais/cumulus.settings" \
+        --volume "${HOME}/.ssh/cumulus.cam.ac.uk.rsa.pub:/tmp/cumulus.cam.ac.uk.rsa.pub" \
+        --volume "${AGLAIS_CODE}/src/ansible:/var/local/aglais/ansible" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+    >   ....
+
+# -----------------------------------------------------
+# Load our OpenStack settings.
+#[root@ansible]
+
+    source '/etc/aglais/cumulus.settings'
+
+# -----------------------------------------------------
+# Create our Ansible plugin configuration file.
+# https://docs.ansible.com/ansible/latest/modules/list_of_cloud_modules.html#openstack
+#[root@ansible]
+
+    # https://docs.openstack.org/python-openstackclient/latest/cli/man/openstack.html#manpage
+    # https://docs.openstack.org/python-openstackclient/latest/configuration/index.html#clouds-yaml
+    # http://jaormx.github.io/2018/spawning-your-first-instance-with-ansible/
+
+    mkdir "${HOME}/.config/"
+    mkdir "${HOME}/.config/openstack/"
+    cat > "${HOME}/.config/openstack/clouds.yaml" << EOF
+
+        clouds:
+          cumulus:
+            auth:
+              auth_url: 'https://cumulus.openstack.hpc.cam.ac.uk:5000/v3'
+              application_credential_id: '${OS_APPLICATION_CREDENTIAL_ID:?}'
+              application_credential_secret: '${OS_APPLICATION_CREDENTIAL_SECRET:?}'
+            region_name: '${OS_REGION_NAME:?}'
+            interface: '${OS_INTERFACE:?}'
+            identity_api_version: ${OS_IDENTITY_API_VERSION:?}
+            auth_type: '${OS_AUTH_TYPE:?}'
+
+EOF
+
+
+# -----------------------------------------------------
+# Create an OpenStack server group.
+# https://docs.ansible.com/ansible/latest/modules/os_server_group_module.html
+#[root@ansible]
+
+    cat > "/tmp/01-create-server-group.yml" << EOF
+
+- name: Check the workers group
+  hosts: localhost
+  tasks:
+    - name: Check the workers group
+      os_server_group:
+        cloud: cumulus
+        state: present
+        name: 'aglais-workers'
+        policies: anti-affinity
+      register:
+        workers
+
+    - debug:
+        msg: "Group [{{ workers.id }}]"
+
+EOF
+
+    ansible-playbook \
+        "/tmp/01-create-server-group.yml"
+
+--START--
+....
+TASK [Create a workers group]
+changed: [localhost]
+....
+--END--
+
+
+# -----------------------------------------------------
+# Create our hosts file.
+#[root@ansible]
+
+    cat > "/tmp/test-hosts.yml" << EOF
+
+all:
+
+    hosts:
+
+        work01:
+        work02:
+        work03:
+        work04:
+        data01:
+        data02:
+        data03:
+        data04:
+
+    children:
+
+        workers:
+            hosts:
+                work01:
+                work02:
+                work03:
+                work04:
+
+
+EOF
+
+
+# -----------------------------------------------------
+# Create our worker nodes with an anti-affinity-group.
+# https://docs.ansible.com/ansible/latest/modules/os_server_module.html
+# https://docs.catalystcloud.io/compute-service/anti-affinity-groups-ha.html
+#[root@ansible]
+
+    cat > "/tmp/02-create-workers.yml" << EOF
+
+- name: Create worker nodes
+  hosts: localhost
+  tasks:
+
+    - name: Check the workers group
+      os_server_group:
+        cloud: cumulus
+        state: present
+        name: 'aglais-workers'
+        policies: anti-affinity
+      register:
+        workernodes
+
+    - debug:
+        msg: "Group [{{ workernodes.id }}]"
+
+    - name: Check worker nodes
+      os_server:
+        cloud: 'cumulus'
+        state: present
+        name:  "{{ item }}"
+        image: 'Fedora-30-1.2'
+        flavor: 'general.v1.small'
+        network: 'cumulus-internal'
+        key_name: 'aglais-ansible'
+        auto_ip: no
+        meta:
+          hostname: "{{ item }}"
+        scheduler_hints:
+          group: "{{ workernodes.id }}"
+      loop:
+        "{{ groups['workers'] }}"
+
+EOF
+
+    ansible-playbook \
+        --inventory "/tmp/test-hosts.yml" \
+        "/tmp/02-create-workers.yml"
+
+--START--
+....
+TASK [Check worker nodes]
+task path: /tmp/02-create-workers.yml:18
+<127.0.0.1> ESTABLISH LOCAL CONNECTION FOR USER: root
+<127.0.0.1> EXEC /bin/sh -c 'echo ~root && sleep 0'
+<127.0.0.1> EXEC /bin/sh -c '( umask 77 && mkdir -p "` echo /root/.ansible/tmp/ansible-tmp-1571405077.8727727-249383482219129 `" && echo ansible-tmp-1571405077.8727727-249383482219129="` echo /root/.ansible/tmp/ansible-tmp-1571405077.8727727-249383482219129 `" ) && sleep 0'
+Using module file /usr/lib/python3.7/site-packages/ansible/modules/cloud/openstack/os_server.py
+<127.0.0.1> PUT /root/.ansible/tmp/ansible-local-2115gdh480wo/tmppzjnxv6e TO /root/.ansible/tmp/ansible-tmp-1571405077.8727727-249383482219129/AnsiballZ_os_server.py
+<127.0.0.1> EXEC /bin/sh -c 'chmod u+x /root/.ansible/tmp/ansible-tmp-1571405077.8727727-249383482219129/ /root/.ansible/tmp/ansible-tmp-1571405077.8727727-249383482219129/AnsiballZ_os_server.py && sleep 0'
+<127.0.0.1> EXEC /bin/sh -c '/usr/bin/python3 /root/.ansible/tmp/ansible-tmp-1571405077.8727727-249383482219129/AnsiballZ_os_server.py && sleep 0'
+<127.0.0.1> EXEC /bin/sh -c 'rm -f -r /root/.ansible/tmp/ansible-tmp-1571405077.8727727-249383482219129/ > /dev/null 2>&1 && sleep 0'
+The full traceback is:
+  File "/tmp/ansible_os_server_payload_gt1sdy0h/__main__.py", line 744, in main
+    _create_server(module, cloud)
+  File "/tmp/ansible_os_server_payload_gt1sdy0h/__main__.py", line 538, in _create_server
+    **bootkwargs
+  File "<decorator-gen-30>", line 2, in create_server
+  File "/usr/lib/python3.7/site-packages/openstack/cloud/_utils.py", line 374, in func_wrapper
+    return func(*args, **kwargs)
+  File "/usr/lib/python3.7/site-packages/openstack/cloud/openstackcloud.py", line 6768, in create_server
+    self.compute.post(endpoint, json={'server': kwargs}))
+  File "/usr/lib/python3.7/site-packages/openstack/_adapter.py", line 95, in _json_response
+    exceptions.raise_from_response(response, error_message=error_message)
+  File "/usr/lib/python3.7/site-packages/openstack/exceptions.py", line 212, in raise_from_response
+    http_status=http_status, request_id=request_id
+
+failed: [localhost] (item=work01) => {
+    "ansible_loop_var": "item",
+    "changed": false,
+    "extra_data": null,
+    "invocation": {
+        "module_args": {
+            "api_timeout": null,
+            "auth": null,
+            "auth_type": null,
+            "auto_ip": false,
+            "availability_zone": null,
+            "boot_from_volume": false,
+            "boot_volume": null,
+            "ca_cert": null,
+            "client_cert": null,
+            "client_key": null,
+            "config_drive": false,
+            "delete_fip": false,
+            "flavor": "general.v1.small",
+            "flavor_include": null,
+            "flavor_ram": null,
+            "floating_ip_pools": null,
+            "floating_ips": null,
+            "image": "Fedora-30-1.2",
+            "image_exclude": "(deprecated)",
+            "interface": "public",
+            "key_name": "aglais-ansible",
+            "meta": {
+                "hostname": "work01"
+            },
+            "name": "work01",
+            "network": "cumulus-internal",
+            "nics": [],
+            "region_name": null,
+            "reuse_ips": true,
+            "scheduler_hints": {
+                "group": "245480a2-2efb-4f12-9edb-fd5bef089738"
+            },
+            "security_groups": [
+                "default"
+            ],
+            "state": "present",
+            "terminate_volume": false,
+            "timeout": 180,
+            "userdata": null,
+            "validate_certs": null,
+            "volume_size": false,
+            "volumes": [],
+            "wait": true
+        }
+    },
+    "item": "work01",
+    "msg": "BadRequestException: 400"
+}
+....
+--END--
+
+        #
+        # Tried different syntax, none of them work.
+
+        scheduler_hints: "group=245480a2-2efb-4f12-9edb-fd5bef089738"
+
+        scheduler_hints:
+          group: "aglais-workers"
+
+        scheduler_hints:
+          group: "245480a2-2efb-4f12-9edb-fd5bef089738"
+
+        scheduler_hints:
+          group: "{{ workernodes.id }}"
+
+        #
+        # Found some matching issues ...
+
+        # How it should work ....
+        # https://docs.catalystcloud.io/compute-service/anti-affinity-groups-ha.html#via-ansible
+
+        # Matching issue - out of data libraries
+        # https://github.com/ansible/awx/issues/2540
+
+        # Tried adding the latest version from OpenStack
+        # https://repos.fedorapeople.org/repos/openstack/openstack-train/
+
+        dnf install https://repos.fedorapeople.org/repos/openstack/openstack-train/rdo-release-train-1.noarch.rpm
+
+        # Still no matching package
+
+        dnf info python-openstacksdk
+--START--
+Last metadata expiration check: 0:00:40 ago on Fri Oct 18 13:46:13 2019.
+Error: No matching Packages to list
+--END--
+
+        # Found a request to update the version
+        # https://bugzilla.redhat.com/show_bug.cgi?id=1720719
+
+        # python-openstacksdk-0.36.0 is available .. but doen't build
+        # https://bugzilla.redhat.com/show_bug.cgi?id=1572617
+
+        # Instructions for how to upgrade via pip
+        # https://docs.openstack.org/ocata/user-guide/common/cli-install-openstack-command-line-clients.html
+
+        #
+        # Explicitly upgrade the nova client package.
+        pip3 install python-novaclient
+
+--START--
+WARNING: Running pip install with root privileges is generally not a good idea. Try `pip3 install --user` instead.
+Requirement already satisfied: python-novaclient in /usr/lib/python3.7/site-packages (10.1.0)
+--END--
+
+        pip3 install --upgrade python-novaclient
+
+--START--
+WARNING: Running pip install with root privileges is generally not a good idea. Try `pip3 install --user` instead.
+Collecting python-novaclient
+  Downloading https://files.pythonhosted.org/packages/c1/63/9075a30d92183c23d331f13b28b234cf90b003ae6fe331b3256e6c24fd1e/python_novaclient-15.1.0-py2.py3-none-any.whl (333kB)
+    100% |████████████████████████████████| 337kB 1.9MB/s
+Requirement already satisfied, skipping upgrade: oslo.i18n>=3.15.3 in /usr/lib/python3.7/site-packages (from python-novaclient) (3.23.1)
+Requirement already satisfied, skipping upgrade: simplejson>=3.5.1 in /usr/lib64/python3.7/site-packages (from python-novaclient) (3.16.0)
+Requirement already satisfied, skipping upgrade: keystoneauth1>=3.5.0 in /usr/lib/python3.7/site-packages (from python-novaclient) (3.13.1)
+Requirement already satisfied, skipping upgrade: pbr!=2.1.0,>=2.0.0 in /usr/lib/python3.7/site-packages (from python-novaclient) (5.1.2)
+Requirement already satisfied, skipping upgrade: PrettyTable<0.8,>=0.7.2 in /usr/lib/python3.7/site-packages (from python-novaclient) (0.7.2)
+Requirement already satisfied, skipping upgrade: Babel!=2.4.0,>=2.3.4 in /usr/lib/python3.7/site-packages (from python-novaclient) (2.6.0)
+Requirement already satisfied, skipping upgrade: oslo.utils>=3.33.0 in /usr/lib/python3.7/site-packages (from python-novaclient) (3.40.3)
+Requirement already satisfied, skipping upgrade: iso8601>=0.1.11 in /usr/lib/python3.7/site-packages (from python-novaclient) (0.1.11)
+Requirement already satisfied, skipping upgrade: oslo.serialization!=2.19.1,>=2.18.0 in /usr/lib/python3.7/site-packages (from python-novaclient) (2.28.2)
+Requirement already satisfied, skipping upgrade: six>=1.10.0 in /usr/lib/python3.7/site-packages (from python-novaclient) (1.12.0)
+Requirement already satisfied, skipping upgrade: pytz in /usr/lib/python3.7/site-packages (from Babel!=2.4.0,>=2.3.4->python-novaclient) (2018.5)
+Installing collected packages: python-novaclient
+Successfully installed python-novaclient-15.1.0
+--END--
+
+
+
+
+
+# -----------------------------------------------------
+# Try again ....
+#[root@ansible]
+
+    cat > "/tmp/02-create-workers.yml" << EOF
+
+- name: Create worker nodes
+  hosts: localhost
+  tasks:
+
+    - name: Check the workers group
+      os_server_group:
+        cloud: cumulus
+        state: present
+        name: 'aglais-workers'
+        policies: anti-affinity
+      register:
+        workernodes
+
+    - debug:
+        msg: "Group [{{ workernodes.id }}]"
+
+    - name: Check worker nodes
+      os_server:
+        cloud: 'cumulus'
+        state: present
+        name:  "{{ item }}"
+        image: 'Fedora-30-1.2'
+        flavor: 'general.v1.small'
+        network: 'cumulus-internal'
+        key_name: 'aglais-ansible'
+        auto_ip: no
+        meta:
+          hostname: "{{ item }}"
+        scheduler_hints:
+          group: "{{ workernodes.id }}"
+      loop:
+        "{{ groups['workers'] }}"
+
+EOF
+
+    ansible-playbook \
+        --inventory "/tmp/test-hosts.yml" \
+        "/tmp/02-create-workers.yml"
+
+--START--
+....
+TASK [Check worker nodes]
+failed: [localhost] (item=work01) => {"ansible_loop_var": "item", "changed": false, "extra_data": null, "item": "work01", "msg": "BadRequestException: 400"}
+failed: [localhost] (item=work02) => {"ansible_loop_var": "item", "changed": false, "extra_data": null, "item": "work02", "msg": "BadRequestException: 400"}
+failed: [localhost] (item=work03) => {"ansible_loop_var": "item", "changed": false, "extra_data": null, "item": "work03", "msg": "BadRequestException: 400"}
+failed: [localhost] (item=work04) => {"ansible_loop_var": "item", "changed": false, "extra_data": null, "item": "work04", "msg": "BadRequestException: 400"}
+....
+--END--
+
+# -----------------------------------------------------
+# Update some other client libraries.
+#[root@ansible]
+
+    pip3 install --upgrade python-heatclient
+
+--START--
+WARNING: Running pip install with root privileges is generally not a good idea. Try `pip3 install --user` instead.
+Collecting python-heatclient
+  Downloading https://files.pythonhosted.org/packages/f6/82/5139795c46dab297fa37822f02d735550962edb0aed52683d64ad25c7eae/python_heatclient-1.18.0-py2.py3-none-any.whl (213kB)
+    100% |████████████████████████████████| 215kB 1.7MB/s
+Collecting python-swiftclient>=3.2.0 (from python-heatclient)
+  Downloading https://files.pythonhosted.org/packages/1a/6c/1dca59a10d9689203599b1507f0420242cfe914fa518063f5cebf36207b1/python_swiftclient-3.8.1-py2.py3-none-any.whl (84kB)
+    100% |████████████████████████████████| 92kB 2.3MB/s
+Requirement already satisfied, skipping upgrade: keystoneauth1>=3.4.0 in /usr/lib/python3.7/site-packages (from python-heatclient) (3.13.1)
+Requirement already satisfied, skipping upgrade: requests>=2.14.2 in /usr/lib/python3.7/site-packages (from python-heatclient) (2.21.0)
+Requirement already satisfied, skipping upgrade: oslo.i18n>=3.15.3 in /usr/lib/python3.7/site-packages (from python-heatclient) (3.23.1)
+Requirement already satisfied, skipping upgrade: PyYAML>=3.12 in /usr/lib64/python3.7/site-packages (from python-heatclient) (5.1)
+Requirement already satisfied, skipping upgrade: osc-lib>=1.8.0 in /usr/lib/python3.7/site-packages (from python-heatclient) (1.9.0)
+Requirement already satisfied, skipping upgrade: cliff!=2.9.0,>=2.8.0 in /usr/lib/python3.7/site-packages (from python-heatclient) (2.15.0)
+Requirement already satisfied, skipping upgrade: PrettyTable<0.8,>=0.7.2 in /usr/lib/python3.7/site-packages (from python-heatclient) (0.7.2)
+Requirement already satisfied, skipping upgrade: iso8601>=0.1.11 in /usr/lib/python3.7/site-packages (from python-heatclient) (0.1.11)
+Requirement already satisfied, skipping upgrade: six>=1.10.0 in /usr/lib/python3.7/site-packages (from python-heatclient) (1.12.0)
+Requirement already satisfied, skipping upgrade: Babel!=2.4.0,>=2.3.4 in /usr/lib/python3.7/site-packages (from python-heatclient) (2.6.0)
+Requirement already satisfied, skipping upgrade: pbr!=2.1.0,>=2.0.0 in /usr/lib/python3.7/site-packages (from python-heatclient) (5.1.2)
+Requirement already satisfied, skipping upgrade: oslo.utils>=3.33.0 in /usr/lib/python3.7/site-packages (from python-heatclient) (3.40.3)
+Requirement already satisfied, skipping upgrade: oslo.serialization!=2.19.1,>=2.18.0 in /usr/lib/python3.7/site-packages (from python-heatclient) (2.28.2)
+Requirement already satisfied, skipping upgrade: chardet<3.1.0,>=3.0.2 in /usr/lib/python3.7/site-packages (from requests>=2.14.2->python-heatclient) (3.0.4)
+Requirement already satisfied, skipping upgrade: idna<2.9,>=2.5 in /usr/lib/python3.7/site-packages (from requests>=2.14.2->python-heatclient) (2.7)
+Requirement already satisfied, skipping upgrade: urllib3<1.25,>=1.21.1 in /usr/lib/python3.7/site-packages (from requests>=2.14.2->python-heatclient) (1.24.3)
+Requirement already satisfied, skipping upgrade: pytz in /usr/lib/python3.7/site-packages (from Babel!=2.4.0,>=2.3.4->python-heatclient) (2018.5)
+Installing collected packages: python-swiftclient, python-heatclient
+Successfully installed python-heatclient-1.18.0 python-swiftclient-3.8.1
+--END--
+
+
+# -----------------------------------------------------
+# Try again ....
+#[root@ansible]
+
+    ansible-playbook \
+        --inventory "/tmp/test-hosts.yml" \
+        "/tmp/02-create-workers.yml"
+
+--START--
+....
+TASK [Check worker nodes]
+failed: [localhost] (item=work01) => {"ansible_loop_var": "item", "changed": false, "extra_data": null, "item": "work01", "msg": "BadRequestException: 400"}
+failed: [localhost] (item=work02) => {"ansible_loop_var": "item", "changed": false, "extra_data": null, "item": "work02", "msg": "BadRequestException: 400"}
+failed: [localhost] (item=work03) => {"ansible_loop_var": "item", "changed": false, "extra_data": null, "item": "work03", "msg": "BadRequestException: 400"}
+failed: [localhost] (item=work04) => {"ansible_loop_var": "item", "changed": false, "extra_data": null, "item": "work04", "msg": "BadRequestException: 400"}
+....
+--END--
+
+
+# -----------------------------------------------------
+# Update all the python modules.
+#[root@ansible]
+
+    modules=(
+        barbican
+        ceilometer
+        cinder
+        cloudkitty
+        designate
+        fuel
+        glance
+        gnocchi
+        heat
+        magnum
+        manila
+        mistral
+        monasca
+        murano
+        neutron
+        nova
+        senlin
+        swift
+        trove
+        )
+
+    for module in "${modules[@]}"
+    do
+        echo "Module [${module}]"
+        pip3 install --upgrade "python-${module}client"
+    done
+
+
+# -----------------------------------------------------
+# Try again ....
+#[root@ansible]
+
+    ansible-playbook \
+        --inventory "/tmp/test-hosts.yml" \
+        "/tmp/02-create-workers.yml"
+
+--START--
+....
+TASK [Check the workers group]
+fatal: [localhost]: FAILED! => {"changed": false, "module_stderr": "/root/.ansible/tmp/ansible-tmp-1571407614.4122167-225230321861716/AnsiballZ_os_server_group.py:18: DeprecationWarning: the imp module is deprecated in favour of importlib; see the module's documentation for alternative uses\n  import imp\nTraceback (most recent call last):\n  File \"/root/.ansible/tmp/ansible-tmp-1571407614.4122167-225230321861716/AnsiballZ_os_server_group.py\", line 114, in <module>\n    _ansiballz_main()\n  File \"/root/.ansible/tmp/ansible-tmp-1571407614.4122167-225230321861716/AnsiballZ_os_server_group.py\", line 106, in _ansiballz_main\n    invoke_module(zipped_mod, temp_path, ANSIBALLZ_PARAMS)\n  File \"/root/.ansible/tmp/ansible-tmp-1571407614.4122167-225230321861716/AnsiballZ_os_server_group.py\", line 49, in invoke_module\n    imp.load_module('__main__', mod, module, MOD_DESC)\n  File \"/usr/lib64/python3.7/imp.py\", line 234, in load_module\n    return load_source(name, filename, file)\n  File \"/usr/lib64/python3.7/imp.py\", line 169, in load_source\n    module = _exec(spec, sys.modules[name])\n  File \"<frozen importlib._bootstrap>\", line 630, in _exec\n  File \"<frozen importlib._bootstrap_external>\", line 728, in exec_module\n  File \"<frozen importlib._bootstrap>\", line 219, in _call_with_frames_removed\n  File \"/tmp/ansible_os_server_group_payload_1seakeyp/__main__.py\", line 172, in <module>\n  File \"/tmp/ansible_os_server_group_payload_1seakeyp/__main__.py\", line 139, in main\n  File \"/usr/local/lib/python3.7/site-packages/openstack/cloud/_compute.py\", line 600, in get_server_group\n    filters)\n  File \"/usr/local/lib/python3.7/site-packages/openstack/cloud/_utils.py\", line 205, in _get_entity\n    entities = search(name_or_id, filters, **kwargs)\n  File \"/usr/local/lib/python3.7/site-packages/openstack/cloud/_compute.py\", line 115, in search_server_groups\n    server_groups = self.list_server_groups()\n  File \"/usr/local/lib/python3.7/site-packages/openstack/cloud/_compute.py\", line 366, in list_server_groups\n    return list(self.compute.server_groups())\n  File \"/usr/local/lib/python3.7/site-packages/openstack/resource.py\", line 1598, in list\n    microversion=microversion)\n  File \"/usr/lib/python3.7/site-packages/keystoneauth1/adapter.py\", line 375, in get\n    return self.request(url, 'GET', **kwargs)\n  File \"/usr/local/lib/python3.7/site-packages/openstack/proxy.py\", line 98, in request\n    **kwargs)\n  File \"/usr/lib/python3.7/site-packages/keystoneauth1/adapter.py\", line 237, in request\n    return self.session.request(url, method, **kwargs)\n  File \"/usr/lib/python3.7/site-packages/keystoneauth1/session.py\", line 835, in request\n    resp = send(**kwargs)\n  File \"/usr/lib/python3.7/site-packages/keystoneauth1/session.py\", line 926, in _send_request\n    resp = self.session.request(method, url, **kwargs)\nTypeError: request() got an unexpected keyword argument 'global_request_id'\n", "module_stdout": "", "msg": "MODULE FAILURE\nSee stdout/stderr for the exact error", "rc": 1}
+....
+--END--
+
+    # Ok, that made it worse :-(
+
+# -----------------------------------------------------
+# Update the python client itself.
+#[root@ansible]
+
+    pip3 install --upgrade python-openstackclient
+
+
+# -----------------------------------------------------
+# Try again ....
+#[root@ansible]
+
+    ansible-playbook \
+        --inventory "/tmp/test-hosts.yml" \
+        "/tmp/02-create-workers.yml"
+
+--START--
+....
+TASK [Check the workers group]
+fatal: [localhost]: FAILED! => {"changed": false, "module_stderr": "/root/.ansible/tmp/ansible-tmp-1571407845.3322504-273413169632757/AnsiballZ_os_server_group.py:18: DeprecationWarning: the imp module is deprecated in favour of importlib; see the module's documentation for alternative uses\n  import imp\nTraceback (most recent call last):\n  File \"/root/.ansible/tmp/ansible-tmp-1571407845.3322504-273413169632757/AnsiballZ_os_server_group.py\", line 114, in <module>\n    _ansiballz_main()\n  File \"/root/.ansible/tmp/ansible-tmp-1571407845.3322504-273413169632757/AnsiballZ_os_server_group.py\", line 106, in _ansiballz_main\n    invoke_module(zipped_mod, temp_path, ANSIBALLZ_PARAMS)\n  File \"/root/.ansible/tmp/ansible-tmp-1571407845.3322504-273413169632757/AnsiballZ_os_server_group.py\", line 49, in invoke_module\n    imp.load_module('__main__', mod, module, MOD_DESC)\n  File \"/usr/lib64/python3.7/imp.py\", line 234, in load_module\n    return load_source(name, filename, file)\n  File \"/usr/lib64/python3.7/imp.py\", line 169, in load_source\n    module = _exec(spec, sys.modules[name])\n  File \"<frozen importlib._bootstrap>\", line 630, in _exec\n  File \"<frozen importlib._bootstrap_external>\", line 728, in exec_module\n  File \"<frozen importlib._bootstrap>\", line 219, in _call_with_frames_removed\n  File \"/tmp/ansible_os_server_group_payload_2hc0bq21/__main__.py\", line 172, in <module>\n  File \"/tmp/ansible_os_server_group_payload_2hc0bq21/__main__.py\", line 139, in main\n  File \"/usr/local/lib/python3.7/site-packages/openstack/cloud/_compute.py\", line 600, in get_server_group\n    filters)\n  File \"/usr/local/lib/python3.7/site-packages/openstack/cloud/_utils.py\", line 205, in _get_entity\n    entities = search(name_or_id, filters, **kwargs)\n  File \"/usr/local/lib/python3.7/site-packages/openstack/cloud/_compute.py\", line 115, in search_server_groups\n    server_groups = self.list_server_groups()\n  File \"/usr/local/lib/python3.7/site-packages/openstack/cloud/_compute.py\", line 366, in list_server_groups\n    return list(self.compute.server_groups())\n  File \"/usr/local/lib/python3.7/site-packages/openstack/resource.py\", line 1598, in list\n    microversion=microversion)\n  File \"/usr/lib/python3.7/site-packages/keystoneauth1/adapter.py\", line 375, in get\n    return self.request(url, 'GET', **kwargs)\n  File \"/usr/local/lib/python3.7/site-packages/openstack/proxy.py\", line 98, in request\n    **kwargs)\n  File \"/usr/lib/python3.7/site-packages/keystoneauth1/adapter.py\", line 237, in request\n    return self.session.request(url, method, **kwargs)\n  File \"/usr/lib/python3.7/site-packages/keystoneauth1/session.py\", line 835, in request\n    resp = send(**kwargs)\n  File \"/usr/lib/python3.7/site-packages/keystoneauth1/session.py\", line 926, in _send_request\n    resp = self.session.request(method, url, **kwargs)\nTypeError: request() got an unexpected keyword argument 'global_request_id'\n", "module_stdout": "", "msg": "MODULE FAILURE\nSee stdout/stderr for the exact error", "rc": 1}
+....
+--END--
+
+    # Still broken :-(
+
+
+    # Try doing the same thing using the OpenStack command line client ?
+

@@ -1,0 +1,183 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2019, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    #
+    # ..... about 4hrs messing around with instances, network security groups and floating IP addresses.
+    # The default security group blocks SSH.
+    # Adding a floating address to an interface reverts back to the default security group.
+    # Need to explicitly set the security group on the whole instance to make things work.
+    #
+
+    #
+    # Add this to set the default login password
+    #       userdata: |
+    #           #!/bin/bash
+    #           echo "-----------------------------------------"
+    #           echo "userdata running on hostname: $(uname -n)"
+    #           echo 'fedora:super secret' | chpasswd
+    #           echo "-----------------------------------------"
+
+    #
+    # I think we have to implement our own DNS, because internal dns isn't there yet ?
+    # https://specs.openstack.org/openstack/charm-specs/specs/pike/implemented/internal-dns.html
+    # Not totally 100% clear how much of this is still to be implemented.
+    # https://docs.openstack.org/mitaka/networking-guide/config-dns-int.html
+    #
+    # Mitaka was released 2016-04-07.
+    # I don't know how to check what version we are using ... (cloud is the new OS)
+    #
+
+    #
+    # We can add hosts to our in-memory lists and groups.
+    # https://docs.ansible.com/ansible/latest/modules/add_host_module.html
+
+
+# -----------------------------------------------------
+# Create our OpenStack cloud configuration file.
+# https://docs.openstack.org/python-openstackclient/latest/configuration/index.html#clouds-yaml
+#[user@desktop]
+
+    # https://docs.openstack.org/python-openstackclient/latest/cli/man/openstack.html#manpage
+    # https://docs.openstack.org/python-openstackclient/latest/configuration/index.html#clouds-yaml
+    # http://jaormx.github.io/2018/spawning-your-first-instance-with-ansible/
+
+    cat > "${HOME}/cumulus.yaml" << EOF
+
+        clouds:
+          cumulus:
+            auth:
+              auth_url: 'https://cumulus.openstack.hpc.cam.ac.uk:5000/v3'
+              application_credential_id: '$(secret 'cumulus.cam.ac.uk.CREDENTIAL_ID')'
+              application_credential_secret: '$(secret 'cumulus.cam.ac.uk.CREDENTIAL_SECRET')'
+            region_name: 'RegionOne'
+            interface: 'public'
+            identity_api_version: 3
+            auth_type: 'v3applicationcredential'
+
+EOF
+
+
+# -----------------------------------------------------
+# Create a container (running as root).
+#[user@desktop]
+
+    source "${HOME}/aglais.settings"
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname ansible \
+        --env SSH_AUTH_SOCK=/tmp/ssh_auth_sock \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock" \
+        --volume "${HOME}/cumulus.yaml:/etc/openstack/clouds.yaml:ro" \
+        --volume "${HOME}/.ssh/cumulus.cam.ac.uk.rsa.pub:/tmp/cumulus.cam.ac.uk.rsa.pub:ro" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/ansible:/var/local/aglais/ansible:ro" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our gateway node.
+# https://docs.ansible.com/ansible/latest/modules/os_server_module.html
+#[root@ansible]
+
+    ansible-playbook \
+        --inventory "/var/local/aglais/ansible/hosts.yml" \
+        "/var/local/aglais/ansible/01-create-gateway-node.yml"
+
+    >   PLAY [Create our gateway node] ..
+    >
+    >   TASK [Gathering Facts] ..
+    >   ok: [localhost]
+    >
+    >   TASK [Create the 'aglais-gateway' security group] ..
+    >   changed: [localhost]
+    >
+    >   TASK [Create a security rule for IPv4 SSH] ..
+    >   changed: [localhost]
+    >
+    >   TASK [Create a security rule for IPv6 SSH] ..
+    >   changed: [localhost]
+    >
+    >   TASK [Create our gateway node] ..
+    >   changed: [localhost]
+    >
+    >   TASK [Create a floating IP address] ..
+    >   changed: [localhost]
+    >
+    >   TASK [Apply our security group to the floating IP address] ..
+    >   ok: [localhost]
+    >
+    >   TASK [debug] ..
+    >   ok: [localhost] => {
+    >       "floating.floating_ip.floating_ip_address": "128.232.224.74"
+    >   }
+    >
+    >   PLAY RECAP ..
+    >   localhost                  : ok=8    changed=5    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Create our worker nodes.
+# https://docs.ansible.com/ansible/latest/modules/os_server_module.html
+#[root@ansible]
+
+    ansible-playbook \
+        --inventory "/var/local/aglais/ansible/hosts.yml" \
+        "/var/local/aglais/ansible/02-create-worker-nodes-(ungrouped).yml"
+
+    >   PLAY [Check/create worker nodes] ..
+    >
+    >   TASK [Gathering Facts] ..
+    >   ok: [localhost]
+    >
+    >   TASK [Create the '{{ firewalls['worker'] }}' security group] ..
+    >   changed: [localhost]
+    >
+    >   TASK [Create a security rule for IPv4 SSH] ..
+    >   changed: [localhost]
+    >
+    >   TASK [Create a security rule for IPv6 SSH] ..
+    >   changed: [localhost]
+    >
+    >   TASK [Create the 'aglais-workers' group] ..
+    >   changed: [localhost]
+    >
+    >   TASK [debug] ..
+    >   ok: [localhost] => {
+    >       "msg": "Group [5b1fbe6f-37fa-4809-8ae1-961d8cb9e7be]"
+    >   }
+    >
+    >   TASK [Create the worker nodes] ..
+    >   changed: [localhost] => (item=aglaiswork01)
+    >   changed: [localhost] => (item=aglaiswork02)
+    >   changed: [localhost] => (item=aglaiswork03)
+    >   changed: [localhost] => (item=aglaiswork04)
+    >
+    >   PLAY RECAP ..
+    >   localhost                  : ok=7    changed=5    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+

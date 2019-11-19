@@ -1,0 +1,1206 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2019, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-indent
+#zrq-notes-ansible
+#
+
+# -----------------------------------------------------
+# Create our cloud YAML file.
+#[user@desktop]
+
+cat > "${HOME}/cumulus.yaml" << EOF
+
+clouds:
+  cumulus:
+    auth_url: 'https://cumulus.openstack.hpc.cam.ac.uk:5000/v3'
+    auth_type: 'v3applicationcredential'
+    application_credential_id: '$(secret 'cumulus.cam.ac.uk.CREDENTIAL_ID')'
+    application_credential_secret: '$(secret 'cumulus.cam.ac.uk.CREDENTIAL_SECRET')'
+    region_name: 'RegionOne'
+    interface: 'public'
+    identity_api_version: 3
+
+EOF
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    docker run \
+        --rm \
+        --tty \
+        --user "$(id -u)" \
+        --interactive \
+        --hostname openstacker \
+        --env SSH_AUTH_SOCK=/tmp/ssh_auth_sock \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock" \
+        --volume "${HOME}/cumulus.yaml:/etc/openstack/clouds.yaml" \
+        --volume "${HOME}/.ssh/cumulus.cam.ac.uk.rsa:/tmp/cumulus.cam.ac.uk.rsa" \
+        --volume "${HOME}/.ssh/cumulus.cam.ac.uk.rsa.pub:/tmp/cumulus.cam.ac.uk.rsa.pub" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# List our servers.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        server list
+
+
+    >   +--------------------------------------+---------------------+--------+---------------------------------------------+---------------+-------------------+
+    >   | ID                                   | Name                | Status | Networks                                    | Image         | Flavor            |
+    >   +--------------------------------------+---------------------+--------+---------------------------------------------+---------------+-------------------+
+    >   | 9b64b9a0-58e9-4a5c-9ce6-f222ce82986d | stv-aglais-zeppelin | ACTIVE | stv-aglais-network=10.0.0.19                |               | general.v1.medium |
+    >   | 3650f871-8dd4-4f5a-b801-dced3a6afb18 | stv-aglais-worker-2 | ACTIVE | stv-aglais-network=10.0.0.23                | Fedora-30-1.2 | general.v1.large  |
+    >   | 7641988a-e49a-4626-9641-0375efac3b43 | stv-aglais-worker-1 | ACTIVE | stv-aglais-network=10.0.0.12                | Fedora-30-1.2 | general.v1.large  |
+    >   | f0b5a11c-d6cf-46cf-a1d3-c192b78d989c | stv-aglais-worker-3 | ACTIVE | stv-aglais-network=10.0.0.9                 | Fedora-30-1.2 | general.v1.large  |
+    >   | d6108496-1d7f-4c40-84b1-06a25de20f25 | stv-aglais-master   | ACTIVE | stv-aglais-network=10.0.0.14                |               | general.v1.large  |
+    >   | 2766482a-7096-4703-a042-5c479192f072 | stv-aglais-bastion  | ACTIVE | stv-aglais-network=10.0.0.8, 128.232.224.71 | CentOS7-1907  | general.v1.tiny   |
+    >   +--------------------------------------+---------------------+--------+---------------------------------------------+---------------+-------------------+
+
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster list
+
+
+    # Works - empty list becase we don't have any clusters yet.
+
+# -----------------------------------------------------
+# List our cluster templates.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster template list
+
+    >   +--------------------------------------+------------------------------+
+    >   | uuid                                 | name                         |
+    >   +--------------------------------------+------------------------------+
+    >   | b9e6104d-d264-4980-9581-6073d25f732c | kubernetes-1.14.6_nginx_as   |
+    >   | b75535d9-45dc-42ed-a43c-4644d617284a | kubernetes-1.14.6_traefik_as |
+    >   | 41437926-8461-4fdf-ac1b-ff97325a79f8 | kubernetes-1.14.6_octavia_as |
+    >   +--------------------------------------+------------------------------+
+
+
+# -----------------------------------------------------
+# Try create a new cluster.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster create \
+                'albert' \
+                --cluster-template 'kubernetes-1.14.6_octavia_as' \
+                --node-count 3
+
+    >   Request to create cluster dadf9c47-a4f6-4ba2-8c27-427574ba5669 accepted
+
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster list
+
+    >   +--------------------------------------+--------+---------+------------+--------------+---------------+
+    >   | uuid                                 | name   | keypair | node_count | master_count | status        |
+    >   +--------------------------------------+--------+---------+------------+--------------+---------------+
+    >   | dadf9c47-a4f6-4ba2-8c27-427574ba5669 | albert | None    |          3 |            1 | CREATE_FAILED |
+    >   +--------------------------------------+--------+---------+------------+--------------+---------------+
+
+
+# -----------------------------------------------------
+# List our cluster IDs.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster list \
+            --format json \
+    | jq -r '.[] | .uuid'
+
+    >   dadf9c47-a4f6-4ba2-8c27-427574ba5669
+
+
+# -----------------------------------------------------
+# Show details for our cluster.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster show \
+            'dadf9c47-a4f6-4ba2-8c27-427574ba5669'
+
+    >   +---------------------+----------------------------------------------------------------------------------------+
+    >   | Field               | Value                                                                                  |
+    >   +---------------------+----------------------------------------------------------------------------------------+
+    >   | status              | CREATE_FAILED                                                                          |
+    >   | cluster_template_id | 41437926-8461-4fdf-ac1b-ff97325a79f8                                                   |
+    >   | node_addresses      | []                                                                                     |
+    >   | uuid                | dadf9c47-a4f6-4ba2-8c27-427574ba5669                                                   |
+    >   | stack_id            | None                                                                                   |
+    >   | status_reason       | Failed to create trustee or trust for Cluster: dadf9c47-a4f6-4ba2-8c27-427574ba5669    |
+    >   | created_at          | 2019-11-19T02:14:27+00:00                                                              |
+    >   | updated_at          | 2019-11-19T02:14:29+00:00                                                              |
+    >   | coe_version         | None                                                                                   |
+    >   | labels              | {'tiller_enabled': 'true', 'kube_tag': 'v1.14.6', 'max_node_count': '5', .... }        |
+    >   | faults              | {}                                                                                     |
+    >   | keypair             | None                                                                                   |
+    >   | api_address         | None                                                                                   |
+    >   | master_addresses    | []                                                                                     |
+    >   | create_timeout      | 60                                                                                     |
+    >   | node_count          | 3                                                                                      |
+    >   | discovery_url       | None                                                                                   |
+    >   | master_count        | 1                                                                                      |
+    >   | container_version   | None                                                                                   |
+    >   | name                | albert                                                                                 |
+    >   | master_flavor_id    | general.v1.tiny                                                                        |
+    >   | flavor_id           | general.v1.small                                                                       |
+    >   +---------------------+----------------------------------------------------------------------------------------+
+
+    labels {
+        'tiller_enabled': 'true',
+        'kube_tag': 'v1.14.6',
+        'max_node_count': '5',
+        'cloud_provider_tag': 'v1.14.0',
+        'tiller_tag': 'v2.14.3',
+        'monitoring_enabled': 'true',
+        'cgroup_driver': 'cgroupfs',
+        'min_node_count': '1',
+        'master_lb_floating_ip_enabled': 'true',
+        'ingress_controller': 'octavia',
+        'heat_container_agent_tag': 'train-stable-1',
+        'autoscaler_tag': 'v1.0',
+        'auto_scaling_enabled': 'true'
+        }
+
+
+# -----------------------------------------------------
+# List our keypairs.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        keypair list
+
+    >   +----------------+-------------------------------------------------+
+    >   | Name           | Fingerprint                                     |
+    >   +----------------+-------------------------------------------------+
+    >   | aglais-ansible | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +----------------+-------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Get the ID for our keypair.
+#[user@openstacker]
+
+    keyname=$(
+        openstack \
+            --os-cloud cumulus \
+            keypair list \
+                --format json \
+        | jq -r '.[0] | .Name'
+        )
+
+    echo "key [${keyname:?}]"
+
+    >   key [aglais-ansible]
+
+
+# -----------------------------------------------------
+# List our flavours.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        flavor list
+
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | ID                                   | Name              |    RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | 20061eba-9e88-494c-95a3-41ed77721244 | general.v1.small  |  22528 |   20 |         0 |     6 | True      |
+    >   | 406a17e0-afd0-47d3-a6ad-8b19198bdd97 | general.v1.tiny   |   6144 |   12 |         0 |     2 | True      |
+    >   | 8a821ef8-20b8-4bbb-990b-91198745e7a7 | general.v1.xlarge | 184320 |   20 |       340 |    28 | True      |
+    >   | 996c1c8c-c934-411c-9631-b74eb2829631 | general.v1.medium |  46080 |   20 |        60 |    14 | True      |
+    >   | c4c07f5a-260a-4f22-9530-a09a19aa490a | general.v1.large  |  92160 |   20 |       160 |    28 | True      |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+
+
+# -----------------------------------------------------
+# The flavor ID for small.
+#[user@openstacker]
+
+    flavorsm=$(
+        openstack \
+            --os-cloud cumulus \
+                flavor list \
+                    --format json \
+        | jq -r '.[] | select(.Name | test("small")) | .ID'
+        )
+
+    echo "flavor [${flavorsm:?}]"
+
+    >   flavor [20061eba-9e88-494c-95a3-41ed77721244]
+
+
+# -----------------------------------------------------
+# Try create a new cluster.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster create \
+            --keypair "${keyname}" \
+            --flavor  "${flavorsm}" \
+            --node-count 3 \
+            --master-count 1 \
+            --master-flavor "${flavorsm}" \
+            --cluster-template 'kubernetes-1.14.6_octavia_as' \
+            'albert'
+
+    >   Request to create cluster c969a295-57dc-4ade-8f47-d50c7b183fe9 accepted
+
+    echo "Request to create cluster c969a295-57dc-4ade-8f47-d50c7b183fe9 accepted" \
+    | sed 's/.* \([^ ]*-[^ ]*\) .*/\1/'
+
+
+    >   c969a295-57dc-4ade-8f47-d50c7b183fe9
+
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster list
+
+    >   +--------------------------------------+--------+----------------+------------+--------------+-----------------+
+    >   | uuid                                 | name   | keypair        | node_count | master_count | status          |
+    >   +--------------------------------------+--------+----------------+------------+--------------+-----------------+
+    >   | fe61cb8d-5b8d-47c0-b4a7-315f17ffb14a | albert | aglais-ansible |          3 |            1 | CREATE_COMPLETE |
+    >   | c969a295-57dc-4ade-8f47-d50c7b183fe9 | albert | aglais-ansible |          3 |            1 | CREATE_FAILED   |
+    >   +--------------------------------------+--------+----------------+------------+--------------+-----------------+
+
+
+# -----------------------------------------------------
+# Delete the failed cluster.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster delete \
+            'c969a295-57dc-4ade-8f47-d50c7b183fe9'
+
+    >   Request to delete cluster c969a295-57dc-4ade-8f47-d50c7b183fe9 has been accepted.
+
+
+# -----------------------------------------------------
+# List our servers.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        server list
+
+    >   +--------------------------------------+------------------------------+--------+---------------------------------------------+-------------------------+-------------------+
+    >   | ID                                   | Name                         | Status | Networks                                    | Image                   | Flavor            |
+    >   +--------------------------------------+------------------------------+--------+---------------------------------------------+-------------------------+-------------------+
+    >   | 78f02f11-d9fd-45a5-b712-36b983708b1e | albert-vhkdfdsqfp6i-minion-2 | ACTIVE | private=10.0.0.8                            | FedoraAtomic29-20191028 | general.v1.small  |
+    >   | a4ccd40c-bff2-4e2e-8247-5af1d3358420 | albert-vhkdfdsqfp6i-minion-0 | ACTIVE | private=10.0.0.14                           | FedoraAtomic29-20191028 | general.v1.small  |
+    >   | ba694450-a37f-48f8-ad5e-5041ff8165e0 | albert-vhkdfdsqfp6i-minion-1 | ACTIVE | private=10.0.0.21                           | FedoraAtomic29-20191028 | general.v1.small  |
+    >   | 52a71ac3-7635-43f3-b9f3-be13e1aabf4a | albert-vhkdfdsqfp6i-master-0 | ACTIVE | private=10.0.0.15                           | FedoraAtomic29-20191028 | general.v1.small  |
+    >   | 9b64b9a0-58e9-4a5c-9ce6-f222ce82986d | stv-aglais-zeppelin          | ACTIVE | stv-aglais-network=10.0.0.19                |                         | general.v1.medium |
+    >   | 3650f871-8dd4-4f5a-b801-dced3a6afb18 | stv-aglais-worker-2          | ACTIVE | stv-aglais-network=10.0.0.23                | Fedora-30-1.2           | general.v1.large  |
+    >   | 7641988a-e49a-4626-9641-0375efac3b43 | stv-aglais-worker-1          | ACTIVE | stv-aglais-network=10.0.0.12                | Fedora-30-1.2           | general.v1.large  |
+    >   | f0b5a11c-d6cf-46cf-a1d3-c192b78d989c | stv-aglais-worker-3          | ACTIVE | stv-aglais-network=10.0.0.9                 | Fedora-30-1.2           | general.v1.large  |
+    >   | d6108496-1d7f-4c40-84b1-06a25de20f25 | stv-aglais-master            | ACTIVE | stv-aglais-network=10.0.0.14                |                         | general.v1.large  |
+    >   | 2766482a-7096-4703-a042-5c479192f072 | stv-aglais-bastion           | ACTIVE | stv-aglais-network=10.0.0.8, 128.232.224.71 | CentOS7-1907            | general.v1.tiny   |
+    >   +--------------------------------------+------------------------------+--------+---------------------------------------------+-------------------------+-------------------+
+
+
+# -----------------------------------------------------
+# Show details for our healthy cluster.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster show \
+            'fe61cb8d-5b8d-47c0-b4a7-315f17ffb14a'
+
+    >   +---------------------+---------------------------------------------------------------+
+    >   | Field               | Value                                                         |
+    >   +---------------------+---------------------------------------------------------------+
+    >   | status              | CREATE_COMPLETE                                               |
+    >   | cluster_template_id | 41437926-8461-4fdf-ac1b-ff97325a79f8                          |
+    >   | node_addresses      | ['10.0.0.14', '10.0.0.21', '10.0.0.8']                        |
+    >   | uuid                | fe61cb8d-5b8d-47c0-b4a7-315f17ffb14a                          |
+    >   | stack_id            | da1fd926-7c0d-4bea-ae3e-3b2dc7e25ff7                          |
+    >   | status_reason       | Stack CREATE completed successfully                           |
+    >   | created_at          | 2019-11-19T02:36:05+00:00                                     |
+    >   | updated_at          | 2019-11-19T02:42:59+00:00                                     |
+    >   | coe_version         | v1.11.6                                                       |
+    >   | labels              | { .... }                                                      |
+    >   | faults              |                                                               |
+    >   | api_address         | https://128.232.227.139:6443                                  |
+    >   | master_addresses    | ['10.0.0.15']                                                 |
+    >   | create_timeout      | 60                                                            |
+    >   | node_count          | 3                                                             |
+    >   | discovery_url       | https://discovery.etcd.io/ef6df9c2ec52d4fdf973c20c87c3dd9e    |
+    >   | master_count        | 1                                                             |
+    >   | container_version   | 1.12.6                                                        |
+    >   | name                | albert                                                        |
+    >   | master_flavor_id    | general.v1.small                                              |
+    >   | flavor_id           | general.v1.small                                              |
+    >   +---------------------+---------------------------------------------------------------+
+
+    labels {
+        'tiller_enabled': 'true',
+        'kube_tag': 'v1.14.6',
+        'max_node_count': '5',
+        'cloud_provider_tag': 'v1.14.0',
+        'tiller_tag': 'v2.14.3',
+        'monitoring_enabled': 'true',
+        'cgroup_driver': 'cgroupfs',
+        'min_node_count': '1',
+        'master_lb_floating_ip_enabled': 'true',
+        'ingress_controller': 'octavia',
+        'heat_container_agent_tag': 'train-stable-1',
+        'autoscaler_tag': 'v1.0',
+        'auto_scaling_enabled': 'true'
+        }
+
+
+# -----------------------------------------------------
+# Try the api_address.
+#[user@openstacker]
+
+    curl 'https://128.232.227.139:6443'
+
+    >   curl: (60) SSL certificate problem: unable to get local issuer certificate
+    >   ....
+
+
+    curl \
+        --insecure \
+        'https://128.232.227.139:6443' \
+    | jq '.'
+
+    >   {
+    >     "kind": "Status",
+    >     "apiVersion": "v1",
+    >     "metadata": {},
+    >     "status": "Failure",
+    >     "message": "forbidden: User \"system:anonymous\" cannot get path \"/\"",
+    >     "reason": "Forbidden",
+    >     "details": {},
+    >     "code": 403
+    >   }
+
+
+# -----------------------------------------------------
+# List our floating IP addresses.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        floating ip list
+
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | ID                                   | Floating IP Address | Fixed IP Address | Port                                 | Floating Network                     | Project                          |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | 6ac2028a-cf2c-4df3-8523-d0cb4261144d | 128.232.227.139     | 10.0.0.17        | 7f078fc2-d880-4249-add6-515eee4c3e5e | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | 08e24c6d87f94740aa59c172462ed927 |
+    >   | fc59b54b-c953-45b5-a703-35dcb2687c1a | 128.232.224.71      | 10.0.0.8         | e0f75599-8acb-49b4-bc0d-9037f8f922dc | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | 08e24c6d87f94740aa59c172462ed927 |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+
+    # '128.232.224.71'  is Stelios's bastion.
+    # '128.232.227.139' is ours.
+
+
+# -----------------------------------------------------
+# List our networks.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        network list
+
+    >   +--------------------------------------+--------------------+----------------------------------------------------------------------------+
+    >   | ID                                   | Name               | Subnets                                                                    |
+    >   +--------------------------------------+--------------------+----------------------------------------------------------------------------+
+    >   | 1a17cdb6-23dc-4f17-b7e4-d7f316bb560f | stv-aglais-network | a45354a2-a6de-4d25-8a6b-90dbda3a24e0                                       |
+    >   | 554ac53c-67eb-4aeb-a6d9-e910835366cb | private            | 2e7ddce8-0db7-4614-a207-4a5eb6680f36                                       |
+    >   | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | internet           | 180dc961-c52f-461a-b241-8f7a30d022a5, 273123bb-70f6-4f51-a406-7fc4b446532d |
+    >   | ecb791d5-1022-447a-a79c-8f38a0f5c990 | cumulus-internal   | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290                                       |
+    >   +--------------------------------------+--------------------+----------------------------------------------------------------------------+
+
+    # 'private' is ours (duff name)
+
+
+# -----------------------------------------------------
+# List our network ports.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        port list
+
+    >   +--------------------------------------+--------------------------------------------------------------------------------------------+-------------------+--------------------------------------------------------------------------+--------+
+    >   | ID                                   | Name                                                                                       | MAC Address       | Fixed IP Addresses                                                       | Status |
+    >   +--------------------------------------+--------------------------------------------------------------------------------------------+-------------------+--------------------------------------------------------------------------+--------+
+    >   | 041583b5-dd59-4b6f-a3dd-3697ca370222 |                                                                                            | fa:16:3e:d9:bb:21 | ip_address='10.0.0.3', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | 110d8764-8ec8-4b02-8429-4ef2b3210178 | octavia-lb-vrrp-85c13b1f-99e5-42ee-877c-5871983e79fa                                       | fa:16:3e:ef:03:75 | ip_address='10.0.0.5', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | 1cf4f218-1d91-493e-9c3e-e75f6e1e3ae9 |                                                                                            | fa:16:3e:8c:94:bb | ip_address='10.0.0.14', subnet_id='a45354a2-a6de-4d25-8a6b-90dbda3a24e0' | ACTIVE |
+    >   | 2869ffbb-58e4-4830-b7b8-4f1e6ac5aaf2 |                                                                                            | fa:16:3e:9b:1a:08 | ip_address='10.0.0.2', subnet_id='a45354a2-a6de-4d25-8a6b-90dbda3a24e0'  | ACTIVE |
+    >   | 351b341f-0cff-482e-8bf7-52cc064988a4 |                                                                                            | fa:16:3e:0c:89:32 | ip_address='10.0.0.23', subnet_id='a45354a2-a6de-4d25-8a6b-90dbda3a24e0' | ACTIVE |
+    >   | 64791e3e-20fa-46cb-81c2-6fed5626ddf9 | albert-vhkdfdsqfp6i-kube_minions-24edri7ngvrc-1-6bopzfoj2tg5-kube_minion_eth0-qbbkcrhb3pwb | fa:16:3e:8a:48:01 | ip_address='10.0.0.21', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36' | ACTIVE |
+    >   | 6bc6e61a-fab6-491c-b2cf-81203bcd6cfe | albert-vhkdfdsqfp6i-kube_minions-24edri7ngvrc-0-dj75ihjwz3my-kube_minion_eth0-2xhfpk5ygzb2 | fa:16:3e:8f:07:f3 | ip_address='10.0.0.14', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36' | ACTIVE |
+    >   | 7208cf7b-3e8c-4cc0-864b-be1d06de045e | albert-vhkdfdsqfp6i-kube_masters-gnyghqb2kntx-0-un3hv7v3jdt3-kube_master_eth0-w37fx7ijl57d | fa:16:3e:d3:05:6d | ip_address='10.0.0.15', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36' | ACTIVE |
+    >   | 7f078fc2-d880-4249-add6-515eee4c3e5e | octavia-lb-9d4e6a59-6f5b-4130-8625-1d27944386e6                                            | fa:16:3e:a8:5b:bd | ip_address='10.0.0.17', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36' | DOWN   |
+    >   | a6b93e2b-9c9e-4ce3-b669-fe6471d358fb | octavia-lb-vrrp-1f121b00-940f-431f-ad69-af6501518c90                                       | fa:16:3e:0e:73:c4 | ip_address='10.0.0.4', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | b21c7e17-1e63-4ee5-88f6-073ba752e031 |                                                                                            | fa:16:3e:a7:5f:55 | ip_address='10.0.0.1', subnet_id='a45354a2-a6de-4d25-8a6b-90dbda3a24e0'  | ACTIVE |
+    >   | ba2abc50-014e-4d80-8454-a167f28aad1b | albert-vhkdfdsqfp6i-kube_minions-24edri7ngvrc-2-trwmj4wm75t7-kube_minion_eth0-qhapsqedymol | fa:16:3e:ab:6e:a1 | ip_address='10.0.0.8', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | c6424022-c3e3-4fe6-a8ad-3ef4d7248166 | octavia-lb-c03fe4f7-d64d-4948-b245-a4c2ec7f1dd8                                            | fa:16:3e:10:cb:de | ip_address='10.0.0.7', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | DOWN   |
+    >   | cc940f40-dc22-4420-a9fd-40e1633d9e5a |                                                                                            | fa:16:3e:85:39:17 | ip_address='10.0.0.12', subnet_id='a45354a2-a6de-4d25-8a6b-90dbda3a24e0' | ACTIVE |
+    >   | d3b4518d-4dd8-48ef-b78e-997734f2143b |                                                                                            | fa:16:3e:12:d7:8a | ip_address='10.0.0.2', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | d7f57827-444a-41ef-9103-8a815b6af522 |                                                                                            | fa:16:3e:49:84:9d | ip_address='10.0.0.19', subnet_id='a45354a2-a6de-4d25-8a6b-90dbda3a24e0' | ACTIVE |
+    >   | dcb51a0c-5a84-46fd-ac19-b4cd4be0e579 |                                                                                            | fa:16:3e:05:51:57 | ip_address='10.0.0.3', subnet_id='a45354a2-a6de-4d25-8a6b-90dbda3a24e0'  | ACTIVE |
+    >   | e0f75599-8acb-49b4-bc0d-9037f8f922dc |                                                                                            | fa:16:3e:ce:03:b4 | ip_address='10.0.0.8', subnet_id='a45354a2-a6de-4d25-8a6b-90dbda3a24e0'  | ACTIVE |
+    >   | e2d67bb3-d4dd-46ec-b4fd-cc9ab9872c23 |                                                                                            | fa:16:3e:a0:1b:f1 | ip_address='10.0.0.1', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | ef069527-b165-474a-816d-db094856d499 |                                                                                            | fa:16:3e:b8:ae:a8 | ip_address='10.0.0.9', subnet_id='a45354a2-a6de-4d25-8a6b-90dbda3a24e0'  | ACTIVE |
+    >   +--------------------------------------+--------------------------------------------------------------------------------------------+-------------------+--------------------------------------------------------------------------+--------+--END--
+
+
+# -----------------------------------------------------
+# List our network ports (filter to exclude Stelios's network).
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        port list \
+    | grep --invert-match 'a45354a2-a6de'
+
+
+    >   +--------------------------------------+--------------------------------------------------------------------------------------------+-------------------+--------------------------------------------------------------------------+--------+
+    >   | ID                                   | Name                                                                                       | MAC Address       | Fixed IP Addresses                                                       | Status |
+    >   +--------------------------------------+--------------------------------------------------------------------------------------------+-------------------+--------------------------------------------------------------------------+--------+
+    >   | 041583b5-dd59-4b6f-a3dd-3697ca370222 |                                                                                            | fa:16:3e:d9:bb:21 | ip_address='10.0.0.3', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | 110d8764-8ec8-4b02-8429-4ef2b3210178 | octavia-lb-vrrp-85c13b1f-99e5-42ee-877c-5871983e79fa                                       | fa:16:3e:ef:03:75 | ip_address='10.0.0.5', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | 64791e3e-20fa-46cb-81c2-6fed5626ddf9 | albert-vhkdfdsqfp6i-kube_minions-24edri7ngvrc-1-6bopzfoj2tg5-kube_minion_eth0-qbbkcrhb3pwb | fa:16:3e:8a:48:01 | ip_address='10.0.0.21', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36' | ACTIVE |
+    >   | 6bc6e61a-fab6-491c-b2cf-81203bcd6cfe | albert-vhkdfdsqfp6i-kube_minions-24edri7ngvrc-0-dj75ihjwz3my-kube_minion_eth0-2xhfpk5ygzb2 | fa:16:3e:8f:07:f3 | ip_address='10.0.0.14', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36' | ACTIVE |
+    >   | 7208cf7b-3e8c-4cc0-864b-be1d06de045e | albert-vhkdfdsqfp6i-kube_masters-gnyghqb2kntx-0-un3hv7v3jdt3-kube_master_eth0-w37fx7ijl57d | fa:16:3e:d3:05:6d | ip_address='10.0.0.15', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36' | ACTIVE |
+    >   | 7f078fc2-d880-4249-add6-515eee4c3e5e | octavia-lb-9d4e6a59-6f5b-4130-8625-1d27944386e6                                            | fa:16:3e:a8:5b:bd | ip_address='10.0.0.17', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36' | DOWN   |
+    >   | a6b93e2b-9c9e-4ce3-b669-fe6471d358fb | octavia-lb-vrrp-1f121b00-940f-431f-ad69-af6501518c90                                       | fa:16:3e:0e:73:c4 | ip_address='10.0.0.4', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | ba2abc50-014e-4d80-8454-a167f28aad1b | albert-vhkdfdsqfp6i-kube_minions-24edri7ngvrc-2-trwmj4wm75t7-kube_minion_eth0-qhapsqedymol | fa:16:3e:ab:6e:a1 | ip_address='10.0.0.8', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | c6424022-c3e3-4fe6-a8ad-3ef4d7248166 | octavia-lb-c03fe4f7-d64d-4948-b245-a4c2ec7f1dd8                                            | fa:16:3e:10:cb:de | ip_address='10.0.0.7', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | DOWN   |
+    >   | d3b4518d-4dd8-48ef-b78e-997734f2143b |                                                                                            | fa:16:3e:12:d7:8a | ip_address='10.0.0.2', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   | e2d67bb3-d4dd-46ec-b4fd-cc9ab9872c23 |                                                                                            | fa:16:3e:a0:1b:f1 | ip_address='10.0.0.1', subnet_id='2e7ddce8-0db7-4614-a207-4a5eb6680f36'  | ACTIVE |
+    >   +--------------------------------------+--------------------------------------------------------------------------------------------+-------------------+--------------------------------------------------------------------------+--------+--END--
+
+    # Unknown [10.0.0.1][10.0.0.2][10.0.0.3]
+
+    # One master    [albert-....-kube_masters-....] [10.0.0.15]
+    # Three minions [albert-....-kube_minions-....] [10.0.0.14][10.0.0.21][10.0.0.8]
+
+    # Load balancer [octavia-lb-vrrp-85c13b1f-....] [10.0.0.5]
+    # Load balancer [octavia-lb-9d4e6a59-6f5b-....] [10.0.0.17] -> [128.232.227.139] [DOWN]
+    # Load balancer [octavia-lb-vrrp-1f121b00-....] [10.0.0.4]
+    # Load balancer [octavia-lb-c03fe4f7-d64d-....] [10.0.0.7] [DOWN]
+
+# -----------------------------------------------------
+# List our routers.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        router list
+
+    >   +--------------------------------------+-----------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                                            | Status | State | Project                          |
+    >   +--------------------------------------+-----------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | 95267b95-0794-499a-a171-321f099f9218 | albert-vhkdfdsqfp6i-network-5rkiotbch4pg-extrouter-z2g6sxnrtxlj | ACTIVE | UP    | 08e24c6d87f94740aa59c172462ed927 |
+    >   | 9dd1eef8-715c-435e-86a1-553a15104266 | stv-aglais-router                                               | ACTIVE | UP    | 08e24c6d87f94740aa59c172462ed927 |
+    >   +--------------------------------------+-----------------------------------------------------------------+--------+-------+----------------------------------+
+
+    # 'albert-...-network-....-extrouter-....' is ours
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Install the octavia client.
+# https://docs.openstack.org/python-octaviaclient/latest/
+#[user@desktop]
+
+    docker ps
+
+    >   CONTAINER ID        IMAGE                      COMMAND             CREATED             STATUS              PORTS               NAMES
+    >   74aa21813ca6        atolmis/openstack-client   "bash"              2 hours ago         Up 2 hours                              pedantic_gates
+
+    docker exec \
+        --tty \
+        --interactive \
+        --user root \
+        '74aa21813ca6' \
+            'bash'
+
+            dnf install -y \
+                python3-octaviaclient
+
+    >   ....
+    >   Installed:
+    >       python3-octaviaclient-1.8.0-3.fc30.noarch
+    >       python3-unicodecsv-0.14.1-15.fc30.noarch
+
+
+# -----------------------------------------------------
+# List the octavia commands.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        help \
+        loadbalancer
+
+    >   Command "loadbalancer" matches:
+    >     loadbalancer amphora configure
+    >     loadbalancer amphora failover
+    >     loadbalancer amphora list
+    >     loadbalancer amphora show
+    >     loadbalancer create
+    >     loadbalancer delete
+    >     loadbalancer failover
+    >     loadbalancer flavor create
+    >     loadbalancer flavor delete
+    >     loadbalancer flavor list
+    >     loadbalancer flavor set
+    >     loadbalancer flavor show
+    >     loadbalancer flavorprofile create
+    >     loadbalancer flavorprofile delete
+    >     loadbalancer flavorprofile list
+    >     loadbalancer flavorprofile set
+    >     loadbalancer flavorprofile show
+    >     loadbalancer healthmonitor create
+    >     loadbalancer healthmonitor delete
+    >     loadbalancer healthmonitor list
+    >     loadbalancer healthmonitor set
+    >     loadbalancer healthmonitor show
+    >     loadbalancer l7policy create
+    >     loadbalancer l7policy delete
+    >     loadbalancer l7policy list
+    >     loadbalancer l7policy set
+    >     loadbalancer l7policy show
+    >     loadbalancer l7rule create
+    >     loadbalancer l7rule delete
+    >     loadbalancer l7rule list
+    >     loadbalancer l7rule set
+    >     loadbalancer l7rule show
+    >     loadbalancer list
+    >     loadbalancer listener create
+    >     loadbalancer listener delete
+    >     loadbalancer listener list
+    >     loadbalancer listener set
+    >     loadbalancer listener show
+    >     loadbalancer listener stats show
+    >     loadbalancer member create
+    >     loadbalancer member delete
+    >     loadbalancer member list
+    >     loadbalancer member set
+    >     loadbalancer member show
+    >     loadbalancer pool create
+    >     loadbalancer pool delete
+    >     loadbalancer pool list
+    >     loadbalancer pool set
+    >     loadbalancer pool show
+    >     loadbalancer provider capability list
+    >     loadbalancer provider list
+    >     loadbalancer quota defaults show
+    >     loadbalancer quota list
+    >     loadbalancer quota reset
+    >     loadbalancer quota set
+    >     loadbalancer quota show
+    >     loadbalancer set
+    >     loadbalancer show
+    >     loadbalancer stats show
+    >     loadbalancer status show
+
+
+# -----------------------------------------------------
+# List our load balancers.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        loadbalancer \
+            list
+
+    >   +--------------------------------------+--------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+    >   | id                                   | name                                                               | project_id                       | vip_address | provisioning_status | provider |
+    >   +--------------------------------------+--------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+    >   | 9d4e6a59-6f5b-4130-8625-1d27944386e6 | albert-vhkdfdsqfp6i-api_lb-fhxxwk6rx6tm-loadbalancer-eoo3skvtlibf  | 08e24c6d87f94740aa59c172462ed927 | 10.0.0.17   | ACTIVE              | amphora  |
+    >   | c03fe4f7-d64d-4948-b245-a4c2ec7f1dd8 | albert-vhkdfdsqfp6i-etcd_lb-h3jpoem46y77-loadbalancer-bc4q6wdiqvsx | 08e24c6d87f94740aa59c172462ed927 | 10.0.0.7    | ACTIVE              | amphora  |
+    >   +--------------------------------------+--------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+
+
+# -----------------------------------------------------
+# Get details of our 'api' load balancer.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        loadbalancer \
+            show \
+                '9d4e6a59-6f5b-4130-8625-1d27944386e6'
+
+    >   +---------------------+-------------------------------------------------------------------+
+    >   | Field               | Value                                                             |
+    >   +---------------------+-------------------------------------------------------------------+
+    >   | admin_state_up      | True                                                              |
+    >   | created_at          | 2019-11-19T02:36:27                                               |
+    >   | description         |                                                                   |
+    >   | flavor_id           | None                                                              |
+    >   | id                  | 9d4e6a59-6f5b-4130-8625-1d27944386e6                              |
+    >   | listeners           | a777a243-0046-42eb-88b3-26c3b084649e                              |
+    >   | name                | albert-vhkdfdsqfp6i-api_lb-fhxxwk6rx6tm-loadbalancer-eoo3skvtlibf |
+    >   | operating_status    | ONLINE                                                            |
+    >   | pools               | 73395912-ff4d-4778-9787-cc87d4f4c2a9                              |
+    >   | project_id          | 08e24c6d87f94740aa59c172462ed927                                  |
+    >   | provider            | amphora                                                           |
+    >   | provisioning_status | ACTIVE                                                            |
+    >   | updated_at          | 2019-11-19T02:42:28                                               |
+    >   | vip_address         | 10.0.0.17                                                         |
+    >   | vip_network_id      | 554ac53c-67eb-4aeb-a6d9-e910835366cb                              |
+    >   | vip_port_id         | 7f078fc2-d880-4249-add6-515eee4c3e5e                              |
+    >   | vip_qos_policy_id   | None                                                              |
+    >   | vip_subnet_id       | 2e7ddce8-0db7-4614-a207-4a5eb6680f36                              |
+    >   +---------------------+-------------------------------------------------------------------+
+
+    # The vip_subnet_id  [2e7ddce8-0db7-...] matches our private network.
+    # The vip_network_id [554ac53c-67eb-...] matches our private network.
+    # The vip_port_id    [7f078fc2-d880-...] matches our floating IP address [10.0.0.17] -> [128.232.227.139].
+
+
+# -----------------------------------------------------
+# Get details of our 'etcd' load balancer.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        loadbalancer \
+            show \
+                'c03fe4f7-d64d-4948-b245-a4c2ec7f1dd8'
+
+    >   +---------------------+--------------------------------------------------------------------+
+    >   | Field               | Value                                                              |
+    >   +---------------------+--------------------------------------------------------------------+
+    >   | admin_state_up      | True                                                               |
+    >   | created_at          | 2019-11-19T02:36:28                                                |
+    >   | description         |                                                                    |
+    >   | flavor_id           | None                                                               |
+    >   | id                  | c03fe4f7-d64d-4948-b245-a4c2ec7f1dd8                               |
+    >   | listeners           | c0d1c9ae-a1eb-489e-8d41-b65712504bfe                               |
+    >   | name                | albert-vhkdfdsqfp6i-etcd_lb-h3jpoem46y77-loadbalancer-bc4q6wdiqvsx |
+    >   | operating_status    | ONLINE                                                             |
+    >   | pools               | fb4f7714-f54f-4141-89b0-117407d9675e                               |
+    >   | project_id          | 08e24c6d87f94740aa59c172462ed927                                   |
+    >   | provider            | amphora                                                            |
+    >   | provisioning_status | ACTIVE                                                             |
+    >   | updated_at          | 2019-11-19T02:42:33                                                |
+    >   | vip_address         | 10.0.0.7                                                           |
+    >   | vip_network_id      | 554ac53c-67eb-4aeb-a6d9-e910835366cb                               |
+    >   | vip_port_id         | c6424022-c3e3-4fe6-a8ad-3ef4d7248166                               |
+    >   | vip_qos_policy_id   | None                                                               |
+    >   | vip_subnet_id       | 2e7ddce8-0db7-4614-a207-4a5eb6680f36                               |
+    >   +---------------------+--------------------------------------------------------------------+
+
+    # The vip_subnet_id  [2e7ddce8-0db7-...] matches our private network.
+    # The vip_network_id [554ac53c-67eb-...] matches our private network.
+    # The vip_port_id    [c6424022-c3e3-...] does not match any of our floating IP addresses [10.0.0.7] -> [].
+
+
+# -----------------------------------------------------
+# Get details of our cluster certificate.
+#[user@openstacker]
+
+    certfile=$(mktemp)
+
+    openstack \
+        --os-cloud cumulus \
+        coe ca show \
+            'fe61cb8d-5b8d-47c0-b4a7-315f17ffb14a' \
+    | tee "${certfile}"
+
+    >   -----BEGIN CERTIFICATE-----
+    >   MIIC0zCCAbugAwIBAgIRAMat4Bgz50LmqhnYk2C9M+wwDQYJKoZIhvcNAQELBQAw
+    >   ETEPMA0GA1UEAwwGYWxiZXJ0MB4XDTE5MTExODAyMzYwNloXDTI0MTExNzAyMzYw
+    >   NlowETEPMA0GA1UEAwwGYWxiZXJ0MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIB
+    >   CgKCAQEAr/DStIli+wuZg1d0ga3O1nHXJlAwHziCxz7IizemUlMSeazeiknfWUI/
+    >   S0krHkH86DUZRicucQTubazPre1RoDAUPLT4JLJOKswnmZ4UEzilij2jZXVHDNXK
+    >   THZldkOZSXe7gP1YJRSHCWpXgYewJjMDOEFiQKKSmrCz4mdeDRhZN57BuHDOYojQ
+    >   ZR945NAjRpAxHwRNMYUPhD5pGX1jMirMN/pMbyoQOxKaYoNR5WvW9BI33DYq5UNR
+    >   wstR8EIzCPHUu5MvgMAajC71BV7JRjfDnbPjRdWnraLIRB8b7Tya5mr551SE0x4H
+    >   upXdp9P5lmh10LpyBw+U5MBB5I4mSQIDAQABoyYwJDASBgNVHRMBAf8ECDAGAQH/
+    >   AgEAMA4GA1UdDwEB/wQEAwICBDANBgkqhkiG9w0BAQsFAAOCAQEAJHAGANfFtNZm
+    >   5g2zpmICSFa3JCdB8rc1pQtJ6vs539jyj0A+mkOlbwke1IZPt1hmTthie4iUYyfK
+    >   A/uo+0e93FQzFbsjVwpDnjKqfw0PbwYqnU1keCGR/wU2oVAS834eSpKrnPH6c81K
+    >   vraRI5ForeslUfFGNWbXHyXHrOVbjWz5AdM3EIiMYNO3flge9tiROOnSaw6JE+Xv
+    >   RTzkz0G9L3xenoM0qlDT7nMdSH51AqM72mLk2y6ABU7vQ4mC5f+1dGdCZzaPBoTY
+    >   PXouOHU8czKCXRMry+ZXEz1K2pKYr4Ehsry8ggBJnkewLpRgepDd9q0CEYQs9tGf
+    >   RaP+mmrKbA==
+
+
+# -----------------------------------------------------
+# Try the api_address with the certificate.
+#[user@openstacker]
+
+    curl \
+        --cacert "${certfile}" \
+        'https://128.232.227.139:6443' \
+    | jq '.'
+
+    >   {
+    >     "kind": "Status",
+    >     "apiVersion": "v1",
+    >     "metadata": {},
+    >     "status": "Failure",
+    >     "message": "forbidden: User \"system:anonymous\" cannot get path \"/\"",
+    >     "reason": "Forbidden",
+    >     "details": {},
+    >     "code": 403
+    >   }
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Install the Kubernetes client.
+#[user@desktop]
+
+    docker ps
+
+    >   CONTAINER ID        IMAGE                      COMMAND             CREATED             STATUS              PORTS               NAMES
+    >   74aa21813ca6        atolmis/openstack-client   "bash"              2 hours ago         Up 2 hours                              pedantic_gates
+
+    docker exec \
+        --tty \
+        --interactive \
+        --user root \
+        '74aa21813ca6' \
+            'bash'
+
+            dnf install -y \
+                kubernetes-client
+
+    >   ....
+    >   Installed:
+    >       kubernetes-client-1.15.2-1.fc30.x86_64
+
+
+# -----------------------------------------------------
+# Configure our cluster settings.
+#[user@openstacker]
+
+    export HOME=$(mktemp -d)
+
+    kubectl \
+        config set-cluster \
+            albert \
+            --server 'https://128.232.227.139:6443' \
+            --certificate-authority "${certfile}"
+
+    >   Cluster "albert" set.
+
+
+# -----------------------------------------------------
+# Check what it created.
+#[user@openstacker]
+
+    ls -al "${HOME}"
+
+    >   ....
+    >   drwxr-xr-x. 1 1000 root  12 Nov 19 05:58 .kube
+
+
+    ls -al "${HOME}/.kube"
+
+    >   ....
+    >   -rw-------. 1 1000 root 211 Nov 19 05:58 config
+
+
+    cat "${HOME}/.kube/config"
+
+    >   apiVersion: v1
+    >   clusters:
+    >   - cluster:
+    >       certificate-authority: /tmp/tmp.h6RCzxQgYy
+    >       server: https://128.232.227.139:6443
+    >     name: albert
+    >   contexts: []
+    >   current-context: ""
+    >   kind: Config
+    >   preferences: {}
+    >   users: []
+
+
+# -----------------------------------------------------
+# Check the cluster info.
+#[user@openstacker]
+
+    kubectl \
+        config set-context \
+            --cluster albert \
+            albert
+
+    >   Context "albert" created.
+
+
+    kubectl \
+        config use-context \
+            albert
+
+    >   Switched to context "albert".
+
+
+    cat "${HOME}/.kube/config"
+
+    >   apiVersion: v1
+    >   clusters:
+    >   - cluster:
+    >       certificate-authority: /tmp/tmp.h6RCzxQgYy
+    >       server: https://128.232.227.139:6443
+    >     name: albert
+    >   contexts:
+    >   - context:
+    >       cluster: albert
+    >       user: ""
+    >     name: albert
+    >   current-context: ""
+    >   kind: Config
+    >   preferences: {}
+    >   users: []
+
+
+    kubectl \
+        cluster-info
+
+    >   Please enter Username: ^C
+
+
+# -----------------------------------------------------
+# Get config details for our cluster.
+# https://github.com/cncf/k8s-conformance/tree/master/v1.11/openstack-magnum#create-kubernetes-cluster
+#[user@openstacker]
+
+    confdir=$(mktemp -d)
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster config \
+            --dir "${confdir}" \
+            'fe61cb8d-5b8d-47c0-b4a7-315f17ffb14a'
+
+    >   a bytes-like object is required, not 'str'
+
+
+    # Matches a known bug
+    # https://bugs.launchpad.net/python-magnumclient/+bug/1812816
+    # https://storyboard.openstack.org/#!/story/2004902
+
+    # Found a fix
+    # https://review.opendev.org/gitweb?p=openstack%2Fpython-magnumclient.git;a=commitdiff;h=3f7b994acd3eaac2321006b34cebfcb07d924934
+
+# -----------------------------------------------------
+# Find the magnum client files.
+#[user@openstacker]
+
+    rpm -q -l python3-magnumclient
+
+    >   /usr/bin/magnum
+    >   /usr/lib/python3.7/site-packages/magnumclient
+    >   /usr/lib/python3.7/site-packages/magnumclient/__init__.py
+    >   ....
+    >   /usr/lib/python3.7/site-packages/magnumclient/common/utils.py
+    >   ....
+
+
+# -----------------------------------------------------
+# Check who owns the file.
+#[user@openstacker]
+
+    ls -al /usr/lib/python3.7/site-packages/magnumclient/common/utils.py
+
+    >   -rw-r--r--. 1 root root 11592 Mar  6  2019 /usr/lib/python3.7/site-packages/magnumclient/common/utils.py
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Apply the fix as root.
+#[user@desktop]
+
+    docker ps
+
+    >   CONTAINER ID        IMAGE                      COMMAND             CREATED             STATUS              PORTS               NAMES
+    >   74aa21813ca6        atolmis/openstack-client   "bash"              2 hours ago         Up 2 hours                              pedantic_gates
+
+    docker exec \
+        --tty \
+        --interactive \
+        --user root \
+        '74aa21813ca6' \
+            'bash'
+
+        cp /usr/lib/python3.7/site-packages/magnumclient/common/utils.py \
+           /usr/lib/python3.7/site-packages/magnumclient/common/utils.bak
+
+        sed -i '
+            s/b64encode/encode_as_text/g
+            ' /usr/lib/python3.7/site-packages/magnumclient/common/utils.py
+
+        sed -i '
+            /from oslo_serialization/ {
+                i \
+from oslo_serialization import base64
+                }
+            ' /usr/lib/python3.7/site-packages/magnumclient/common/utils.py
+
+        diff /usr/lib/python3.7/site-packages/magnumclient/common/utils.bak \
+             /usr/lib/python3.7/site-packages/magnumclient/common/utils.py
+
+    >   26a27
+    >   > from oslo_serialization import base64
+    >   218,220c219,221
+    >   <                       'key': base64.b64encode(certs['key']),
+    >   <                       'cert': base64.b64encode(certs['cert']),
+    >   <                       'ca': base64.b64encode(certs['ca'])})
+    >   ---
+    >   >                       'key': base64.encode_as_text(certs['key']),
+    >   >                       'cert': base64.encode_as_text(certs['cert']),
+    >   >                       'ca': base64.encode_as_text(certs['ca'])})
+    >   253c254
+    >   <                       'ca': base64.b64encode(certs['ca'])})
+    >   ---
+    >   >                       'ca': base64.encode_as_text(certs['ca'])})
+
+
+# -----------------------------------------------------
+# Get config details for our cluster.
+# https://github.com/cncf/k8s-conformance/tree/master/v1.11/openstack-magnum#create-kubernetes-cluster
+#[user@openstacker]
+
+    confdir=$(mktemp -d)
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster config \
+            --dir "${confdir}" \
+            'fe61cb8d-5b8d-47c0-b4a7-315f17ffb14a'
+
+    >   'SHELL'
+
+
+    # Ok, totally underwhelming non-event.
+
+
+    confdir=$(mktemp -d)
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster config \
+            --output-certs \
+            --dir "${confdir}" \
+            'fe61cb8d-5b8d-47c0-b4a7-315f17ffb14a'
+
+    >   'SHELL'
+
+
+    ls -al "${confdir}"
+
+    >   -rw-r--r--. 1 1000 root 1041 Nov 19 07:14 ca.pem
+    >   -rw-r--r--. 1 1000 root 1016 Nov 19 07:14 cert.pem
+    >   -rw-r--r--. 1 1000 root 5317 Nov 19 07:14 config
+    >   -rw-r--r--. 1 1000 root 1679 Nov 19 07:14 key.pem
+
+
+    cat "${confdir}/config"
+
+    >   apiVersion: v1
+    >   clusters:
+    >   - cluster:
+    >       certificate-authority-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUMwekNDQWJ1Z0F3SUJBZ0lSQU1hdDRCZ3o1MExtcWhuWWsyQzlNK3d3RFFZSktvWklodmNOQVFFTEJRQXcKRVRFUE1BMEdBMVVFQXd3R1lXeGlaWEowTUI0WERURTVNVEV4T0RBeU16WXdObG9YRFRJME1URXhOekF5TXpZdwpObG93RVRFUE1BMEdBMVVFQXd3R1lXeGlaWEowTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCCkNnS0NBUUVBci9EU3RJbGkrd3VaZzFkMGdhM08xbkhYSmxBd0h6aUN4ejdJaXplbVVsTVNlYXplaWtuZldVSS8KUzBrckhrSDg2RFVaUmljdWNRVHViYXpQcmUxUm9EQVVQTFQ0SkxKT0tzd25tWjRVRXppbGlqMmpaWFZIRE5YSwpUSFpsZGtPWlNYZTdnUDFZSlJTSENXcFhnWWV3SmpNRE9FRmlRS0tTbXJDejRtZGVEUmhaTjU3QnVIRE9Zb2pRClpSOTQ1TkFqUnBBeEh3Uk5NWVVQaEQ1cEdYMWpNaXJNTi9wTWJ5b1FPeEthWW9OUjVXdlc5QkkzM0RZcTVVTlIKd3N0UjhFSXpDUEhVdTVNdmdNQWFqQzcxQlY3SlJqZkRuYlBqUmRXbnJhTElSQjhiN1R5YTVtcjU1MVNFMHg0SAp1cFhkcDlQNWxtaDEwTHB5QncrVTVNQkI1STRtU1FJREFRQUJveVl3SkRBU0JnTlZIUk1CQWY4RUNEQUdBUUgvCkFnRUFNQTRHQTFVZER3RUIvd1FFQXdJQ0JEQU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFKSEFHQU5mRnROWm0KNWcyenBtSUNTRmEzSkNkQjhyYzFwUXRKNnZzNTM5anlqMEErbWtPbGJ3a2UxSVpQdDFobVR0aGllNGlVWXlmSwpBL3VvKzBlOTNGUXpGYnNqVndwRG5qS3FmdzBQYndZcW5VMWtlQ0dSL3dVMm9WQVM4MzRlU3BLcm5QSDZjODFLCnZyYVJJNUZvcmVzbFVmRkdOV2JYSHlYSHJPVmJqV3o1QWRNM0VJaU1ZTk8zZmxnZTl0aVJPT25TYXc2SkUrWHYKUlR6a3owRzlMM3hlbm9NMHFsRFQ3bk1kU0g1MUFxTTcybUxrMnk2QUJVN3ZRNG1DNWYrMWRHZENaemFQQm9UWQpQWG91T0hVOGN6S0NYUk1yeStaWEV6MUsycEtZcjRFaHNyeThnZ0JKbmtld0xwUmdlcERkOXEwQ0VZUXM5dEdmClJhUCttbXJLYkE9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0t
+    >       server: https://128.232.227.139:6443
+    >     name: albert
+    >   contexts:
+    >   - context:
+    >       cluster: albert
+    >       user: admin
+    >     name: default
+    >   current-context: default
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >   - name: admin
+    >     user:
+    >       client-certificate-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUN3ekNDQWF1Z0F3SUJBZ0lSQU1zRFlGRkZTVS9nbkZHVzBsNDB4NGt3RFFZSktvWklodmNOQVFFTEJRQXcKRVRFUE1BMEdBMVVFQXd3R1lXeGlaWEowTUI0WERURTVNVEV4T0RBM01UUXhORm9YRFRJME1URXhOekEzTVRReApORm93S1RFT01Bd0dBMVVFQXd3RllXUnRhVzR4RnpBVkJnTlZCQW9NRG5ONWMzUmxiVHB0WVhOMFpYSnpNSUlCCklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUF2ZWtXRUpJOEVYejBGbEtqNjcxcTdmM1kKSEptTTdGK2Evd3RoMEFNVmtGZ1d5YkVVRDRUMUNYMG1XSVY5enRUTjcrWWZHM05TOWtESzlvc1RaY0FxQnN2eQovNlUzQjUxSHNQWlBmYVQrYnNOekpDbG5kSDdFbk9zZmVDRm9vbjNJVi81YStmOHBLUEFURUhDYXlidlMxYmVDCmRoVzZSbGhiTGl2elVwVm95Qk9aRDdVcmthMnc3bmJPTFNpaDVhMk05SzhuZjhYTzY3QTdmU3lEYzcwekVmdGoKUE9JVGxqZ0paL3dkb3IwQnY0WG5NTllZa3h6dUF3NWdLQ3ZRL2pFSDJ4UDVqOUJWVmFKOThoS2Q0RkJVQzhDRAo5UVhvdjYrbjY4dTFpQ2tEWlJEUWNoNFJvSndPREZNSmF1UFJZZ1RCUkViUXJ2MktqQ0xTS2MyMVc5dGQzUUlECkFRQUJNQTBHQ1NxR1NJYjNEUUVCQ3dVQUE0SUJBUUJqaDZWSEh5SHM2Nkt2enMzK1VCOWZhSUhhM0wvU3BLSi8KQnlUYmdwRFZsOWh3WGhyL2lReDlEMHpDTC9PaG0wSFB3RzJTYWdLaEx1ZjY3ek5HNUhPU1RsOGJWd3RWbmptVAo5T3pyUGJLVnRiNXZScTJQOSs3QzYrWkZublUwem9PZ0FXdHZsWENwZGJsUUkzc1djQndSMk54Mkc4YmRwQTNqCkJzbTQ4eFFPS2lUdm03NncrdzVrNmNWL0FQUG4xNGp6UWlaNUgycVdyZ0ViN3VDVzBWMHlIRlFpYnNVSkFUQSsKa2h4cXBHSmhJVnFtYXM4Skg0bHluSTNwTmFxNFJTOFpZVk96U3lYSGlLMWNIZW5xZExwcU82b3JQSk8rOGlwSwpKUmhWTWhoSDQ4cnlSYmo5eENpckFkdUFGTXhOeWtpcXJYeFExeXNKNjVwLzFDQ3NCK2JxCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0=
+    >       client-key-data: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFcFFJQkFBS0NBUUVBdmVrV0VKSThFWHowRmxLajY3MXE3ZjNZSEptTTdGK2Evd3RoMEFNVmtGZ1d5YkVVCkQ0VDFDWDBtV0lWOXp0VE43K1lmRzNOUzlrREs5b3NUWmNBcUJzdnkvNlUzQjUxSHNQWlBmYVQrYnNOekpDbG4KZEg3RW5Pc2ZlQ0Zvb24zSVYvNWErZjhwS1BBVEVIQ2F5YnZTMWJlQ2RoVzZSbGhiTGl2elVwVm95Qk9aRDdVcgprYTJ3N25iT0xTaWg1YTJNOUs4bmY4WE82N0E3ZlN5RGM3MHpFZnRqUE9JVGxqZ0paL3dkb3IwQnY0WG5NTllZCmt4enVBdzVnS0N2US9qRUgyeFA1ajlCVlZhSjk4aEtkNEZCVUM4Q0Q5UVhvdjYrbjY4dTFpQ2tEWlJEUWNoNFIKb0p3T0RGTUphdVBSWWdUQlJFYlFydjJLakNMU0tjMjFXOXRkM1FJREFRQUJBb0lCQVFDZC9SLy9EempycjVEOApWU25MZjF4S3UyZ2pldGFTK29KZWRTQ2RSVU9XUHNKT2JvTnEyY2hrYVhvU0lKUG1Fb0YwZDNRZmlSUldpdGFPCnZtcVh0b0wvL29HY2pkeTI5L0JoVnJnUXBjZUpiQTRJNG0wUHJEcHk5T1BNTTdieG4wU2hkNWhGN0RGWXZraU4KMzYvVjdleGJJWHhtTW5NeC9HVjJodGU1TjFUaFJJTU1lSE1JQmFWS3I0bHU4YkJ5b2Z2OTUzTHFueHpnWjJpeQprazF6U3RrVEVzNEN4bmxlYnVadXI3T3BNZUo4STlna2FnWUZnNkZsSElNWjhKR2ZNYUJERHE5WHpRNzUrd1hRClczYjRuS3lhQW1SU1dZOVVscTg5ZWpBQXd2U0Y4azIwcU1CWWNvbTEzQlJHTU8vRnUwZjFVKzdpWTg3R1BmQlkKM3pIMUUwZTlBb0dCQVBpSjdiMkNURHByYVRNYmRxUVBDRXVTSlk4b1Z0Q1JlTG9WUVdReWxLbXBwZXJJTzljTQpZMkJjMTN4cTFXTmxjNitTcG1aQUJ2eFZqVDVaUjlJN0ZXREpDNXRTbUFBTjF2dk52K0RDQ0E5MFJRSE8zbVAvCmFrMWhuTGRuc29WdkVUUk5JU1B0SXVDNGFVSGc3Qjgya1dFdldRdFFlUWhoOEw2Z3lRMGZvMURYQW9HQkFNT2MKbGszTHBvazdLRXRHKzdWR0RWcmtIRmpmZXFQKzQ2S1ZnSE4xc0lQU0FvMnF1OXpzOWFSSGs5TlVIZmwyUm0zZwpqMnpWa0c4enZpVENiUDc3NDRmVlN2RmZoTEl5dzV0ZVlyd01JRzkrMU5qUmszUkFKcThTTFBCQzdFSEtFczU0CmFoYUtnc215dHhBNlRjTjI3eTV3VDlwZG5oYWptUGIxclc5OVZZeHJBb0dCQVBUMWRMVlFnL01jUkc1VHhpWkMKanFsMUhNR3hQNGVIcVZhMmRtSGNISHZ3TWhCcVU5aExaSExvYnBZNDhhSnFyby9BV1hMejdpNnIzMjh4TGNGOQo3RDhkUit4SmhuaWZLMkc0MDBJaDJ6SG9KYzkzWmVkbktRMmxoSUdibWU4N25kaFBvTGM1RlNRcGZjeXBjKy83CnAyUUM5NTlZTEVKZnpaa0UvY09LaUR1M0FvR0FmNXd0cWI3TGZBY3R1RDRzZ3d1YU5zdE5ldVQvMnZDempDTS8KMHhMWi9vVUl5V2F5ZStQU05FUEZ1ajNMK0N3aXNoZW5PWGJ4YkxveXQwUm5Xc2owbkc2WEgzUVMyeldteWpyKwo2bkoyem9YTlVVMFhodVU2MTBkaUxiTmE4V2hrY0hHNXM4N1VsOFNSREhNY3ZBRmc4OGl0TDJXWGRtbHZwdHlMCk1vcHZQdFVDZ1lFQTBpZEllLzlzU3QydCtDb2NaS0x6am90eGhHSDZPOUNLeHVrWVVvc0Z5TzJ6UkZLb2FCS2oKUFVmNytiRjVHbjhMRlNHMFgyU3d5TWt1YzdqUmMyM3dzZDM2UncybHpBK3JFR04xZDdDcEJmc3VaWGdRZFcvagpuOTJZUDhpOFRFalROQ24zL29vdTAydk9sSE5pTnFnNzQ0U3N2cmtYazNBWW5VYmlzQUhRRDM4PQotLS0tLUVORCBSU0EgUFJJVkFURSBLRVktLS0tLQo=
+
+    #
+    # Ok, now we are cooking ... :-)
+    #
+
+
+# -----------------------------------------------------
+# Check our kubectl settings.
+#[user@openstacker]
+
+    export HOME=$(mktemp -d)
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        config  \
+            get-contexts
+
+    >   CURRENT   NAME      CLUSTER   AUTHINFO   NAMESPACE
+    >   *         default   albert    admin
+
+
+# -----------------------------------------------------
+# Check we can connect to our cluster.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.139:6443
+    >   Heapster is running at https://128.232.227.139:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.139:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+    >   
+    >   To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
+
+
+# -----------------------------------------------------
+# Dump the cluster details.
+#[user@openstacker]
+
+    dumpfile=$(mktemp)
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        cluster-info \
+            dump
+
+    >   ....
+    >   ....
+    >   Cluster info dumped to standard output
+
+
+# -----------------------------------------------------
+# Dump the cluster details.
+#[user@openstacker]
+
+    dumpfile=$(mktemp)
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        cluster-info \
+            dump \
+    | tee "${dumpfile}"
+
+    >   ....
+    >   ....
+    >   Cluster info dumped to standard output
+
+
+    head "${dumpfile}"
+
+    >   {
+    >       "kind": "NodeList",
+    >       "apiVersion": "v1",
+    >       "metadata": {
+    >           "selfLink": "/api/v1/nodes",
+    >           "resourceVersion": "47464"
+    >       },
+    >       "items": [
+    >           {
+    >               "metadata": {
+
+
+    tail "${dumpfile}"
+
+    >   {
+    >       "kind": "PodList",
+    >       "apiVersion": "v1",
+    >       "metadata": {
+    >           "selfLink": "/api/v1/namespaces/default/pods",
+    >           "resourceVersion": "47468"
+    >       },
+    >       "items": []
+    >   }
+    >   Cluster info dumped to standard output
+
+
+# -----------------------------------------------------
+# Delete our cluster.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster delete \
+            'fe61cb8d-5b8d-47c0-b4a7-315f17ffb14a'
+
+    >   Request to delete cluster fe61cb8d-5b8d-47c0-b4a7-315f17ffb14a has been accepted.
+
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud cumulus \
+        coe cluster list
+
+    >   +--------------------------------------+--------+----------------+------------+--------------+--------------------+
+    >   | uuid                                 | name   | keypair        | node_count | master_count | status             |
+    >   +--------------------------------------+--------+----------------+------------+--------------+--------------------+
+    >   | fe61cb8d-5b8d-47c0-b4a7-315f17ffb14a | albert | aglais-ansible |          3 |            1 | DELETE_IN_PROGRESS |
+    >   +--------------------------------------+--------+----------------+------------+--------------+--------------------+
+
+
+
+
+    # NEXT : Deploy an ngix example ..
+    # https://docs.openstack.org/magnum/newton/dev/kubernetes-load-balancer.html#steps-for-the-users
+
+
+
+
+
+
+

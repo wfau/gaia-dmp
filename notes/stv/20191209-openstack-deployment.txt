@@ -1,0 +1,919 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2019, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#  
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+
+################################################################
+##  Setup Zepellin/Yarn/Spark/Hadoop Cluster                  ##
+################################################################
+
+
+# Read up and try to follow
+# https://docs.hpc.cam.ac.uk/cloud-training/#16
+
+
+#-------------------------------------------------------------------------
+# GUI Steps to Setup Networks, Security Groups & Instances
+#-------------------------------------------------------------------------
+
+
+## Step 1:
+
+Create Private Network 
+
+   Name: stv-dev-network
+
+   Create Subnet
+      Name - stv-dev-subnet 
+      CIDR - 10.0.0.0/24
+      DNS Name Servers - 131.111.8.42 131.111.12.20      
+
+
+
+## Step 2:
+
+Create Router, connected to Internet
+ 
+   Name: stv-dev-router
+   External Network: Internet
+
+   Create Interface
+      Subnet - stv-dev-network
+
+
+## Step 3
+
+Create Security Groups (based on training presentation)
+
+external-bastion: 22 / ICMP
+internal-bastion: default
+internal-webserver: 22 - internal-bastion
+external-webserver: 80
+stv-dev-zeppelin : 8080
+stv-dev-master: *
+stv-dev-worker: * - stv-dev-master
+
+
+
+## Step 4:
+
+Create Bastion Instance (Gateway)
+    Fedora-30-1.2
+    general.v1.tiny	
+    external-bastion + internal-bastion
+
+
+## Step 5:
+
+Create Master node
+    Fedora-30-1.2
+    general.v1.medium	
+    internal-bastion + internal-webserver + stv-dev-master
+
+
+
+## Step 6:
+
+Create 6 Worker Nodes with 500 Gb volumes
+    Fedora-30-1.2
+    general.v1.large	
+    (external-bastion + internal-webserver + stv-dev-worker)
+
+
+
+## Step 7:
+
+Create Zeppelin Node 
+(external-bastion + internal-webserver + stv-dev-zeppelin)
+
+
+
+
+
+stv-dev-gateway-ip=
+stv-dev-worker-1-ip=
+stv-dev-worker-2-ip=
+stv-dev-worker-3-ip=
+stv-dev-master-ip=
+stv-dev-zeppelin-ip=
+
+
+
+
+#-------------------------------------------------------------------------
+# Setup .ssh config locally
+#-------------------------------------------------------------------------
+
+~/.ssh/config
+..
+
+
+Host stv-dev-gateway
+    User centos
+    IdentityFile ~/.ssh/stv-master
+    Hostname ${stv-dev-gateway-ip:?}
+
+Host stv-dev-master
+    User fedora
+    IdentityFile ~/.ssh/stv-master
+    Hostname${stv-dev-master-ip:?}
+    ProxyCommand ssh -W %h:%p stv-dev-gateway
+
+Host stv-dev-worker-1
+    User fedora
+    IdentityFile ~/.ssh/stv-master
+    Hostname ${stv-dev-worker-1-ip:?}
+    ProxyCommand ssh -W %h:%p stv-dev-gateway
+
+Host stv-dev-worker-2
+    User fedora
+    IdentityFile ~/.ssh/stv-master
+    Hostname ${stv-dev-worker-2-ip:?}
+    ProxyCommand ssh -W %h:%p stv-dev-gateway
+
+
+...  
+
+Host stv-dev-zeppelin
+    User fedora
+    IdentityFile ~/.ssh/stv-master
+    Hostname ${stv-dev-zeppelin-ip:?}
+    ProxyCommand ssh -W %h:%p stv-dev-gateway
+
+..
+
+
+
+#-------------------------------------------------------------------------
+## Step 5: Install HDFS Cluster
+#-------------------------------------------------------------------------
+
+## Fetch Hadoop Binaries on each node & install java
+
+
+## Run on all nodes
+
+sudo yum install -y wget
+sudo yum install -y nano
+wget http://apache.cs.utah.edu/hadoop/common/current/hadoop-3.1.3.tar.gz
+tar -xzf hadoop-3.1.3.tar.gz
+mv hadoop-3.1.3 hadoop
+sudo yum install -y java-1.8.0-openjdk
+
+
+
+
+
+#-------------------------------------------------------------------------
+# Setup Environment variables on each node
+#-------------------------------------------------------------------------
+
+# For each Worker node & Master node
+
+cat > "${HOME:?}/.profile" << EOF
+PATH=/home/fedora/spark/bin:/home/fedora/.local/bin:/home/fedora/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/bin:/sbin:/home/fedora/hadoop/bin:/home/fedora/hadoop/sbin
+EOF
+
+cat <<EOF >> "${HOME:?}/.bashrc"
+export HADOOP_HOME=/home/fedora/hadoop
+export PATH=/home/fedora/.local/bin:/home/fedora/bin:/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/bin:/sbin:/home/fedora/hadoop/bin:/home/fedora/hadoop/sbin:/home/fedora/spark/bin
+export JAVA_HOME=/usr/lib/jvm/java-1.8.0-openjdk-1.8.0.232.b09-0.fc30.x86_64/jre/
+export HADOOP_CONF_DIR=/home/fedora/hadoop/etc/hadoop
+export SPARK_HOME=/home/fedora/spark
+export LD_LIBRARY_PATH=/home/fedora/hadoop/lib/native
+EOF
+
+
+
+
+
+#-------------------------------------------------------------------------
+## Setup /etc/hosts file and ~/.ssh/config file
+#-------------------------------------------------------------------------
+
+
+sudo su
+cat <<EOF >> "/etc/hosts"
+
+127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+
+	
+10.0.0.14       stv-dev-master.novalocal
+10.0.0.14       stv-dev-master
+10.0.0.16       stv-dev-worker-1
+10.0.0.4       stv-dev-worker-2
+10.0.0.6       stv-dev-worker-3
+10.0.0.33       stv-dev-worker-4
+10.0.0.28       stv-dev-worker-5
+10.0.0.29       stv-dev-worker-6
+10.0.0.27      stv-dev-zeppelin
+10.0.0.17      stv-dev-storage
+
+EOF
+  
+exit
+
+
+cat > "${HOME:?}/.ssh/config" << EOF
+
+    Host stv-dev-worker-1
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-worker-2 
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-worker-3
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-worker-4
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-worker-5
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-worker-6
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-master.novalocal
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-master
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-zeppelin
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+EOF
+
+
+sudo chmod 600 ~/.ssh/config
+sudo chmod 600 ~/.ssh/stv-master 
+
+
+
+
+
+#-------------------------------------------------------------------------
+# Setup Hadoop (on all nodes)
+#-------------------------------------------------------------------------
+
+## Setup Hadoop Configurations
+
+
+cat > "${HOME:?}/hadoop/etc/hadoop/core-site.xml" << EOF
+
+<!--
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License. See accompanying LICENSE file.
+-->
+
+<!-- Put site-specific property overrides in this file. -->
+
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property>
+            <name>fs.default.name</name>
+            <value>hdfs://stv-dev-master:9000</value>
+        </property>
+    </configuration>
+
+EOF
+
+
+cat > "${HOME:?}/hadoop/etc/hadoop/yarn-site.xml" << EOF
+
+<configuration>
+    <property>
+            <name>yarn.acl.enable</name>
+            <value>0</value>
+    </property>
+
+    <property>
+            <name>yarn.resourcemanager.hostname</name>
+            <value>stv-dev-master</value>
+    </property>
+
+    <property>
+            <name>yarn.nodemanager.aux-services</name>
+            <value>mapreduce_shuffle</value>
+    </property>
+<property>
+        <name>yarn.nodemanager.resource.memory-mb</name>
+        <value>50000</value>
+</property>
+
+<property>
+        <name>yarn.scheduler.maximum-allocation-mb</name>
+        <value>50000</value>
+</property>
+
+<property>
+        <name>yarn.scheduler.minimum-allocation-mb</name>
+        <value>2000</value>
+</property>
+
+<property>
+        <name>yarn.nodemanager.vmem-check-enabled</name>
+        <value>false</value>
+</property>
+<property>
+   <name>yarn.scheduler.capacity.root.support.user-limit-factor</name>  
+   <value>2</value>
+</property>
+<property>
+   <name>yarn.nodemanager.disk-health-checker.min-healthy-disks</name>
+   <value>0.0</value>
+</property>
+<property>
+   <name>yarn.nodemanager.disk-health-checker.max-disk-utilization-per-disk-percentage</name>
+   <value>100.0</value>
+</property>
+
+ <property>
+    <name>yarn.resourcemanager.scheduler.address</name>
+    <value>stv-dev-master:8030</value>
+  </property>
+  <property>
+    <name>yarn.resourcemanager.address</name>
+    <value>stv-dev-master:8032</value>
+  </property>
+  <property>
+    <name>yarn.resourcemanager.webapp.address</name>
+    <value>stv-dev-master:8088</value>
+  </property>
+  <property>
+    <name>yarn.resourcemanager.resource-tracker.address</name>
+    <value>stv-dev-master:8031</value>
+  </property>
+  <property>
+    <name>yarn.resourcemanager.admin.address</name>
+    <value>stv-dev-master:8033</value>
+  </property>
+
+</configuration>
+
+EOF
+
+
+
+
+cat > "${HOME:?}/hadoop/etc/hadoop/workers" << EOF
+
+stv-dev-worker-1
+stv-dev-worker-2
+stv-dev-worker-3
+stv-dev-worker-4
+stv-dev-worker-5
+stv-dev-worker-6
+
+EOF
+
+
+
+
+cat > "${HOME:?}/hadoop/etc/hadoop/mapred-site.xml" << EOF
+
+<configuration>
+    <property>
+            <name>mapreduce.framework.name</name>
+            <value>yarn</value>
+    </property>
+    <property>
+            <name>yarn.app.mapreduce.am.env</name>
+            <value>HADOOP_MAPRED_HOME=/home/fedora/hadoop</value>
+    </property>
+    <property>
+            <name>mapreduce.map.env</name>
+            <value>HADOOP_MAPRED_HOME=/home/fedora/hadoop</value>
+    </property>
+    <property>
+            <name>mapreduce.reduce.env</name>
+            <value>HADOOP_MAPRED_HOME=/home/fedora/hadoop</value>
+    </property>
+<property>
+	<name>yarn.app.mapreduce.am.resource.mb</name>
+        <value>50000</value>
+</property>
+
+<property>
+	<name>mapreduce.map.memory.mb</name>
+        <value>25000</value>
+</property>
+
+<property>
+	<name>mapreduce.reduce.memory.mb</name>
+        <value>25000</value>
+</property>
+</configuration>
+
+EOF
+
+
+
+
+cat > "${HOME:?}/hadoop/etc/hadoop/core-site.xml" << EOF
+
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+    <configuration>
+        <property>
+            <name>fs.default.name</name>
+            <value>hdfs://stv-dev-master:9000</value>
+        </property>
+    </configuration>
+
+EOF
+
+
+## Note: The resource (memory) values input here need to be revisited
+
+
+
+#-------------------------------------------------------------------------
+## Format HDFS Master Node on each node
+#-------------------------------------------------------------------------
+
+## for each worker node
+
+source ~/.bashrc
+sudo mkdir /home/hadoop/
+sudo chown -R fedora:root /home/hadoop/
+source /home/fedora/hadoop/bin/hdfs namenode -format
+
+
+
+
+#-------------------------------------------------------------------------
+## Install Python3 and set it as default for each worker node
+#-------------------------------------------------------------------------
+
+## for each worker node
+
+sudo yum install python3
+sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
+
+
+
+
+#-------------------------------------------------------------------------
+## Start and Stop HDFS services
+#-------------------------------------------------------------------------
+
+# Leave safe mode. (Without this we get exceptions when running yarn jobs)
+hdfs dfsadmin -safemode leave
+
+
+## On Master Node: (ssh stv-dev-master)
+
+start-all.sh
+
+
+## Create a directory
+hdfs dfs -mkdir /hadoop/
+hdfs dfs -mkdir /hadoop/books/
+
+
+## Run test job
+
+cd /home/hadoop
+wget -O alice.txt https://www.gutenberg.org/files/11/11-0.txt
+wget -O holmes.txt https://www.gutenberg.org/files/1661/1661-0.txt
+wget -O frankenstein.txt https://www.gutenberg.org/files/84/84-0.txt
+
+
+hdfs dfs -put alice.txt holmes.txt frankenstein.txt /hadoop/books
+
+
+
+
+## LS directory
+hdfs dfs -ls /hadoop/books
+
+
+yarn jar ~/hadoop/share/hadoop/mapreduce/hadoop-mapreduce-examples-3.1.3.jar wordcount "/hadoop/books/*" output
+## Job Completed Successfully
+## Check Results
+
+hdfs dfs -ls output
+hdfs dfs -cat output/part-r-00000 | less
+
+
+
+
+
+
+#-------------------------------------------------------------------------
+# Spark
+#-------------------------------------------------------------------------
+
+## Setup Spark on Existing yarn & hdfs cluster
+
+
+## Download and Install Spark Binaries
+## On Master Node: (ssh stv-dev-master)
+
+cd /home/fedora
+wget https://www-eu.apache.org/dist/spark/spark-2.4.4/spark-2.4.4-bin-hadoop2.7.tgz
+tar -xvf spark-2.4.4-bin-hadoop2.7.tgz
+mv spark-2.4.4-bin-hadoop2.7/ spark
+
+## Setup Default Spark Config
+
+mv /home/fedora/spark/conf/spark-defaults.conf.template /home/fedora/spark/conf/spark-defaults.conf
+
+cat <<EOF >> "/home/fedora/spark/conf/spark-defaults.conf"
+spark.master                     yarn
+spark.driver.memory              40g
+spark.yarn.am.memory            40g
+spark.executor.memory          40g
+spark.eventLog.enabled  true
+spark.eventLog.dir hdfs://stv-dev-master:9000/spark-log
+EOF
+
+
+## Create the log directory in HDFS:
+hdfs dfs -mkdir /spark-log
+
+
+./bin/spark-submit --class org.apache.spark.examples.SparkPi     --master yarn-client     --num-executors 1     --driver-memory 512m     --executor-memory 512m     --executor-cores 1     examples/jars/spark-examples*.jar 10
+
+
+
+2019-11-20 19:04:39,482 INFO scheduler.DAGScheduler: Job 0 finished: reduce at SparkPi.scala:38, took 0.706995 s
+Pi is roughly 3.1443231443231445
+
+
+
+
+#-------------------------------------------------------------------------
+# Zeppelin
+#-------------------------------------------------------------------------
+
+
+
+## On Zeppelin Node: (ssh stv-dev-zeppelin)
+
+## Fetch Zeppelin Binaries
+sudo yum install -y wget
+sudo yum install -y nano
+sudo yum install -y java-1.8.0-openjdk
+
+wget https://www-eu.apache.org/dist/zeppelin/zeppelin-0.8.2/zeppelin-0.8.2-bin-all.tgz
+tar -xzvf zeppelin-0.8.2-bin-all.tgz 
+mv zeppelin-0.8.2-bin-all zeppelin
+rm zeppelin-0.8.2-bin-all.tgz 
+
+
+
+
+## Setup Zeppelin Configurations
+
+## Setup Users in shiro.ini
+cp /home/fedora/zeppelin/conf/shiro.ini.template /home/fedora/zeppelin/conf/shiro.ini
+
+
+
+
+## Setup Zeppelin node IP 
+
+cp /home/fedora/zeppelin/conf/zeppelin-site.xml.template /home/fedora/zeppelin/conf/zeppelin-site.xml
+nano /home/fedora/zeppelin/conf/zeppelin-site.xml
+
+..
+
+<property>
+  <name>zeppelin.server.addr</name>
+  <value>10.0.0.27</value>
+  <description>Server binding address</description>
+</property>
+
+
+..
+
+
+
+
+
+## Setup Zeppelin Environment Configuration
+
+cp zeppelin/conf/zeppelin-env.sh.template zeppelin/conf/zeppelin-env.sh
+
+cat <<EOF >> "/home/fedora/zeppelin/conf/zeppelin-env.sh"
+
+export SPARK_HOME=/home/fedora/spark
+export HADOOP_CONF_DIR=/home/fedora/zeppelin/hadoop-conf
+export MASTER=yarn-cluster
+
+EOF
+
+
+
+## Setup Hosts
+
+sudo su
+cat <<EOF >> "/etc/hosts"
+
+127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+
+	
+10.0.0.14       stv-dev-master.novalocal
+10.0.0.14       stv-dev-master
+10.0.0.16       stv-dev-worker-1
+10.0.0.4       stv-dev-worker-2
+10.0.0.6       stv-dev-worker-3
+10.0.0.33       stv-dev-worker-4
+10.0.0.28       stv-dev-worker-5
+10.0.0.29       stv-dev-worker-6
+10.0.0.27      stv-dev-zeppelin
+10.0.0.17      stv-dev-storage
+
+EOF
+  
+exit
+
+
+## Setup ssh config
+
+cat > "${HOME:?}/.ssh/config" << EOF
+
+    Host stv-dev-worker-1
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-worker-2 
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-worker-3
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-worker-4
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+
+    Host stv-dev-worker-5
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+
+    Host stv-dev-worker-6
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+
+    Host stv-dev-master.novalocal
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-master
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+    Host stv-dev-zeppelin
+        User fedora
+        IdentityFile ~/.ssh/stv-master
+        Protocol 2
+        ForwardAgent yes
+        PasswordAuthentication no
+
+EOF
+
+
+sudo chmod 600 ~/.ssh/config
+
+
+
+
+## Create Spark & Hadoop Configuration Directories
+
+mkdir /home/fedora/spark
+mkdir /home/fedora/zeppelin/hadoop-conf
+
+
+
+exit
+
+
+
+
+## From Master node:
+## Copy Hadoop & Spark Config files 
+
+ssh stv-dev-master
+    scp ~/hadoop/etc/hadoop/* stv-dev-zeppelin:/home/fedora/zeppelin/hadoop-conf;
+    scp -r ~/spark/* stv-dev-zeppelin:/home/fedora/spark;
+exit
+
+
+
+## Enable Python3 and matplotlib for python3 notebooks
+## Update python interpreter, set it to python3
+
+## Install matplotlib
+sudo python3 -m pip install -U pip
+sudo python3 -m pip install -U matplotlib
+sudo python3 -m pip install -U healpy
+
+## Make python point to python3
+sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
+
+
+
+## Start Server
+/home/fedora/zeppelin/bin/zeppelin-daemon.sh start
+
+
+
+## Tunnel connection to 8080 and go to
+## On Local Machine (Browser)
+## Go to: http://localhost:8080/#/
+
+
+
+## Update Spark Interpreter from admin GUI
+## Set master=yarn-client
+
+
+
+
+
+
+#-------------------------------------------------------------------------
+#  Gaiasource & Tgas as Parquet files
+#-------------------------------------------------------------------------
+
+## From Gaia-spark virtual image (GDAF), copy ascii files from /archive/gaia/gdr1 to /home/hadoop/gaia/ascii & /hadoop/gaia/parquet on master node
+## Or we can fetch the ascii files from the web
+
+
+## From  Master Node:
+## To convert, run:
+## Run from directory where asciiToParquetConverter.jar is
+
+spark-submit --num-executors 6 --driver-memory 4096m --executor-memory 1024m --executor-cores 2 asciiToParquetConverter.jar -input file:///home/hadoop/ascii/gaia/gdr1/gaia/data -output hdfs:///hadoop/parquet/gaia/gdr1/gaia/ -schema file:///home/hadoop/ascii/gaia/gdr1/gaia/GaiaSourceHeaderSchema
+  
+
+
+## Check parquet files on HDFS:
+  
+hdfs dfs -ls /hadoop/parquet/gaia/gdr1/gaia
+Found 49 items
+
+-rw-r--r--   3 fedora supergroup          0 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/_SUCCESS
+-rw-r--r--   3 fedora supergroup   11859792 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00000-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3948082 2019-12-19 11:17 /hadoop/parquet/gaia/gdr1/gaia/part-00001-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11864197 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00002-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3947689 2019-12-19 11:17 /hadoop/parquet/gaia/gdr1/gaia/part-00003-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11863033 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00004-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    4039055 2019-12-19 11:17 /hadoop/parquet/gaia/gdr1/gaia/part-00005-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11866374 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00006-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3862654 2019-12-19 11:17 /hadoop/parquet/gaia/gdr1/gaia/part-00007-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11893105 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00008-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3913698 2019-12-19 11:17 /hadoop/parquet/gaia/gdr1/gaia/part-00009-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11889796 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00010-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3925577 2019-12-19 11:17 /hadoop/parquet/gaia/gdr1/gaia/part-00011-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11866184 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00012-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3888745 2019-12-19 11:17 /hadoop/parquet/gaia/gdr1/gaia/part-00013-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11860497 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00014-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3933025 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00015-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11902547 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00016-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3937435 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00017-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11887517 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00018-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3858329 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00019-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11867507 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00020-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3934492 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00021-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11854523 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00022-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3924032 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00023-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11887462 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00024-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3913733 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00025-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11900013 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00026-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    4011439 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00027-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11869961 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00028-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3954332 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00029-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11866819 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00030-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3958179 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00031-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11894034 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00032-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3927282 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00033-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11867325 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00034-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3973411 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00035-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11857354 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00036-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3952436 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00037-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11896659 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00038-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3923433 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00039-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11884384 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00040-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3932511 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00041-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11862317 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00042-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3834954 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00043-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11878103 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00044-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3956676 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00045-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup   11859314 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00046-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+-rw-r--r--   3 fedora supergroup    3932777 2019-12-19 11:18 /hadoop/parquet/gaia/gdr1/gaia/part-00047-91f0ded1-2282-4290-a48b-8f1ebe49a6e1-c000.snappy.parquet
+
+
+#-------------------------------------------------------------------------
+#  Connecting to HDFS from Zeppelin to read Parquet
+#-------------------------------------------------------------------------
+
+
+%pyspark
+df = sqlContext.read.parquet("/hadoop/gaia/parquet/gdr1/tgas/*.parquet")
+df.show()
+
+....
+
+
+null|              null|               null|           null|                  80|                   0|                       78|                        0|                       2|                       0|               null|      0.7818795674480172|           3.139370448988829|                   false|                    1.2610668|            0.5425742|                 null|                      2|                  11|            false|                0.38731492|                 0.8369744|                 0.4949606|                 0.7654146|            -143.71667|             19.987251|            -36.288437|             24.805357|          79|1166.9671689329211|     2.933581781810067| 17.85712346903953|     NOT_AVAILABLE|165.70172164422004|-31.854854313991563|52.645388799891506|-0.11956453431793665|
++-------------------+-----------------+------------+---------+------------------+-------------------+------------------+-------------------+--------+--------------+----+----------+-----+-----------+-----------+----------------+------------+-------------+-----------------+-------------+--------------+------------------+-------------------+---------------+--------------------+--------------------+-------------------------+-------------------------+------------------------+------------------------+-------------------+------------------------+----------------------------+------------------------+-----------------------------+---------------------+---------------------+-----------------------+--------------------+-----------------+--------------------------+--------------------------+--------------------------+--------------------------+----------------------+----------------------+----------------------+----------------------+------------+------------------+----------------------+------------------+------------------+------------------+-------------------+------------------+--------------------+
+only showing top 20 rows
+

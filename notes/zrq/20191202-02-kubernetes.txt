@@ -1,0 +1,321 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (C) 2018 by Wizzard Solutions Ltd, ischnura@metagrid.co.uk
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+#
+# Example: Deploying Cassandra with Stateful Sets
+# https://kubernetes.io/docs/tutorials/stateful-application/cassandra/
+#
+
+# -----------------------------------------------------
+# Get cluster details from OpenStack.
+# https://github.com/cncf/k8s-conformance/tree/master/v1.11/openstack-magnum#create-kubernetes-cluster
+#[user@openstacker]
+
+    confdir=$(mktemp -d)
+
+    openstack \
+        --os-cloud gaia-dev \
+        coe cluster config \
+            --dir "${confdir}" \
+            "${clusteruuid}"
+
+    >   'SHELL'
+
+
+    cat "${confdir}/config"
+
+    >   apiVersion: v1
+    >   clusters:
+    >   - cluster:
+    >       certificate-authority-data: LS0tLS1C....FLS0tLS0=
+    >       server: https://128.232.227.137:6443
+    >     name: albert
+    >   contexts:
+    >   - context:
+    >       cluster: albert
+    >       user: admin
+    >     name: default
+    >   current-context: default
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >   - name: admin
+    >     user:
+    >       client-certificate-data: LS0tLS1C....FLS0tLS0=
+    >       client-key-data: LS0tLS1C....tLS0tLQo=
+
+
+# -----------------------------------------------------
+# Check our kubectl settings.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        config  \
+            get-contexts
+
+    >   CURRENT   NAME      CLUSTER   AUTHINFO   NAMESPACE
+    >   *         default   albert    admin
+
+
+# -----------------------------------------------------
+# Check we can connect to our cluster.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.137:6443
+    >   Heapster is running at https://128.232.227.137:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.137:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+    >
+    >   To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
+
+    # Still taking >90 sec to resolve ..
+
+    time \
+        kubectl \
+            --kubeconfig "${confdir}/config" \
+            cluster-info
+
+    >   real    0m0.410s
+    >   user    0m0.205s
+    >   sys     0m0.055s
+    >
+    >   real    0m0.593s
+    >   user    0m0.204s
+    >   sys     0m0.063s
+    >
+    >   real    1m31.622s
+    >   user    0m0.222s
+    >   sys 0m0.070s
+    >
+    >   real    1m30.558s
+    >   user    0m0.214s
+    >   sys 0m0.074s
+
+
+# -----------------------------------------------------
+# Download the Cassandra service config.
+# https://kubernetes.io/docs/tutorials/stateful-application/cassandra/#creating-a-cassandra-headless-service
+#[user@openstacker]
+
+    codedir=$(mktemp -d)
+    pushd "${codedir}"
+
+        wget 'https://k8s.io/examples/application/cassandra/cassandra-service.yaml'
+
+    popd
+
+    >   ....
+    >   2019-12-02 12:32:52 (2.52 MB/s) - 'cassandra-service.yaml' saved [165/165]
+
+
+    cat "${codedir}/cassandra-service.yaml"
+
+    >   apiVersion: v1
+    >   kind: Service
+    >   metadata:
+    >     labels:
+    >       app: cassandra
+    >     name: cassandra
+    >   spec:
+    >     clusterIP: None
+    >     ports:
+    >     - port: 9042
+    >     selector:
+    >       app: cassandra
+
+
+# -----------------------------------------------------
+# Create a Service to track the Cassandra nodes.
+# https://kubernetes.io/docs/tutorials/stateful-application/cassandra/#creating-a-cassandra-headless-service
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename "${codedir}/cassandra-service.yaml"
+
+
+    >   service/cassandra created
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get service \
+            cassandra
+
+    >   NAME        TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)    AGE
+    >   cassandra   ClusterIP   None         <none>        9042/TCP   41m
+
+
+# -----------------------------------------------------
+# Download the StatefulSet service config.
+# https://kubernetes.io/docs/tutorials/stateful-application/cassandra/#using-a-statefulset-to-create-a-cassandra-ring
+#[user@openstacker]
+
+    pushd "${codedir}"
+
+        wget 'https://k8s.io/examples/application/cassandra/cassandra-statefulset.yaml'
+
+    popd
+
+    >   ....
+    >   2019-12-02 13:20:09 (31.1 MB/s) - 'cassandra-statefulset.yaml' saved [2593/2593]
+
+
+    cat "${codedir}/cassandra-statefulset.yaml"
+
+    >   apiVersion: apps/v1
+    >   kind: StatefulSet
+    >   metadata:
+    >     name: cassandra
+    >     labels:
+    >       app: cassandra
+    >   spec:
+    >     serviceName: cassandra
+    >     replicas: 3
+    >     selector:
+    >       matchLabels:
+    >         app: cassandra
+    >     template:
+    >       metadata:
+    >         labels:
+    >           app: cassandra
+    >       spec:
+    >         terminationGracePeriodSeconds: 1800
+    >         containers:
+    >         - name: cassandra
+    >           image: gcr.io/google-samples/cassandra:v13
+    >           imagePullPolicy: Always
+    >           ports:
+    >           - containerPort: 7000
+    >             name: intra-node
+    >           - containerPort: 7001
+    >             name: tls-intra-node
+    >           - containerPort: 7199
+    >             name: jmx
+    >           - containerPort: 9042
+    >             name: cql
+    >           resources:
+    >             limits:
+    >               cpu: "500m"
+    >               memory: 1Gi
+    >             requests:
+    >               cpu: "500m"
+    >               memory: 1Gi
+    >           securityContext:
+    >             capabilities:
+    >               add:
+    >                 - IPC_LOCK
+    >           lifecycle:
+    >             preStop:
+    >               exec:
+    >                 command:
+    >                 - /bin/sh
+    >                 - -c
+    >                 - nodetool drain
+    >           env:
+    >             - name: MAX_HEAP_SIZE
+    >               value: 512M
+    >             - name: HEAP_NEWSIZE
+    >               value: 100M
+    >             - name: CASSANDRA_SEEDS
+    >               value: "cassandra-0.cassandra.default.svc.cluster.local"
+    >             - name: CASSANDRA_CLUSTER_NAME
+    >               value: "K8Demo"
+    >             - name: CASSANDRA_DC
+    >               value: "DC1-K8Demo"
+    >             - name: CASSANDRA_RACK
+    >               value: "Rack1-K8Demo"
+    >             - name: POD_IP
+    >               valueFrom:
+    >                 fieldRef:
+    >                   fieldPath: status.podIP
+    >           readinessProbe:
+    >             exec:
+    >               command:
+    >               - /bin/bash
+    >               - -c
+    >               - /ready-probe.sh
+    >             initialDelaySeconds: 15
+    >             timeoutSeconds: 5
+    >           # These volume mounts are persistent. They are like inline claims,
+    >           # but not exactly because the names need to match exactly one of
+    >           # the stateful pod volumes.
+    >           volumeMounts:
+    >           - name: cassandra-data
+    >             mountPath: /cassandra_data
+    >     # These are converted to volume claims by the controller
+    >     # and mounted at the paths mentioned above.
+    >     # do not use these in production until ssd GCEPersistentDisk or other ssd pd
+    >     volumeClaimTemplates:
+    >     - metadata:
+    >         name: cassandra-data
+    >       spec:
+    >         accessModes: [ "ReadWriteOnce" ]
+    >         storageClassName: fast
+    >         resources:
+    >           requests:
+    >             storage: 1Gi
+    >   ---
+    >   kind: StorageClass
+    >   apiVersion: storage.k8s.io/v1
+    >   metadata:
+    >     name: fast
+    >   provisioner: k8s.io/minikube-hostpath
+    >   parameters:
+    >     type: pd-ssd
+
+    #
+    # Comment in the example ...
+    # "This example uses the default provisioner for Minikube. Please update the following StatefulSet for the cloud you are working with."
+    #
+
+    #
+    # Need to find the equivalent provisioner for our Magnum created K8 ...
+    # Lots more to learn here ;-/
+    #
+
+
+Standalone Cinder Driver
+https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/using-cinder-standalone-provisioner.md
+"Standalone Cinder Driver is deprecated will be removed in future releases. Please use Cinder CSI Plugin"
+- Ok, moving on ..
+
+CSI Cinder driver
+https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/using-cinder-csi-plugin.md
+- this is the most likley ?
+
+CERN - CephFS for Kubernetes
+https://clouddocs.web.cern.ch/containers/tutorials/cephfs.html
+- this is direct interface to Ceph, which we don't have
+
+OpenStack - Manila
+https://wiki.openstack.org/wiki/Manila
+"... provides a canonical storage provisioning control plane in OpenStack for shared or distributed file systems ..."
+- we probably don't need shared storage (yet)
+
+
+

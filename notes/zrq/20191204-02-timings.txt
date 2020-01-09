@@ -1,0 +1,517 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2019, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    # Issues with the Edinburgh network.
+    # Trying an external network (DigitalOcean).
+
+# -----------------------------------------------------
+# Create a DigitalOcean VM (Docker droplet)
+
+    dropletip=104.248.169.195
+
+    ssh \
+        "root@${dropletip:?}"
+
+
+# -----------------------------------------------------
+# Check Docker status.
+#[root@droplet]
+
+    systemctl status docker.service
+
+    >   ● docker.service - Docker Application Container Engine
+    >      Loaded: loaded (/lib/systemd/system/docker.service; enabled; vendor preset: enabled)
+    >      Active: active (running) since Wed 2019-12-04 17:02:25 UTC; 14s ago
+    >        Docs: https://docs.docker.com
+    >    Main PID: 1035 (dockerd)
+    >       Tasks: 11
+    >      CGroup: /system.slice/docker.service
+    >              └─1035 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create our cloud YAML file.
+#[user@laptop]
+
+cat > "${HOME}/clouds.yaml" << EOF
+
+clouds:
+
+  gaia-dev:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-dev.CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-dev.CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-dev-super:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-dev-super.CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-dev-super.CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-prod:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-prod.CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-prod.CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-prod-super:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-prod-super.CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-prod-super.CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+EOF
+
+
+# -----------------------------------------------------
+# Transfer our cloud YAML file.
+#[user@laptop]
+
+    scp \
+        "${HOME}/clouds.yaml" \
+        "root@${dropletip:?}:clouds.yaml"
+
+    >   clouds.yaml                                   100% 1448    49.3KB/s   00:00
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a container to work with.
+#[root@droplet]
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --volume "${HOME}/clouds.yaml:/root/clouds.yaml" \
+        atolmis/openstack-client \
+        bash
+
+    >   Unable to find image 'atolmis/openstack-client:latest' locally
+    >   latest: Pulling from atolmis/openstack-client
+    >   d318c91bf2a8: Pull complete
+    >   ....
+    >   58c4eb1fb3ac: Pull complete
+    >   Digest: sha256:09ef00ed423b4a46a6f7e090f193bbbab640d12065999947de4a4f55f6385e28
+    >   Status: Downloaded newer image for atolmis/openstack-client:latest
+
+
+# -----------------------------------------------------
+# Set the project and cluster names.
+#[user@openstacker]
+
+    cloudname=gaia-dev
+    clustername=Augustus
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    time \
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list
+
+    >   real    0m3.569s
+    >   user    0m0.690s
+    >   sys     0m0.104s
+
+
+# -----------------------------------------------------
+# Get the name of our first keypair.
+#[user@openstacker]
+
+    time \
+        keyname=$(
+            openstack \
+            --os-cloud "${cloudname:?}" \
+                keypair list \
+                    --format json \
+            | jq -r '.[0] | .Name'
+            )
+
+    >   real    0m1.881s
+    >   user    0m0.728s
+    >   sys     0m0.136s
+
+    echo "Key name [${keyname}]"
+
+    >   Key name [zrq-gaia-keypair]
+
+# -----------------------------------------------------
+# Get the ID of the small flavor.
+#[user@openstacker]
+
+    time \
+        flavorid=$(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                flavor list \
+                    --format json \
+            | jq -r '.[] | select(.Name == "general.v1.small") | .ID'
+            )
+
+    >   real    0m1.845s
+    >   user    0m0.768s
+    >   sys     0m0.069s
+
+    echo "Flavor ID [${flavorid}]"
+
+    >   Flavor ID [20061eba-9e88-494c-95a3-41ed77721244]
+
+
+# -----------------------------------------------------
+# Get the uuid for the Octavia template.
+#[user@openstacker]
+
+    time \
+        templateuuid=$(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                coe cluster template list \
+                    --format json \
+            | jq -r '.[] | select(.name | test("octavia")) | .uuid'
+            )
+
+    >   real    0m3.261s
+    >   user    0m0.733s
+    >   sys     0m0.115s
+
+
+    echo "Template uuid [${templateuuid}]"
+
+    >   Template uuid [41437926-8461-4fdf-ac1b-ff97325a79f8]
+
+
+# -----------------------------------------------------
+# Create a new cluster, using unrestricted credentials.
+#[user@openstacker]
+
+    time \
+        openstack \
+            --os-cloud "${cloudname:?}-super" \
+            coe cluster create \
+                --keypair "${keyname:?}" \
+                --flavor  "${flavorid:?}" \
+                --node-count 4 \
+                --master-count 2 \
+                --master-flavor "${flavorid:?}" \
+                --cluster-template "${templateuuid:?}" \
+                "${clustername:?}"
+
+    >   Request to create cluster 7082a760-df35-401e-bcfc-09a52d3e0096 accepted
+
+    >   real    0m5.858s
+    >   user    0m0.717s
+    >   sys     0m0.091s
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    mkdir "${HOME}/bin"
+    cat > "${HOME}/bin/list.sh" << 'EOF'
+#!/bin/sh
+echo "---- ----"
+date
+time \
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+EOF
+
+    chmod u+x "${HOME}/bin/list.sh"
+
+    rm -f /tmp/list.log
+    while :
+    do
+        "${HOME}/bin/list.sh" | tee -a /tmp/list.log
+        sleep 5
+    done
+
+
+    >   Wed Dec  4 17:26:17 UTC 2019
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+    >   | uuid                                 | name     | keypair          | node_count | master_count | status             |
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+    >   | 7082a760-df35-401e-bcfc-09a52d3e0096 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_IN_PROGRESS |
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+
+    >   real    0m4.563s
+    >   user    0m0.828s
+    >   sys     0m0.111s
+
+    ....
+    ....
+
+    >   Wed Dec  4 17:30:09 UTC 2019
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+    >   | uuid                                 | name     | keypair          | node_count | master_count | status             |
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+    >   | 7082a760-df35-401e-bcfc-09a52d3e0096 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_IN_PROGRESS |
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+
+    >   real    0m4.170s
+    >   user    0m0.678s
+    >   sys     0m0.102s
+
+    ....
+    ....
+
+    >   Wed Dec  4 17:36:00 UTC 2019
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+    >   | uuid                                 | name     | keypair          | node_count | master_count | status             |
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+    >   | 7082a760-df35-401e-bcfc-09a52d3e0096 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_IN_PROGRESS |
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+
+    >   real    0m4.167s
+    >   user    0m0.706s
+    >   sys     0m0.074s
+
+    ....
+    ....
+
+    >   Wed Dec  4 17:36:09 UTC 2019
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >   | uuid                                 | name     | keypair          | node_count | master_count | status          |
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >   | 7082a760-df35-401e-bcfc-09a52d3e0096 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_COMPLETE |
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >
+
+    >   real    0m4.252s
+    >   user    0m0.772s
+    >   sys     0m0.094s
+
+
+# -----------------------------------------------------
+# Get the details of our OpenStack cluster.
+#[user@openstacker]
+
+    clusteruuid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[] | select(.name == "'${clustername:?}'") | .uuid'
+        )
+
+    echo "Cluster uuid [${clusteruuid}]"
+
+    >   Cluster uuid [7082a760-df35-401e-bcfc-09a52d3e0096]
+
+    time \
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster show \
+                "${clusteruuid}"
+
+    >   +---------------------+-------------------------------------------------------------------+
+    >   | Field               | Value                                                             |
+    >   +---------------------+-------------------------------------------------------------------+
+    >   | status              | CREATE_COMPLETE                                                   |
+    >   | cluster_template_id | 41437926-8461-4fdf-ac1b-ff97325a79f8                              |
+    >   | node_addresses      | ['10.0.0.13', '10.0.0.5', '10.0.0.7', '10.0.0.18']                |
+    >   | uuid                | 7082a760-df35-401e-bcfc-09a52d3e0096                              |
+    >   | stack_id            | cd98c3b6-65a0-4d6a-889f-7941d37d1576                              |
+    >   | status_reason       | None                                                              |
+    >   | created_at          | 2019-12-04T17:26:03+00:00                                         |
+    >   | updated_at          | 2019-12-04T17:36:28+00:00                                         |
+    >   | coe_version         | v1.14.6                                                           |
+    >   | labels              | { .... }                                                          |
+    >   | faults              |                                                                   |
+    >   | keypair             | zrq-gaia-keypair                                                  |
+    >   | api_address         | https://128.232.227.131:6443                                      |
+    >   | master_addresses    | ['10.0.0.10', '10.0.0.11']                                        |
+    >   | create_timeout      | 60                                                                |
+    >   | node_count          | 4                                                                 |
+    >   | discovery_url       | https://discovery.etcd.io/66b52c0125446d96939d5eb9f6cd5410        |
+    >   | master_count        | 2                                                                 |
+    >   | container_version   | 1.12.6                                                            |
+    >   | name                | Augustus                                                          |
+    >   | master_flavor_id    | 20061eba-9e88-494c-95a3-41ed77721244                              |
+    >   | flavor_id           | 20061eba-9e88-494c-95a3-41ed77721244                              |
+    >   +---------------------+-------------------------------------------------------------------+
+
+    >   real    0m4.289s
+    >   user    0m0.702s
+    >   sys     0m0.092s
+
+
+# -----------------------------------------------------
+# Get the Kubernetes cluster config from OpenStack.
+# https://github.com/cncf/k8s-conformance/tree/master/v1.11/openstack-magnum#create-kubernetes-cluster
+#[user@openstacker]
+
+    confdir=$(mktemp -d)
+
+    time \
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster config \
+                --dir "${confdir:?}" \
+                "${clusteruuid:?}"
+
+    >   'SHELL'
+
+    >   real    0m10.784s
+    >   user    0m0.908s
+    >   sys     0m0.117s
+
+
+    cat "${confdir}/config"
+
+    >   apiVersion: v1
+    >   clusters:
+    >   - cluster:
+    >       certificate-authority-data: ....
+    >       server: https://128.232.227.131:6443
+    >     name: Augustus
+    >   contexts:
+    >   - context:
+    >       cluster: Augustus
+    >       user: admin
+    >     name: default
+    >   current-context: default
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >   - name: admin
+    >     user:
+    >       client-certificate-data: ....
+    >       client-key-data: ....
+
+
+# -----------------------------------------------------
+# Check kubectl is configured correctly.
+#[user@openstacker]
+
+    time \
+        kubectl \
+            --kubeconfig "${confdir}/config" \
+            config  \
+                get-contexts
+
+    >   CURRENT   NAME      CLUSTER    AUTHINFO   NAMESPACE
+    >   *         default   Augustus   admin
+
+    >   real    0m0.104s
+    >   user    0m0.109s
+    >   sys     0m0.034s
+
+    >   real    0m0.129s
+    >   user    0m0.118s
+    >   sys     0m0.043s
+
+    >   real    0m0.099s
+    >   user    0m0.110s
+    >   sys     0m0.026s
+
+    >   real    0m0.100s
+    >   user    0m0.093s
+    >   sys     0m0.030s
+
+
+# -----------------------------------------------------
+# Get the cluster endpoints.
+#[user@openstacker]
+
+    time \
+        kubectl \
+            --kubeconfig "${confdir}/config" \
+            cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.131:6443
+    >   Heapster is running at https://128.232.227.131:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.131:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+    >
+    >   To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
+
+    >   real    0m0.486s
+    >   user    0m0.193s
+    >   sys     0m0.046s
+
+    >   real    0m0.225s
+    >   user    0m0.202s
+    >   sys     0m0.039s
+
+    >   real    0m0.179s
+    >   user    0m0.139s
+    >   sys     0m0.039s
+
+    >   real    0m0.166s
+    >   user    0m0.123s
+    >   sys     0m0.049s
+
+
+# -----------------------------------------------------
+# List the K8 nodes.
+#[user@openstacker]
+
+    time \
+        kubectl \
+            --kubeconfig "${confdir}/config" \
+            get nodes -A
+
+    >   NAME                             STATUS   ROLES    AGE     VERSION
+    >   augustus-meqj2tpaskd6-master-0   Ready    master   7m53s   v1.14.6
+    >   augustus-meqj2tpaskd6-master-1   Ready    master   7m56s   v1.14.6
+    >   augustus-meqj2tpaskd6-node-0     Ready    <none>   4m8s    v1.14.6
+    >   augustus-meqj2tpaskd6-node-1     Ready    <none>   4m3s    v1.14.6
+    >   augustus-meqj2tpaskd6-node-2     Ready    <none>   4m3s    v1.14.6
+    >   augustus-meqj2tpaskd6-node-3     Ready    <none>   4m11s   v1.14.6
+
+    >   real    0m0.180s
+    >   user    0m0.155s
+    >   sys     0m0.037s
+
+    >   real    0m0.170s
+    >   user    0m0.153s
+    >   sys     0m0.023s
+
+    >   real    0m0.182s
+    >   user    0m0.125s
+    >   sys     0m0.056s
+
+    >   real    0m0.181s
+    >   user    0m0.145s
+    >   sys     0m0.037s
+

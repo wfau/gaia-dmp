@@ -1,0 +1,1740 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    # 1)
+    # Learn about volumes and requests ...
+    # Create a set of test containers with an ephemeral Cinder volume allocated to each.
+    #
+
+    # 2)
+    # Learn about services and IP tables ..
+    # http://kubernetesbyexample.com/services/
+    #
+
+
+
+# -----------------------------------------------------
+# Set the project and cluster names.
+#[user@openstacker]
+
+    cloudname=gaia-prod
+    clustername=Augustus
+
+# -----------------------------------------------------
+# Get our OpenStack (Magnum) cluster ID.
+#[user@openstacker]
+
+    clusteruuid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[0] | .uuid'
+        )
+
+    echo "Cluster uuid [${clusteruuid}]"
+
+    >   Cluster uuid [ef984f7a-cb7c-4ad7-b297-cd09cd21fbe5]
+
+# -----------------------------------------------------
+# Get Kubernetes cluster info from the OpenStack (Magnum) cluster.
+# https://github.com/cncf/k8s-conformance/tree/master/v1.11/openstack-magnum#create-kubernetes-cluster
+#[user@openstacker]
+
+    confdir=$(mktemp -d)
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            --dir "${confdir}" \
+            "${clusteruuid}"
+
+    >   'SHELL'
+
+    cat "${confdir}/config"
+
+    >   apiVersion: v1
+    >   clusters:
+    >   - cluster:
+    >       certificate-authority-data: LS0tLS1C....UtLS0tLQ==
+    >       server: https://128.232.227.144:6443
+    >     name: Augustus
+    >   contexts:
+    >   - context:
+    >       cluster: Augustus
+    >       user: admin
+    >     name: default
+    >   current-context: default
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >   - name: admin
+    >     user:
+    >       client-certificate-data: LS0tLS1C....RS0tLS0t
+    >       client-key-data: LS0tLS1C....0tLS0tCg==
+
+
+# -----------------------------------------------------
+# Check the Kubernetes endpoints.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.144:6443
+    >   Heapster is running at https://128.232.227.144:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.144:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# List the Kubernetes contexts (clusters).
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        config  \
+            get-contexts
+
+    >   CURRENT   NAME      CLUSTER    AUTHINFO   NAMESPACE
+    >   *         default   Augustus   admin
+
+
+# -----------------------------------------------------
+# Create a simple Pod and run it.
+#[user@openstacker]
+
+    cat > /tmp/tiberius << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tiberius-pod
+  labels:
+    app: tiberius-app
+spec:
+  containers:
+  - name: tiberius-container
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /tmp/log; sleep 30; done']
+EOF
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/tiberius
+
+    >   pod/tiberius-pod created
+
+
+# -----------------------------------------------------
+# Check our Pod is running.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get pod \
+            'tiberius-pod'
+
+    >   NAME           READY   STATUS    RESTARTS   AGE
+    >   tiberius-pod   1/1     Running   0          57s
+
+
+# -----------------------------------------------------
+# Connect a shell to the Pod (not the container).
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        exec -it \
+            'tiberius-pod' \
+            --  \
+                /bin/bash
+
+# -----------------------------------------------------
+# Check the log file is updating.
+#[root@tiberius-pod]
+
+    cat /tmp/log
+
+    >   Fri Jan  3 15:41:06 UTC 2020
+
+
+    cat /etc/redhat-release
+
+    >   Fedora release 31 (Thirty One)
+
+
+# -----------------------------------------------------
+# Get details of our Pods.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe pod \
+            'tiberius-pod'
+
+    >   Name:         tiberius-pod
+    >   Namespace:    default
+    >   Node:         augustus-vwab7fqj6ofy-node-1/10.0.0.8
+    >   Start Time:   Fri, 03 Jan 2020 15:30:57 +0000
+    >   Labels:       app=tiberius-app
+    >   Annotations:  kubectl.kubernetes.io/last-applied-configuration:
+    >                   {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"labels":{"app":"tiberius-app"},"name":"tiberius-pod","namespace":"default"},...
+    >   Status:       Running
+    >   IP:           10.100.2.5
+    >   Containers:
+    >     tiberius-container:
+    >       Container ID:  docker://8ccbba02a6df5f3e60d64a41f46f42638bf2349be586376329a539a84d8c4448
+    >       Image:         fedora
+    >       Image ID:      docker-pullable://docker.io/fedora@sha256:d4f7df6b691d61af6cee7328f82f1d8afdef63bc38f58516858ae3045083924a
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Command:
+    >         sh
+    >         -c
+    >         while true ; do date > /tmp/log; sleep 30; done
+    >       State:          Running
+    >         Started:      Fri, 03 Jan 2020 15:31:06 +0000
+    >       Ready:          True
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-6mjqx (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             True
+    >     ContainersReady   True
+    >     PodScheduled      True
+    >   Volumes:
+    >     default-token-6mjqx:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-6mjqx
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type    Reason     Age   From                                   Message
+    >     ----    ------     ----  ----                                   -------
+    >     Normal  Scheduled  24m   default-scheduler                      Successfully assigned default/tiberius-pod to augustus-vwab7fqj6ofy-node-1
+    >     Normal  Pulling    24m   kubelet, augustus-vwab7fqj6ofy-node-1  Pulling image "fedora"
+    >     Normal  Pulled     24m   kubelet, augustus-vwab7fqj6ofy-node-1  Successfully pulled image "fedora"
+    >     Normal  Created    24m   kubelet, augustus-vwab7fqj6ofy-node-1  Created container tiberius-container
+    >     Normal  Started    24m   kubelet, augustus-vwab7fqj6ofy-node-1  Started container tiberius-container
+
+
+# -----------------------------------------------------
+# Update our pod to contain two containers.
+#[user@openstacker]
+
+    cat > /tmp/tiberius << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tiberius-pod
+  labels:
+    app: tiberius-app
+spec:
+  volumes:
+  - name: tiberius-volume
+    emptyDir: {}
+  containers:
+  - name: tiberius-one
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /var/local/tiberius/one ; sleep 30 ; done']
+    volumeMounts:
+    - name: tiberius-volume
+      mountPath: /var/local/tiberius
+  - name: tiberius-two
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /var/local/tiberius/two ; sleep 30 ; done']
+    volumeMounts:
+    - name: tiberius-volume
+      mountPath: /var/local/tiberius
+
+EOF
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/tiberius
+
+    >   The Pod "tiberius-pod" is invalid: spec.containers: Forbidden: pod updates may not add or remove containers
+
+    #
+    # Ok, so we have to delete this one and create a new one.
+    #
+
+# -----------------------------------------------------
+# Delete our Pod.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        delete pod \
+            'tiberius-pod'
+
+    >   pod "tiberius-pod" deleted
+
+
+# -----------------------------------------------------
+# Create our two container Pod.
+#[user@openstacker]
+
+    cat > /tmp/tiberius << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tiberius-pod
+  labels:
+    app: tiberius-app
+spec:
+  volumes:
+  - name: tiberius-volume
+    emptyDir: {}
+  containers:
+  - name: tiberius-one
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /var/local/tiberius/one ; sleep 30 ; done']
+    volumeMounts:
+    - name: tiberius-volume
+      mountPath: /var/local/tiberius
+  - name: tiberius-two
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /var/local/tiberius/two ; sleep 30 ; done']
+    volumeMounts:
+    - name: tiberius-volume
+      mountPath: /var/local/tiberius
+
+EOF
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/tiberius
+
+    >   pod/tiberius-pod created
+
+
+# -----------------------------------------------------
+# Get details of our Pods.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe pod \
+            'tiberius-pod'
+
+    >   Name:         tiberius-pod
+    >   Namespace:    default
+    >   Node:         augustus-vwab7fqj6ofy-node-3/10.0.0.14
+    >   Start Time:   Fri, 03 Jan 2020 16:02:30 +0000
+    >   Labels:       app=tiberius-app
+    >   Annotations:  kubectl.kubernetes.io/last-applied-configuration:
+    >                   {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"labels":{"app":"tiberius-app"},"name":"tiberius-pod","namespace":"default"},...
+    >   Status:       Running
+    >   IP:           10.100.4.5
+    >   Containers:
+    >     tiberius-one:
+    >       Container ID:  docker://797be58285a5592716a01868ade7fe498c9100a098acd773f0baa3e31b404238
+    >       Image:         fedora
+    >       Image ID:      docker-pullable://docker.io/fedora@sha256:d4f7df6b691d61af6cee7328f82f1d8afdef63bc38f58516858ae3045083924a
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Command:
+    >         sh
+    >         -c
+    >         while true ; do date > /var/local/tiberius/one ; sleep 30 ; done
+    >       State:          Running
+    >         Started:      Fri, 03 Jan 2020 16:02:40 +0000
+    >       Ready:          True
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /var/local/tiberius from tiberius-volume (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-6mjqx (ro)
+    >     tiberius-two:
+    >       Container ID:  docker://2f24776bc323d84fe2e56dfa8909c840fd1e8000247d5368d0b3bc205e80752c
+    >       Image:         fedora
+    >       Image ID:      docker-pullable://docker.io/fedora@sha256:d4f7df6b691d61af6cee7328f82f1d8afdef63bc38f58516858ae3045083924a
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Command:
+    >         sh
+    >         -c
+    >         while true ; do date > /var/local/tiberius/two ; sleep 30 ; done
+    >       State:          Running
+    >         Started:      Fri, 03 Jan 2020 16:02:43 +0000
+    >       Ready:          True
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /var/local/tiberius from tiberius-volume (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-6mjqx (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             True
+    >     ContainersReady   True
+    >     PodScheduled      True
+    >   Volumes:
+    >     tiberius-volume:
+    >       Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    >       Medium:
+    >       SizeLimit:  <unset>
+    >     default-token-6mjqx:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-6mjqx
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type    Reason     Age   From                                   Message
+    >     ----    ------     ----  ----                                   -------
+    >     Normal  Scheduled  31s   default-scheduler                      Successfully assigned default/tiberius-pod to augustus-vwab7fqj6ofy-node-3
+    >     Normal  Pulling    29s   kubelet, augustus-vwab7fqj6ofy-node-3  Pulling image "fedora"
+    >     Normal  Pulled     22s   kubelet, augustus-vwab7fqj6ofy-node-3  Successfully pulled image "fedora"
+    >     Normal  Created    21s   kubelet, augustus-vwab7fqj6ofy-node-3  Created container tiberius-one
+    >     Normal  Started    21s   kubelet, augustus-vwab7fqj6ofy-node-3  Started container tiberius-one
+    >     Normal  Pulling    21s   kubelet, augustus-vwab7fqj6ofy-node-3  Pulling image "fedora"
+    >     Normal  Pulled     18s   kubelet, augustus-vwab7fqj6ofy-node-3  Successfully pulled image "fedora"
+    >     Normal  Created    18s   kubelet, augustus-vwab7fqj6ofy-node-3  Created container tiberius-two
+    >     Normal  Started    18s   kubelet, augustus-vwab7fqj6ofy-node-3  Started container tiberius-two
+
+
+# -----------------------------------------------------
+# Connect a shell to the Pod (not the container).
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        exec -it \
+            'tiberius-pod' \
+            --  \
+                /bin/bash
+
+    >   Defaulting container name to tiberius-one.
+    >   Use 'kubectl describe pod/tiberius-pod -n default' to see all of the containers in this pod.
+
+# -----------------------------------------------------
+# Check the shared directory
+#[root@tiberius-pod]
+
+    ls -al /var/local/tiberius/
+
+    >   total 8
+    >   drwxrwxrwx. 2 root root 28 Jan  3 16:02 .
+    >   drwxr-xr-x. 1 root root 22 Jan  3 16:02 ..
+    >   -rw-r--r--. 1 root root 29 Jan  3 16:05 one
+    >   -rw-r--r--. 1 root root 29 Jan  3 16:05 two
+
+
+    cat /var/local/tiberius/one
+
+    >   Fri Jan  3 16:05:10 UTC 2020
+
+
+    cat /var/local/tiberius/two
+
+    >   Fri Jan  3 16:05:13 UTC 2020
+
+
+# -----------------------------------------------------
+# Get the pod details in JSON.
+#[root@tiberius-pod]
+
+    kubectl \
+        --output json \
+        --kubeconfig "${confdir}/config" \
+        get pod \
+            'tiberius-pod'
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Pod",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"annotations\":{},\"labels\":{\"app\":\"tiberius-app\"},\"name\":\"tiberius-pod\",\"namespace\":\"default\"},\"spec\":{\"containers\":[{\"command\":[\"sh\",\"-c\",\"while true ; do date \\u003e /var/local/tiberius/one ; sleep 30 ; done\"],\"image\":\"fedora\",\"name\":\"tiberius-one\",\"volumeMounts\":[{\"mountPath\":\"/var/local/tiberius\",\"name\":\"tiberius-volume\"}]},{\"command\":[\"sh\",\"-c\",\"while true ; do date \\u003e /var/local/tiberius/two ; sleep 30 ; done\"],\"image\":\"fedora\",\"name\":\"tiberius-two\",\"volumeMounts\":[{\"mountPath\":\"/var/local/tiberius\",\"name\":\"tiberius-volume\"}]}],\"volumes\":[{\"emptyDir\":{},\"name\":\"tiberius-volume\"}]}}\n"
+    >           },
+    >           "creationTimestamp": "2020-01-03T16:02:30Z",
+    >           "labels": {
+    >               "app": "tiberius-app"
+    >           },
+    >           "name": "tiberius-pod",
+    >           "namespace": "default",
+    >           "resourceVersion": "866872",
+    >           "selfLink": "/api/v1/namespaces/default/pods/tiberius-pod",
+    >           "uid": "7253858c-2e42-11ea-bf2c-fa163e5292d4"
+    >       },
+    >       "spec": {
+    >           "containers": [
+    >               {
+    >                   "command": [
+    >                       "sh",
+    >                       "-c",
+    >                       "while true ; do date \u003e /var/local/tiberius/one ; sleep 30 ; done"
+    >                   ],
+    >                   "image": "fedora",
+    >                   "imagePullPolicy": "Always",
+    >                   "name": "tiberius-one",
+    >                   "resources": {},
+    >                   "terminationMessagePath": "/dev/termination-log",
+    >                   "terminationMessagePolicy": "File",
+    >                   "volumeMounts": [
+    >                       {
+    >                           "mountPath": "/var/local/tiberius",
+    >                           "name": "tiberius-volume"
+    >                       },
+    >                       {
+    >                           "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+    >                           "name": "default-token-6mjqx",
+    >                           "readOnly": true
+    >                       }
+    >                   ]
+    >               },
+    >               {
+    >                   "command": [
+    >                       "sh",
+    >                       "-c",
+    >                       "while true ; do date \u003e /var/local/tiberius/two ; sleep 30 ; done"
+    >                   ],
+    >                   "image": "fedora",
+    >                   "imagePullPolicy": "Always",
+    >                   "name": "tiberius-two",
+    >                   "resources": {},
+    >                   "terminationMessagePath": "/dev/termination-log",
+    >                   "terminationMessagePolicy": "File",
+    >                   "volumeMounts": [
+    >                       {
+    >                           "mountPath": "/var/local/tiberius",
+    >                           "name": "tiberius-volume"
+    >                       },
+    >                       {
+    >                           "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+    >                           "name": "default-token-6mjqx",
+    >                           "readOnly": true
+    >                       }
+    >                   ]
+    >               }
+    >           ],
+    >           "dnsPolicy": "ClusterFirst",
+    >           "enableServiceLinks": true,
+    >           "nodeName": "augustus-vwab7fqj6ofy-node-3",
+    >           "restartPolicy": "Always",
+    >           "schedulerName": "default-scheduler",
+    >           "securityContext": {},
+    >           "serviceAccount": "default",
+    >           "serviceAccountName": "default",
+    >           "terminationGracePeriodSeconds": 30,
+    >           "tolerations": [
+    >               {
+    >                   "effect": "NoExecute",
+    >                   "key": "node.kubernetes.io/not-ready",
+    >                   "operator": "Exists",
+    >                   "tolerationSeconds": 300
+    >               },
+    >               {
+    >                   "effect": "NoExecute",
+    >                   "key": "node.kubernetes.io/unreachable",
+    >                   "operator": "Exists",
+    >                   "tolerationSeconds": 300
+    >               }
+    >           ],
+    >           "volumes": [
+    >               {
+    >                   "emptyDir": {},
+    >                   "name": "tiberius-volume"
+    >               },
+    >               {
+    >                   "name": "default-token-6mjqx",
+    >                   "secret": {
+    >                       "defaultMode": 420,
+    >                       "secretName": "default-token-6mjqx"
+    >                   }
+    >               }
+    >           ]
+    >       },
+    >       "status": {
+    >           "conditions": [
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-01-03T16:02:30Z",
+    >                   "status": "True",
+    >                   "type": "Initialized"
+    >               },
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-01-03T16:02:43Z",
+    >                   "status": "True",
+    >                   "type": "Ready"
+    >               },
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-01-03T16:02:43Z",
+    >                   "status": "True",
+    >                   "type": "ContainersReady"
+    >               },
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-01-03T16:02:30Z",
+    >                   "status": "True",
+    >                   "type": "PodScheduled"
+    >               }
+    >           ],
+    >           "containerStatuses": [
+    >               {
+    >                   "containerID": "docker://797be58285a5592716a01868ade7fe498c9100a098acd773f0baa3e31b404238",
+    >                   "image": "docker.io/fedora:latest",
+    >                   "imageID": "docker-pullable://docker.io/fedora@sha256:d4f7df6b691d61af6cee7328f82f1d8afdef63bc38f58516858ae3045083924a",
+    >                   "lastState": {},
+    >                   "name": "tiberius-one",
+    >                   "ready": true,
+    >                   "restartCount": 0,
+    >                   "state": {
+    >                       "running": {
+    >                           "startedAt": "2020-01-03T16:02:40Z"
+    >                       }
+    >                   }
+    >               },
+    >               {
+    >                   "containerID": "docker://2f24776bc323d84fe2e56dfa8909c840fd1e8000247d5368d0b3bc205e80752c",
+    >                   "image": "docker.io/fedora:latest",
+    >                   "imageID": "docker-pullable://docker.io/fedora@sha256:d4f7df6b691d61af6cee7328f82f1d8afdef63bc38f58516858ae3045083924a",
+    >                   "lastState": {},
+    >                   "name": "tiberius-two",
+    >                   "ready": true,
+    >                   "restartCount": 0,
+    >                   "state": {
+    >                       "running": {
+    >                           "startedAt": "2020-01-03T16:02:43Z"
+    >                       }
+    >                   }
+    >               }
+    >           ],
+    >           "hostIP": "10.0.0.14",
+    >           "phase": "Running",
+    >           "podIP": "10.100.4.5",
+    >           "qosClass": "BestEffort",
+    >           "startTime": "2020-01-03T16:02:30Z"
+    >       }
+    >   }
+
+
+# -----------------------------------------------------
+# Get details of our Pod volume.
+#[root@tiberius-pod]
+
+    kubectl \
+        --output json \
+        --kubeconfig "${confdir}/config" \
+        get pod \
+            'tiberius-pod' \
+    | jq '.spec.volumes[0]'
+
+
+    >   {
+    >     "emptyDir": {},
+    >     "name": "tiberius-volume"
+    >   }
+
+
+# -----------------------------------------------------
+# Get details of our Pod volume.
+# (describe doesn't support JSON output)
+#[root@tiberius-pod]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe pod \
+            'tiberius-pod'
+
+    >   ....
+    >   Volumes:
+    >     tiberius-volume:
+    >       Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    >       Medium:
+    >       SizeLimit:  <unset>
+    >   ....
+
+    #
+    # Where is the volume created ?
+    # Is there a size limit ?
+
+
+# -----------------------------------------------------
+# Connect a shell to container two.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        exec -it \
+            --container 'tiberius-two' \
+            'tiberius-pod' \
+            --  \
+                /bin/bash
+
+    >   [root@tiberius-pod /]#
+
+# -----------------------------------------------------
+# Create a 10M byte file of random stuff.
+#[root@tiberius-pod]
+
+    dd \
+        if=/dev/urandom \
+        bs=1M \
+        count=10 \
+        of=/var/local/tiberius/random-000
+
+    >   10+0 records in
+    >   10+0 records out
+    >   10485760 bytes (10 MB, 10 MiB) copied, 0.0546638 s, 192 MB/s
+
+
+    ls -alh /var/local/tiberius/random-*
+
+    >   -rw-r--r--. 1 root root 10M Jan  3 17:52 /var/local/tiberius/random-000
+
+
+# -----------------------------------------------------
+# Create a 10G byte file of random stuff.
+#[root@tiberius-pod]
+
+    dd \
+        if=/dev/urandom \
+        bs=1G \
+        count=10 \
+        of=/var/local/tiberius/random-001
+
+    >   dd: warning: partial read (33554431 bytes); suggest iflag=fullblock
+    >   0+10 records in
+    >   0+10 records out
+    >   335544310 bytes (336 MB, 320 MiB) copied, 1.83341 s, 183 MB/s
+
+    ls -alh /var/local/tiberius/random-*
+
+    >   -rw-r--r--. 1 root root  10M Jan  3 17:52 /var/local/tiberius/random-000
+    >   -rw-r--r--. 1 root root 320M Jan  3 17:54 /var/local/tiberius/random-001
+
+    #
+    # So there is a limit ... around 330M bytes.
+    # Can we find that 330M anywhere on the OpenStack virtual machines ?
+    #
+
+    #
+    # The entire OpenSTack cluster is built from general.v1.small machines.
+    # Rach general.v1.small machines has a 20GB local disc.
+    #
+    # No volumes visible in the Horizon interface.
+    #
+
+# -----------------------------------------------------
+# Check the available disc space.
+#[root@tiberius-pod]
+
+    df -h /
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   overlay          19G  4.4G   15G  23% /
+
+
+    du -h /
+
+    >   ....
+    >   12M     /var/lib
+    >   331M    /var/local/tiberius
+    >   331M    /var/local
+    >   1.2M    /var/log/anaconda
+    >   1.2M    /var/log
+    >   ....
+    >   343M    /var
+    >   533M    /
+
+
+# -----------------------------------------------------
+# Create a 1G byte file of random stuff.
+#[root@tiberius-pod]
+
+    dd \
+        if=/dev/urandom \
+        bs=1M \
+        count=1M \
+        of=/var/local/tiberius/random-001
+
+        # Exits from the Pod
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Connect a shell to container two.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        exec -it \
+            --container 'tiberius-two' \
+            'tiberius-pod' \
+            --  \
+                /bin/bash
+
+    >   error: cannot exec into a container in a completed pod; current phase is Failed
+
+
+# -----------------------------------------------------
+# Get details of our Pod.
+#[root@tiberius-pod]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe pod \
+            'tiberius-pod'
+
+    >   Name:         tiberius-pod
+    >   Namespace:    default
+    >   Node:         augustus-vwab7fqj6ofy-node-3/
+    >   Start Time:   Fri, 03 Jan 2020 16:02:30 +0000
+    >   Labels:       app=tiberius-app
+    >   Annotations:  kubectl.kubernetes.io/last-applied-configuration:
+    >                   {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"labels":{"app":"tiberius-app"},"name":"tiberius-pod","namespace":"default"},...
+    >   Status:       Failed
+    >   Reason:       Evicted
+    >   Message:      The node was low on resource: ephemeral-storage. Container tiberius-two was using 20Ki, which exceeds its request of 0. Container tiberius-one was using 20Ki, which exceeds its request of 0.
+    >   ....
+
+    #
+    # Ok, so we get bounced out if we try to use too much space.
+    #
+
+
+# -----------------------------------------------------
+# Delete our Pod.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        delete pod \
+            'tiberius-pod'
+
+    >   pod "tiberius-pod" deleted
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get pod \
+            'tiberius-pod'
+
+    >   Error from server (NotFound): pods "tiberius-pod" not found
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get pods
+
+    >   No resources found.
+
+
+
+# -----------------------------------------------------
+# Create a two container Pod, with a volume claim.
+#[user@openstacker]
+
+
+    cat > /tmp/tiberius-claim << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tiberius-claim
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50G
+EOF
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/tiberius-claim
+
+    >   persistentvolumeclaim/tiberius-claim created
+
+
+    cat > /tmp/tiberius-pod << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tiberius-pod
+  labels:
+    app: tiberius-app
+spec:
+  volumes:
+  - name: tiberius-volume
+    persistentVolumeClaim:
+      claimName: tiberius-claim
+  containers:
+  - name: tiberius-one
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /var/local/tiberius/one ; sleep 30 ; done']
+    volumeMounts:
+    - name: tiberius-volume
+      mountPath: /var/local/tiberius
+  - name: tiberius-two
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /var/local/tiberius/two ; sleep 30 ; done']
+    volumeMounts:
+    - name: tiberius-volume
+      mountPath: /var/local/tiberius
+EOF
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/tiberius-pod
+
+    >   pod/tiberius-pod created
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get pods
+
+    >   NAME           READY   STATUS    RESTARTS   AGE
+    >   tiberius-pod   0/2     Pending   0          23s
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe pod \
+            'tiberius-pod'
+
+    >   Name:         tiberius-pod
+    >   Namespace:    default
+    >   Node:         <none>
+    >   Labels:       app=tiberius-app
+    >   Annotations:  kubectl.kubernetes.io/last-applied-configuration:
+    >                   {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"labels":{"app":"tiberius-app"},"name":"tiberius-pod","namespace":"default"},...
+    >   Status:       Pending
+    >   IP:
+    >   Containers:
+    >     tiberius-one:
+    >       Image:      fedora
+    >       Port:       <none>
+    >       Host Port:  <none>
+    >       Command:
+    >         sh
+    >         -c
+    >         while true ; do date > /var/local/tiberius/one ; sleep 30 ; done
+    >       Environment:  <none>
+    >       Mounts:
+    >         /var/local/tiberius from tiberius-volume (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-6mjqx (ro)
+    >     tiberius-two:
+    >       Image:      fedora
+    >       Port:       <none>
+    >       Host Port:  <none>
+    >       Command:
+    >         sh
+    >         -c
+    >         while true ; do date > /var/local/tiberius/two ; sleep 30 ; done
+    >       Environment:  <none>
+    >       Mounts:
+    >         /var/local/tiberius from tiberius-volume (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-6mjqx (ro)
+    >   Conditions:
+    >     Type           Status
+    >     PodScheduled   False
+    >   Volumes:
+    >     tiberius-volume:
+    >       Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    >       ClaimName:  tiberius-claim
+    >       ReadOnly:   false
+    >     default-token-6mjqx:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-6mjqx
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type     Reason             Age                  From                Message
+    >     ----     ------             ----                 ----                -------
+    >     Warning  FailedScheduling   44s (x3 over 2m11s)  default-scheduler   pod has unbound immediate PersistentVolumeClaims (repeated 6 times)
+    >     Normal   NotTriggerScaleUp  8s (x13 over 2m8s)   cluster-autoscaler  pod didn't trigger scale-up (it wouldn't fit if a new node is added): 1 max limit reached
+
+    #
+    # Looks like pod is failing because we are trying to claim more space than we have.
+    # .. because we haven't added the Cinder volume provisioner ?
+    #
+
+# -----------------------------------------------------
+# Delete our Pod and claim.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        delete pod \
+            'tiberius-pod'
+
+    >   pod "tiberius-pod" deleted
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        delete pvc \
+            'tiberius-claim'
+
+    >   persistentvolumeclaim "tiberius-claim" deleted
+
+
+# -----------------------------------------------------
+# Explore the Cinder CSI driver.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get csidrivers.storage.k8s.io
+
+    >   No resources found.
+
+
+    #
+    # Either there is a simple switch I need to find, or this is just not configured on thes OpenStack system.
+    # At the moment I can't tell.
+
+
+    Cinder CSI plugin
+    https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/using-cinder-csi-plugin.md
+
+    OpenStack and Kubernetes integration options
+    https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/openstack-kubernetes-integration-options.md
+
+# -----------------------------------------------------
+# Based on this example ...
+# https://github.com/kubernetes/cloud-provider-openstack/blob/master/examples/cinder-csi-plugin/nginx.yaml
+#[user@openstacker]
+
+
+    cat > /tmp/cinder-storage << EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: csi-sc-cinderplugin
+provisioner: cinder.csi.openstack.org
+EOF
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/cinder-storage
+
+    >   storageclass.storage.k8s.io/csi-sc-cinderplugin created
+
+
+    cat > /tmp/tiberius-claim << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tiberius-claim
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50G
+  storageClassName: csi-sc-cinderplugin
+EOF
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/tiberius-claim
+
+    >   persistentvolumeclaim/tiberius-claim created
+
+
+    cat > /tmp/tiberius-pod << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tiberius-pod
+  labels:
+    app: tiberius-app
+spec:
+  volumes:
+  - name: tiberius-volume
+    persistentVolumeClaim:
+      claimName: tiberius-claim
+  containers:
+  - name: tiberius-one
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /var/local/tiberius/one ; sleep 30 ; done']
+    volumeMounts:
+    - name: tiberius-volume
+      mountPath: /var/local/tiberius
+  - name: tiberius-two
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /var/local/tiberius/two ; sleep 30 ; done']
+    volumeMounts:
+    - name: tiberius-volume
+      mountPath: /var/local/tiberius
+EOF
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/tiberius-pod
+
+    >   pod/tiberius-pod created
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get pods
+
+    >   NAME           READY   STATUS    RESTARTS   AGE
+    >   tiberius-pod   0/2     Pending   0          8s
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe pod \
+            'tiberius-pod'
+
+    >   ....
+    >   Events:
+    >     Type     Reason             Age                From                Message
+    >     ----     ------             ----               ----                -------
+    >     Warning  FailedScheduling   21s (x2 over 21s)  default-scheduler   pod has unbound immediate PersistentVolumeClaims (repeated 6 times)
+    >     Normal   NotTriggerScaleUp  6s (x2 over 16s)   cluster-autoscaler  pod didn't trigger scale-up (it wouldn't fit if a new node is added): 1 max limit reached
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe pvc \
+            'tiberius-claim'
+
+    >   Name:          tiberius-claim
+    >   Namespace:     default
+    >   StorageClass:  csi-sc-cinderplugin
+    >   Status:        Pending
+    >   Volume:
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"tiberius-claim","namespace":"default"},"spec":{"acc...
+    >                  volume.beta.kubernetes.io/storage-provisioner: cinder.csi.openstack.org
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:
+    >   Access Modes:
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    tiberius-pod
+    >   Events:
+    >     Type    Reason                Age               From                         Message
+    >     ----    ------                ----              ----                         -------
+    >     Normal  ExternalProvisioning  6s (x9 over 87s)  persistentvolume-controller  waiting for a volume to be created, either by external provisioner "cinder.csi.openstack.org" or manually created by system administrator
+
+    #
+    # Ok, so how do we connect up the "cinder.csi.openstack.org" provisioner?
+    #
+
+
+# -----------------------------------------------------
+# Based on this ...
+# https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/using-cinder-csi-plugin.md
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get \
+            csidrivers.storage.k8s.io
+
+    >   No resources found.
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe \
+            csidrivers.storage.k8s.io
+
+    >   -
+
+    #
+    # Which suggests we need to deploy the Cinder plugin.
+    #
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        cluster-info
+
+
+    #
+    # Configuration of Cambridge UIS Evolution of Darwin (EoD) OpenStack infrastructure
+    # https://github.com/RSE-Cambridge/cumulus-config/
+
+    #
+    # Config for the projects, users and quotas.
+    # https://github.com/RSE-Cambridge/cumulus-config/blob/master/etc/cumulus-config/cumulus-config.yml
+
+
+    #
+    # Magnum user guide
+    # https://docs.openstack.org/magnum/latest/user/index.html#storage
+
+        "Specify ‘cinder’ as the volume-driver for Kubernetes"
+        This is just for ephemeral storage, the main container '/' filesystem
+
+        For manual volume allocations:
+
+            User explicitly creates a Cinder volume
+            https://docs.openstack.org/python-cinderclient/latest/cli/details.html#cinder-create
+
+                cinder create --display-name=test-repo 1
+
+            Explicitly adds the Cinder volume ID to the Pod definition:
+
+                vi example.yaml
+                    ....
+                    volumes:
+                      - name: html-volume
+                        cinder:
+                          # Enter the volume ID below
+                          volumeID: $ID
+                          fsType: ext4
+                          volumeID: $ID
+
+            Creates the Pod
+
+                kubectl create -f example.yaml
+
+        Size of the volume is set manually when it is created.
+        K8s mounts the existing Cinder volume as a Docker volume in the container.
+
+# -----------------------------------------------------
+# Check the details of our OpenStack cluster.
+#[user@openstacker]
+
+    ....
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        stack show \
+            "${stackid}" \
+            --format json \
+    | jq '.'
+
+    >       ....
+    >       ....
+    >       "volume_driver": "",
+    >       "docker_volume_type": "rbd",
+    >       "docker_storage_driver": "overlay2",
+    >       "docker_volume_size": "0",
+    >       ....
+    >       ....
+
+
+# -----------------------------------------------------
+# Manually create a Cinder volume.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        volume create \
+            --size 10 \
+            'volume-one'
+
+    >   +---------------------+--------------------------------------+
+    >   | Field               | Value                                |
+    >   +---------------------+--------------------------------------+
+    >   | attachments         | []                                   |
+    >   | availability_zone   | nova                                 |
+    >   | bootable            | false                                |
+    >   | consistencygroup_id | None                                 |
+    >   | created_at          | 2020-01-04T03:21:18.000000           |
+    >   | description         | None                                 |
+    >   | encrypted           | False                                |
+    >   | id                  | 47f459f0-1b9a-42c3-8ee0-bcbc5d3c2b3b |
+    >   | multiattach         | False                                |
+    >   | name                | volume-one                           |
+    >   | properties          |                                      |
+    >   | replication_status  | None                                 |
+    >   | size                | 10                                   |
+    >   | snapshot_id         | None                                 |
+    >   | source_volid        | None                                 |
+    >   | status              | creating                             |
+    >   | type                | None                                 |
+    >   | updated_at          | None                                 |
+    >   | user_id             | 98169f87de174ad4ac98c32e59646488     |
+    >   +---------------------+--------------------------------------+
+
+
+    volumeid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            volume list \
+                --format json \
+        | jq -r '.[0].ID'
+        )
+
+    echo "Volume [${volumeid:?}]"
+
+    >   Volume [47f459f0-1b9a-42c3-8ee0-bcbc5d3c2b3b]
+
+
+# -----------------------------------------------------
+# Create a Pod that refers to our Cinder volume.
+#[user@openstacker]
+
+    cat > /tmp/cinder-pod << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cinder-pod
+spec:
+
+  volumes:
+  - name: cinder-volume
+    cinder:
+      volumeID: ${volumeid:?}
+
+  containers:
+  - name: tiberius-one
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /var/local/tiberius/one ; sleep 30 ; done']
+    volumeMounts:
+    - name: cinder-volume
+      mountPath: /var/local/cinder
+  - name: tiberius-two
+    image: fedora
+    command: ['sh', '-c', 'while true ; do date > /var/local/tiberius/two ; sleep 30 ; done']
+    volumeMounts:
+    - name: cinder-volume
+      mountPath: /var/local/cinder
+EOF
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/cinder-pod
+
+    >   pod/cinder-pod created
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get pods
+
+    >   NAME         READY   STATUS    RESTARTS   AGE
+    >   cinder-pod   2/2     Running   0          49s
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe pod \
+            'cinder-pod'
+
+    >   Events:
+    >     Type    Reason                  Age   From                                   Message
+    >     ----    ------                  ----  ----                                   -------
+    >     Normal  Scheduled               58s   default-scheduler                      Successfully assigned default/cinder-pod to augustus-vwab7fqj6ofy-node-5
+    >     Normal  SuccessfulAttachVolume  47s   attachdetach-controller                AttachVolume.Attach succeeded for volume "cinder-volume"
+    >     Normal  Pulling                 37s   kubelet, augustus-vwab7fqj6ofy-node-5  Pulling image "fedora"
+    >     Normal  Pulled                  30s   kubelet, augustus-vwab7fqj6ofy-node-5  Successfully pulled image "fedora"
+    >     Normal  Created                 29s   kubelet, augustus-vwab7fqj6ofy-node-5  Created container tiberius-one
+    >     Normal  Started                 29s   kubelet, augustus-vwab7fqj6ofy-node-5  Started container tiberius-one
+    >     Normal  Pulling                 29s   kubelet, augustus-vwab7fqj6ofy-node-5  Pulling image "fedora"
+    >     Normal  Pulled                  26s   kubelet, augustus-vwab7fqj6ofy-node-5  Successfully pulled image "fedora"
+    >     Normal  Created                 26s   kubelet, augustus-vwab7fqj6ofy-node-5  Created container tiberius-two
+    >     Normal  Started                 26s   kubelet, augustus-vwab7fqj6ofy-node-5  Started container tiberius-two
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Login and explore the filesystem.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        exec -it \
+            --container 'tiberius-two' \
+            'cinder-pod' \
+            --  \
+                /bin/bash
+
+
+# -----------------------------------------------------
+# Explore the filesystem.
+#[root@cinder-pod]
+
+    df -h /
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   overlay          19G  4.1G   15G  22% /
+
+
+    df -h /var/local/cinder
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb        9.8G   37M  9.8G   1% /var/local/cinder
+
+
+# -----------------------------------------------------
+# Create a 1G byte file of random stuff.
+#[root@tiberius-pod]
+
+    dd \
+        if=/dev/urandom \
+        bs=1M \
+        count=1K \
+        of=/var/local/cinder/random-001
+
+    >   1024+0 records in
+    >   1024+0 records out
+    >   1073741824 bytes (1.1 GB, 1.0 GiB) copied, 5.9484 s, 181 MB/s--END--
+
+
+    df -h /var/local/cinder
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb        9.8G  1.1G  8.8G  11% /var/local/cinder
+
+
+    du -h /var/local/cinder
+
+    >   16K	/var/local/cinder/lost+found
+    >   1.1G	/var/local/cinder
+
+
+    ls -alh /var/local/cinder
+
+    >   total 1.1G
+    >   drwxr-xr-x. 3 root root 4.0K Jan  4 03:45 .
+    >   drwxr-xr-x. 1 root root   20 Jan  4 03:39 ..
+    >   drwx------. 2 root root  16K Jan  4 03:34 lost+found
+    >   -rw-r--r--. 1 root root 1.0G Jan  4 03:45 random-001
+
+
+# -----------------------------------------------------
+# Create a 8G byte file of random stuff.
+#[root@tiberius-pod]
+
+    dd \
+        if=/dev/urandom \
+        bs=1M \
+        count=8K \
+        of=/var/local/cinder/random-002
+
+    # Shell didn't last that long.
+    # kubectl exec seems to fail after a few minutes.
+    # Seen this several times, just logged back in again.
+    # Could be because we are remote from the cluster.
+
+
+
+    ls -alh /var/local/cinder
+
+    >   total 9.1G
+    >   drwxr-xr-x. 3 root root 4.0K Jan  4 03:46 .
+    >   drwxr-xr-x. 1 root root   20 Jan  4 03:39 ..
+    >   drwx------. 2 root root  16K Jan  4 03:34 lost+found
+    >   -rw-r--r--. 1 root root 1.0G Jan  4 03:45 random-001
+    >   -rw-r--r--. 1 root root 8.0G Jan  4 03:47 random-002
+
+
+    df -h /var/local/cinder
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb        9.8G  9.1G  748M  93% /var/local/cinder
+
+
+    du -h /var/local/cinder
+
+    >   16K	/var/local/cinder/lost+found
+    >   9.1G	/var/local/cinder
+
+
+# -----------------------------------------------------
+# Delete the pod.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        delete pod \
+            'cinder-pod'
+
+    >   pod "cinder-pod" deleted
+
+
+# -----------------------------------------------------
+# Create the pod again.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/cinder-pod
+
+    >   pod/cinder-pod created
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get pods
+
+    >   NAME         READY   STATUS    RESTARTS   AGE
+    >   cinder-pod   2/2     Running   0          34s
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe pod \
+            'cinder-pod'
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason                  Age   From                                   Message
+    >     ----    ------                  ----  ----                                   -------
+    >     Normal  Scheduled               48s   default-scheduler                      Successfully assigned default/cinder-pod to augustus-vwab7fqj6ofy-node-5
+    >     Normal  SuccessfulAttachVolume  38s   attachdetach-controller                AttachVolume.Attach succeeded for volume "cinder-volume"
+    >     Normal  Pulling                 25s   kubelet, augustus-vwab7fqj6ofy-node-5  Pulling image "fedora"
+    >     Normal  Pulled                  22s   kubelet, augustus-vwab7fqj6ofy-node-5  Successfully pulled image "fedora"
+    >     Normal  Created                 22s   kubelet, augustus-vwab7fqj6ofy-node-5  Created container tiberius-one
+    >     Normal  Started                 22s   kubelet, augustus-vwab7fqj6ofy-node-5  Started container tiberius-one
+    >     Normal  Pulling                 22s   kubelet, augustus-vwab7fqj6ofy-node-5  Pulling image "fedora"
+    >     Normal  Pulled                  19s   kubelet, augustus-vwab7fqj6ofy-node-5  Successfully pulled image "fedora"
+    >     Normal  Created                 19s   kubelet, augustus-vwab7fqj6ofy-node-5  Created container tiberius-two
+    >     Normal  Started                 19s   kubelet, augustus-vwab7fqj6ofy-node-5  Started container tiberius-two
+
+
+# -----------------------------------------------------
+# Login and explore the filesystem.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        exec -it \
+            --container 'tiberius-two' \
+            'cinder-pod' \
+            --  \
+                /bin/bash
+
+
+# -----------------------------------------------------
+# Explore the filesystem.
+#[root@cinder-pod]
+
+    df -h /
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   overlay          19G  4.1G   15G  22% /
+
+
+    df -h /var/local/cinder
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb        9.8G  9.1G  748M  93% /var/local/cinder
+
+
+    #
+    # OK - looks like that part works :-)
+    # Not much use for creating a shared filesystem though.
+    # Small steps ..
+    #
+
+    #
+    # Is the next step to try using a persistent volumes in K8s?
+    # https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+    #
+
+    What we are aiming for:
+
+        1) Each pod gets an ephemeral volume ~100G bytes.
+           Lifetime linked to the pod lifecycle.
+
+        2) All pods share access to a persistent volume ~T bytes
+           backed by a Ceph/Manilla share.
+
+
+    df -h /var/local/cinder
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb        9.8G  1.1G  8.8G  11% /var/local/cinder
+
+
+    du -h /var/local/cinder
+
+    >   16K	/var/local/cinder/lost+found
+    >   1.1G	/var/local/cinder
+
+
+    ls -alh /var/local/cinder
+
+    >   total 1.1G
+    >   drwxr-xr-x. 3 root root 4.0K Jan  4 03:45 .
+    >   drwxr-xr-x. 1 root root   20 Jan  4 03:39 ..
+    >   drwx------. 2 root root  16K Jan  4 03:34 lost+found
+    >   -rw-r--r--. 1 root root 1.0G Jan  4 03:45 random-001
+
+
+# -----------------------------------------------------
+# Create a 8G byte file of random stuff.
+#[root@tiberius-pod]
+
+    dd \
+        if=/dev/urandom \
+        bs=1M \
+        count=8K \
+        of=/var/local/cinder/random-002
+
+    # Shell didn't last that long.
+    # kubectl exec seems to fail after a few minutes.
+    # Seen this several times, just logged back in again.
+    # Could be because we are remote from the cluster.
+
+
+
+    ls -alh /var/local/cinder
+
+    >   total 9.1G
+    >   drwxr-xr-x. 3 root root 4.0K Jan  4 03:46 .
+    >   drwxr-xr-x. 1 root root   20 Jan  4 03:39 ..
+    >   drwx------. 2 root root  16K Jan  4 03:34 lost+found
+    >   -rw-r--r--. 1 root root 1.0G Jan  4 03:45 random-001
+    >   -rw-r--r--. 1 root root 8.0G Jan  4 03:47 random-002
+
+
+    df -h /var/local/cinder
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb        9.8G  9.1G  748M  93% /var/local/cinder
+
+
+    du -h /var/local/cinder
+
+    >   16K	/var/local/cinder/lost+found
+    >   9.1G	/var/local/cinder
+
+
+# -----------------------------------------------------
+# Delete the pod.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        delete pod \
+            'cinder-pod'
+
+    >   pod "cinder-pod" deleted
+
+
+# -----------------------------------------------------
+# Create the pod again.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        apply \
+            --filename /tmp/cinder-pod
+
+    >   pod/cinder-pod created
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        get pods
+
+    >   NAME         READY   STATUS    RESTARTS   AGE
+    >   cinder-pod   2/2     Running   0          34s
+
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        describe pod \
+            'cinder-pod'
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason                  Age   From                                   Message
+    >     ----    ------                  ----  ----                                   -------
+    >     Normal  Scheduled               48s   default-scheduler                      Successfully assigned default/cinder-pod to augustus-vwab7fqj6ofy-node-5
+    >     Normal  SuccessfulAttachVolume  38s   attachdetach-controller                AttachVolume.Attach succeeded for volume "cinder-volume"
+    >     Normal  Pulling                 25s   kubelet, augustus-vwab7fqj6ofy-node-5  Pulling image "fedora"
+    >     Normal  Pulled                  22s   kubelet, augustus-vwab7fqj6ofy-node-5  Successfully pulled image "fedora"
+    >     Normal  Created                 22s   kubelet, augustus-vwab7fqj6ofy-node-5  Created container tiberius-one
+    >     Normal  Started                 22s   kubelet, augustus-vwab7fqj6ofy-node-5  Started container tiberius-one
+    >     Normal  Pulling                 22s   kubelet, augustus-vwab7fqj6ofy-node-5  Pulling image "fedora"
+    >     Normal  Pulled                  19s   kubelet, augustus-vwab7fqj6ofy-node-5  Successfully pulled image "fedora"
+    >     Normal  Created                 19s   kubelet, augustus-vwab7fqj6ofy-node-5  Created container tiberius-two
+    >     Normal  Started                 19s   kubelet, augustus-vwab7fqj6ofy-node-5  Started container tiberius-two
+
+
+# -----------------------------------------------------
+# Login and explore the filesystem.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${confdir}/config" \
+        exec -it \
+            --container 'tiberius-two' \
+            'cinder-pod' \
+            --  \
+                /bin/bash
+
+
+# -----------------------------------------------------
+# Explore the filesystem.
+#[root@cinder-pod]
+
+    df -h /
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   overlay          19G  4.1G   15G  22% /
+
+
+    df -h /var/local/cinder
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb        9.8G  9.1G  748M  93% /var/local/cinder
+
+
+    #
+    # OK - looks like that part works :-)
+    # Not much use for creating a shared filesystem though.
+    # Small steps ..
+    #
+
+    #
+    # Is the next step to try using a persistent volumes in K8s?
+    # https://kubernetes.io/docs/concepts/storage/persistent-volumes/
+    #
+
+    What we are aiming for:
+
+        1) Each pod gets an ephemeral volume ~100G bytes.
+           Lifetime linked to the pod lifecycle.
+
+        2) All pods share access to a persistent volume ~T bytes
+           backed by a Ceph/Manilla share.
+

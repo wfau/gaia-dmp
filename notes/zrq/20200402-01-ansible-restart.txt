@@ -1,0 +1,267 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+# -----------------------------------------------------
+# Create our project config file.
+#[user@desktop]
+
+    cat > "${HOME:?}/aglais.env" << 'EOF'
+
+source "${HOME:?}/projects.env"
+AGLAIS_REPO='git@github.com:Zarquan/aglais.git'
+AGLAIS_HOME="${PROJECTS_ROOT:?}/WFAU/aglais"
+AGLAIS_CODE="${AGLAIS_HOME:?}/github-zrq"
+AGLAIS_CLOUD=gaia-prod
+AGLAIS_USER=albert
+
+EOF
+
+# -----------------------------------------------------
+# Create our cloud config file.
+#[user@desktop]
+
+    cat > "${HOME:?}/clouds.yaml" << EOF
+
+clouds:
+
+  gaia-dev:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-dev.APP_CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-dev.APP_CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-dev-super:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-dev.APX_CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-dev.APX_CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-prod:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-prod.APP_CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-prod.APP_CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-prod-super:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-prod.APX_CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-prod.APX_CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+EOF
+
+
+# -----------------------------------------------------
+# Install podman.
+#[user@desktop]
+
+    sudo dnf install podman
+
+--START--
+Installed:
+    podman-2:1.7.0-2.fc31.x86_64
+    ....
+--END--
+
+
+# -----------------------------------------------------
+# Allow podman containers to use the SSH authentication socket on our desktop.
+# https://osric.com/chris/accidental-developer/2017/11/selinux-audit2why-audit2allow-policy-files/
+# https://stackoverflow.com/a/52326925
+#[user@desktop]
+
+    cat > /tmp/ssh-auth.te << EOF
+module ssh-auth 1.0;
+
+require {
+	type user_tmp_t;
+	type container_t;
+	type unconfined_t;
+	class sock_file write;
+	class unix_stream_socket connectto;
+}
+
+#============= container_t ==============
+allow container_t unconfined_t:unix_stream_socket connectto;
+allow container_t user_tmp_t:sock_file write;
+EOF
+
+    checkmodule -M -m \
+        -o /tmp/ssh-auth.mod \
+        /tmp/ssh-auth.te
+
+    semodule_package \
+        -m /tmp/ssh-auth.mod \
+        -o /tmp/ssh-auth.pp
+
+    sudo semodule \
+        -i /tmp/ssh-auth.pp
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+# https://podman.readthedocs.io/en/latest/markdown/podman-run.1.html
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/tmp/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/ansible:/mnt/ansible:ro,z" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Create our Ansible include vars file.
+#[root@ansibler]
+
+    cat > /tmp/ansible-vars.yml << EOF
+
+buildtag:  'aglais-$(date '+%Y%m%d')'
+cloudname: '${cloudname}'
+clouduser: '${clouduser}'
+EOF
+
+    #
+    # Deprecate buildtag because it hampers search by name ?.
+    #
+
+
+# -----------------------------------------------------
+# Link our clouds.cfg file.
+# https://docs.ansible.com/ansible/latest/reference_appendices/config.html#the-configuration-file
+#[root@ansibler]
+
+    mkdir /etc/openstack
+    pushd /etc/openstack
+        ln -sf /tmp/clouds.yaml
+    popd
+
+
+# -----------------------------------------------------
+# Run the scripts from the ansible directory.
+#[root@ansibler]
+
+    pushd '/mnt/ansible'
+
+# -----------------------------------------------------
+# Run all our playbooks in sequence.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory "hosts.yml" \
+        "combined-02.yml"
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Login to a master node ...
+#[root@ansibler]
+
+    ssh -F "${HOME:?}/.ssh/ansible-config" master01
+
+--START--
+Last login: Thu Apr  2 06:20:41 2020 from 10.10.0.4
+--END--
+
+
+# -----------------------------------------------------
+# Test ssh connection to workers.
+#[user@master01]
+
+        ssh -v worker01
+
+--START--
+OpenSSH_7.9p1, OpenSSL 1.1.1b FIPS  26 Feb 2019
+....
+debug1: Reading configuration data /home/fedora/.ssh/config
+debug1: /home/fedora/.ssh/config line 32: Applying options for worker01
+....
+debug1: Connecting to worker01 [10.10.0.11] port 22.
+debug1: Connection established.
+debug1: identity file /home/fedora/.ssh/master01-fedora-rsa type 0
+debug1: identity file /home/fedora/.ssh/master01-fedora-rsa-cert type -1
+....
+debug1: Server host key: ecdsa-sha2-nistp256 SHA256:Tpjux91+EUrk7XdjkxH/ElA/C2wtVPzvkpf0/GiwQI0
+The authenticity of host 'worker01 (10.10.0.11)' can't be established.
+ECDSA key fingerprint is SHA256:Tpjux91+EUrk7XdjkxH/ElA/C2wtVPzvkpf0/GiwQI0.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added 'worker01,10.10.0.11' (ECDSA) to the list of known hosts.
+....
+debug1: Will attempt key: /home/fedora/.ssh/master01-fedora-rsa RSA SHA256:5TyR0Ux4hYJ4HKPNFY1IfOlzmGgG81J6sUKsNB68esI explicit
+....
+debug1: Next authentication method: publickey
+debug1: Offering public key: /home/fedora/.ssh/master01-fedora-rsa RSA SHA256:5TyR0Ux4hYJ4HKPNFY1IfOlzmGgG81J6sUKsNB68esI explicit
+debug1: Server accepts key: /home/fedora/.ssh/master01-fedora-rsa RSA SHA256:5TyR0Ux4hYJ4HKPNFY1IfOlzmGgG81J6sUKsNB68esI explicit
+debug1: Authentication succeeded (publickey).
+Authenticated to worker01 ([10.10.0.11]:22).
+....
+--END--
+
+
+    #
+    # Yay - this is ignoring the agent and just using the local key.
+    #
+
+    #
+    # TODO - need to add the host keys for all the workers to all the masters.
+    # 
+
+    #
+    # Why haven't we had to tweak the firewall rules ?
+    # Does the Fedora image have the firewall disabled !?
+    #
+    

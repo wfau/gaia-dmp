@@ -24,9 +24,12 @@
 # Link our clouds.cfg file.
 # https://docs.ansible.com/ansible/latest/reference_appendices/config.html#the-configuration-file
 
-    mkdir /etc/openstack
-    pushd /etc/openstack
-        ln -sf /tmp/clouds.yaml
+    if [ ! -e '/etc/openstack' ]
+        then
+            mkdir '/etc/openstack'
+        fi
+    pushd '/etc/openstack'
+        ln -sf '/tmp/clouds.yaml' 'clouds.yaml'
     popd
 
 # -----------------------------------------------------

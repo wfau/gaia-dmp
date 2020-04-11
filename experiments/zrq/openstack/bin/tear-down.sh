@@ -75,6 +75,30 @@
 
 
 # -----------------------------------------------------
+# Delete our volumes (using JQ foo).
+
+    echo ""
+    echo "---- ---- ---- ----"
+    echo "Delete volumes"
+    echo ""
+
+    for volumeid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            volume list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("'${regex:?}'")) | .ID'
+        )
+    do
+        echo "Volume [${volumeid:?}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            volume delete \
+                "${volumeid:?}"
+    done
+
+
+# -----------------------------------------------------
 # Release our router ports (using JQ foo).
 
     echo ""

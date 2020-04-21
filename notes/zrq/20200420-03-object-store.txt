@@ -1,0 +1,383 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    #
+    # Check we can access the 'prod' ObjectStore space using client inside our cluster.
+    #
+
+    #
+    # Using files list genereted during download.
+    # 20200417-01-gdr2-download.txt
+    #
+
+
+# -----------------------------------------------------
+# Create clouds.yaml with OpenStack application credentials.
+#[user@desktop]
+
+    ....
+    ....
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud name.
+#[user@openstacker]
+
+    cloudname=gaia-prod
+
+
+# -----------------------------------------------------
+# List our EC2 credentials.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        ec2 credentials \
+            list
+
+    >   +------------------+------------------+------------------+------------------+
+    >   | Access           | Secret           | Project ID       | User ID          |
+    >   +------------------+------------------+------------------+------------------+
+    >   | 3367........0df9 | 4034........aea0 | 21b4........63af | 9816........6488 |
+    >   | 93d0........f83c | 0e28........25b1 | 08e2........d927 | 9816........6488 |
+    >   | 2a35........a9c2 | 52e4........ec51 | 21b4........63af | 9816........6488 |
+    >   +------------------+------------------+------------------+------------------+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to our master node.
+#[user@desktop]
+
+    podman exec -it $(
+        podman ps --filter 'name=ansibler' --format "{{.ID}}"
+        ) \
+        ssh master02
+
+
+# -----------------------------------------------------
+# Install a S3 client.
+#[fedora@master02]
+
+    sudo dnf install s3cmd
+
+    >   Installed:
+    >       s3cmd-2.0.2-3.fc30.noarch
+    >       python3-magic-5.36-2.fc30.noarch                                                                                        
+
+
+# -----------------------------------------------------
+# Configure our S3 client.
+# https://linux.die.net/man/1/s3cmd
+# https://s3tools.org/kb/item14.htm
+# https://www.digitalocean.com/docs/spaces/resources/s3cmd/
+# https://support.arcticcloud.com/portal/kb/articles/managing-object-storage-using-the-s3cmd-interface
+#[fedora@master02]
+
+    s3cmd \
+        --configure
+
+
+    >   New settings:
+    >     Access Key: 2a35........a9c2
+    >     Secret Key: 52e4........ec51
+    >     Default Region: US
+    >     S3 Endpoint: cumulus.openstack.hpc.cam.ac.uk:6780
+    >     DNS-style bucket+hostname:port template for accessing a bucket: cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/%(bucket)
+    >     Encryption password: 
+    >     Path to GPG program: /usr/bin/gpg
+    >     Use HTTPS protocol: True
+    >     HTTP Proxy server name: 
+    >     HTTP Proxy server port: 0
+    >   
+    >   Test access with supplied credentials? [Y/n] 
+    >   Please wait, attempting to list all buckets...
+    >   Success. Your access key and secret key worked fine :-)
+    >   
+    >   Now verifying that encryption works...
+    >   Not configured. Never mind.
+    >   
+    >   Save settings? [y/N] y
+    >   Configuration saved to '/home/fedora/.s3cfg'
+
+
+# -----------------------------------------------------
+# List our buckets.
+#[fedora@master02]
+
+    s3cmd \
+        ls
+
+    >   2019-12-23 12:04  s3://albert-container
+    >   2020-04-20 16:35  s3://johansen-bucket
+
+
+# -----------------------------------------------------
+# Create our bucket.
+#[fedora@master02]
+
+    s3cmd mb \
+        's3://gaia-dr2-csv'
+
+    >   Bucket 's3://gaia-dr2-csv/' created
+
+
+# -----------------------------------------------------
+# Transfer the first 10 files into the ObjectStore.
+#[fedora@master02]
+
+    for filename in $(head -n 10 ${HOME:?}/files.txt)
+    do
+
+        hdfs dfs -get "/Gaia/gdr2/gaia_source/csv/${filename:?}" "${filename:?}" 2> error.log
+
+        s3cmd \
+            put "${filename:?}" \
+                "s3://gaia-dr2-csv/${filename:?}"
+
+        rm "${filename:?}"
+
+    done
+
+    >   upload: 'GaiaSource_1000172165251650944_1000424567594791808.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1000172165251650944_1000424567594791808.csv.gz'  [1 of 1]
+    >    5347523 of 5347523   100% in    0s    19.31 MB/s  done
+    >   upload: 'GaiaSource_1000424601954531200_1000677322125743488.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1000424601954531200_1000677322125743488.csv.gz'  [1 of 1]
+    >    5024698 of 5024698   100% in    0s    22.64 MB/s  done
+    >   upload: 'GaiaSource_1000677386549270528_1000959999693425920.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1000677386549270528_1000959999693425920.csv.gz'  [1 of 1]
+    >    5976430 of 5976430   100% in    0s    22.79 MB/s  done
+    >   upload: 'GaiaSource_1000960034052654336_1001215258190537216.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1000960034052654336_1001215258190537216.csv.gz'  [1 of 1]
+    >    6102333 of 6102333   100% in    0s    21.49 MB/s  done
+    >   upload: 'GaiaSource_1001215288252921728_1001455428465395840.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1001215288252921728_1001455428465395840.csv.gz'  [1 of 1]
+    >    6143061 of 6143061   100% in    0s    12.24 MB/s  done
+    >   upload: 'GaiaSource_1001455467121397632_1001731032222989696.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1001455467121397632_1001731032222989696.csv.gz'  [1 of 1]
+    >    6517254 of 6517254   100% in    0s    24.75 MB/s  done
+    >   upload: 'GaiaSource_1001731062285590912_1001962891736267904.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1001731062285590912_1001962891736267904.csv.gz'  [1 of 1]
+    >    5591548 of 5591548   100% in    0s    21.47 MB/s  done
+    >   upload: 'GaiaSource_1001962921802480896_1002270686272717312.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1001962921802480896_1002270686272717312.csv.gz'  [1 of 1]
+    >    6225326 of 6225326   100% in    0s    12.92 MB/s  done
+    >   upload: 'GaiaSource_100222516391441280_100632114537641344.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_100222516391441280_100632114537641344.csv.gz'  [1 of 1]
+    >    3445051 of 3445051   100% in    0s    17.31 MB/s  done
+    >   upload: 'GaiaSource_1002270754991788288_1002616826277079168.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1002270754991788288_1002616826277079168.csv.gz'  [1 of 1]
+    >    7090884 of 7090884   100% in    0s    21.36 MB/s  done
+
+
+# -----------------------------------------------------
+# List the objects in our bucket.
+#[fedora@master02]
+
+    s3cmd ls \
+        's3://gaia-dr2-csv'
+
+    >   2020-04-20 17:09   5347523   s3://gaia-dr2-csv/GaiaSource_1000172165251650944_1000424567594791808.csv.gz
+    >   2020-04-20 17:09   5024698   s3://gaia-dr2-csv/GaiaSource_1000424601954531200_1000677322125743488.csv.gz
+    >   2020-04-20 17:09   5976430   s3://gaia-dr2-csv/GaiaSource_1000677386549270528_1000959999693425920.csv.gz
+    >   2020-04-20 17:09   6102333   s3://gaia-dr2-csv/GaiaSource_1000960034052654336_1001215258190537216.csv.gz
+    >   2020-04-20 17:09   6143061   s3://gaia-dr2-csv/GaiaSource_1001215288252921728_1001455428465395840.csv.gz
+    >   2020-04-20 17:09   6517254   s3://gaia-dr2-csv/GaiaSource_1001455467121397632_1001731032222989696.csv.gz
+    >   2020-04-20 17:09   5591548   s3://gaia-dr2-csv/GaiaSource_1001731062285590912_1001962891736267904.csv.gz
+    >   2020-04-20 17:09   6225326   s3://gaia-dr2-csv/GaiaSource_1001962921802480896_1002270686272717312.csv.gz
+    >   2020-04-20 17:09   3445051   s3://gaia-dr2-csv/GaiaSource_100222516391441280_100632114537641344.csv.gz
+    >   2020-04-20 17:09   7090884   s3://gaia-dr2-csv/GaiaSource_1002270754991788288_1002616826277079168.csv.gz
+
+
+# -----------------------------------------------------
+# Delete our bucket.
+#[fedora@master02]
+
+    s3cmd rm \
+        --force \
+        --recursive \
+        's3://gaia-dr2-csv'
+
+    >   delete: 's3://gaia-dr2-csv/GaiaSource_1000172165251650944_1000424567594791808.csv.gz'
+    >   delete: 's3://gaia-dr2-csv/GaiaSource_1000424601954531200_1000677322125743488.csv.gz'
+    >   delete: 's3://gaia-dr2-csv/GaiaSource_1000677386549270528_1000959999693425920.csv.gz'
+    >   delete: 's3://gaia-dr2-csv/GaiaSource_1000960034052654336_1001215258190537216.csv.gz'
+    >   delete: 's3://gaia-dr2-csv/GaiaSource_1001215288252921728_1001455428465395840.csv.gz'
+    >   delete: 's3://gaia-dr2-csv/GaiaSource_1001455467121397632_1001731032222989696.csv.gz'
+    >   delete: 's3://gaia-dr2-csv/GaiaSource_1001731062285590912_1001962891736267904.csv.gz'
+    >   delete: 's3://gaia-dr2-csv/GaiaSource_1001962921802480896_1002270686272717312.csv.gz'
+    >   delete: 's3://gaia-dr2-csv/GaiaSource_100222516391441280_100632114537641344.csv.gz'
+    >   delete: 's3://gaia-dr2-csv/GaiaSource_1002270754991788288_1002616826277079168.csv.gz'
+
+
+# -----------------------------------------------------
+# Create our bucket.
+#[fedora@master02]
+
+    s3cmd mb \
+        's3://gaia-dr2-csv'
+
+    >   Bucket 's3://gaia-dr2-csv/' created
+
+
+# -----------------------------------------------------
+# Transfer all the csv files into our ObjectStore.
+#[fedora@master02]
+
+    date
+    for filename in $(cat ${HOME:?}/files.txt)
+    do
+
+        hdfs dfs -get "/Gaia/gdr2/gaia_source/csv/${filename:?}" "${filename:?}" 2> error.log
+
+        s3cmd \
+            put "${filename:?}" \
+                "s3://gaia-dr2-csv/${filename:?}"
+
+        rm "${filename:?}"
+
+    done
+    date
+
+    >   Mon 20 Apr 2020 05:12:09 PM UTC
+    >   upload: 'GaiaSource_1000172165251650944_1000424567594791808.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1000172165251650944_1000424567594791808.csv.gz'  [1 of 1]
+    >    5347523 of 5347523   100% in    0s    20.19 MB/s  done
+    >   upload: 'GaiaSource_1000424601954531200_1000677322125743488.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1000424601954531200_1000677322125743488.csv.gz'  [1 of 1]
+    >    5024698 of 5024698   100% in    0s    20.61 MB/s  done
+    >   upload: 'GaiaSource_1000677386549270528_1000959999693425920.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1000677386549270528_1000959999693425920.csv.gz'  [1 of 1]
+    >    5976430 of 5976430   100% in    0s    21.98 MB/s  done
+    >   upload: 'GaiaSource_1000960034052654336_1001215258190537216.csv.gz' -> 's3://gaia-dr2-csv/GaiaSource_1000960034052654336_1001215258190537216.csv.gz'  [1 of 1]
+    >    6102333 of 6102333   100% in    0s    22.69 MB/s  done
+    >   ....
+    >   ....
+    >   
+    >   
+
+    
+# -----------------------------------------------------
+# -----------------------------------------------------
+    
+
+
+# -----------------------------------------------------
+# List our buckets.
+#[fedora@master02]
+
+    s3cmd \
+        ls
+
+    >   2019-12-23 12:04  s3://albert-container
+    >   2020-04-20 16:55  s3://gaia-dr2-csv
+    >   2020-04-20 16:35  s3://johansen-bucket
+
+
+# -----------------------------------------------------
+# Create our bucket.
+#[fedora@master02]
+
+    s3cmd mb \
+        's3://gaia-dr2-parquet'
+
+    >   Bucket 's3://gaia-dr2-parquet/' created
+
+
+# -----------------------------------------------------
+# Create a list of our parquet files.
+#[fedora@master02]
+    
+    hdfs dfs -ls -C \
+        /Gaia/gdr2/gaia_source/parquet-01 \
+    | sed '
+        s|^.*/\([^/]*\)$|\1|
+        ' \
+    | tee parquet-list 
+    
+
+    head parquet-list
+    
+    >   _SUCCESS
+    >   part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+
+
+    tail parquet-list
+
+    >   ....
+    >   part-06510-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-06511-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-06512-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-06513-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+
+
+# -----------------------------------------------------
+# Transfer our parquet files into our ObjectStore.
+#[fedora@master02]
+
+    date
+    for filename in $(cat ${HOME:?}/parquet-list)
+    do
+
+        hdfs dfs -get "/Gaia/gdr2/gaia_source/parquet-01/${filename:?}" "${filename:?}" 2> error.log
+
+        s3cmd \
+            put "${filename:?}" \
+                "s3://gaia-dr2-parquet/${filename:?}"
+
+        rm "${filename:?}"
+
+    done
+    date
+
+
+    >   Tue 21 Apr 2020 02:04:33 AM UTC
+    >   upload: '_SUCCESS' -> 's3://gaia-dr2-parquet/_SUCCESS'  [1 of 1]
+    >    0 of 0     0% in    0s     0.00 B/s  done
+    >   upload: 'part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 's3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [part 1 of 5, 15MB] [1 of 1]
+    >    15728640 of 15728640   100% in    0s    21.30 MB/s  done
+    >   upload: 'part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 's3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [part 2 of 5, 15MB] [1 of 1]
+    >    15728640 of 15728640   100% in    0s    24.27 MB/s  done
+    >   upload: 'part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 's3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [part 3 of 5, 15MB] [1 of 1]
+    >    15728640 of 15728640   100% in    0s    39.56 MB/s  done
+    >   upload: 'part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 's3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [part 4 of 5, 15MB] [1 of 1]
+    >    15728640 of 15728640   100% in    0s    36.42 MB/s  done
+    >   upload: 'part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 's3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [part 5 of 5, 10MB] [1 of 1]
+    >    11199660 of 11199660   100% in    0s    28.11 MB/s  done
+    >   ....
+    >   ....
+    >   
+    >   
+
+
+    

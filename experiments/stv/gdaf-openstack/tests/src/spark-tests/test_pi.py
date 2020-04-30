@@ -3,8 +3,6 @@ import unittest
 from datetime import datetime
 import random
 
-NUM_SAMPLES = 1000000000
-
 def inside(p):
     """
     Helper method for piCalculation

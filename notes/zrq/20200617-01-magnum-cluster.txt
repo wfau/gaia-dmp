@@ -1,0 +1,407 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the project and cluster names.
+#[user@openstacker]
+
+    cloudname=gaia-prod
+    clustername=Augustus
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+    >   -
+
+
+# -----------------------------------------------------
+# Get our keypair name.
+#[user@openstacker]
+
+    keyname=$(
+        openstack \
+        --os-cloud "${cloudname:?}" \
+            keypair list \
+                --format json \
+        | jq -r '.[0] | .Name'
+        )
+
+    echo "Key name [${keyname}]"
+
+    >   Key name [zrq-gaia-keypair]
+
+
+# -----------------------------------------------------
+# Get the small flavor ID.
+#[user@openstacker]
+
+    flavorid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.small") | .ID'
+        )
+
+    echo "Flavor ID [${flavorid}]"
+
+    >   Flavor ID [20061eba-9e88-494c-95a3-41ed77721244]
+
+
+# -----------------------------------------------------
+# List the available templates.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster template list
+
+    >   +--------------------------------------+----------------------------+
+    >   | uuid                                 | name                       |
+    >   +--------------------------------------+----------------------------+
+    >   | 1b81ec4d-9545-4ada-b6ec-23469550910a | kubernetes-1.14.6-20200203 |
+    >   | 40963ffb-4439-49f8-8e80-f511fc11c4a9 | kubernetes-1.17.2-20200205 |
+    >   | 4d2d0d0a-5925-4744-8451-fa8edfa5d275 | kubernetes-1.16.6-20200205 |
+    >   | d54167d9-495f-437e-88fe-d182b2a230ea | kubernetes-1.15.9-20200205 |
+    >   +--------------------------------------+----------------------------+
+
+
+# -----------------------------------------------------
+# Get the uuid for the kubernetes-1.17 template.
+#[user@openstacker]
+
+    templateuuid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster template list \
+                --format json \
+        | jq -r '.[] | select(.name | test("1.17.2")) | .uuid'
+        )
+
+    echo "Template [${templateuuid}]"
+
+    >   Template [40963ffb-4439-49f8-8e80-f511fc11c4a9]
+
+
+# -----------------------------------------------------
+# Create a new cluster, using unrestricted credentials.
+#[user@openstacker]
+
+    supername="${cloudname:?}-super"
+
+    openstack \
+        --os-cloud "${supername:?}" \
+        coe cluster create \
+            --keypair "${keyname:?}" \
+            --flavor  "${flavorid:?}" \
+            --node-count 4 \
+            --master-count 2 \
+            --master-flavor "${flavorid:?}" \
+            --cluster-template "${templateuuid:?}" \
+            "${clustername:?}"
+
+--START--
+Request to create cluster ec2bca46-5098-43c8-8647-f4bce1370d68 accepted
+--END--
+
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+--START--
++--------------------------------------+----------+------------------+------------+--------------+--------------------+
+| uuid                                 | name     | keypair          | node_count | master_count | status             |
++--------------------------------------+----------+------------------+------------+--------------+--------------------+
+| ec2bca46-5098-43c8-8647-f4bce1370d68 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_IN_PROGRESS |
++--------------------------------------+----------+------------------+------------+--------------+--------------------+
+--END--
+
+watch \
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+
+--START--
++--------------------------------------+----------+------------------+------------+--------------+-----------------+
+| uuid                                 | name     | keypair          | node_count | master_count | status          |
++--------------------------------------+----------+------------------+------------+--------------+-----------------+
+| ec2bca46-5098-43c8-8647-f4bce1370d68 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_COMPLETE |
++--------------------------------------+----------+------------------+------------+--------------+-----------------+
+--END--
+
+
+# -----------------------------------------------------
+# Get the cluster details.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster show \
+            $(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                coe cluster list \
+                    --format json \
+            | jq -r '.[] | select(.name | test("Augustus")) | .uuid'
+            )
+
+--START--
++---------------------+-----------------------------------------------------------------------------+
+| Field               | Value                                                                       |
++---------------------+-----------------------------------------------------------------------------+
+| status              | CREATE_COMPLETE                                                             |
+| cluster_template_id | 40963ffb-4439-49f8-8e80-f511fc11c4a9                                        |
+| node_addresses      | ['10.0.0.182', '10.0.0.163', '10.0.0.85', '10.0.0.5']                       |
+| uuid                | ec2bca46-5098-43c8-8647-f4bce1370d68                                        |
+| stack_id            | bc5235e9-0b09-4b5e-8916-71f88322bdab                                        |
+| status_reason       | None                                                                        |
+| created_at          | 2020-06-17T17:35:19+00:00                                                   |
+| updated_at          | 2020-06-17T17:41:12+00:00                                                   |
+| coe_version         | v1.17.2                                                                     |
+| labels              | {'auto_healing_controller': 'magnum-auto-healer' ... 'min_node_count': '1'} |
+| faults              |                                                                             |
+| keypair             | zrq-gaia-keypair                                                            |
+| api_address         | https://128.232.227.140:6443                                                |
+| master_addresses    | ['10.0.0.248', '10.0.0.173']                                                |
+| create_timeout      | 60                                                                          |
+| node_count          | 4                                                                           |
+| discovery_url       | https://discovery.etcd.io/a0a79e5de4df333a27c94194db40e3e6                  |
+| master_count        | 2                                                                           |
+| container_version   | 1.12.6                                                                      |
+| name                | Augustus                                                                    |
+| master_flavor_id    | 20061eba-9e88-494c-95a3-41ed77721244                                        |
+| flavor_id           | 20061eba-9e88-494c-95a3-41ed77721244                                        |
++---------------------+-----------------------------------------------------------------------------+
+--END--
+
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[] | select(.name | test("Augustus")) | .uuid'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster show \
+            "${clusterid:?}" \
+        --format json \
+        | jq '.'
+
+
+--START--
+{
+  "status": "CREATE_COMPLETE",
+  "cluster_template_id": "40963ffb-4439-49f8-8e80-f511fc11c4a9",
+  "node_addresses": [
+    "10.0.0.182",
+    "10.0.0.163",
+    "10.0.0.85",
+    "10.0.0.5"
+  ],
+  "uuid": "ec2bca46-5098-43c8-8647-f4bce1370d68",
+  "stack_id": "bc5235e9-0b09-4b5e-8916-71f88322bdab",
+  "status_reason": null,
+  "created_at": "2020-06-17T17:35:19+00:00",
+  "updated_at": "2020-06-17T17:55:41+00:00",
+  "coe_version": "v1.17.2",
+  "labels": {
+    "auto_healing_controller": "magnum-auto-healer",
+    "max_node_count": "4",
+    "cloud_provider_tag": "v1.17.0",
+    "etcd_tag": "3.3.17",
+    "monitoring_enabled": "true",
+    "tiller_enabled": "true",
+    "autoscaler_tag": "v1.15.2",
+    "master_lb_floating_ip_enabled": "true",
+    "auto_scaling_enabled": "true",
+    "tiller_tag": "v2.16.1",
+    "use_podman": "true",
+    "auto_healing_enabled": "true",
+    "heat_container_agent_tag": "train-stable-1",
+    "kube_tag": "v1.17.2",
+    "min_node_count": "1"
+  },
+  "faults": "",
+  "keypair": "zrq-gaia-keypair",
+  "api_address": "https://128.232.227.140:6443",
+  "master_addresses": [
+    "10.0.0.248",
+    "10.0.0.173"
+  ],
+  "create_timeout": 60,
+  "node_count": 4,
+  "discovery_url": "https://discovery.etcd.io/a0a79e5de4df333a27c94194db40e3e6",
+  "master_count": 2,
+  "container_version": "1.12.6",
+  "name": "Augustus",
+  "master_flavor_id": "20061eba-9e88-494c-95a3-41ed77721244",
+  "flavor_id": "20061eba-9e88-494c-95a3-41ed77721244"
+}
+--END--
+
+
+# -----------------------------------------------------
+# Get the kubectl config for our cluster.
+#[user@openstacker]
+
+
+    cd "${HOME}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clusterid}"
+
+    cat config
+
+--START--
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: LS0tLS1C........UtLS0tLQ==
+    server: https://128.232.227.140:6443
+  name: Augustus
+contexts:
+- context:
+    cluster: Augustus
+    user: admin
+  name: default
+current-context: default
+kind: Config
+preferences: {}
+users:
+- name: admin
+  user:
+    client-certificate-data: LS0tLS1C........RS0tLS0t
+    client-key-data: LS0tLS1C........tLS0tLQo=
+--END--
+
+
+# -----------------------------------------------------
+# Use kubectl to get details of our cluster.
+#[user@openstacker]
+
+    kubectl \
+        --kubeconfig "${HOME}/config" \
+        cluster-info
+
+--START--
+Kubernetes master is running at https://128.232.227.140:6443
+Heapster is running at https://128.232.227.140:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+CoreDNS is running at https://128.232.227.140:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+--END--
+
+
+    kubectl \
+        --kubeconfig "${HOME}/config" \
+        config  \
+            get-contexts
+
+--START--
+CURRENT   NAME      CLUSTER    AUTHINFO   NAMESPACE
+*         default   Augustus   admin
+--END--
+
+
+# -----------------------------------------------------
+# Delete our cluster.
+#[user@openstacker]
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[] | select(.name | test("Augustus")) | .uuid'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster delete \
+            "${clusterid}"
+
+--START--
+Request to delete cluster ec2bca46-5098-43c8-8647-f4bce1370d68 has been accepted.
+--END--
+
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+--START--
++--------------------------------------+----------+------------------+------------+--------------+--------------------+
+| uuid                                 | name     | keypair          | node_count | master_count | status             |
++--------------------------------------+----------+------------------+------------+--------------+--------------------+
+| ec2bca46-5098-43c8-8647-f4bce1370d68 | Augustus | zrq-gaia-keypair |          4 |            2 | DELETE_IN_PROGRESS |
+| 48cad944-62b7-496e-a77b-85494fb2516a | my-test  | my-test          |          1 |            1 | CREATE_COMPLETE    |
++--------------------------------------+----------+------------------+------------+--------------+--------------------+
+--END--
+
+--START--
++--------------------------------------+---------+---------+------------+--------------+-----------------+
+| uuid                                 | name    | keypair | node_count | master_count | status          |
++--------------------------------------+---------+---------+------------+--------------+-----------------+
+| 48cad944-62b7-496e-a77b-85494fb2516a | my-test | my-test |          1 |            1 | CREATE_COMPLETE |
++--------------------------------------+---------+---------+------------+--------------+-----------------+
+--END--
+
+
+

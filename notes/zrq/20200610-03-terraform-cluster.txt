@@ -1,0 +1,1230 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    StackHPC Magnum/Terraform cluster
+    https://github.com/RSE-Cambridge/iris-magnum/blob/master/magnum-tour/README.md
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the project and cluster names.
+#[user@openstacker]
+
+    cloudname=gaia-prod
+    clustername=Tiberius
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >   | uuid                                 | name     | keypair          | node_count | master_count | status          |
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >   | f5632b7e-87bd-46d6-820f-a20f1b66b6c8 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_COMPLETE |
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+
+
+# -----------------------------------------------------
+# Install Terraform.
+# https://www.terraform.io/downloads.html
+# https://github.com/RSE-Cambridge/iris-magnum/blob/master/magnum-tour/README.md
+# https://computingforgeeks.com/how-to-install-terraform-on-fedora/
+#[user@openstacker]
+
+    terraver=0.12.26
+    terrazip=terraform_${terraver:?}_linux_amd64.zip
+
+    pushd $(mktemp -d)
+
+        wget  "https://releases.hashicorp.com/terraform/${terraver:?}/${terrazip:?}"
+        unzip "${terrazip:?}"
+
+        mv terraform /usr/local/bin/
+
+    popd
+
+    which terraform
+
+    >   /usr/local/bin/terraform
+
+
+# -----------------------------------------------------
+# Clone the StackHPC examples.
+#[user@openstacker]
+
+    pushd "${HOME}"
+
+        git clone 'https://github.com/RSE-Cambridge/iris-magnum.git'
+
+    popd
+
+# -----------------------------------------------------
+# Run Terraform to deploy the example cluster.
+#[user@openstacker]
+
+    pushd "${HOME}/iris-magnum"
+        pushd 'terraform/examples/cluster'
+
+            terraform init
+
+    >   Initializing modules...
+    >   - cluster in ../../modules/cluster
+    >
+    >   Initializing the backend...
+    >
+    >   Initializing provider plugins...
+    >   - Checking for available provider plugins...
+    >   - Downloading plugin for provider "openstack" (terraform-providers/openstack) 1.28.0...
+    >   - Downloading plugin for provider "null" (hashicorp/null) 2.1.2...
+    >
+    >   The following providers do not have any version constraints in configuration,
+    >   so the latest version was installed.
+    >
+    >   To prevent automatic upgrades to new major versions that may contain breaking
+    >   changes, it is recommended to add version = "..." constraints to the
+    >   corresponding provider blocks in configuration, with the constraint strings
+    >   suggested below.
+    >
+    >   * provider.null: version = "~> 2.1"
+    >
+    >   Terraform has been successfully initialized!
+    >
+    >   You may now begin working with Terraform. Try running "terraform plan" to see
+    >   any changes that are required for your infrastructure. All Terraform commands
+    >   should now work.
+    >
+    >   If you ever set or change modules or backend configuration for Terraform,
+    >   rerun this command to reinitialize your working directory. If you forget, other
+    >   commands will detect it and remind you to do so if necessary.
+
+
+            terraform plan
+
+    >   Error: One of 'auth_url' or 'cloud' must be specified
+    >
+    >     on ../../modules/cluster/main.tf line 5, in provider "openstack":
+    >      5: provider "openstack" {
+
+            #
+            # Need to export the cloud name as OS_CLOUD
+
+            export OS_CLOUD="${cloudname:?}"
+
+            terraform plan
+
+    >   Refreshing Terraform state in-memory prior to plan...
+    >   The refreshed state will be used to calculate this plan, but will not be
+    >   persisted to local or remote state storage.
+    >
+    >   module.cluster.data.openstack_containerinfra_clustertemplate_v1.clustertemplate: Refreshing state...
+    >
+    >   ------------------------------------------------------------------------
+    >
+    >   Error: Error in function call
+    >
+    >     on ../../modules/cluster/main.tf line 11, in resource "openstack_compute_keypair_v2" "keypair":
+    >     11:   public_key = file(var.public_key_file)
+    >       |----------------
+    >       | var.public_key_file is "~/.ssh/id_rsa.pub"
+    >
+    >   Call to function "file" failed: no file exists at /root/.ssh/id_rsa.pub.
+
+        popd
+    popd
+
+    #
+    # Need to install our public key in a local file.
+    #
+
+# -----------------------------------------------------
+# Fetch our public key from OpenStack.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            keypair list
+
+    >   +------------------+-------------------------------------------------+
+    >   | Name             | Fingerprint                                     |
+    >   +------------------+-------------------------------------------------+
+    >   | zrq-gaia-keypair | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +------------------+-------------------------------------------------+
+
+    keyname=$(
+        openstack \
+        --os-cloud "${cloudname:?}" \
+            keypair list \
+                --format json \
+        | jq -r '.[0] | .Name'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            keypair show \
+            "${keyname:?}"
+
+    >   +-------------+-------------------------------------------------+
+    >   | Field       | Value                                           |
+    >   +-------------+-------------------------------------------------+
+    >   | created_at  | 2019-11-20T15:29:27.000000                      |
+    >   | deleted     | False                                           |
+    >   | deleted_at  | None                                            |
+    >   | fingerprint | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   | id          | 1033                                            |
+    >   | name        | zrq-gaia-keypair                                |
+    >   | updated_at  | None                                            |
+    >   | user_id     | 9816........6488                                |
+    >   +-------------+-------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            keypair show \
+            --public-key \
+            "${keyname:?}"
+
+    >   ssh-rsa AAAAB3Nz........zV4ksPOL
+
+    keyfile=${HOME:?}/.ssh/${keyname:?}.pub
+    mkdir $(dirname "${keyfile:?}")
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            keypair show \
+            --public-key \
+            "${keyname:?}" \
+    | tee "${keyfile:?}"
+
+    >   ssh-rsa AAAAB3Nz........zV4ksPOL
+
+
+    cat >> "${HOME:?}/terraform.tfvars" << EOF
+public_key_file = "${keyfile:?}"
+EOF
+
+
+# -----------------------------------------------------
+# Run Terraform to deploy the example cluster.
+#[user@openstacker]
+
+    pushd "${HOME}/iris-magnum"
+        pushd 'terraform/examples/cluster'
+
+            terraform plan \
+                -var-file "${HOME:?}/terraform.tfvars"
+
+
+    >   Refreshing Terraform state in-memory prior to plan...
+    >   The refreshed state will be used to calculate this plan, but will not be
+    >   persisted to local or remote state storage.
+    >
+    >   module.cluster.data.openstack_containerinfra_clustertemplate_v1.clustertemplate: Refreshing state...
+    >
+    >   ------------------------------------------------------------------------
+    >
+    >   Warning: Value for undeclared variable
+    >
+    >   The root module does not declare a variable named "public_key_file" but a
+    >   value was found in file "/root/terraform.tfvars". To use this value, add a
+    >   "variable" block to the configuration.
+    >
+    >   Using a variables file to set an undeclared variable is deprecated and will
+    >   become an error in a future release. If you wish to provide certain "global"
+    >   settings to all configurations in your organization, use TF_VAR_...
+    >   environment variables to set these instead.
+    >
+    >
+    >   Error: Error in function call
+    >
+    >     on ../../modules/cluster/main.tf line 11, in resource "openstack_compute_keypair_v2" "keypair":
+    >     11:   public_key = file(var.public_key_file)
+    >       |----------------
+    >       | var.public_key_file is "~/.ssh/id_rsa.pub"
+    >
+    >   Call to function "file" failed: no file exists at /root/.ssh/id_rsa.pub.
+
+            #
+            # Add a 'variables.tf' file to the example.
+
+            cat >> 'variables.tf' << EOF
+variable "public_key_file" {
+    type = string
+    }
+EOF
+
+            #
+            # Try again ..
+
+            terraform plan \
+                -var-file "${HOME:?}/terraform.tfvars"
+
+
+    >   Refreshing Terraform state in-memory prior to plan...
+    >   The refreshed state will be used to calculate this plan, but will not be
+    >   persisted to local or remote state storage.
+    >
+    >   module.cluster.data.openstack_containerinfra_clustertemplate_v1.clustertemplate: Refreshing state...
+    >
+    >   ------------------------------------------------------------------------
+    >
+    >   Error: Error in function call
+    >
+    >     on ../../modules/cluster/main.tf line 11, in resource "openstack_compute_keypair_v2" "keypair":
+    >     11:   public_key = file(var.public_key_file)
+    >       |----------------
+    >       | var.public_key_file is "~/.ssh/id_rsa.pub"
+    >
+    >   Call to function "file" failed: no file exists at /root/.ssh/id_rsa.pub.
+
+
+            #
+            # Adding the 'variables.tf' file was the wrong direction.
+            # Adding the 'variables.tf' added a variable to _this_ module.
+            # We want to set the value of a variable in the cluster module.
+            #
+
+            # We need to add the setting to 'main.tf'.
+
+            vi 'main.tf'
+
+                module "cluster" {
+                  source = "../../modules/cluster"
+
+            +     public_key_file       = var.public_key_file
+                  cluster_name          = "my-test"
+
+
+            #
+            # Try again ..
+
+            terraform plan \
+                -var-file "${HOME:?}/terraform.tfvars"
+
+
+    >   Refreshing Terraform state in-memory prior to plan...
+    >   The refreshed state will be used to calculate this plan, but will not be
+    >   persisted to local or remote state storage.
+    >
+    >   module.cluster.data.openstack_containerinfra_clustertemplate_v1.clustertemplate: Refreshing state...
+    >
+    >   ------------------------------------------------------------------------
+    >
+    >   An execution plan has been generated and is shown below.
+    >   Resource actions are indicated with the following symbols:
+    >     + create
+    >
+    >   Terraform will perform the following actions:
+    >
+    >     # module.cluster.null_resource.kubeconfig will be created
+    >     + resource "null_resource" "kubeconfig" {
+    >         + id       = (known after apply)
+    >         + triggers = {
+    >             + "kubeconfig" = "my-test"
+    >           }
+    >       }
+    >
+    >     # module.cluster.openstack_compute_keypair_v2.keypair will be created
+    >     + resource "openstack_compute_keypair_v2" "keypair" {
+    >         + fingerprint = (known after apply)
+    >         + id          = (known after apply)
+    >         + name        = "my-test"
+    >         + private_key = (known after apply)
+    >         + public_key  = <<~EOT
+    >               ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDf4c9GuWKfTjclpDp779deRXXSgTblrTD6mdgJxwWOC2Vh1Tvicn8qv1tgTV62G49/783lffTKnCTUIFNOCTaaaLpkGDjVdR7ZG0o4u8r7c9bHEPaH/RJirG19wZ1LbTAA0XKGQrhlnCAMG2ruoX8zFz4FUNgpY0qkSLtNaarmFqkNxbg76sXehwzxhOqxLSoimlj4HJ0MUVVJsDUqbIpujJeC6AKKOUmr++h4Y/EnKetUSp/GhfHUD+Lt9BYALOFEyAAv3qyUqSrWT/JeFF//VS+syzoszBqBgQ+tvi4GBDhwnfRM0WgOOusWHXEOhitYwwaQ/6J66RC1zV4ksPOL Cambridge HPC OpenStack
+    >           EOT
+    >         + region      = (known after apply)
+    >       }
+    >
+    >     # module.cluster.openstack_containerinfra_cluster_v1.cluster will be created
+    >     + resource "openstack_containerinfra_cluster_v1" "cluster" {
+    >         + api_address         = (known after apply)
+    >         + cluster_template_id = "d54167d9-495f-437e-88fe-d182b2a230ea"
+    >         + coe_version         = (known after apply)
+    >         + container_version   = (known after apply)
+    >         + create_timeout      = (known after apply)
+    >         + created_at          = (known after apply)
+    >         + discovery_url       = (known after apply)
+    >         + docker_volume_size  = (known after apply)
+    >         + fixed_network       = (known after apply)
+    >         + fixed_subnet        = (known after apply)
+    >         + flavor              = "general.v1.tiny"
+    >         + id                  = (known after apply)
+    >         + keypair             = (known after apply)
+    >         + kubeconfig          = (sensitive value)
+    >         + labels              = {
+    >             + "auto_healing_controller"       = "magnum-auto-healer"
+    >             + "auto_healing_enabled"          = "true"
+    >             + "auto_scaling_enabled"          = "true"
+    >             + "autoscaler_tag"                = "v1.15.2"
+    >             + "cloud_provider_tag"            = "v1.15.0"
+    >             + "etcd_tag"                      = "3.3.17"
+    >             + "heat_container_agent_tag"      = "train-stable-1"
+    >             + "kube_tag"                      = "v1.15.9"
+    >             + "master_lb_floating_ip_enabled" = "true"
+    >             + "max_node_count"                = "2"
+    >             + "min_node_count"                = "1"
+    >             + "monitoring_enabled"            = "true"
+    >             + "tiller_enabled"                = "true"
+    >             + "tiller_tag"                    = "v2.16.1"
+    >             + "use_podman"                    = "true"
+    >           }
+    >         + master_addresses    = (known after apply)
+    >         + master_count        = 1
+    >         + master_flavor       = "general.v1.tiny"
+    >         + name                = "my-test"
+    >         + node_addresses      = (known after apply)
+    >         + node_count          = 1
+    >         + project_id          = (known after apply)
+    >         + region              = (known after apply)
+    >         + stack_id            = (known after apply)
+    >         + updated_at          = (known after apply)
+    >         + user_id             = (known after apply)
+    >       }
+    >
+    >   Plan: 3 to add, 0 to change, 0 to destroy.
+    >
+    >   ------------------------------------------------------------------------
+    >
+    >   Note: You didn't specify an "-out" parameter to save this plan, so Terraform
+    >   can't guarantee that exactly these actions will be performed if
+    >   "terraform apply" is subsequently run.
+    >
+
+
+            #
+            # OK, looks good.
+            # Turns out StackHPC's Terraform module is going to use the public key to create an OpenStack public key.
+            # Makes sense I guess.
+            # The Terraform module doesn't assume any existing infrastructure in OpenStack.
+            #
+
+            #
+            # Given we have edited this module, we can move our tfvars file here too.
+
+            mv "${HOME:?}/terraform.tfvars" .
+
+            terraform plan
+
+    >   ....
+    >     # module.cluster.null_resource.kubeconfig will be created
+    >   ....
+    >     # module.cluster.openstack_compute_keypair_v2.keypair will be created
+    >   ....
+    >     # module.cluster.openstack_containerinfra_cluster_v1.cluster will be created
+    >   ....
+
+            #
+            # Ok, go for it ..
+
+            terraform apply
+
+    >   ....
+    >
+    >   Do you want to perform these actions?
+    >     Terraform will perform the actions described above.
+    >     Only 'yes' will be accepted to approve.
+    >
+    >     Enter a value: yes
+    >
+    >   module.cluster.openstack_compute_keypair_v2.keypair: Creating...
+    >   module.cluster.openstack_compute_keypair_v2.keypair: Creation complete after 1s [id=my-test]
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Creating...
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [10s elapsed]
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [20s elapsed]
+    >   ....
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [50s elapsed]
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [1m0s elapsed]
+    >
+    >   Error: Error waiting for openstack_containerinfra_cluster_v1 d5ff35f1-38a7-4b4c-ac16-68770c80f0c2 to become ready: json: cannot unmarshal object into Go struct field Cluster.health_status_reason of type string
+    >
+    >     on ../../modules/cluster/main.tf line 14, in resource "openstack_containerinfra_cluster_v1" "cluster":
+    >     14: resource "openstack_containerinfra_cluster_v1" "cluster" {
+    >
+
+            # We know it can take up to 10 min to create a cluster ... so not necesarily an error ...
+
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >   | uuid                                 | name     | keypair          | node_count | master_count | status          |
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >   | f5632b7e-87bd-46d6-820f-a20f1b66b6c8 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_COMPLETE |
+    >   | d5ff35f1-38a7-4b4c-ac16-68770c80f0c2 | my-test  | my-test          |          1 |            1 | CREATE_FAILED   |
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+
+        #
+        # OK, not good :-(
+        #
+
+
+    clusterid=$(
+        openstack \
+        --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[1] | .uuid'
+        )
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster show \
+            "${clusterid}"
+
+    >   +---------------------+----------------------------------------------------------------------------------------+
+    >   | Field               | Value                                                                                  |
+    >   +---------------------+----------------------------------------------------------------------------------------+
+    >   | status              | CREATE_FAILED                                                                          |
+    >   | cluster_template_id | d54167d9-495f-437e-88fe-d182b2a230ea                                                   |
+    >   | node_addresses      | []                                                                                     |
+    >   | uuid                | d5ff35f1-38a7-4b4c-ac16-68770c80f0c2                                                   |
+    >   | stack_id            | None                                                                                   |
+    >   | status_reason       | Failed to create trustee or trust for Cluster: d5ff35f1-38a7-4b4c-ac16-68770c80f0c2    |
+    >   | created_at          | 2020-06-10T16:41:14+00:00                                                              |
+    >   | updated_at          | 2020-06-10T16:41:16+00:00                                                              |
+    >   | coe_version         | None                                                                                   |
+    >   | labels              | {'auto_healing_controller': 'magnum-auto-healer', .... 'auto_scaling_enabled': 'true'} |
+    >   | faults              | {}                                                                                     |
+    >   | keypair             | my-test                                                                                |
+    >   | api_address         | None                                                                                   |
+    >   | master_addresses    | []                                                                                     |
+    >   | create_timeout      | None                                                                                   |
+    >   | node_count          | 1                                                                                      |
+    >   | discovery_url       | None                                                                                   |
+    >   | master_count        | 1                                                                                      |
+    >   | container_version   | None                                                                                   |
+    >   | name                | my-test                                                                                |
+    >   | master_flavor_id    | general.v1.tiny                                                                        |
+    >   | flavor_id           | general.v1.tiny                                                                        |
+    >   +---------------------+----------------------------------------------------------------------------------------+
+
+    #
+    # status_reason: "Failed to create trustee or trust for Cluster"
+    # Ahah !
+    # We used the normal credentials rather than the unrestricted ones.
+    #
+
+            # ... try again
+
+            export OS_CLOUD="${cloudname:?}-super"
+
+            terraform apply
+
+    >   module.cluster.openstack_compute_keypair_v2.keypair: Refreshing state... [id=my-test]
+    >   module.cluster.data.openstack_containerinfra_clustertemplate_v1.clustertemplate: Refreshing state...
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Refreshing state... [id=d5ff35f1-38a7-4b4c-ac16-68770c80f0c2]
+    >
+    >   Error: Error retrieving openstack_containerinfra_cluster_v1 d5ff35f1-38a7-4b4c-ac16-68770c80f0c2: json: cannot unmarshal object into Go struct field Cluster.health_status_reason of type string
+
+            #
+            # Looks like Terraform gets confused if there is an old (broken) cluster already there.
+            # Delete the broken cluster.
+
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                coe cluster delete \
+                    "${clusterid}"
+
+    >   Request to delete cluster d5ff35f1-38a7-4b4c-ac16-68770c80f0c2 has been accepted.
+
+
+            # ... try again
+
+            terraform apply
+
+
+    >   module.cluster.openstack_compute_keypair_v2.keypair: Refreshing state... [id=my-test]
+    >   module.cluster.data.openstack_containerinfra_clustertemplate_v1.clustertemplate: Refreshing state...
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Refreshing state... [id=d5ff35f1-38a7-4b4c-ac16-68770c80f0c2]
+    >
+    >   An execution plan has been generated and is shown below.
+    >   Resource actions are indicated with the following symbols:
+    >     + create
+    >
+    >   Terraform will perform the following actions:
+    >
+    >     # module.cluster.null_resource.kubeconfig will be created
+    >     + resource "null_resource" "kubeconfig" {
+    >         + id       = (known after apply)
+    >         + triggers = {
+    >             + "kubeconfig" = "my-test"
+    >           }
+    >       }
+    >
+    >     # module.cluster.openstack_containerinfra_cluster_v1.cluster will be created
+    >     + resource "openstack_containerinfra_cluster_v1" "cluster" {
+    >         + api_address         = (known after apply)
+    >         + cluster_template_id = "d54167d9-495f-437e-88fe-d182b2a230ea"
+    >         + coe_version         = (known after apply)
+    >         + container_version   = (known after apply)
+    >         + create_timeout      = (known after apply)
+    >         + created_at          = (known after apply)
+    >         + discovery_url       = (known after apply)
+    >         + docker_volume_size  = (known after apply)
+    >         + fixed_network       = (known after apply)
+    >         + fixed_subnet        = (known after apply)
+    >         + flavor              = "general.v1.tiny"
+    >         + id                  = (known after apply)
+    >         + keypair             = "my-test"
+    >         + kubeconfig          = (sensitive value)
+    >         + labels              = {
+    >             + "auto_healing_controller"       = "magnum-auto-healer"
+    >             + "auto_healing_enabled"          = "true"
+    >             + "auto_scaling_enabled"          = "true"
+    >             + "autoscaler_tag"                = "v1.15.2"
+    >             + "cloud_provider_tag"            = "v1.15.0"
+    >             + "etcd_tag"                      = "3.3.17"
+    >             + "heat_container_agent_tag"      = "train-stable-1"
+    >             + "kube_tag"                      = "v1.15.9"
+    >             + "master_lb_floating_ip_enabled" = "true"
+    >             + "max_node_count"                = "2"
+    >             + "min_node_count"                = "1"
+    >             + "monitoring_enabled"            = "true"
+    >             + "tiller_enabled"                = "true"
+    >             + "tiller_tag"                    = "v2.16.1"
+    >             + "use_podman"                    = "true"
+    >           }
+    >         + master_addresses    = (known after apply)
+    >         + master_count        = 1
+    >         + master_flavor       = "general.v1.tiny"
+    >         + name                = "my-test"
+    >         + node_addresses      = (known after apply)
+    >         + node_count          = 1
+    >         + project_id          = (known after apply)
+    >         + region              = (known after apply)
+    >         + stack_id            = (known after apply)
+    >         + updated_at          = (known after apply)
+    >         + user_id             = (known after apply)
+    >       }
+    >
+    >   Plan: 2 to add, 0 to change, 0 to destroy.
+    >
+    >   Do you want to perform these actions?
+    >     Terraform will perform the actions described above.
+    >     Only 'yes' will be accepted to approve.
+    >
+    >     Enter a value: yes
+    >
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Creating...
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [10s elapsed]
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [20s elapsed]
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [30s elapsed]
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [40s elapsed]
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [50s elapsed]
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [1m0s elapsed]
+    >
+    >   Error: Error waiting for openstack_containerinfra_cluster_v1 492e28e5-2b54-4450-95c9-f66f921d3e3b to become ready: json: cannot unmarshal object into Go struct field Cluster.health_status_reason of type string
+    >
+    >     on ../../modules/cluster/main.tf line 14, in resource "openstack_containerinfra_cluster_v1" "cluster":
+    >     14: resource "openstack_containerinfra_cluster_v1" "cluster" {
+
+
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                coe cluster list
+
+
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+    >   | uuid                                 | name     | keypair          | node_count | master_count | status             |
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+    >   | f5632b7e-87bd-46d6-820f-a20f1b66b6c8 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_COMPLETE    |
+    >   | 492e28e5-2b54-4450-95c9-f66f921d3e3b | my-test  | my-test          |          1 |            1 | CREATE_IN_PROGRESS |
+    >   +--------------------------------------+----------+------------------+------------+--------------+--------------------+
+
+
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >   | uuid                                 | name     | keypair          | node_count | master_count | status          |
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >   | f5632b7e-87bd-46d6-820f-a20f1b66b6c8 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_COMPLETE |
+    >   | 492e28e5-2b54-4450-95c9-f66f921d3e3b | my-test  | my-test          |          1 |            1 | CREATE_COMPLETE |
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+
+
+
+    clusterid=$(
+        openstack \
+        --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[1] | .uuid'
+        )
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster show \
+            "${clusterid}"
+
+    >   +---------------------+-----------------------------------------------------------------+
+    >   | Field               | Value                                                           |
+    >   +---------------------+-----------------------------------------------------------------+
+    >   | status              | CREATE_COMPLETE                                                 |
+    >   | cluster_template_id | d54167d9-495f-437e-88fe-d182b2a230ea                            |
+    >   | node_addresses      | ['10.0.0.105']                                                  |
+    >   | uuid                | 492e28e5-2b54-4450-95c9-f66f921d3e3b                            |
+    >   | stack_id            | a45bbe9a-088a-4ab1-8260-95f088c4f116                            |
+    >   | status_reason       | None                                                            |
+    >   | created_at          | 2020-06-10T17:35:43+00:00                                       |
+    >   | updated_at          | 2020-06-10T17:41:40+00:00                                       |
+    >   | coe_version         | v1.15.9                                                         |
+    >   | labels              | {'auto_healing_controller': 'magnum-auto-healer'.... }          |
+    >   | faults              |                                                                 |
+    >   | keypair             | my-test                                                         |
+    >   | api_address         | https://128.232.227.226:6443                                    |
+    >   | master_addresses    | ['10.0.0.193']                                                  |
+    >   | create_timeout      | None                                                            |
+    >   | node_count          | 1                                                               |
+    >   | discovery_url       | https://discovery.etcd.io/86fae31d722a068d13aaa444487f8562      |
+    >   | master_count        | 1                                                               |
+    >   | container_version   | 1.12.6                                                          |
+    >   | name                | my-test                                                         |
+    >   | master_flavor_id    | general.v1.tiny                                                 |
+    >   | flavor_id           | general.v1.tiny                                                 |
+    >   +---------------------+-----------------------------------------------------------------+
+
+
+    labels:
+
+    >       {
+    >       'auto_healing_controller': 'magnum-auto-healer',
+    >       'max_node_count': '2',
+    >       'cloud_provider_tag': 'v1.15.0',
+    >       'etcd_tag': '3.3.17',
+    >       'monitoring_enabled': 'true',
+    >       'tiller_enabled': 'true',
+    >       'autoscaler_tag': 'v1.15.2',
+    >       'master_lb_floating_ip_enabled': 'true',
+    >       'min_node_count': '1',
+    >       'tiller_tag': 'v2.16.1',
+    >       'use_podman': 'true',
+    >       'auto_healing_enabled': 'true',
+    >       'heat_container_agent_tag': 'train-stable-1',
+    >       'kube_tag': 'v1.15.9',
+    >       'auto_scaling_enabled': 'true'
+    >       }
+
+
+    #
+    # We can change the way the keypair is loaded.
+    # https://www.terraform.io/docs/providers/openstack/r/compute_keypair_v2.html
+    # We could import the key itself (avoiding the file).
+    # We could import the key by right name, matching the existing one.
+    # https://www.terraform.io/docs/providers/openstack/r/compute_keypair_v2.html
+    #
+    # .. change the Magnum template.
+    # .. change the cluster name.
+    # .. change the public key name.
+    # .. change the max node count.
+    #
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Run Terraform to destroy our cluster.
+#[user@openstacker]
+
+    pushd "${HOME}/iris-magnum"
+        pushd 'terraform/examples/cluster'
+
+            terraform destroy
+
+        popd
+    popd
+
+    >   module.cluster.data.openstack_containerinfra_clustertemplate_v1.clustertemplate: Refreshing state...
+    >   module.cluster.openstack_compute_keypair_v2.keypair: Refreshing state... [id=my-test]
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Refreshing state... [id=492e28e5-2b54-4450-95c9-f66f921d3e3b]
+    >
+    >   Error: Error retrieving openstack_containerinfra_cluster_v1 492e28e5-2b54-4450-95c9-f66f921d3e3b: json: cannot unmarshal object into Go struct field Cluster.health_status_reason of type string
+
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >   | uuid                                 | name     | keypair          | node_count | master_count | status          |
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+    >   | f5632b7e-87bd-46d6-820f-a20f1b66b6c8 | Augustus | zrq-gaia-keypair |          4 |            2 | CREATE_COMPLETE |
+    >   | 492e28e5-2b54-4450-95c9-f66f921d3e3b | my-test  | my-test          |          1 |            1 | CREATE_COMPLETE |
+    >   +--------------------------------------+----------+------------------+------------+--------------+-----------------+
+
+
+# -----------------------------------------------------
+# Show our cluster details.
+#[user@openstacker]
+
+    clusterid=$(
+        openstack \
+        --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[1] | .uuid'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster show \
+            "${clusterid}"
+
+    >   +---------------------+----------------------------------------------------------------------------------------+
+    >   | Field               | Value                                                                                  |
+    >   +---------------------+----------------------------------------------------------------------------------------+
+    >   | status              | CREATE_COMPLETE                                                                        |
+    >   | cluster_template_id | d54167d9-495f-437e-88fe-d182b2a230ea                                                   |
+    >   | node_addresses      | ['10.0.0.105']                                                                         |
+    >   | uuid                | 492e28e5-2b54-4450-95c9-f66f921d3e3b                                                   |
+    >   | stack_id            | a45bbe9a-088a-4ab1-8260-95f088c4f116                                                   |
+    >   | status_reason       | None                                                                                   |
+    >   | created_at          | 2020-06-10T17:35:43+00:00                                                              |
+    >   | updated_at          | 2020-06-10T17:41:40+00:00                                                              |
+    >   | coe_version         | v1.15.9                                                                                |
+    >   | labels              | {'auto_healing_controller': 'magnum-auto-healer', .... 'auto_scaling_enabled': 'true'} |
+    >   | faults              |                                                                                        |
+    >   | keypair             | my-test                                                                                |
+    >   | api_address         | https://128.232.227.226:6443                                                           |
+    >   | master_addresses    | ['10.0.0.193']                                                                         |
+    >   | create_timeout      | None                                                                                   |
+    >   | node_count          | 1                                                                                      |
+    >   | discovery_url       | https://discovery.etcd.io/86fae31d722a068d13aaa444487f8562                             |
+    >   | master_count        | 1                                                                                      |
+    >   | container_version   | 1.12.6                                                                                 |
+    >   | name                | my-test                                                                                |
+    >   | master_flavor_id    | general.v1.tiny                                                                        |
+    >   | flavor_id           | general.v1.tiny                                                                        |
+    >   +---------------------+----------------------------------------------------------------------------------------+
+
+
+    labels {
+        'auto_healing_controller': 'magnum-auto-healer',
+        'max_node_count': '2',
+        'cloud_provider_tag': 'v1.15.0',
+        'etcd_tag': '3.3.17',
+        'monitoring_enabled': 'true',
+        'tiller_enabled': 'true',
+        'autoscaler_tag': 'v1.15.2',
+        'master_lb_floating_ip_enabled': 'true',
+        'min_node_count': '1',
+        'tiller_tag': 'v2.16.1',
+        'use_podman': 'true',
+        'auto_healing_enabled': 'true',
+        'heat_container_agent_tag': 'train-stable-1',
+        'kube_tag': 'v1.15.9',
+        'auto_scaling_enabled': 'true'
+        }
+
+
+    #
+    # So we have a resource that we can't delete ..
+    # Cluster details look healthy enough.
+    #
+
+
+# -----------------------------------------------------
+# Check the state Terraform state information.
+#[user@openstacker]
+
+    pwd
+
+    >   /root/iris-magnum/terraform/examples/cluster
+
+
+    ls -a1
+
+    >   .terraform
+    >   main.tf
+    >   outputs.tf
+    >   terraform.tfstate
+    >   terraform.tfstate.backup
+    >   terraform.tfvars
+    >   variables.tf
+
+
+# -----------------------------------------------------
+# Check the Terraform state file.
+# https://www.terraform.io/docs/state/index.html
+#[user@openstacker]
+
+    jq '.' terraform.tfstate
+
+    >   {
+    >     "version": 4,
+    >     "terraform_version": "0.12.26",
+    >     "serial": 3,
+    >     "lineage": "a5802ba5-55bb-8ea5-5d5d-0dfa6957beed",
+    >     "outputs": {
+    >       "KUBECONFIG": {
+    >         "value": "~/.kube/my-test/config",
+    >         "type": "string"
+    >       }
+    >     },
+    >     "resources": [
+    >       {
+    >         "module": "module.cluster",
+    >         "mode": "data",
+    >         "type": "openstack_containerinfra_clustertemplate_v1",
+    >         "name": "clustertemplate",
+    >         "provider": "module.cluster.provider.openstack",
+    >         "instances": [
+    >           {
+    >             "schema_version": 0,
+    >             "attributes": {
+    >               "apiserver_port": 0,
+    >               "cluster_distro": "fedora-atomic",
+    >               "coe": "kubernetes",
+    >               "created_at": "2020-02-05T18:41:13Z",
+    >               "dns_nameserver": "8.8.8.8",
+    >               "docker_storage_driver": "overlay2",
+    >               "docker_volume_size": 0,
+    >               "external_network_id": "internet",
+    >               "fixed_network": "",
+    >               "fixed_subnet": "",
+    >               "flavor": "general.v1.small",
+    >               "floating_ip_enabled": false,
+    >               "http_proxy": "",
+    >               "https_proxy": "",
+    >               "id": "d54167d9-495f-437e-88fe-d182b2a230ea",
+    >               "image": "FedoraAtomic29-20191126",
+    >               "insecure_registry": "",
+    >               "keypair_id": "",
+    >               "labels": {
+    >                 "auto_healing_controller": "magnum-auto-healer",
+    >                 "auto_healing_enabled": "true",
+    >                 "auto_scaling_enabled": "true",
+    >                 "autoscaler_tag": "v1.15.2",
+    >                 "cloud_provider_tag": "v1.15.0",
+    >                 "etcd_tag": "3.3.17",
+    >                 "heat_container_agent_tag": "train-stable-1",
+    >                 "kube_tag": "v1.15.9",
+    >                 "master_lb_floating_ip_enabled": "true",
+    >                 "max_node_count": "4",
+    >                 "min_node_count": "1",
+    >                 "monitoring_enabled": "true",
+    >                 "tiller_enabled": "true",
+    >                 "tiller_tag": "v2.16.1",
+    >                 "use_podman": "true"
+    >               },
+    >               "master_flavor": "general.v1.tiny",
+    >               "master_lb_enabled": true,
+    >               "name": "kubernetes-1.15.9-20200205",
+    >               "network_driver": "flannel",
+    >               "no_proxy": "",
+    >               "project_id": "481837de9b39406d93c7782d0d29e48e",
+    >               "public": true,
+    >               "region": "RegionOne",
+    >               "registry_enabled": false,
+    >               "server_type": "vm",
+    >               "tls_disabled": false,
+    >               "updated_at": "0001-01-01T00:00:00Z",
+    >               "user_id": "198b4207ef5647c2a7abb783234cf2c0",
+    >               "volume_driver": "cinder"
+    >             }
+    >           }
+    >         ]
+    >       },
+    >       {
+    >         "module": "module.cluster",
+    >         "mode": "managed",
+    >         "type": "null_resource",
+    >         "name": "kubeconfig",
+    >         "provider": "provider.null",
+    >         "instances": []
+    >       },
+    >       {
+    >         "module": "module.cluster",
+    >         "mode": "managed",
+    >         "type": "openstack_compute_keypair_v2",
+    >         "name": "keypair",
+    >         "provider": "module.cluster.provider.openstack",
+    >         "instances": [
+    >           {
+    >             "schema_version": 0,
+    >             "attributes": {
+    >               "fingerprint": "a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4",
+    >               "id": "my-test",
+    >               "name": "my-test",
+    >               "private_key": "",
+    >               "public_key": "ssh-rsa AAAAB3Nz........zV4ksPOL\n",
+    >               "region": "RegionOne",
+    >               "value_specs": null
+    >             },
+    >             "private": "bnVsbA=="
+    >           }
+    >         ]
+    >       },
+    >       {
+    >         "module": "module.cluster",
+    >         "mode": "managed",
+    >         "type": "openstack_containerinfra_cluster_v1",
+    >         "name": "cluster",
+    >         "provider": "module.cluster.provider.openstack",
+    >         "instances": [
+    >           {
+    >             "status": "tainted",
+    >             "schema_version": 0,
+    >             "attributes": {
+    >               "api_address": null,
+    >               "cluster_template_id": "d54167d9-495f-437e-88fe-d182b2a230ea",
+    >               "coe_version": null,
+    >               "container_version": null,
+    >               "create_timeout": null,
+    >               "created_at": null,
+    >               "discovery_url": null,
+    >               "docker_volume_size": null,
+    >               "fixed_network": null,
+    >               "fixed_subnet": null,
+    >               "flavor": "general.v1.tiny",
+    >               "id": "492e28e5-2b54-4450-95c9-f66f921d3e3b",
+    >               "keypair": "my-test",
+    >               "kubeconfig": null,
+    >               "labels": {
+    >                 "auto_healing_controller": "magnum-auto-healer",
+    >                 "auto_healing_enabled": "true",
+    >                 "auto_scaling_enabled": "true",
+    >                 "autoscaler_tag": "v1.15.2",
+    >                 "cloud_provider_tag": "v1.15.0",
+    >                 "etcd_tag": "3.3.17",
+    >                 "heat_container_agent_tag": "train-stable-1",
+    >                 "kube_tag": "v1.15.9",
+    >                 "master_lb_floating_ip_enabled": "true",
+    >                 "max_node_count": "2",
+    >                 "min_node_count": "1",
+    >                 "monitoring_enabled": "true",
+    >                 "tiller_enabled": "true",
+    >                 "tiller_tag": "v2.16.1",
+    >                 "use_podman": "true"
+    >               },
+    >               "master_addresses": null,
+    >               "master_count": 1,
+    >               "master_flavor": "general.v1.tiny",
+    >               "name": "my-test",
+    >               "node_addresses": null,
+    >               "node_count": 1,
+    >               "project_id": null,
+    >               "region": null,
+    >               "stack_id": null,
+    >               "timeouts": null,
+    >               "updated_at": null,
+    >               "user_id": null
+    >             },
+    >             "private": "eyJl........MH19",
+    >             "dependencies": [
+    >               "module.cluster.openstack_compute_keypair_v2.keypair"
+    >             ]
+    >           }
+    >         ]
+    >       }
+    >     ]
+    >   }
+
+    #
+    # Should this be in source control ?
+    # https://stackoverflow.com/questions/38486335/should-i-commit-tfstate-files-to-git
+
+        tfstate contains state needed to decide how to plan changes
+        ** planning is based on the tfstate file, not the target status **
+
+        ** tfstate files can contain clear text secrets **
+
+        *** Terraform assumes you always use the same machine ***
+
+        *** Need to plan out how to manage remote state ***
+
+        *** Without using Amazon S3 ***
+
+
+    #
+    # How to manage Terraform state
+    # https://blog.gruntwork.io/how-to-manage-terraform-state-28f5697e68fa
+
+    #
+    # ** important **
+    # Terraform, VPC, and why you want a tfstate file per env
+    # https://charity.wtf/2016/03/30/terraform-vpc-and-why-you-want-a-tfstate-file-per-env/
+
+
+
+
+    #
+    # Terraform best practice
+    # https://www.terraform.io/docs/cloud/guides/recommended-practices/index.html
+
+    # Terraform want you to rely on Terraform for everything.
+    # https://www.terraform.io/docs/cloud/guides/recommended-practices/part3.3.html#7-restrict-non-terraform-access
+
+
+    #
+    # Terraform import
+    # https://www.terraform.io/docs/import/index.html
+
+        Terraform import can import state, but still needs a resource configuration first.
+
+
+# -----------------------------------------------------
+# Check the contents of the hidden directory.
+#[user@openstacker]
+
+    ls -a1 .terraform
+
+    >   modules
+    >   plugins
+
+
+    ls -a1 .terraform/modules/
+
+    >   modules.json
+
+
+    jq '.' .terraform/modules/modules.json
+
+    >   {
+    >     "Modules": [
+    >       {
+    >         "Key": "",
+    >         "Source": "",
+    >         "Dir": "."
+    >       },
+    >       {
+    >         "Key": "cluster",
+    >         "Source": "../../modules/cluster",
+    >         "Dir": "../../modules/cluster"
+    >       }
+    >     ]
+    >   }
+
+
+    ls -a1 .terraform/plugins/
+
+    >   linux_amd64
+
+
+    ls -a1 .terraform/plugins/linux_amd64/
+
+    >   lock.json
+    >   terraform-provider-null_v2.1.2_x4
+    >   terraform-provider-openstack_v1.28.0_x4
+
+
+    jq '.' .terraform/plugins/linux_amd64/lock.json
+
+    >   {
+    >     "null": "c56285e7bd25a806bf86fcd4893edbe46e621a46e20fe24ef209b6fd0b7cf5fc",
+    >     "openstack": "ac9898bc9f6752fdc9b0351606876b25aa82e1ff29f83857f8da31698ffe656f"
+    >   }
+
+
+    file .terraform/plugins/linux_amd64/terraform-provider-null_v2.1.2_x4
+
+    >   .terraform/plugins/linux_amd64/terraform-provider-null_v2.1.2_x4:
+    >       ELF 64-bit LSB executable,
+    >       x86-64, version 1 (SYSV),
+    >       statically linked,
+    >       Go BuildID=Qb9yerkYc0tx0cF7oLmR/DdvxWICaACRN75d8fn6n/3KobzfYxdNT7tmXXA-OW/ad4b0XoPCm8wgCw_yxbN,
+    >       stripped
+
+
+    file .terraform/plugins/linux_amd64/terraform-provider-openstack_v1.28.0_x4
+
+    >   .terraform/plugins/linux_amd64/terraform-provider-openstack_v1.28.0_x4:
+    >       ELF 64-bit LSB executable,
+    >       x86-64, version 1 (SYSV),
+    >       statically linked,
+    >       Go BuildID=8prDjK-B_6D-9FJnfPLD/BoilDOs7H5ck5i4PJB53/QGe5zlTdridrryiAh8TV/udX_3PoIwfsAOzMYqaAz,
+    >       stripped
+
+
+    #
+    # Terraform stores a copy of the Go binaries that it used to deploy the resources in a hidden directory next to the templates ?
+    # https://www.terraform.io/docs/commands/get.html
+
+        "The modules are downloaded into a local .terraform folder. This folder should not be committed to version control.
+         The .terraform folder is created relative to your current working directory regardless of the dir argument given to this command."
+
+    #
+    # We can check what Terraform intends to do.
+    # https://www.terraform.io/docs/commands/destroy.html
+
+        "The behavior of any terraform destroy command can be previewed at any
+         time with an equivalent terraform plan -destroy command."
+
+
+
+# -----------------------------------------------------
+# So if state is broken, we are stuffed.
+#[user@openstacker]
+
+    terraform plan
+
+    >   Refreshing Terraform state in-memory prior to plan...
+    >   The refreshed state will be used to calculate this plan, but will not be
+    >   persisted to local or remote state storage.
+    >
+    >   module.cluster.openstack_compute_keypair_v2.keypair: Refreshing state... [id=my-test]
+    >   module.cluster.data.openstack_containerinfra_clustertemplate_v1.clustertemplate: Refreshing state...
+    >   module.cluster.openstack_containerinfra_cluster_v1.cluster: Refreshing state... [id=492e28e5-2b54-4450-95c9-f66f921d3e3b]
+    >
+    >   Error: Error retrieving openstack_containerinfra_cluster_v1 492e28e5-2b54-4450-95c9-f66f921d3e3b: json: cannot unmarshal object into Go struct field Cluster.health_status_reason of type string
+
+
+
+    #
+    # Delete everything manually ... re-build using Terraform.
+    #
+
+
+
+
+

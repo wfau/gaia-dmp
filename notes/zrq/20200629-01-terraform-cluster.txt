@@ -1,0 +1,331 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    # Create Kubernetes cluster using Terraform.
+    # Create CephFS router using Terraform.
+    # Create CephFS storage ..
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname terraformer \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/terraform:/terraform:z" \
+        atolmis/terraform-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud, credentials and cluster names.
+#[user@openstacker]
+
+    cloudname=gaia-prod
+    clustername=Tiberius
+    keypairname=zrq-gaia-keypair
+
+    # Export them as TF_VAR variables so that Terraform will pick them up.
+    # TODO find a better way of doing this ?
+
+    export TF_VAR_zrq_cloud_name=${cloudname:?}-super
+    export TF_VAR_zrq_cluster_name=${clustername:?}
+    export TF_VAR_zrq_keypair_name=${keypairname}
+
+
+# -----------------------------------------------------
+# Run Terraform to deploy the example cluster.
+#[user@openstacker]
+
+    pushd "/terraform"
+
+        terraform init
+
+--START--
+Initializing modules...
+
+Initializing the backend...
+
+Initializing provider plugins...
+
+....
+
+Terraform has been successfully initialized!
+--END--
+
+
+        terraform plan
+
+--START--
+....
+  # module.cluster.null_resource.kubeconfig will be created
+  + resource "null_resource" "kubeconfig" {
+    ....
+    }
+
+  # module.cluster.openstack_compute_keypair_v2.zrq_keypair will be created
+  + resource "openstack_compute_keypair_v2" "zrq_keypair" {
+    ....
+    }
+
+  # module.cluster.openstack_containerinfra_cluster_v1.cluster will be created
+  + resource "openstack_containerinfra_cluster_v1" "cluster" {
+    ....
+    }
+....
+--END--
+
+
+        terraform apply
+
+--START--
+....
+....
+module.cluster.openstack_containerinfra_cluster_v1.cluster: Creating...
+module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [10s elapsed]
+module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [20s elapsed]
+module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [30s elapsed]
+module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [40s elapsed]
+module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [50s elapsed]
+module.cluster.openstack_containerinfra_cluster_v1.cluster: Still creating... [1m0s elapsed]
+
+Error: Error waiting for openstack_containerinfra_cluster_v1 e8ba0e2c-f193-4ecb-985b-7647795c95cf to become ready: json: cannot unmarshal object into Go struct field Cluster.health_status_reason of type string
+
+  on modules/cluster/main.tf line 42, in resource "openstack_containerinfra_cluster_v1" "zrq_cluster":
+  42: resource "openstack_containerinfra_cluster_v1" "zrq_cluster" {
+
+--END--
+
+    popd
+
+
+    #
+    # Sync/async mismatch ?
+    # Could the error is caused by the Terraform component timing out.
+    # The asynchronous job to create the cluster is still running.
+    #
+    # There is a timeout param we could try.
+    # https://www.terraform.io/docs/providers/openstack/d/containerinfra_cluster_v1.html#create_timeout
+    #
+
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+--START--
++--------------------------------------+----------+------------------+------------+--------------+-----------------+---------------+
+| uuid                                 | name     | keypair          | node_count | master_count | status          | health_status |
++--------------------------------------+----------+------------------+------------+--------------+-----------------+---------------+
+| e8ba0e2c-f193-4ecb-985b-7647795c95cf | Tiberius | Tiberius-keypair |          1 |            1 | CREATE_COMPLETE | HEALTHY       |
++--------------------------------------+----------+------------------+------------+--------------+-----------------+---------------+
+--END--
+
+
+# -----------------------------------------------------
+# Get the details for our new cluster.
+#[user@openstacker]
+
+    clusterid=$(
+        openstack \
+        --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[] | select(.name | test("^'${clustername:?}'")) | .uuid'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster show \
+            "${clusterid}" \
+                --format json \
+    | jq '.'
+
+
+--START--
+{
+  "status": "CREATE_COMPLETE",
+  "health_status": "HEALTHY",
+  "cluster_template_id": "d54167d9-495f-437e-88fe-d182b2a230ea",
+  "node_addresses": [
+    "10.0.0.173"
+  ],
+  "uuid": "e8ba0e2c-f193-4ecb-985b-7647795c95cf",
+  "stack_id": "96143b34-9b6e-46c8-a01d-f11b6704ba2a",
+  "status_reason": null,
+  "created_at": "2020-06-29T11:36:43+00:00",
+  "updated_at": "2020-06-29T11:42:43+00:00",
+  "coe_version": "v1.15.9",
+  "labels": {
+    "auto_healing_controller": "magnum-auto-healer",
+    "max_node_count": "2",
+    "cloud_provider_tag": "v1.15.0",
+    "etcd_tag": "3.3.17",
+    "monitoring_enabled": "true",
+    "tiller_enabled": "true",
+    "autoscaler_tag": "v1.15.2",
+    "master_lb_floating_ip_enabled": "true",
+    "min_node_count": "1",
+    "tiller_tag": "v2.16.1",
+    "use_podman": "true",
+    "auto_healing_enabled": "true",
+    "heat_container_agent_tag": "train-stable-1",
+    "kube_tag": "v1.15.9",
+    "auto_scaling_enabled": "true"
+  },
+  "labels_overridden": "",
+  "labels_skipped": "",
+  "labels_added": "",
+  "faults": "",
+  "keypair": "Tiberius-keypair",
+  "api_address": "https://128.232.227.164:6443",
+  "master_addresses": [
+    "10.0.0.154"
+  ],
+  "create_timeout": null,
+  "node_count": 1,
+  "discovery_url": "https://discovery.etcd.io/ef693a6de5b095754ba998444017b92f",
+  "master_count": 1,
+  "container_version": "1.12.6",
+  "name": "Tiberius",
+  "master_flavor_id": "general.v1.tiny",
+  "flavor_id": "general.v1.tiny",
+  "health_status_reason": {
+    "tiberius-xyhitetl3tiy-master-0.Ready": "True",
+    "api": "ok",
+    "tiberius-xyhitetl3tiy-node-0.Ready": "True"
+  },
+  "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af"
+}
+--END--
+
+
+# -----------------------------------------------------
+# .. but we don't see the Kubernetes config.
+#[user@openstacker]
+
+    ls -al "${HOME}"
+
+--START--
+....
+-rw-r--r--.  1 root root   18 Jan 30 18:15 .bash_logout
+-rw-r--r--.  1 root root  141 Jan 30 18:15 .bash_profile
+-rw-r--r--.  1 root root  429 Jan 30 18:15 .bashrc
+drwxr-xr-x.  3 root root    6 Jun 25 23:46 .cache
+-rw-r--r--.  1 root root  100 Jan 30 18:15 .cshrc
+-rw-r--r--.  1 root root  129 Jan 30 18:15 .tcshrc
+drwxr-xr-x.  2 root root   96 Jun 29 11:34 .terraform.d
+....
+--END--
+
+    #
+    # Possibly because the cluster create times out ?
+    # In which case, does it get created if we run the apply agaoin ?
+    #
+
+
+
+# -----------------------------------------------------
+# Run Terraform to deploy the example cluster.
+#[user@openstacker]
+
+    pushd "/terraform"
+
+        terraform plan
+
+--START--
+....
+module.cluster.data.openstack_containerinfra_clustertemplate_v1.zrq_clustertemplate: Refreshing state...
+module.cluster.openstack_compute_keypair_v2.zrq_keypair: Refreshing state... [id=Tiberius-keypair]
+module.cluster.openstack_containerinfra_cluster_v1.zrq_cluster: Refreshing state... [id=e8ba0e2c-f193-4ecb-985b-7647795c95cf]
+
+Error: Error retrieving openstack_containerinfra_cluster_v1 e8ba0e2c-f193-4ecb-985b-7647795c95cf: json: cannot unmarshal object into Go struct field Cluster.health_status_reason of type string
+--END--
+
+        #
+        # Not hopeful :-(
+        #
+
+Error: Error retrieving openstack_containerinfra_cluster_v1 e8ba0e2c-f193-4ecb-985b-7647795c95cf: json: cannot unmarshal object into Go struct field Cluster.health_status_reason of type string
+
+
+    #
+    # health_status and health_status_reason were added to Openstack May 2018 (Tue, 15 May 2018 11:34:09 UTC)
+    # https://opendev.org/openstack/magnum/commit/d80febb3842c3bad11cd6a01bae2fb593f0f7812
+    #
+    # Associated issue in Opendev, reviewed by "Bharat Kunwar" <bharat@stackhpc.com> April 2020
+    # (Bharat Kunwar Patch Set 17: Code-Review+2 (1 comment) LGTM Apr 14 9:34)
+    # https://review.opendev.org/#/c/710384/
+    #
+
+    #
+    # Catchup issue logged in Gophercloud on 28 Mar 2020
+    # https://github.com/gophercloud/gophercloud/issues/1909
+    #
+    # Initial fix in Gophercloud merged on 28 Mar 2020
+    # https://github.com/gophercloud/gophercloud/pull/1910
+    #
+    # Bugfix in openstacker/Gophercloud added on 18 May 2020
+    # https://github.com/openstacker/gophercloud/commit/0e847c5268991c17117b2dd111f4ddc7c8a19038
+    #
+    # Merged into gophercloud/gophercloud on 18 May
+    # https://github.com/gophercloud/gophercloud/pull/1968
+    # Discussion about versions :
+    #   - change will probably be in version 0.12
+    #
+
+    #
+    # Terraform includes an older version.
+    # https://github.com/hashicorp/terraform/blob/master/go.mod#L47
+
+	    module github.com/hashicorp/terraform
+
+        require (
+	        cloud.google.com/go v0.45.1
+	        github.com/Azure/azure-sdk-for-go v40.3.0+incompatible
+	        github.com/Azure/go-autorest/autorest v0.10.0
+	        ....
+	        github.com/gophercloud/gophercloud v0.10.1-0.20200424014253-c3bfe50899e5
+
+
+    #
+    # Issue logged and fixed in Terraform OpenStack Provider
+    # https://github.com/terraform-providers/terraform-provider-openstack/issues/1019
+
+
+
+

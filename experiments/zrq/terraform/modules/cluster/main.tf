@@ -21,6 +21,7 @@
  * Early experiments building my own modules.
  * Based on a set of examples from StackHPC.
  * https://github.com/RSE-Cambridge/iris-magnum/tree/master/terraform/examples
+ * Added prefix to the names of objects and variables to see which are modifiable.
  *
  */
 
@@ -29,7 +30,7 @@ terraform {
     }
 
 provider "openstack" {
-    version = "~> 1.25"
+    version = "~> 1.29"
     cloud = var.zrq_cloud_name
     }
 
@@ -38,7 +39,7 @@ resource "openstack_compute_keypair_v2" "zrq_keypair" {
     public_key = var.zrq_keypair_value
     }
 
-resource "openstack_containerinfra_cluster_v1" "cluster" {
+resource "openstack_containerinfra_cluster_v1" "zrq_cluster" {
     name = var.zrq_cluster_name
     cluster_template_id = data.openstack_containerinfra_clustertemplate_v1.zrq_clustertemplate.id
 
@@ -58,23 +59,17 @@ resource "openstack_containerinfra_cluster_v1" "cluster" {
         )
     }
 
-/*
- *
-
 resource "null_resource" "kubeconfig" {
-  triggers = {
-    kubeconfig = var.cluster_name
-  }
+    triggers = {
+        kubeconfig = var.zrq_cluster_name
+        }
 
-  provisioner "local-exec" {
-    command = "mkdir -p ~/.kube/${var.cluster_name}; openstack coe cluster config ${var.cluster_name} --dir ~/.kube/${var.cluster_name} --force;"
-  }
+    provisioner "local-exec" {
+        command = "mkdir -p ~/.kube/${var.zrq_cluster_name}; openstack --os-cloud ${var.zrq_cloud_name} coe cluster config ${var.zrq_cluster_name} --dir ~/.kube/${var.zrq_cluster_name} --force;"
+        }
 
-  depends_on = [openstack_containerinfra_cluster_v1.cluster]
-}
-
- *
- */
+    depends_on = [openstack_containerinfra_cluster_v1.zrq_cluster]
+    }
 
 
 

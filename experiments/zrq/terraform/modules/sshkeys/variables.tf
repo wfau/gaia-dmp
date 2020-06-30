@@ -21,6 +21,7 @@
  * Early experiments building my own modules.
  * Based on a set of examples from StackHPC.
  * https://github.com/RSE-Cambridge/iris-magnum/tree/master/terraform/examples
+ * Added prefix to the names of objects and variables to see which are modifiable.
  *
  */
 

@@ -21,20 +21,12 @@
  * Early experiments building my own modules.
  * Based on a set of examples from StackHPC.
  * https://github.com/RSE-Cambridge/iris-magnum/tree/master/terraform/examples
+ * Added prefix to the names of objects and variables to see which are modifiable.
  *
  */
 
-#
-# Required parameters
-#
-
 variable "zrq_cloud_name" {
     description = "Name of the cloud configuration"
-    type = string
-    }
-
-variable "zrq_keypair_name" {
-    description = "Name of the public keypair to use"
     type = string
     }
 
@@ -43,41 +35,13 @@ variable "zrq_cluster_name" {
     type = string
     }
 
-#
-# Optional parameters
-#
-
-variable "zrq_cluster_template_name" {
-    description = "Name of the magnum cluster template"
-    default = "kubernetes-1.15.9-20200205"
-    type = string
+variable "zrq_magnum_router_name" {
+    description = "Name of the router for the cluster"
+    type        = string
     }
 
-variable "zrq_worker_flavor_name" {
-    description = "Flavor for the worker nodes"
-    default = "general.v1.tiny"
-    type = string
+variable "zrq_magnum_network_id" {
+    description = "Network id for the 'private' network for the cluster"
+    type        = string
     }
-
-variable "zrq_master_flavor_name" {
-    description = "Flavor for the master nodes"
-    default = "general.v1.tiny"
-    type = string
-    }
-
-variable "zrq_master_count" {
-    type    = number
-    default = 1
-    }
-
-variable "zrq_worker_count" {
-    type    = number
-    default = 1
-    }
-
-variable "zrq_max_worker_count" {
-    type    = number
-    default = 2
-    }
-
 

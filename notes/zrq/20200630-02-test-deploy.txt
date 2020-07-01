@@ -48,6 +48,7 @@
         --rm \
         --tty \
         --interactive \
+        --name terraformer \
         --hostname terraformer \
         --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
         --volume "${AGLAIS_CODE}/experiments/zrq/terraform:/terraform:z" \
@@ -63,13 +64,6 @@
     clustername=Tiberius
     keypairname=zrq-gaia-keypair
 
-    # Export them as TF_VAR variables so that Terraform will pick them up.
-    # TODO find a better way of doing this ?
-
-    export TF_VAR_zrq_cloud_name=${cloudname:?}-super
-    export TF_VAR_zrq_cluster_name=${clustername:?}
-    export TF_VAR_zrq_keypair_name=${keypairname}
-
 
 # -----------------------------------------------------
 # Set the Manila API version.
@@ -80,58 +74,16 @@
 
 
 # -----------------------------------------------------
-# Terraform to generate the cluster config.
+# Get the cluster config for kubectl.
 #[user@terraformer]
 
-    pushd "/terraform"
-
-        terraform init
-
---START--
-....
-Terraform has been successfully initialized!
-....
---END--
-
-
-        terraform plan
-
---START--
-....
-module.cluster.openstack_compute_keypair_v2.zrq_keypair: Refreshing state... [id=Tiberius-keypair]
-module.cluster.data.openstack_containerinfra_clustertemplate_v1.zrq_clustertemplate: Refreshing state...
-module.cluster.openstack_containerinfra_cluster_v1.zrq_cluster: Refreshing state... [id=83c8ebdf-4b94-45f1-9dd9-4cecf9278876]
-module.cluster.null_resource.kubeconfig: Refreshing state... [id=3807861621449591121]
-....
-....
-  # module.cluster.null_resource.kubeconfig is tainted, so must be replaced
--/+ resource "null_resource" "kubeconfig" {
-    ....
-    }
-....
---END--
-
-
-        terraform apply
-
---START--
-module.cluster.null_resource.kubeconfig: Destroying... [id=3807861621449591121]
-module.cluster.null_resource.kubeconfig: Destruction complete after 0s
-module.cluster.null_resource.kubeconfig: Creating...
-module.cluster.null_resource.kubeconfig: Provisioning with 'local-exec'...
-module.cluster.null_resource.kubeconfig (local-exec): Executing: ["/bin/sh" "-c" "mkdir -p ~/.kube/Tiberius; openstack --os-cloud gaia-prod-super coe cluster config Tiberius --dir ~/.kube/Tiberius --force;"]
-module.cluster.null_resource.kubeconfig: Still creating... [10s elapsed]
-module.cluster.null_resource.kubeconfig (local-exec): 'SHELL'
-
-
-Error: Error running command 'mkdir -p ~/.kube/Tiberius; openstack --os-cloud gaia-prod-super coe cluster config Tiberius --dir ~/.kube/Tiberius --force;': exit status 1. Output: 'SHELL'
---END--
-
-    popd
-
-    #
-    # TODO - Would it be easier to run the openstack ourselves ?
-    #
+    mkdir -p "${HOME}/.kube/${clustername:?}"
+    openstack \
+        --os-cloud "${cloudname:?}-super" \
+        coe cluster config \
+            "${clustername:?}" \
+            --force \
+            --dir "${HOME}/.kube/${clustername:?}"
 
 
 # -----------------------------------------------------
@@ -187,7 +139,7 @@ deployment.apps/manila-provisioner-deployment created
     kubectl \
         --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
         create \
-            --filename /terraform/modules/manila/cephfs-pvc/manila-storage.yaml
+            --filename /terraform/modules/manila/cephfs-pvc/manila-storage-class.yaml
 
 --START--
 storageclass.storage.k8s.io/manila-cephfs-storage created
@@ -201,12 +153,12 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
     kubectl \
         --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
         create \
-            --filename /terraform/modules/manila/cephfs-pvc/manila-volume-001.yaml
+            --filename /terraform/modules/manila/cephfs-pvc/manila-volume-claim-001.yaml
 
 
 --START--
+persistentvolumeclaim/manila-volume-claim-001 created
 --END--
-
 
 
 # -----------------------------------------------------
@@ -218,8 +170,9 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
         get ServiceAccount
 
 --START--
-....
-....
+NAME                         SECRETS   AGE
+default                      1         38h
+manila-provisioner-account   1         95s
 --END--
 
 
@@ -228,6 +181,11 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
         get ClusterRole
 
 --START--
+NAME                                                                   AGE
+....
+....
+magnum:podsecuritypolicy:privileged                                    38h
+manila-provisioner-role                                                112s
 ....
 ....
 --END--
@@ -238,6 +196,11 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
         get ClusterRoleBinding
 
 --START--
+NAME                                                   AGE
+....
+....
+magnum-auto-healer                                     38h
+manila-provisioner-role-binding                        2m38s
 ....
 ....
 --END--
@@ -248,8 +211,8 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
         get Deployment
 
 --START--
-....
-....
+NAME                            READY   UP-TO-DATE   AVAILABLE   AGE
+manila-provisioner-deployment   1/1     1            1           3m4s
 --END--
 
 
@@ -258,8 +221,8 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
         get StorageClass
 
 --START--
-....
-....
+NAME                    PROVISIONER          AGE
+manila-cephfs-storage   manila-provisioner   2m42s
 --END--
 
     kubectl \
@@ -267,12 +230,9 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
         get PersistentVolumeClaim
 
 --START--
-....
-....
+NAME                      STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS            AGE
+manila-volume-claim-001   Bound    pvc-be8964e1-4308-41ed-a67e-9775cd96a6cd   108G       RWX            manila-cephfs-storage   2m34s
 --END--
-
-
-
 
 
 # -----------------------------------------------------
@@ -290,16 +250,16 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
     "apiVersion": "v1",
     "kind": "ServiceAccount",
     "metadata": {
-        "creationTimestamp": "2020-06-30T03:55:56Z",
+        "creationTimestamp": "2020-07-01T14:33:34Z",
         "name": "manila-provisioner-account",
         "namespace": "default",
-        "resourceVersion": "36085",
+        "resourceVersion": "425780",
         "selfLink": "/api/v1/namespaces/default/serviceaccounts/manila-provisioner-account",
-        "uid": "a4aca7f1-d4f3-42fa-8ba6-f55b8bf63c8c"
+        "uid": "2db01ea8-e8da-4112-8aeb-0eb4e9d779b5"
     },
     "secrets": [
         {
-            "name": "manila-provisioner-account-token-7qzdd"
+            "name": "manila-provisioner-account-token-hv6cp"
         }
     ]
 }
@@ -317,11 +277,11 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
     "apiVersion": "rbac.authorization.k8s.io/v1",
     "kind": "ClusterRole",
     "metadata": {
-        "creationTimestamp": "2020-06-30T03:55:57Z",
+        "creationTimestamp": "2020-07-01T14:33:34Z",
         "name": "manila-provisioner-role",
-        "resourceVersion": "36086",
+        "resourceVersion": "425781",
         "selfLink": "/apis/rbac.authorization.k8s.io/v1/clusterroles/manila-provisioner-role",
-        "uid": "14b4426f-51b7-4d8c-81c7-98464a2dcfff"
+        "uid": "e1292965-fc95-48b1-8a7a-b4ac9de06063"
     },
     "rules": [
         {
@@ -424,11 +384,11 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
     "apiVersion": "rbac.authorization.k8s.io/v1",
     "kind": "ClusterRoleBinding",
     "metadata": {
-        "creationTimestamp": "2020-06-30T03:55:57Z",
+        "creationTimestamp": "2020-07-01T14:33:34Z",
         "name": "manila-provisioner-role-binding",
-        "resourceVersion": "36087",
+        "resourceVersion": "425782",
         "selfLink": "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/manila-provisioner-role-binding",
-        "uid": "a68058b3-f940-41f7-9543-5db44a2e0b7e"
+        "uid": "9e3696c6-a996-4e64-ac83-0d72293ebce6"
     },
     "roleRef": {
         "apiGroup": "rbac.authorization.k8s.io",
@@ -446,7 +406,6 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
 --END--
 
 
-
     kubectl \
         --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
         get Deployment \
@@ -461,16 +420,16 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
         "annotations": {
             "deployment.kubernetes.io/revision": "1"
         },
-        "creationTimestamp": "2020-06-30T18:51:32Z",
+        "creationTimestamp": "2020-07-01T14:33:40Z",
         "generation": 1,
         "labels": {
             "app": "manila-provisioner-app"
         },
         "name": "manila-provisioner-deployment",
         "namespace": "default",
-        "resourceVersion": "203176",
+        "resourceVersion": "425823",
         "selfLink": "/apis/extensions/v1beta1/namespaces/default/deployments/manila-provisioner-deployment",
-        "uid": "d739138d-2537-49e9-8ff6-5cb8878b8a40"
+        "uid": "af712cbc-2cbc-49c8-b055-4b396311dddd"
     },
     "spec": {
         "progressDeadlineSeconds": 600,
@@ -523,16 +482,16 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
         "availableReplicas": 1,
         "conditions": [
             {
-                "lastTransitionTime": "2020-06-30T18:51:34Z",
-                "lastUpdateTime": "2020-06-30T18:51:34Z",
+                "lastTransitionTime": "2020-07-01T14:33:43Z",
+                "lastUpdateTime": "2020-07-01T14:33:43Z",
                 "message": "Deployment has minimum availability.",
                 "reason": "MinimumReplicasAvailable",
                 "status": "True",
                 "type": "Available"
             },
             {
-                "lastTransitionTime": "2020-06-30T18:51:32Z",
-                "lastUpdateTime": "2020-06-30T18:51:34Z",
+                "lastTransitionTime": "2020-07-01T14:33:40Z",
+                "lastUpdateTime": "2020-07-01T14:33:43Z",
                 "message": "ReplicaSet \"manila-provisioner-deployment-7775bd5d9d\" has successfully progressed.",
                 "reason": "NewReplicaSetAvailable",
                 "status": "True",
@@ -555,8 +514,28 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
             --output json
 
 --START--
-....
-....
+{
+    "apiVersion": "storage.k8s.io/v1",
+    "kind": "StorageClass",
+    "metadata": {
+        "creationTimestamp": "2020-07-01T14:34:12Z",
+        "name": "manila-cephfs-storage",
+        "resourceVersion": "425910",
+        "selfLink": "/apis/storage.k8s.io/v1/storageclasses/manila-cephfs-storage",
+        "uid": "d0e66560-8866-4b9f-9217-9554e6c4b2cb"
+    },
+    "parameters": {
+        "backend": "cephfs",
+        "osSecretName": "os-trustee",
+        "osSecretNamespace": "kube-system",
+        "protocol": "CEPHFS",
+        "type": "cephfsnativetype",
+        "zones": "nova"
+    },
+    "provisioner": "manila-provisioner",
+    "reclaimPolicy": "Delete",
+    "volumeBindingMode": "Immediate"
+}
 --END--
 
 
@@ -565,6 +544,424 @@ storageclass.storage.k8s.io/manila-cephfs-storage created
         get PersistentVolumeClaim \
             manila-volume-claim-001 \
             --output json
+
+--START--
+{
+    "apiVersion": "v1",
+    "kind": "PersistentVolumeClaim",
+    "metadata": {
+        "annotations": {
+            "pv.kubernetes.io/bind-completed": "yes",
+            "pv.kubernetes.io/bound-by-controller": "yes",
+            "volume.beta.kubernetes.io/storage-provisioner": "manila-provisioner"
+        },
+        "creationTimestamp": "2020-07-01T14:34:49Z",
+        "finalizers": [
+            "kubernetes.io/pvc-protection"
+        ],
+        "name": "manila-volume-claim-001",
+        "namespace": "default",
+        "resourceVersion": "426059",
+        "selfLink": "/api/v1/namespaces/default/persistentvolumeclaims/manila-volume-claim-001",
+        "uid": "be8964e1-4308-41ed-a67e-9775cd96a6cd"
+    },
+    "spec": {
+        "accessModes": [
+            "ReadWriteMany"
+        ],
+        "resources": {
+            "requests": {
+                "storage": "100Gi"
+            }
+        },
+        "storageClassName": "manila-cephfs-storage",
+        "volumeMode": "Filesystem",
+        "volumeName": "pvc-be8964e1-4308-41ed-a67e-9775cd96a6cd"
+    },
+    "status": {
+        "accessModes": [
+            "ReadWriteMany"
+        ],
+        "capacity": {
+            "storage": "108G"
+        },
+        "phase": "Bound"
+    }
+}
+--END--
+
+
+# -----------------------------------------------------
+# Deploy our local data test.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        create \
+            --filename /terraform/modules/manila/cephfs-pvc/local-data-test.yaml
+
+--START--
+service/local-data-svc created
+error: error parsing /terraform/modules/manila/cephfs-pvc/local-data-test.yaml: error converting YAML to JSON: yaml: line 29: block sequence entries are not allowed in this context
+--END--
+
+#
+# Tools to fix YAML
+# https://yaml-multiline.info/
+# http://www.yamllint.com/
+#
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        delete Service \
+            local-data-svc
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        delete Pod \
+            local-data-pod
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        create \
+            --filename /terraform/modules/manila/cephfs-pvc/local-data-test.yaml
+
+--START--
+service/local-data-svc created
+pod/local-data-pod created
+--END--
+
+
+# -----------------------------------------------------
+# Get the Pod and Service details.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get Pod \
+            local-data-pod \
+            --output json
+
+--START--
+{
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+        "creationTimestamp": "2020-07-01T15:19:55Z",
+        "labels": {
+            "app": "local-data-app"
+        },
+        "name": "local-data-pod",
+        "namespace": "default",
+        "resourceVersion": "434643",
+        "selfLink": "/api/v1/namespaces/default/pods/local-data-pod",
+        "uid": "059bdc10-befa-40db-985e-09344f3f1ebf"
+    },
+    "spec": {
+        "containers": [
+            {
+                "image": "nginx",
+                "imagePullPolicy": "Always",
+                "name": "webserver",
+                "resources": {},
+                "terminationMessagePath": "/dev/termination-log",
+                "terminationMessagePolicy": "File",
+                "volumeMounts": [
+                    {
+                        "mountPath": "/usr/share/nginx/html",
+                        "name": "local-data-vol"
+                    },
+                    {
+                        "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                        "name": "default-token-cnrz8",
+                        "readOnly": true
+                    }
+                ]
+            },
+            {
+                "args": [
+                    "-c",
+                    "while true; do date \u003e\u003e /data/date.txt; sleep 1; done"
+                ],
+                "command": [
+                    "/bin/sh"
+                ],
+                "image": "debian",
+                "imagePullPolicy": "Always",
+                "name": "logger",
+                "resources": {},
+                "terminationMessagePath": "/dev/termination-log",
+                "terminationMessagePolicy": "File",
+                "volumeMounts": [
+                    {
+                        "mountPath": "/data",
+                        "name": "local-data-vol"
+                    },
+                    {
+                        "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                        "name": "default-token-cnrz8",
+                        "readOnly": true
+                    }
+                ]
+            }
+        ],
+        "dnsPolicy": "ClusterFirst",
+        "enableServiceLinks": true,
+        "nodeName": "tiberius-alfjmzar3cyv-node-0",
+        "restartPolicy": "Always",
+        "schedulerName": "default-scheduler",
+        "securityContext": {},
+        "serviceAccount": "default",
+        "serviceAccountName": "default",
+        "terminationGracePeriodSeconds": 30,
+        "tolerations": [
+            {
+                "effect": "NoExecute",
+                "key": "node.kubernetes.io/not-ready",
+                "operator": "Exists",
+                "tolerationSeconds": 300
+            },
+            {
+                "effect": "NoExecute",
+                "key": "node.kubernetes.io/unreachable",
+                "operator": "Exists",
+                "tolerationSeconds": 300
+            }
+        ],
+        "volumes": [
+            {
+                "emptyDir": {},
+                "name": "local-data-vol"
+            },
+            {
+                "name": "default-token-cnrz8",
+                "secret": {
+                    "defaultMode": 420,
+                    "secretName": "default-token-cnrz8"
+                }
+            }
+        ]
+    },
+    "status": {
+        "conditions": [
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2020-07-01T15:19:55Z",
+                "status": "True",
+                "type": "Initialized"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2020-07-01T15:20:12Z",
+                "status": "True",
+                "type": "Ready"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2020-07-01T15:20:12Z",
+                "status": "True",
+                "type": "ContainersReady"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2020-07-01T15:19:55Z",
+                "status": "True",
+                "type": "PodScheduled"
+            }
+        ],
+        "containerStatuses": [
+            {
+                "containerID": "docker://9fe278c62ce7ff698a6da60e1eb05e38b525ab22815c314064ae8fa8eae04170",
+                "image": "docker.io/debian:latest",
+                "imageID": "docker-pullable://docker.io/debian@sha256:46d659005ca1151087efa997f1039ae45a7bf7a2cbbe2d17d3dcbda632a3ee9a",
+                "lastState": {},
+                "name": "logger",
+                "ready": true,
+                "restartCount": 0,
+                "state": {
+                    "running": {
+                        "startedAt": "2020-07-01T15:20:11Z"
+                    }
+                }
+            },
+            {
+                "containerID": "docker://c5fdfa55fe93be59f5ea45bac8b4e72f68b19bde30b196375fbefc9da0279c19",
+                "image": "docker.io/nginx:latest",
+                "imageID": "docker-pullable://docker.io/nginx@sha256:21f32f6c08406306d822a0e6e8b7dc81f53f336570e852e25fbe1e3e3d0d0133",
+                "lastState": {},
+                "name": "webserver",
+                "ready": true,
+                "restartCount": 0,
+                "state": {
+                    "running": {
+                        "startedAt": "2020-07-01T15:20:04Z"
+                    }
+                }
+            }
+        ],
+        "hostIP": "10.0.0.78",
+        "phase": "Running",
+        "podIP": "10.100.1.35",
+        "qosClass": "BestEffort",
+        "startTime": "2020-07-01T15:19:55Z"
+    }
+}
+--END--
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get Service \
+            local-data-svc \
+            --output json
+
+--START--
+{
+    "apiVersion": "v1",
+    "kind": "Service",
+    "metadata": {
+        "creationTimestamp": "2020-07-01T15:19:55Z",
+        "labels": {
+            "app": "local-data-app"
+        },
+        "name": "local-data-svc",
+        "namespace": "default",
+        "resourceVersion": "434580",
+        "selfLink": "/api/v1/namespaces/default/services/local-data-svc",
+        "uid": "6d29b12d-4d17-4b72-b408-17b2bbf48fe0"
+    },
+    "spec": {
+        "clusterIP": "10.254.209.41",
+        "ports": [
+            {
+                "port": 8000,
+                "protocol": "TCP",
+                "targetPort": 80
+            }
+        ],
+        "selector": {
+            "app": "local-data-app"
+        },
+        "sessionAffinity": "None",
+        "type": "ClusterIP"
+    },
+    "status": {
+        "loadBalancer": {}
+    }
+}
+--END--
+
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Setup a port forwarding proxy.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --publish 8000-8007 \
+        --name kubectl-proxy \
+        --hostname kubectl-proxy \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/terraform:/terraform:z" \
+        atolmis/terraform-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud, credentials and cluster names.
+#[user@kubectl-proxy]
+
+    cloudname=gaia-prod
+    clustername=Tiberius
+
+# -----------------------------------------------------
+# Get the cluster config for kubectl.
+#[user@kubectl-proxy]
+
+    mkdir -p "${HOME}/.kube/${clustername:?}"
+    openstack \
+        --os-cloud "${cloudname:?}-super" \
+        coe cluster config \
+            "${clustername:?}" \
+            --force \
+            --dir "${HOME}/.kube/${clustername:?}"
+
+# -----------------------------------------------------
+# Setup a port forwarding proxy.
+#[user@kubectl-proxy]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        port-forward \
+            --address 0.0.0.0 \
+            svc/local-data-svc \
+                8000
+
+--START--
+Forwarding from 0.0.0.0:8000 -> 80
+
+Handling connection for 8000
+Handling connection for 8000
+Handling connection for 8000
+Handling connection for 8000
+....
+....
+--END--
+
+    # I'm guessing the '80' is the port 80 on the target Pod that the Service points to.
+    # Which implies a Service is an abstract thing that points to a port on a real Pod.
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Get the mapped portnumber.
+#[user@desktop]
+
+    baseport=$(
+        podman inspect \
+            kubectl-proxy \
+        | jq -r '
+            .[0]
+          | .NetworkSettings.Ports[]
+          | select(.containerPort == 8000)
+          | .hostPort
+          '
+        )
+
+    echo "Base port [${baseport}]"
+
+# -----------------------------------------------------
+# Get the data file.
+#[user@desktop]
+
+    curl --silent "http://localhost:$((baseport))/date.txt" | head
+
+--START--
+Wed Jul  1 15:20:11 UTC 2020
+Wed Jul  1 15:20:12 UTC 2020
+Wed Jul  1 15:20:13 UTC 2020
+Wed Jul  1 15:20:14 UTC 2020
+....
+....
+--END--
+
+
+    curl --silent "http://localhost:$((baseport))/date.txt" | tail
+
+--START--
+....
+....
+Wed Jul  1 16:32:49 UTC 2020
+Wed Jul  1 16:32:50 UTC 2020
+Wed Jul  1 16:32:51 UTC 2020
+--END--
+
 
 
 

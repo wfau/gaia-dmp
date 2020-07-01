@@ -1,0 +1,571 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    # Follow on from 20200629-04-cephfs-router
+    # Based on example from StackHPC
+    # https://github.com/RSE-Cambridge/iris-magnum/tree/master/manila-cephfs-pvc
+
+    # StackHPC example is based on manila-provisioner example.
+    # https://github.com/kubernetes/cloud-provider-openstack/tree/master/examples/manila-provisioner/cephfs
+    # ... which is no longer available.
+
+    # ... replaced by manila-csi-plugin
+    # https://github.com/kubernetes/cloud-provider-openstack/tree/master/examples/manila-csi-plugin
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname terraformer \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/terraform:/terraform:z" \
+        atolmis/terraform-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud, credentials and cluster names.
+#[user@terraformer]
+
+    cloudname=gaia-prod
+    clustername=Tiberius
+    keypairname=zrq-gaia-keypair
+
+    # Export them as TF_VAR variables so that Terraform will pick them up.
+    # TODO find a better way of doing this ?
+
+    export TF_VAR_zrq_cloud_name=${cloudname:?}-super
+    export TF_VAR_zrq_cluster_name=${clustername:?}
+    export TF_VAR_zrq_keypair_name=${keypairname}
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@terraformer]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# Terraform to generate the cluster config.
+#[user@terraformer]
+
+    pushd "/terraform"
+
+        terraform init
+
+--START--
+....
+Terraform has been successfully initialized!
+....
+--END--
+
+
+        terraform plan
+
+--START--
+....
+module.cluster.openstack_compute_keypair_v2.zrq_keypair: Refreshing state... [id=Tiberius-keypair]
+module.cluster.data.openstack_containerinfra_clustertemplate_v1.zrq_clustertemplate: Refreshing state...
+module.cluster.openstack_containerinfra_cluster_v1.zrq_cluster: Refreshing state... [id=83c8ebdf-4b94-45f1-9dd9-4cecf9278876]
+module.cluster.null_resource.kubeconfig: Refreshing state... [id=3807861621449591121]
+....
+....
+  # module.cluster.null_resource.kubeconfig is tainted, so must be replaced
+-/+ resource "null_resource" "kubeconfig" {
+    ....
+    }
+....
+--END--
+
+
+        terraform apply
+
+--START--
+module.cluster.null_resource.kubeconfig: Destroying... [id=3807861621449591121]
+module.cluster.null_resource.kubeconfig: Destruction complete after 0s
+module.cluster.null_resource.kubeconfig: Creating...
+module.cluster.null_resource.kubeconfig: Provisioning with 'local-exec'...
+module.cluster.null_resource.kubeconfig (local-exec): Executing: ["/bin/sh" "-c" "mkdir -p ~/.kube/Tiberius; openstack --os-cloud gaia-prod-super coe cluster config Tiberius --dir ~/.kube/Tiberius --force;"]
+module.cluster.null_resource.kubeconfig: Still creating... [10s elapsed]
+module.cluster.null_resource.kubeconfig (local-exec): 'SHELL'
+
+
+Error: Error running command 'mkdir -p ~/.kube/Tiberius; openstack --os-cloud gaia-prod-super coe cluster config Tiberius --dir ~/.kube/Tiberius --force;': exit status 1. Output: 'SHELL'
+--END--
+
+    popd
+
+    #
+    # TODO - Would it be easier to run the openstack ourselves ?
+    #
+
+
+# -----------------------------------------------------
+# Check kubectl can access our cluster.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        cluster-info
+
+--START--
+Kubernetes master is running at https://128.232.227.203:6443
+Heapster is running at https://128.232.227.203:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+CoreDNS is running at https://128.232.227.203:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+--END--
+
+
+# -----------------------------------------------------
+# Create the ServiceAccount, ClusterRole and ClusterRoleBinding.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        create \
+            --filename /terraform/modules/manila/cephfs-pvc/manila-account.yaml
+
+
+--START--
+serviceaccount/manila-provisioner-account created
+clusterrole.rbac.authorization.k8s.io/manila-provisioner-role created
+clusterrolebinding.rbac.authorization.k8s.io/manila-provisioner-role-binding created
+--END--
+
+
+# -----------------------------------------------------
+# Create the manila-provisioner Deployment.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        create \
+            --filename /terraform/modules/manila/cephfs-pvc/manila-deployment.yaml
+
+--START--
+deployment.apps/manila-provisioner-deployment created
+--END--
+
+
+# -----------------------------------------------------
+# Create the manila-cephfs-share StorageClass.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        create \
+            --filename /terraform/modules/manila/cephfs-pvc/manila-storage.yaml
+
+--START--
+storageclass.storage.k8s.io/manila-cephfs-storage created
+--END--
+
+
+# -----------------------------------------------------
+# Create a PersistentVolumeClaim.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        create \
+            --filename /terraform/modules/manila/cephfs-pvc/manila-volume-001.yaml
+
+
+--START--
+--END--
+
+
+
+# -----------------------------------------------------
+# Check our resources ..
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get ServiceAccount
+
+--START--
+....
+....
+--END--
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get ClusterRole
+
+--START--
+....
+....
+--END--
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get ClusterRoleBinding
+
+--START--
+....
+....
+--END--
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get Deployment
+
+--START--
+....
+....
+--END--
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get StorageClass
+
+--START--
+....
+....
+--END--
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get PersistentVolumeClaim
+
+--START--
+....
+....
+--END--
+
+
+
+
+
+# -----------------------------------------------------
+# Check our resources ..
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get ServiceAccount \
+            manila-provisioner-account \
+            --output json
+
+--START--
+{
+    "apiVersion": "v1",
+    "kind": "ServiceAccount",
+    "metadata": {
+        "creationTimestamp": "2020-06-30T03:55:56Z",
+        "name": "manila-provisioner-account",
+        "namespace": "default",
+        "resourceVersion": "36085",
+        "selfLink": "/api/v1/namespaces/default/serviceaccounts/manila-provisioner-account",
+        "uid": "a4aca7f1-d4f3-42fa-8ba6-f55b8bf63c8c"
+    },
+    "secrets": [
+        {
+            "name": "manila-provisioner-account-token-7qzdd"
+        }
+    ]
+}
+--END--
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get ClusterRole \
+            manila-provisioner-role \
+            --output json
+
+--START--
+{
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "ClusterRole",
+    "metadata": {
+        "creationTimestamp": "2020-06-30T03:55:57Z",
+        "name": "manila-provisioner-role",
+        "resourceVersion": "36086",
+        "selfLink": "/apis/rbac.authorization.k8s.io/v1/clusterroles/manila-provisioner-role",
+        "uid": "14b4426f-51b7-4d8c-81c7-98464a2dcfff"
+    },
+    "rules": [
+        {
+            "apiGroups": [
+                ""
+            ],
+            "resources": [
+                "secrets"
+            ],
+            "verbs": [
+                "create",
+                "get",
+                "delete"
+            ]
+        },
+        {
+            "apiGroups": [
+                ""
+            ],
+            "resources": [
+                "endpoints"
+            ],
+            "verbs": [
+                "get",
+                "create",
+                "update",
+                "delete"
+            ]
+        },
+        {
+            "apiGroups": [
+                ""
+            ],
+            "resources": [
+                "persistentvolumes"
+            ],
+            "verbs": [
+                "get",
+                "list",
+                "watch",
+                "create",
+                "delete"
+            ]
+        },
+        {
+            "apiGroups": [
+                ""
+            ],
+            "resources": [
+                "persistentvolumeclaims"
+            ],
+            "verbs": [
+                "get",
+                "list",
+                "watch",
+                "update"
+            ]
+        },
+        {
+            "apiGroups": [
+                "storage.k8s.io"
+            ],
+            "resources": [
+                "storageclasses"
+            ],
+            "verbs": [
+                "get",
+                "list",
+                "watch"
+            ]
+        },
+        {
+            "apiGroups": [
+                ""
+            ],
+            "resources": [
+                "events"
+            ],
+            "verbs": [
+                "list",
+                "watch",
+                "create",
+                "update",
+                "patch"
+            ]
+        }
+    ]
+}
+--END--
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get ClusterRoleBinding \
+            manila-provisioner-role-binding \
+            --output json
+
+--START--
+{
+    "apiVersion": "rbac.authorization.k8s.io/v1",
+    "kind": "ClusterRoleBinding",
+    "metadata": {
+        "creationTimestamp": "2020-06-30T03:55:57Z",
+        "name": "manila-provisioner-role-binding",
+        "resourceVersion": "36087",
+        "selfLink": "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/manila-provisioner-role-binding",
+        "uid": "a68058b3-f940-41f7-9543-5db44a2e0b7e"
+    },
+    "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "ClusterRole",
+        "name": "manila-provisioner-role"
+    },
+    "subjects": [
+        {
+            "kind": "ServiceAccount",
+            "name": "manila-provisioner-account",
+            "namespace": "default"
+        }
+    ]
+}
+--END--
+
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get Deployment \
+            manila-provisioner-deployment \
+            --output json
+
+--START--
+{
+    "apiVersion": "extensions/v1beta1",
+    "kind": "Deployment",
+    "metadata": {
+        "annotations": {
+            "deployment.kubernetes.io/revision": "1"
+        },
+        "creationTimestamp": "2020-06-30T18:51:32Z",
+        "generation": 1,
+        "labels": {
+            "app": "manila-provisioner-app"
+        },
+        "name": "manila-provisioner-deployment",
+        "namespace": "default",
+        "resourceVersion": "203176",
+        "selfLink": "/apis/extensions/v1beta1/namespaces/default/deployments/manila-provisioner-deployment",
+        "uid": "d739138d-2537-49e9-8ff6-5cb8878b8a40"
+    },
+    "spec": {
+        "progressDeadlineSeconds": 600,
+        "replicas": 1,
+        "revisionHistoryLimit": 10,
+        "selector": {
+            "matchLabels": {
+                "app": "manila-provisioner-app"
+            }
+        },
+        "strategy": {
+            "rollingUpdate": {
+                "maxSurge": "25%",
+                "maxUnavailable": "25%"
+            },
+            "type": "RollingUpdate"
+        },
+        "template": {
+            "metadata": {
+                "creationTimestamp": null,
+                "labels": {
+                    "app": "manila-provisioner-app"
+                }
+            },
+            "spec": {
+                "containers": [
+                    {
+                        "args": [
+                            "--provisioner=manila-provisioner"
+                        ],
+                        "image": "docker.io/k8scloudprovider/manila-provisioner:latest",
+                        "imagePullPolicy": "IfNotPresent",
+                        "name": "manila-provisioner",
+                        "resources": {},
+                        "terminationMessagePath": "/dev/termination-log",
+                        "terminationMessagePolicy": "File"
+                    }
+                ],
+                "dnsPolicy": "ClusterFirst",
+                "restartPolicy": "Always",
+                "schedulerName": "default-scheduler",
+                "securityContext": {},
+                "serviceAccount": "manila-provisioner-account",
+                "serviceAccountName": "manila-provisioner-account",
+                "terminationGracePeriodSeconds": 30
+            }
+        }
+    },
+    "status": {
+        "availableReplicas": 1,
+        "conditions": [
+            {
+                "lastTransitionTime": "2020-06-30T18:51:34Z",
+                "lastUpdateTime": "2020-06-30T18:51:34Z",
+                "message": "Deployment has minimum availability.",
+                "reason": "MinimumReplicasAvailable",
+                "status": "True",
+                "type": "Available"
+            },
+            {
+                "lastTransitionTime": "2020-06-30T18:51:32Z",
+                "lastUpdateTime": "2020-06-30T18:51:34Z",
+                "message": "ReplicaSet \"manila-provisioner-deployment-7775bd5d9d\" has successfully progressed.",
+                "reason": "NewReplicaSetAvailable",
+                "status": "True",
+                "type": "Progressing"
+            }
+        ],
+        "observedGeneration": 1,
+        "readyReplicas": 1,
+        "replicas": 1,
+        "updatedReplicas": 1
+    }
+}
+--END--
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get StorageClass \
+            manila-cephfs-storage \
+            --output json
+
+--START--
+....
+....
+--END--
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get PersistentVolumeClaim \
+            manila-volume-claim-001 \
+            --output json
+
+
+
+

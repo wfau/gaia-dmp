@@ -1,0 +1,456 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    # Follow on from 20200629-04-cephfs-router
+    # Based on example from StackHPC
+    # https://github.com/RSE-Cambridge/iris-magnum/tree/master/manila-cephfs-pvc
+
+    # StackHPC example is based on manila-provisioner example.
+    # https://github.com/kubernetes/cloud-provider-openstack/tree/master/examples/manila-provisioner/cephfs
+    # ... which is no longer available.
+
+    # ... replaced by manila-csi-plugin
+    # https://github.com/kubernetes/cloud-provider-openstack/tree/master/examples/manila-csi-plugin
+
+
+
+# -----------------------------------------------------
+
+
+    manila-provisioner has been replaced by manila-csi-plugin.
+    https://github.com/gman0/cloud-provider-openstack/blob/bb8eecea6387b9ea96d9252cc2defc3c15b1f4cc/docs/using-manila-provisioner.md
+
+
+    Trying to track down what this part of the deployment means :
+        args: [ "--provisioner=manila-provisioner" ]'
+
+    Think I found it here :
+    https://github.com/gman0/cloud-provider-openstack/blob/2bf0046658fb6c2501185507ba9d038901dc6f15/cmd/manila-provisioner/main.go#L33
+        provisionerName = flag.String("provisioner", "externalstorage.k8s.io/manila", "Name of the provisioner. The provisioner will only provision volumes for claims that request a StorageClass with a provisioner field set equal to this name.")
+
+
+    In the deployment, the provisioner arg maps to 'provisionerName' in 'manila-provisioner/main.go' inside the container.
+    manila-deployment.yaml
+
+        args: [ "--provisioner=manila-cephfs-provisioner" ]
+
+    This needs to match the 'provisioner' seting in the StorageClass.
+    manila-storage.yaml
+
+        provisioner: manila-cephfs-provisioner
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname terraformer \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/terraform:/terraform:z" \
+        atolmis/terraform-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud, credentials and cluster names.
+#[user@terraformer]
+
+    cloudname=gaia-prod
+    clustername=Tiberius
+    keypairname=zrq-gaia-keypair
+
+    # Export them as TF_VAR variables so that Terraform will pick them up.
+    # TODO find a better way of doing this ?
+
+    export TF_VAR_zrq_cloud_name=${cloudname:?}-super
+    export TF_VAR_zrq_cluster_name=${clustername:?}
+    export TF_VAR_zrq_keypair_name=${keypairname}
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@terraformer]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# Terraform to generate the cluster config.
+#[user@terraformer]
+
+    pushd "/terraform"
+
+        terraform init
+
+--START--
+....
+Terraform has been successfully initialized!
+....
+--END--
+
+
+        terraform plan
+
+--START--
+....
+module.cluster.data.openstack_containerinfra_clustertemplate_v1.zrq_clustertemplate: Refreshing state...
+module.cluster.openstack_compute_keypair_v2.zrq_keypair: Refreshing state... [id=Tiberius-keypair]
+module.cluster.openstack_containerinfra_cluster_v1.zrq_cluster: Refreshing state... [id=83c8ebdf-4b94-45f1-9dd9-4cecf9278876]
+module.cluster.null_resource.kubeconfig: Refreshing state... [id=7833747910716277865]
+....
+....
+  # module.cluster.null_resource.kubeconfig is tainted, so must be replaced
+-/+ resource "null_resource" "kubeconfig" {
+    ....
+    }
+....
+--END--
+
+
+        terraform apply
+
+--START--
+....
+....
+module.cluster.null_resource.kubeconfig: Destroying... [id=7833747910716277865]
+module.cluster.null_resource.kubeconfig: Destruction complete after 0s
+module.cluster.null_resource.kubeconfig: Creating...
+module.cluster.null_resource.kubeconfig: Provisioning with 'local-exec'...
+module.cluster.null_resource.kubeconfig (local-exec): Executing: ["/bin/sh" "-c" "mkdir -p ~/.kube/Tiberius; openstack --os-cloud gaia-prod-super coe cluster config Tiberius --dir ~/.kube/Tiberius --force;"]
+module.cluster.null_resource.kubeconfig: Still creating... [10s elapsed]
+module.cluster.null_resource.kubeconfig (local-exec): 'SHELL'
+
+Error: Error running command 'mkdir -p ~/.kube/Tiberius; openstack --os-cloud gaia-prod-super coe cluster config Tiberius --dir ~/.kube/Tiberius --force;': exit status 1. Output: 'SHELL'
+--END--
+
+    popd
+
+
+# -----------------------------------------------------
+# Check kubectl can access our cluster.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        cluster-info
+
+--START--
+Kubernetes master is running at https://128.232.227.203:6443
+Heapster is running at https://128.232.227.203:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+CoreDNS is running at https://128.232.227.203:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+--END--
+
+
+# -----------------------------------------------------
+# Create the ServiceAccount, ClusterRole and ClusterRoleBinding.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        create \
+            --filename /terraform/modules/manila/cephfs-pvc/manila-account.yaml
+
+
+--START--
+serviceaccount/manila-provisioner-account created
+clusterrole.rbac.authorization.k8s.io/manila-provisioner-role created
+clusterrolebinding.rbac.authorization.k8s.io/manila-provisioner-role-binding created
+--END--
+
+
+# -----------------------------------------------------
+# Create the manila-provisioner Deployment.
+#[user@terraformer]
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        create \
+            --filename /terraform/modules/manila/cephfs-pvc/manila-provisioner.yaml
+
+--START--
+deployment.apps/manila-provisioner created
+--END--
+
+
+# -----------------------------------------------------
+# Create the manila-cephfs-share StorageClass.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        create \
+            --filename /terraform/modules/manila/cephfs-pvc/manila-storage.yaml
+
+--START--
+storageclass.storage.k8s.io/manila-cephfs-storage created
+--END--
+
+
+# -----------------------------------------------------
+# Create a PersistentVolumeClaim.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        create \
+            --filename /terraform/modules/manila/cephfs-pvc/manila-volume-001.yaml
+
+
+--START--
+persistentvolumeclaim/manila-cephfs-volume-001 created
+--END--
+
+
+# -----------------------------------------------------
+# List our pods.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get pods
+
+--START--
+NAME                                  READY   STATUS    RESTARTS   AGE
+manila-provisioner-5c9cff8b96-js8rd   1/1     Running   0          3m29s
+--END--
+
+
+# -----------------------------------------------------
+# Get details of our manila-provisioner pod.
+#[user@terraformer]
+
+    manilapodid=manila-provisioner-5c9cff8b96-js8rd
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get pod \
+            "${manilapodid:?}" \
+            --output json
+
+--START--
+{
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+        "creationTimestamp": "2020-06-30T05:38:57Z",
+        "generateName": "manila-provisioner-5c9cff8b96-",
+        "labels": {
+            "app": "manila-provisioner-app",
+            "pod-template-hash": "5c9cff8b96"
+        },
+        "name": "manila-provisioner-5c9cff8b96-js8rd",
+        "namespace": "default",
+        "ownerReferences": [
+            {
+                "apiVersion": "apps/v1",
+                "blockOwnerDeletion": true,
+                "controller": true,
+                "kind": "ReplicaSet",
+                "name": "manila-provisioner-5c9cff8b96",
+                "uid": "bdd8c035-74bf-4dd9-ad9a-e1991d1506b2"
+            }
+        ],
+        "resourceVersion": "53539",
+        "selfLink": "/api/v1/namespaces/default/pods/manila-provisioner-5c9cff8b96-js8rd",
+        "uid": "f078cc45-8d76-4004-93ae-89b06cda9e0d"
+    },
+    "spec": {
+        "containers": [
+            {
+                "args": [
+                    "--provisioner=manila-cephfs-provisioner"
+                ],
+                "image": "docker.io/k8scloudprovider/manila-provisioner:latest",
+                "imagePullPolicy": "IfNotPresent",
+                "name": "manila-provisioner",
+                "resources": {},
+                "terminationMessagePath": "/dev/termination-log",
+                "terminationMessagePolicy": "File",
+                "volumeMounts": [
+                    {
+                        "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                        "name": "manila-provisioner-account-token-7qzdd",
+                        "readOnly": true
+                    }
+                ]
+            }
+        ],
+        "dnsPolicy": "ClusterFirst",
+        "enableServiceLinks": true,
+        "nodeName": "tiberius-alfjmzar3cyv-node-0",
+        "restartPolicy": "Always",
+        "schedulerName": "default-scheduler",
+        "securityContext": {},
+        "serviceAccount": "manila-provisioner-account",
+        "serviceAccountName": "manila-provisioner-account",
+        "terminationGracePeriodSeconds": 30,
+        "tolerations": [
+            {
+                "effect": "NoExecute",
+                "key": "node.kubernetes.io/not-ready",
+                "operator": "Exists",
+                "tolerationSeconds": 300
+            },
+            {
+                "effect": "NoExecute",
+                "key": "node.kubernetes.io/unreachable",
+                "operator": "Exists",
+                "tolerationSeconds": 300
+            }
+        ],
+        "volumes": [
+            {
+                "name": "manila-provisioner-account-token-7qzdd",
+                "secret": {
+                    "defaultMode": 420,
+                    "secretName": "manila-provisioner-account-token-7qzdd"
+                }
+            }
+        ]
+    },
+    "status": {
+        "conditions": [
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2020-06-30T05:38:57Z",
+                "status": "True",
+                "type": "Initialized"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2020-06-30T05:39:00Z",
+                "status": "True",
+                "type": "Ready"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2020-06-30T05:39:00Z",
+                "status": "True",
+                "type": "ContainersReady"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2020-06-30T05:38:57Z",
+                "status": "True",
+                "type": "PodScheduled"
+            }
+        ],
+        "containerStatuses": [
+            {
+                "containerID": "docker://e53d36e33314be62a5da086e3503a10360192409b4bd213feda2049cd80f36bf",
+                "image": "docker.io/k8scloudprovider/manila-provisioner:latest",
+                "imageID": "docker-pullable://docker.io/k8scloudprovider/manila-provisioner@sha256:76fcd9376f2cda4a703102fff8eb7c0d5bcd506d30d51468f8fada2bbb40b65a",
+                "lastState": {},
+                "name": "manila-provisioner",
+                "ready": true,
+                "restartCount": 0,
+                "state": {
+                    "running": {
+                        "startedAt": "2020-06-30T05:38:59Z"
+                    }
+                }
+            }
+        ],
+        "hostIP": "10.0.0.78",
+        "phase": "Running",
+        "podIP": "10.100.1.29",
+        "qosClass": "BestEffort",
+        "startTime": "2020-06-30T05:38:57Z"
+    }
+}
+--END--
+
+
+# -----------------------------------------------------
+# Describe our pods.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        describe pods
+
+--START--
+Name:           manila-provisioner-5c9cff8b96-js8rd
+Namespace:      default
+Node:           tiberius-alfjmzar3cyv-node-0/10.0.0.78
+Start Time:     Tue, 30 Jun 2020 05:38:57 +0000
+Labels:         app=manila-provisioner-app
+                pod-template-hash=5c9cff8b96
+Annotations:    <none>
+Status:         Running
+IP:             10.100.1.29
+Controlled By:  ReplicaSet/manila-provisioner-5c9cff8b96
+Containers:
+  manila-provisioner:
+    Container ID:  docker://e53d36e33314be62a5da086e3503a10360192409b4bd213feda2049cd80f36bf
+    Image:         docker.io/k8scloudprovider/manila-provisioner:latest
+    Image ID:      docker-pullable://docker.io/k8scloudprovider/manila-provisioner@sha256:76fcd9376f2cda4a703102fff8eb7c0d5bcd506d30d51468f8fada2bbb40b65a
+    Port:          <none>
+    Host Port:     <none>
+    Args:
+      --provisioner=manila-cephfs-provisioner
+    State:          Running
+      Started:      Tue, 30 Jun 2020 05:38:59 +0000
+    Ready:          True
+    Restart Count:  0
+    Environment:    <none>
+    Mounts:
+      /var/run/secrets/kubernetes.io/serviceaccount from manila-provisioner-account-token-7qzdd (ro)
+Conditions:
+  Type              Status
+  Initialized       True
+  Ready             True
+  ContainersReady   True
+  PodScheduled      True
+Volumes:
+  manila-provisioner-account-token-7qzdd:
+    Type:        Secret (a volume populated by a Secret)
+    SecretName:  manila-provisioner-account-token-7qzdd
+    Optional:    false
+QoS Class:       BestEffort
+Node-Selectors:  <none>
+Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+                 node.kubernetes.io/unreachable:NoExecute for 300s
+Events:
+  Type    Reason     Age    From                                   Message
+  ----    ------     ----   ----                                   -------
+  Normal  Scheduled  3m21s  default-scheduler                      Successfully assigned default/manila-provisioner-5c9cff8b96-js8rd to tiberius-alfjmzar3cyv-node-0
+  Normal  Pulled     3m19s  kubelet, tiberius-alfjmzar3cyv-node-0  Container image "docker.io/k8scloudprovider/manila-provisioner:latest" already present on machine
+  Normal  Created    3m19s  kubelet, tiberius-alfjmzar3cyv-node-0  Created container manila-provisioner
+  Normal  Started    3m19s  kubelet, tiberius-alfjmzar3cyv-node-0  Started container manila-provisioner
+--END--
+
+
+

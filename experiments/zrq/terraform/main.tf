@@ -28,7 +28,6 @@ terraform {
     required_version = ">= 0.12, < 0.13"
     }
 
-
 module "sshkeys" {
     source = "./modules/sshkeys"
     }
@@ -41,6 +40,9 @@ module "cluster" {
 
     zrq_keypair_name  = "${var.zrq_cluster_name}-keypair"
     zrq_keypair_value = module.sshkeys.zrq_keypair_value
+
+    zrq_worker_count = var.zrq_worker_count
+    zrq_max_worker_count = var.zrq_max_worker_count
 
     }
 

@@ -33,11 +33,6 @@ variable "zrq_cloud_name" {
     type = string
     }
 
-variable "zrq_keypair_name" {
-    description = "Name of the public keypair to use"
-    type = string
-    }
-
 variable "zrq_cluster_name" {
     description = "Name of our mangum cluster"
     type = string

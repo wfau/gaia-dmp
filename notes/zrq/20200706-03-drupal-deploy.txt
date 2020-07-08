@@ -1,0 +1,551 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Deploy Drupal in Kubernetes
+    https://medium.com/containerum/how-to-easily-deploy-a-drupal-instance-on-kubernetes-1c091f45dcbb
+
+    https://github.com/docker-library/drupal
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname terraformer \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/terraform:/terraform:z" \
+        atolmis/terraform-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud, credentials and cluster names.
+#[user@terraformer]
+
+    cloudname=gaia-prod
+    clustername=drupal-one
+    keypairname=zrq-gaia-keypair
+
+
+# -----------------------------------------------------
+# Delete any old state.
+#[user@terraformer]
+
+    rm -rf /terraform/.terraform
+    rm -f  /terraform/tfvars
+
+    rm -f  /terraform/terraform.tfsate
+    rm -f  /terraform/terraform.tfsate.backup
+
+# -----------------------------------------------------
+# Create our tfvars file.
+#[user@terraformer]
+
+    cat > "${HOME}/cluster.tfvars" << EOF
+zrq_cloud_name   = "${cloudname:?}-super"
+zrq_cluster_name = "${clustername:?}"
+zrq_worker_count = 8
+zrq_max_worker_count = 10
+EOF
+
+
+# -----------------------------------------------------
+# Run Terraform to deploy our cluster.
+#[user@terraformer]
+
+    pushd "/terraform"
+
+        terraform init
+
+    >   ....
+    >   ....
+    >   Terraform has been successfully initialized!
+
+
+        terraform plan \
+            -var-file "${HOME}/cluster.tfvars"
+
+--START--
+....
+  # module.cluster.null_resource.kubeconfig is tainted, so must be replaced
+-/+ resource "null_resource" "kubeconfig" {
+    ....
+    }
+
+  # module.cluster.openstack_compute_keypair_v2.zrq_keypair must be replaced
+-/+ resource "openstack_compute_keypair_v2" "zrq_keypair" {
+    ....
+    }
+
+  # module.cluster.openstack_containerinfra_cluster_v1.zrq_cluster will be created
+  + resource "openstack_containerinfra_cluster_v1" "zrq_cluster" {
+    ....
+    }
+....
+--END--
+
+
+        terraform apply \
+            -var-file "${HOME}/cluster.tfvars"
+
+
+--START--
+....
+module.cluster.openstack_compute_keypair_v2.zrq_keypair: Creating...
+module.cluster.openstack_compute_keypair_v2.zrq_keypair: Creation complete after 0s [id=drupal-one-keypair]
+....
+module.cluster.openstack_containerinfra_cluster_v1.zrq_cluster: Creation complete after 6m28s [id=4c7361a2-4aa3-46b7-ad3e-524d0ba8f24c]
+....
+--END--
+
+
+    popd
+
+
+# -----------------------------------------------------
+# Check kubectl can get the connection details for our cluster.
+#[user@terraformer]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        cluster-info
+
+--START--
+Kubernetes master is running at https://128.232.227.226:6443
+Heapster is running at https://128.232.227.226:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+CoreDNS is running at https://128.232.227.226:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+--END--
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/kubernetes:/kubernetes:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud, credentials and cluster names.
+#[user@kubernator]
+
+    cloudname=gaia-prod
+    clustername=drupal-one
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube/${clustername:?}"
+    openstack \
+        --os-cloud "${cloudname:?}-super" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube/${clustername:?}"
+
+
+# -----------------------------------------------------
+# Check kubectl can get the connection details for our cluster.
+#[user@kubernator]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        cluster-info
+
+--START--
+Kubernetes master is running at https://128.232.227.226:6443
+Heapster is running at https://128.232.227.226:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+CoreDNS is running at https://128.232.227.226:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+--END--
+
+# -----------------------------------------------------
+# Manually create a Cinder volume for the mariadb database.
+#[user@openstacker]
+
+    mariadbvolname=mariadb-data
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        volume create \
+            --size 10 \
+            "${mariadbvolname:?}"
+
+--START--
++---------------------+--------------------------------------+
+| Field               | Value                                |
++---------------------+--------------------------------------+
+| attachments         | []                                   |
+| availability_zone   | nova                                 |
+| bootable            | false                                |
+| consistencygroup_id | None                                 |
+| created_at          | 2020-07-07T06:43:31.000000           |
+| description         | None                                 |
+| encrypted           | False                                |
+| id                  | cec1da52-5dac-45de-9163-016e02f63ebc |
+| multiattach         | False                                |
+| name                | mariadb-data                         |
+| properties          |                                      |
+| replication_status  | None                                 |
+| size                | 10                                   |
+| snapshot_id         | None                                 |
+| source_volid        | None                                 |
+| status              | creating                             |
+| type                | __DEFAULT__                          |
+| updated_at          | None                                 |
+| user_id             | 98169f87de174ad4ac98c32e59646488     |
++---------------------+--------------------------------------+
+--END--
+
+
+# -----------------------------------------------------
+# Get the volume ID for the Mariadb data volume.
+#[user@kubernator]
+
+    mariadbvolid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            volume list \
+                --format json \
+        | jq -r '.[] |  select(.Name == "'${mariadbvolname:?}'") .ID'
+        )
+
+    echo "Volume [${mariadbvolid:?}]"
+
+--START--
+Volume [cec1da52-5dac-45de-9163-016e02f63ebc]
+--END--
+
+
+# -----------------------------------------------------
+# Deploy MariaDB using the deployment template.
+#[user@kubernator]
+
+    drupalrootpass=########
+
+    databasename=drupaldata
+    databaseuser=albert
+    databasepass=########
+
+    sed '
+        s/DRUPAL-MARIADB-ROOTPASS/'${drupalrootpass}'/
+        s/DRUPAL-MARIADB-DATABASE/'${databasename}'/
+        s/DRUPAL-MARIADB-USERNAME/'${databaseuser}'/
+        s/DRUPAL-MARIADB-PASSWORD/'${databasepass}'/
+        s/DRUPAL-MARIADB-VOLUME/'${mariadbvolid:?}'/
+        ' /kubernetes/drupal/mariadb.yaml \
+    | tee /tmp/mariadb.yaml
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        apply \
+            --filename /tmp/mariadb.yaml
+
+--START--
+service/mariadb-service created
+deployment.extensions/mariadb-deploy created
+--END--
+
+
+# -----------------------------------------------------
+# Manually create a Cinder volume for the drual sites.
+#[user@openstacker]
+
+    drupalvolname=drupal-data
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        volume create \
+            --size 10 \
+            "${drupalvolname:?}"
+
+--START--
++---------------------+--------------------------------------+
+| Field               | Value                                |
++---------------------+--------------------------------------+
+| attachments         | []                                   |
+| availability_zone   | nova                                 |
+| bootable            | false                                |
+| consistencygroup_id | None                                 |
+| created_at          | 2020-07-07T06:44:49.000000           |
+| description         | None                                 |
+| encrypted           | False                                |
+| id                  | 04206e72-e221-4837-a47a-26ccf0ebc39a |
+| multiattach         | False                                |
+| name                | drupal-data                          |
+| properties          |                                      |
+| replication_status  | None                                 |
+| size                | 10                                   |
+| snapshot_id         | None                                 |
+| source_volid        | None                                 |
+| status              | creating                             |
+| type                | __DEFAULT__                          |
+| updated_at          | None                                 |
+| user_id             | 98169f87de174ad4ac98c32e59646488     |
++---------------------+--------------------------------------+
+--END--
+
+# -----------------------------------------------------
+# Get the volume ID for the Drupal data volume.
+#[user@kubernator]
+
+    drupalvolid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            volume list \
+                --format json \
+        | jq -r '.[] |  select(.Name == "'${drupalvolname:?}'") .ID'
+        )
+
+    echo "Volume [${drupalvolid:?}]"
+
+--START--
+Volume [04206e72-e221-4837-a47a-26ccf0ebc39a]
+--END--
+
+
+# -----------------------------------------------------
+# Deploy Drupal using the deployment template.
+#[user@kubernator]
+
+    sed '
+        s/DRUPAL-DRUPAL-VOLUME/'${drupalvolid:?}'/
+        ' /kubernetes/drupal/drupal.yaml \
+    | tee /tmp/drupal.yaml
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        apply \
+            --filename /tmp/drupal.yaml
+
+--START--
+service/drupal-service created
+deployment.extensions/drupal-deploy created
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Fighting Drupal install.
+    # Turns out ... recent developments broke the install and update process.
+    #
+
+
+    # Drupal config
+
+        database hostname is mariadb service name
+
+    # Install composer
+
+        https://getcomposer.org/download/
+
+
+            php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+            php composer-setup.php
+            php -r "unlink('composer-setup.php');"
+
+    # Install unzip
+
+        apt-get update
+        apt-get install unzip
+
+
+    # Install git
+
+        apt-get update
+        apt-get install git
+
+    # Install drush
+
+        /var/local/composer/composer.phar require drush/drush
+
+
+    # Update drupal
+
+        /var/local/composer/composer.phar update
+
+    # Install bee
+
+        /var/local/composer/composer.phar require drupal/bee
+
+    # Install drush
+
+        /var/local/composer/composer.phar require drush/drush
+
+
+    # Update the database
+
+        vendor/bin/drush updatedb
+
+    # Update the install
+
+        /var/local/composer/composer.phar update
+
+        /var/local/composer/composer.phar upgrade
+
+        /var/local/composer/composer.phar outdated "drupal/*"
+
+        /var/local/composer/composer.phar update drupal/core-recommended --with-dependencies
+
+        /var/local/composer/composer.phar update drupal/core --with-dependencies
+
+
+
+
+    https://www.drupal.org/docs/updating-drupal/migrate-composer-project-for-drupal-earlier-than-880
+
+        rm -rf vendor
+
+        /var/local/composer/composer.phar update
+
+        /var/local/composer/composer.phar remove webflo/drupal-core-strict --no-update
+        /var/local/composer/composer.phar remove drupal/core --no-update
+        /var/local/composer/composer.phar require 'composer/installers:^1.7' --no-update
+        rm composer.lock
+        rm -rf vendor
+        /var/local/composer/composer.phar require drupal/core-recommended:^8.8 --update-with-dependencies
+
+
+        git add composer.json composer.lock; git commit -m "Update Drupal to 8.8.0 and use drupal/core-recommended instead of webflo/drupal-core-strict"
+
+
+        #
+        # Updating Drupal 8.6 will be a pain.
+        # https://www.drupal.org/docs/updating-drupal/migrate-composer-project-for-drupal-earlier-than-880
+        # https://www.drupal.org/docs/updating-drupal/update-drupal-core-via-composer
+        # https://www.drupal.org/docs/updating-drupal/update-core-via-drush
+
+
+        # Further reading
+        # https://www.jeffgeerling.com/blog/2019/running-drupal-kubernetes-docker-production
+        # https://medium.com/containerum/how-to-easily-deploy-a-drupal-instance-on-kubernetes-1c091f45dcbb
+        # https://github.com/containerum/containerum
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Start again with a more recent version of Drupal.
+    # https://hub.docker.com/_/drupal/
+    # https://github.com/docker-library/drupal/blob/3db0f5df95a92056ab3ce170d49ca96a1850910a/8.9/apache/Dockerfile
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        exec \
+            --stdin \
+            --tty \
+            drupal-deploy-5d98d948c5-ld4p9 \
+                -- \
+                /bin/bash
+
+
+    apt-get update
+    apt-get install mariadb-client
+
+    databasename=drupaldata
+    databaseuser=albert
+    databasepass=########
+
+    mysql -h  mariadb-service  --user=${databaseuser} --password=${databasepass} --database=${databasename}
+
+--START--
+Welcome to the MariaDB monitor.  Commands end with ; or \g.
+Your MariaDB connection id is 11
+Server version: 10.5.4-MariaDB-1:10.5.4+maria~focal mariadb.org binary distribution
+....
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    # Drupal config
+
+        database name : drupaldata
+        database user : albert
+        database pass : ########
+        database host : mariadb-service
+
+
+# -----------------------------------------------------
+# Install composer
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        exec \
+            --stdin \
+            --tty \
+            drupal-deploy-5d98d948c5-ld4p9 \
+                -- \
+                /bin/bash
+
+    https://getcomposer.org/download/
+
+
+    php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+    php -r "if (hash_file('sha384', 'composer-setup.php') === 'e5325b19b381bfd88ce90a5ddb7823406b2a38cff6bb704b0acc289a09c8128d4a8ce2bbafcd1fcbdc38666422fe2806') { echo 'Installer verified'; } else { echo 'Installer corrupt'; unlink('composer-setup.php'); } echo PHP_EOL;"
+    php composer-setup.php
+    php -r "unlink('composer-setup.php');"
+
+# -----------------------------------------------------
+# Install BEE
+
+    ./composer.phar require drupal/bee
+
+
+# -----------------------------------------------------
+# Install OAuth
+
+    ./composer.phar require drupal/oauth_login_oauth2
+
+
+
+

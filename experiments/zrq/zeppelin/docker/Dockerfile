@@ -26,15 +26,11 @@ LABEL buildtag="${buildtag}"
 LABEL buildtime="${buildtime}"
 LABEL gitrepo="https://github.com/wfau/aglais"
 
-ENV LOG_TAG="[ZEPPELIN]:"
-
 ENV Z_HOME="/zeppelin"
 ENV ZEPPELIN_ADDR="0.0.0.0"
 
 COPY . ${Z_HOME}/
-RUN echo "$LOG_TAG Install Zeppelin binary" && \
-    ls -al ${Z_HOME} && \
-    chown -R root:root ${Z_HOME} && \
+RUN chown -R root:root ${Z_HOME} && \
     mkdir -p ${Z_HOME}/logs ${Z_HOME}/run ${Z_HOME}/webapps && \
     # Allow process to edit /etc/passwd, to create a user entry for zeppelin
     chgrp root /etc/passwd && chmod ug+rw /etc/passwd && \

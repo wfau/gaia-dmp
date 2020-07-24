@@ -65,6 +65,7 @@
 
     mkdir -p "${HOME}/.kube/${clustername:?}"
     openstack \
+        -v -v -v \
         --os-cloud "${cloudname:?}-super" \
         coe cluster config \
             "${clustername:?}" \
@@ -88,19 +89,65 @@
 
 
 # -----------------------------------------------------
+# Install config editing tools.
+#[user@kubernator]
+
+    # TODO - add this to the kubernator image
+    dnf install xmlstarlet
+
+
+    # TODO - add this to the kubernator image
+    mkdir "${HOME:?}/bin"
+    wget -O "${HOME:?}/bin/yq" https://github.com/mikefarah/yq/releases/download/3.3.2/yq_linux_amd64
+    chmod a+x "${HOME:?}/bin/yq"
+
+
+# -----------------------------------------------------
 # Update our Zeppelin deployment template.
 #[user@kubernator]
 
-    sed -i '
-        s/apache\/zeppelin:0.9.0-SNAPSHOT/aglais\/zeppelin:latest/
-        ' /zeppelin/conf/zeppelin-site.xml.template
+    zpimage='aglais/zeppelin:latest'
+    dkimage='aglais/zeppelin:latest'
+    spimage='aglais/spark:latest'
 
-    sed -i '
-        s/apache\/zeppelin:0.9.0-SNAPSHOT/aglais\/zeppelin:latest/
-        ' /zeppelin/k8s/zeppelin-server.yaml
+    filepath=/zeppelin/conf
+    filename=zeppelin-site.xml
+    backup=${filepath:?}/${filename:?}.backup
+    target=${filepath:?}/${filename:?}.template
 
-    # TODO - Change these to use XML and YAML paths.
-    # TODO - Changed in our fork, need to change in our image.
+    mv --force "${target:?}" "${backup:?}"
+
+    xmlstarlet edit \
+         --update "//property[name='zeppelin.k8s.container.image']/value" \
+         --value  "${zpimage:?}" \
+         --update "//property[name='zeppelin.k8s.spark.container.image']/value" \
+         --value  "${spimage:?}" \
+         --update "//property[name='zeppelin.docker.container.image']/value" \
+         --value  "${dkimage:?}" \
+        "${original:?}" \
+    | tee "${template:?}"
+
+
+# -----------------------------------------------------
+# Update our Zeppelin server configuration.
+#[user@kubernator]
+
+    filepath=/zeppelin/k8s
+    filename=zeppelin-server.yaml
+    backup=${filepath:?}/${filename:?}.backup
+    target=${filepath:?}/${filename:?}
+
+    cp --force "${target:?}" "${backup:?}"
+
+    yq write \
+        --inplace \
+        "${target:?}" \
+        'data.ZEPPELIN_K8S_CONTAINER_IMAGE' "${zpimage:?}"
+
+    yq write \
+        --inplace \
+        "${target:?}" \
+        'data.ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE' "${spimage:?}"
 
 
 # -----------------------------------------------------
@@ -257,17 +304,17 @@ EOF
 # Create a PySpark note.
 #[anon-zeppelin]
 
-    %spark.pyspark
-    import random
-    NUM_SAMPLES = 2000000000
+%spark.pyspark
+import random
+NUM_SAMPLES = 2000000000
 
-    def inside(p):
-        x, y = random.random(), random.random()
-        return x*x + y*y < 1
+def inside(p):
+    x, y = random.random(), random.random()
+    return x*x + y*y < 1
 
-    count = sc.parallelize(xrange(0, NUM_SAMPLES)) \
-                 .filter(inside).count()
-    print "Pi is roughly %f" % (4.0 * count / NUM_SAMPLES)
+count = sc.parallelize(xrange(0, NUM_SAMPLES)) \
+             .filter(inside).count()
+print "Pi is roughly %f" % (4.0 * count / NUM_SAMPLES)
 
 
     #
@@ -308,4 +355,67 @@ EOF
     >       ... 13 more
 
 
+    #
+    # Think I might have found the cause.
+    # Tests using the K8s dashboard
+
+    # A pod using an image from atolmis WORKS
+        atolmis/fedora:2019.09.24
+
+    # A pod using an image from aglais FAILS
+         aglais/pyspark:2020.07.22
+
+
+    # The difference is :
+    # atolmis images were created using Docker,
+    # aglais images were created using Buildah.
+
+    # https://github.com/containers/buildah/issues/575#issuecomment-384308227
+
+        This confirms that buildah creates an OCI manifest, the Nexus registry
+        (presumably) accepts it, but then returns it using a Docker schema2
+        Content-Type.
+
+        That ultimately needs to be fixed in Nexus, either to reject OCI input
+        as unrecognized, or to return it correctly (maybe converting to other
+        formats if the client does not support reading OCI).
+
+        It seems, though, that buildah can be forced to upload using the Docker
+        schema2, using something like buildah bud --format=docker. That could
+        be a workaround in the meantime.
+
+
+    #
+    # Build new images and push them to the repo.
+    # notes/zrq/20200724-03-buildah-images.txt
+
+
+
+# -----------------------------------------------------
+# Update our data map.
+#[user@kubernator]
+
+    mapname=zeppelin-server-conf-map
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        patch \
+            configmap "${mapname:?}" \
+            -p '{
+                "data":{
+                    "ZEPPELIN_K8S_CONTAINER_IMAGE":"aglais/zeppelin:latest",
+                    "ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE":"aglais/pyspark-mod:2020.07.24"
+                    }
+                }'
+
+
+    #
+    # OK, got to the next stage ..
+    # PySpark worker launched OK, but fails with Python version errors.
+
+    #
+    # Exception: Python in worker has different version 2.7 than that in driver 3.7,
+    #   PySpark cannot run with different minor versions.
+    #   Please check environment variables PYSPARK_PYTHON and PYSPARK_DRIVER_PYTHON are correctly set.
+    #
 

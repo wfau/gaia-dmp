@@ -62,7 +62,7 @@ variable "zrq_cluster_template_name" {
 
 variable "zrq_worker_flavor_name" {
     description = "Flavor for the worker nodes"
-    default = "general.v1.tiny"
+    default = "general.v1.small"
     type = string
     }
 

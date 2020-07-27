@@ -13,15 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG buildtag
+ARG buildsrc
 
-FROM aglais/zeppelinbase:${buildtag}
+FROM aglais/zeppelinbase:${buildsrc}
 MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
 
+ARG buildsrc
 ARG buildtag
 ARG buildtime
 
 LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+LABEL buildsrc="${buildsrc}"
 LABEL buildtag="${buildtag}"
 LABEL buildtime="${buildtime}"
 LABEL gitrepo="https://github.com/wfau/aglais"

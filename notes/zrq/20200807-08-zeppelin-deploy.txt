@@ -1,0 +1,261 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Deploy Zeppelin with Ingress.
+
+# -----------------------------------------------------
+
+    # Deleted old cluster.
+    # notes/zrq/20200807-04-openstack-delete.txt
+
+    # Created new cluster.
+    # notes/zrq/20200807-05-terraform-create.txt
+
+    # Installed NGINX ingress controller.
+    # notes/zrq/20200807-06-nginx-ingress.txt
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname zepplinator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${ZEPPELIN_CODE}:/zeppelin:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the deployment names.
+#[user@kubernator]
+
+    zeppname=zeppelin-$(date '+%Y%m%d')
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@zepplinator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+    >   'SHELL'
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Install config editing tools.
+# TODO - Add this to the openstack-client image.
+#[user@zepplinator]
+
+    mkdir -p "${HOME:?}/bin"
+    wget  -O "${HOME:?}/bin/yq" https://github.com/mikefarah/yq/releases/download/3.3.2/yq_linux_amd64
+    chmod a+x "${HOME:?}/bin/yq"
+
+
+# -----------------------------------------------------
+# Create a copy of our Zeppelin server configuration.
+#[user@zepplinator]
+
+    # TODO add date stamp to the deployment names
+
+    zpimage='aglais/zeppelin:latest'
+    dkimage='aglais/zeppelin:latest'
+    spimage='aglais/pyspark-mod:latest'
+
+    source=/zeppelin/k8s/zeppelin-server.yaml
+    deploy=/tmp/${zeppname:?}-server.yaml
+
+    cp "${source:?}" "${deploy:?}"
+
+    yq write \
+        --inplace \
+        --doc 0 \
+        "${deploy:?}" \
+        'data.ZEPPELIN_K8S_CONTAINER_IMAGE' \
+            "${zpimage:?}"
+
+    yq write \
+        --inplace \
+        --doc 0 \
+        "${deploy:?}" \
+        'data.ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE' \
+            "${spimage:?}"
+
+    yq write \
+        --inplace \
+        --doc 2 \
+        "${deploy:?}" \
+        'spec.template.spec.containers.[0].image' \
+            "${zpimage:?}"
+
+    diff \
+        --ignore-all-space \
+        "${source:?}" \
+        "${deploy:?}"
+
+    >   31,32c31,32
+    >   <   ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE: spark:2.4.5
+    >   <   ZEPPELIN_K8S_CONTAINER_IMAGE: apache/zeppelin:0.9.0-SNAPSHOT
+    >   ---
+    >   >   ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE: aglais/pyspark-mod:latest
+    >   >   ZEPPELIN_K8S_CONTAINER_IMAGE: aglais/zeppelin:latest
+    >   118c118
+    >   <         image: apache/zeppelin:0.9.0-SNAPSHOT
+    >   ---
+    >   >           image: aglais/zeppelin:latest
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Deploy Zeppelin using our template.
+#[user@zepplinator]
+
+    kubectl apply \
+        --filename \
+            "${deploy:?}"
+
+    >   configmap/zeppelin-server-conf-map created
+    >   configmap/zeppelin-server-conf created
+    >   deployment.apps/zeppelin-server created
+    >   service/zeppelin-server created
+    >   serviceaccount/zeppelin-server created
+    >   role.rbac.authorization.k8s.io/zeppelin-server-role created
+    >   rolebinding.rbac.authorization.k8s.io/zeppelin-server-role-binding created
+
+
+# -----------------------------------------------------
+# Expose Zeppelin with a LoadBalancer.
+#[user@zepplinator]
+
+    # TODO Use the OAuth proxy to protect it
+
+    cat > "/tmp/${zeppname:?}-service.yaml" << EOF
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: ${zeppname:?}-service
+spec:
+  ports:
+    - name: http
+      port: 80
+  selector:
+    app.kubernetes.io/name: zeppelin-server
+  type: LoadBalancer
+EOF
+
+    kubectl apply \
+        --filename \
+            "/tmp/${zeppname:?}-service.yaml"
+
+    >   service/zeppelin-external created
+
+
+# -----------------------------------------------------
+# Get the external address.
+#[user@zepplinator]
+
+    watch \
+        kubectl \
+            get service \
+                "${zeppname:?}-service"
+
+    >   NAME                        TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)        AGE
+    >   zeppelin-20200807-service   LoadBalancer   10.254.138.86   <pending>     80:31256/TCP   63s
+
+    >   NAME                        TYPE           CLUSTER-IP      EXTERNAL-IP       PORT(S)        AGE
+    >   zeppelin-20200807-service   LoadBalancer   10.254.138.86   128.232.227.151   80:31256/TCP   84s
+
+
+    kubectl \
+        --output json \
+        get service \
+            "${zeppname:?}-service" \
+    | jq -r '.status.loadBalancer.ingress[0].ip'
+
+
+    >   128.232.227.151
+
+
+# -----------------------------------------------------
+# Update our external DNS service.
+
+    ....
+    ....
+    aglais-002.metagrid.xyz.    A    128.232.227.151
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Connect to the endpoint, logged in as anonymous.
+#[user@desktop]
+
+    firefox http://aglais-002.metagrid.xyz/ &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Import our test notebook.
+#[user@zeppelin]
+
+    ....
+
+    Bugs:
+
+        Add test notebooks to the deployment.
+
+        First time loading take too long - needs a local registry.
+
+        S3 works for single files, not for directories.
+
+
+
+

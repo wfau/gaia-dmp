@@ -98,7 +98,7 @@
 # -----------------------------------------------------
 
     The S3 API is provided by a proxy handler in front of the Swift API?
-
+    https://docs.openstack.org/swift/latest/overview_architecture.html#proxy-server
 
     Proxy config
     /home/Zarquan/Desktop/projects/WFAU/aglais/external/openstack/swift/doc/saio/swift/proxy-server.conf
@@ -135,22 +135,22 @@
         python3
 
 
-import boto3
-import botocore
+            import boto3
+            import botocore
 
-session = boto3.session.Session()
+            session = boto3.session.Session()
 
-boto3.set_stream_logger(name='botocore')
+            boto3.set_stream_logger(name='botocore')
 
-client = session.client(
-    service_name='s3',
-    region_name='US',
-    endpoint_url='https://cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af',
-    aws_access_key_id='3367....0df9',
-    aws_secret_access_key='4034....aea0',
-    )
+            client = session.client(
+                service_name='s3',
+                region_name='US',
+                endpoint_url='https://cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af',
+                aws_access_key_id='3367....0df9',
+                aws_secret_access_key='4034....aea0',
+                )
 
-client.list_objects(Bucket='albert')
+            client.list_objects(Bucket='albert')
 
     #
     # Ends up stuck in an infinite loop and runs out out stack space.
@@ -166,11 +166,11 @@ client.list_objects(Bucket='albert')
     >   2020-08-10 02:19:06,019 botocore.auth [DEBUG] CanonicalRequest:
     >   HEAD
     >   /swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af/albert
-    >   
+    >
     >   host:cumulus.openstack.hpc.cam.ac.uk:6780
     >   x-amz-content-sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
     >   x-amz-date:20200810T021906Z
-    >   
+    >
     >   host;x-amz-content-sha256;x-amz-date
     >   e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
     >   2020-08-10 02:19:06,019 botocore.auth [DEBUG] StringToSign:
@@ -223,4 +223,120 @@ client.list_objects(Bucket='albert')
     # So this client doesn't work either, but for a different reason ?
     #
 
+    # Different way of using boto ..
+    # https://www.youtube.com/watch?v=BfIKPlUpWgE
+
+            import boto3
+            import botocore
+
+            session = boto3.Session(
+                profile_name='swiftstack-v4'
+                )
+            s3 = session.resource(
+                '3s',
+                endpoint_url='https://cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af'
+                )
+            list(
+                s3.buckets.all()
+                )
+
+    >   ....
+    >   ....
+    >   botocore.exceptions.ProfileNotFound: The config profile (swiftstack-v4) could not be found
+
+    #
+    # .. and another way
+    # (from swift/common/middleware/s3api/s3api.py)
+
+            import boto3
+
+            from boto.s3.connection import S3Connection
+            connection = S3Connection(
+                aws_access_key_id='c2e3....8f61',
+                aws_secret_access_key='baab....ed59',
+                port=8080,
+                host='127.0.0.1',
+                is_secure=False,
+                calling_format=boto.s3.connection.OrdinaryCallingFormat())
+
+
+    >   Traceback (most recent call last):
+    >     File "<stdin>", line 1, in <module>
+    >   ModuleNotFoundError: No module named 'boto'
+
+    # OK, so that is broken too.
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    The s3cmd client works no problems.
+    The boto python client explodes in different ways.
+
+    Using the AWS s3 Java library, looks like the XML response is using the Swift XML schema not the Amazon S3 schema.
+    All the elelemnst are there, just the wrong format.
+
+    The code and schema for generating Amazon S3 responses is there.
+    I just can't find where the server decides which format to respond with.
+    What request criteria does the server look for ?
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+
+    Found some clues.
+    Using the top level URL without path works in browser RESTClient.
+    https://cumulus.openstack.hpc.cam.ac.uk:6780/albert/
+
+
+    Found out how to use anonymous access in the Java client.
+    https://stackoverflow.com/a/53812476
+
+
+    THIS WORKS in Java
+    (*) for the short directory listing
+    (**) fails for the full DR2 parquet data set :-(
+
+        Configuration configuration = new Configuration();
+
+        //configuration.set("fs.s3a.endpoint", "https://cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af/");
+        configuration.set("fs.s3a.endpoint", "https://cumulus.openstack.hpc.cam.ac.uk:6780");
+        //configuration.set("fs.s3a.access.key", "");
+        //configuration.set("fs.s3a.secret.key", "");
+        configuration.set("fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider");
+        configuration.set("fs.s3a.path.style.access", "true");
+        configuration.set("fs.s3a.bucket.probe", "0");
+
+//        URI baseuri = new URI(
+//            "s3a://gaia-dr2-parquet"
+//            );
+        URI baseuri = new URI(
+            "s3a://albert"
+            );
+
+        S3AFileSystem fs = (S3AFileSystem) FileSystem.get(
+            baseuri,
+            configuration
+            );
+
+        Path basepath = new Path(
+            "/"
+            );
+
+        FileStatus check = fs.getFileStatus(
+            basepath
+            );
+
+        if (check.isDirectory())
+            {
+            RemoteIterator<FileStatus> iter = fs.listStatusIterator(basepath);
+            while(iter.hasNext())
+                {
+                FileStatus status = iter.next();
+                log.debug("Node [{}]", status.getPath());
+                }
+            }
 

@@ -1,4 +1,4 @@
-4/*
+/*
  *  Copyright (C) 2020 Royal Observatory, University of Edinburgh, UK
  *
  *  This program is free software: you can redistribute it and/or modify
@@ -25,6 +25,7 @@ import java.net.URISyntaxException;
 import org.apache.hadoop.conf.Configuration ;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.s3a.S3AFileSystem;
@@ -110,7 +111,8 @@ extends TestCase
 
         if (check.isDirectory())
             {
-            RemoteIterator<FileStatus> iter = fs.listStatusIterator(basepath);
+            //RemoteIterator<FileStatus> iter = fs.listStatusIterator(basepath);
+            RemoteIterator<LocatedFileStatus> iter = fs.listFiles(basepath, false);
             while(iter.hasNext())
                 {
                 FileStatus status = iter.next();

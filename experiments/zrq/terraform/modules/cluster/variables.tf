@@ -25,9 +25,9 @@
  *
  */
 
-#
-# Required parameters
-#
+/*
+ * Required parameters
+ */
 
 variable "zrq_cloud_name" {
     description = "Name of the cloud configuration"
@@ -49,42 +49,41 @@ variable "zrq_keypair_value" {
     type = string
     }
 
-#
-# Optional parameters
-#
-
+/*
+ * Optional parameters
+ */
 
 variable "zrq_cluster_template_name" {
     description = "Name of the magnum cluster template"
-    default = "kubernetes-1.15.9-20200205"
+//  default = "kubernetes-1.15.9-20200205"
     type = string
     }
 
 variable "zrq_worker_flavor_name" {
     description = "Flavor for the worker nodes"
-    default = "general.v1.small"
+//  default = "general.v1.tiny"
     type = string
     }
 
 variable "zrq_master_flavor_name" {
     description = "Flavor for the master nodes"
-    default = "general.v1.tiny"
+//  default = "general.v1.tiny"
     type = string
     }
 
 variable "zrq_master_count" {
     type    = number
-    default = 1
+//  default = 1
     }
 
 variable "zrq_worker_count" {
     type    = number
-    default = 1
+//  default = 1
     }
 
 variable "zrq_max_worker_count" {
     type    = number
-    default = 2
+//  default = 2
     }
 
 

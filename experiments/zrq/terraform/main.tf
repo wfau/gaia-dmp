@@ -41,8 +41,14 @@ module "cluster" {
     zrq_keypair_name  = "${var.zrq_cluster_name}-keypair"
     zrq_keypair_value = module.sshkeys.zrq_keypair_value
 
+    zrq_master_count = var.zrq_master_count
     zrq_worker_count = var.zrq_worker_count
     zrq_max_worker_count = var.zrq_max_worker_count
+
+    zrq_master_flavor_name = var.zrq_master_flavor_name
+    zrq_worker_flavor_name = var.zrq_worker_flavor_name
+
+    zrq_cluster_template_name = var.zrq_cluster_template_name
 
     }
 

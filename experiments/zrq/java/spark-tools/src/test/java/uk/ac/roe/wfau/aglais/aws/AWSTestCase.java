@@ -85,15 +85,16 @@ extends TestCase
 
         //configuration.set("fs.s3a.endpoint", "https://cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af/");
         configuration.set("fs.s3a.endpoint", "https://cumulus.openstack.hpc.cam.ac.uk:6780");
+        configuration.set("fs.s3a.path.style.access", "true");
+        configuration.set("fs.s3a.list.version", "2");
+        configuration.set("fs.s3a.bucket.probe", "0");
+        configuration.set("fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider");
         //configuration.set("fs.s3a.access.key", "");
         //configuration.set("fs.s3a.secret.key", "");
-        configuration.set("fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider");
-        configuration.set("fs.s3a.path.style.access", "true");
-        configuration.set("fs.s3a.bucket.probe", "0");
 
         URI baseuri = new URI(
-            "s3a://gaia-dr2-parquet"
-//            "s3a://albert"
+//          "s3a://gaia-dr2-parquet"
+            "s3a://albert"
             );
 
         S3AFileSystem fs = (S3AFileSystem) FileSystem.get(
@@ -109,15 +110,19 @@ extends TestCase
             basepath
             );
 
+        int count = 0 ;
+
         if (check.isDirectory())
             {
             //RemoteIterator<FileStatus> iter = fs.listStatusIterator(basepath);
             RemoteIterator<LocatedFileStatus> iter = fs.listFiles(basepath, false);
-            while(iter.hasNext())
+            for(count = 0 ; iter.hasNext() ; count++)
                 {
                 FileStatus status = iter.next();
-                log.debug("Node [{}]", status.getPath());
+                log.debug("Node [{}][{}]", count, status.getPath());
                 }
             }
+        log.debug("Result [{}]", count);
+        assertEquals(2, count);
         }
     }

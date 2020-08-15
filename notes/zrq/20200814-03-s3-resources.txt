@@ -1,0 +1,936 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Need to create smaller data sets for testing.
+    Ideally, we scan the whole dataset and use the randmon key to select a subset.
+
+    Practically, at this stage, we just copy a subset of parquet files into a separate bucket.
+    We should be able to use the S3 client to do server side copies, using copyObject commands.
+
+    https://stackoverflow.com/questions/56269577/fastest-way-to-do-s3-copy-from-one-bucket-to-another
+    https://stackoverflow.com/a/56284278
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get details of our object store account.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        object store \
+            account show
+
+    >   +------------+---------------------------------------+
+    >   | Field      | Value                                 |
+    >   +------------+---------------------------------------+
+    >   | Account    | AUTH_21b4....63af |
+    >   | Bytes      | 1095496242242                         |
+    >   | Containers | 3                                     |
+    >   | Objects    | 67751                                 |
+    >   +------------+---------------------------------------+
+
+# -----------------------------------------------------
+# List our containers.
+#[user@openstacker]
+
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            container list
+
+    >   +------------------+
+    >   | Name             |
+    >   +------------------+
+    >   | albert           |
+    >   | gaia-dr2-csv     |
+    >   | gaia-dr2-parquet |
+    >   +------------------+
+
+
+# -----------------------------------------------------
+# Configure our S3 client with EC2 credentials.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        ec2 credentials \
+            list
+
+    >   +--------------+--------------+--------------+--------------+
+    >   | Access       | Secret       | Project ID   | User ID      |
+    >   +--------------+--------------+--------------+--------------+
+    >   | 3367....0df9 | 4034....aea0 | 21b4....63af | 9816....6488 |
+    >   | 93d0....f83c | 0e28....25b1 | 08e2....d927 | 9816....6488 |
+    >   | 2a35....a9c2 | 52e4....ec51 | 21b4....63af | 9816....6488 |
+    >   +--------------+--------------+--------------+--------------+
+
+
+    s3cmd \
+        --configure \
+        --config ${HOME}/s3cfg
+
+    >     Access Key: 2a35....a9c2
+    >     Secret Key: 52e4....ec51
+    >     Default Region: US
+    >     S3 Endpoint: cumulus.openstack.hpc.cam.ac.uk:6780
+    >     DNS-style bucket+hostname:port template for accessing a bucket: cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4....63af/%(bucket)
+    >     Encryption password:
+    >     Path to GPG program: /usr/bin/gpg
+    >     Use HTTPS protocol: True
+    >     HTTP Proxy server name:
+    >     HTTP Proxy server port: 0
+
+
+# -----------------------------------------------------
+# Try listing the contents of a bucket.
+#[user@openstacker]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        ls \
+            's3://gaia-dr2-parquet'
+
+    >   2020-04-21 02:04            0  s3://gaia-dr2-parquet/_SUCCESS
+    >   2020-04-21 02:04     74114220  s3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:04    104411815  s3://gaia-dr2-parquet/part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:04     99035704  s3://gaia-dr2-parquet/part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:05     96996784  s3://gaia-dr2-parquet/part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# List all the filenames.
+#[user@openstacker]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        ls \
+            's3://gaia-dr2-parquet' \
+    | tee /tmp/all-full.txt
+
+
+    >   2020-04-21 02:04            0  s3://gaia-dr2-parquet/_SUCCESS
+    >   2020-04-21 02:04     74114220  s3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:04    104411815  s3://gaia-dr2-parquet/part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:04     99035704  s3://gaia-dr2-parquet/part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:05     96996784  s3://gaia-dr2-parquet/part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/all-full.txt
+
+    >   6515 /tmp/all-full.txt
+
+
+    sed -n '
+        s|.*s3://gaia-dr2-parquet/\(.*.snappy.parquet\)|\1|p
+        ' \
+    /tmp/all-list.txt \
+    | tee /tmp/all-names.txt
+
+    >   part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/all-names.txt
+
+    >   6514 /tmp/all-names.txt
+
+
+# -----------------------------------------------------
+# Select a quarter of the files.
+# https://stackoverflow.com/questions/21309020/remove-odd-or-even-lines-from-a-text-file
+# https://stackoverflow.com/a/21309169
+#[user@openstacker]
+
+    sed -n '
+        0~4p
+        ' \
+    /tmp/all-names.txt \
+    | tee /tmp/names-0-4.txt
+
+    >   part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00011-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/names-0-4.txt
+
+    >   1628 /tmp/names-0-4.txt
+
+
+# -----------------------------------------------------
+# Create a new bucket.
+#[user@openstacker]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        mb \
+            's3://gaia-dr2-parquet-0-4'
+
+
+# -----------------------------------------------------
+# Add a copy of the selected files into the new container.
+#[user@openstacker]
+
+    for filename in $(cat /tmp/names-0-4.txt)
+    do
+        echo "File [${filename:?}]"
+        s3cmd \
+            --config ${HOME}/s3cfg \
+            cp \
+                "s3://gaia-dr2-parquet/${filename:?}" \
+                "s3://gaia-dr2-parquet-0-4"
+    done
+
+
+    # parquet-0-4 - FAILS
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Select 1/16 of the files.
+#[user@openstacker]
+
+    sed -n '
+        0~16p
+        ' \
+    /tmp/all-names.txt \
+    | tee /tmp/names-0-16.txt
+
+    >   part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00047-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/names-0-16.txt
+
+    >   407 /tmp/names-0-16.txt
+
+
+# -----------------------------------------------------
+# Create a new bucket.
+#[user@openstacker]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        mb \
+            's3://gaia-dr2-parquet-0-16'
+
+
+# -----------------------------------------------------
+# Add a copy of the selected files into the new container.
+#[user@openstacker]
+
+    for filename in $(cat /tmp/names-0-16.txt)
+    do
+        echo "File [${filename:?}]"
+        s3cmd \
+            --config ${HOME}/s3cfg \
+            cp \
+                "s3://gaia-dr2-parquet/${filename:?}" \
+                "s3://gaia-dr2-parquet-0-16"
+    done
+
+
+
+    # parquet-0-16 - WORKS - 1min 44sec
+    # Long pauses where nothing is happening
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Select 1/8 of the files.
+#[user@openstacker]
+
+    sed -n '
+        0~8p
+        ' \
+    /tmp/all-names.txt \
+    | tee /tmp/names-0-8.txt
+
+    >   part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00023-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/names-0-8.txt
+
+    >   814 /tmp/names-0-8.txt
+
+
+# -----------------------------------------------------
+# Create a new bucket.
+#[user@openstacker]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        mb \
+            's3://gaia-dr2-parquet-0-8'
+
+
+# -----------------------------------------------------
+# Add a copy of the selected files into the new container.
+#[user@openstacker]
+
+    for filename in $(cat /tmp/names-0-8.txt)
+    do
+        echo "File [${filename:?}]"
+        s3cmd \
+            --config ${HOME}/s3cfg \
+            cp \
+                "s3://gaia-dr2-parquet/${filename:?}" \
+                "s3://gaia-dr2-parquet-0-8"
+    done
+
+
+# -----------------------------------------------------
+# Make the container public.
+# https://gist.github.com/alexclifford/b5cd2fbfcbf9e20fe9e2
+#[user@openstacker]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        info \
+            "s3://gaia-dr2-parquet-0-8"
+
+    >   s3://gaia-dr2-parquet-0-8/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       iris-gaia-prod: FULL_CONTROL
+
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        setacl \
+            "s3://gaia-dr2-parquet-0-8" \
+            --acl-public
+
+    >   s3://gaia-dr2-parquet-0-8/: ACL set to Public
+
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        info \
+            "s3://gaia-dr2-parquet-0-8"
+
+    >   s3://gaia-dr2-parquet-0-8/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       iris-gaia-prod: FULL_CONTROL
+    >      URL:       http://cumulus.openstack.hpc.cam.ac.uk:6780/gaia-dr2-parquet-0-8/
+
+
+    # parquet-0-4 - FAILS > 2min
+    # Long pauses where nothing is happening
+    # Disconnects, at least one Pod terminated
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Select 1/32 of the files.
+#[user@openstacker]
+
+    setregex=0~32
+    setname=0-32
+
+    sed -n "
+        ${setregex:?}p
+        " \
+    '/tmp/all-names.txt' \
+    | tee "/tmp/names-${setname:?}.txt"
+
+    >   part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00095-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00127-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l "/tmp/names-${setname:?}.txt"
+
+    >   203 /tmp/names-0-32.txt
+
+
+# -----------------------------------------------------
+# Create a new bucket.
+#[user@openstacker]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        mb \
+            "s3://gaia-dr2-parquet-${setname:?}" \
+            --acl-public
+
+
+    >   Bucket 's3://gaia-dr2-parquet-0-32/' created
+
+
+# -----------------------------------------------------
+# Add a copy of the selected files into the new container.
+#[user@openstacker]
+
+    for filename in $(cat "/tmp/names-${setname:?}.txt")
+    do
+        echo "File [${filename:?}]"
+        s3cmd \
+            --config ${HOME}/s3cfg \
+            cp \
+                "s3://gaia-dr2-parquet/${filename:?}" \
+                "s3://gaia-dr2-parquet-${setname:?}"
+    done
+
+
+# -----------------------------------------------------
+# Make the container public.
+# https://gist.github.com/alexclifford/b5cd2fbfcbf9e20fe9e2
+#[user@openstacker]
+
+    #
+    # Making it pubilc when created didn't work.
+    #
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        setacl \
+            "s3://gaia-dr2-parquet-${setname:?}" \
+            --acl-public
+
+    >   s3://gaia-dr2-parquet-0-8/: ACL set to Public
+
+
+    #
+    # Making it pubilc here didn't work either.
+    # Needed to click the [] public check box on the GUI.
+    #
+
+
+    # parquet-0-32 - WORKS
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Select 1/2 of the files.
+#[user@openstacker]
+
+    setregex=0~2
+    setname=0-2
+
+    sed -n "
+        ${setregex:?}p
+        " \
+    '/tmp/all-names.txt' \
+    | tee "/tmp/names-${setname:?}.txt"
+
+    >   part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00005-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l "/tmp/names-${setname:?}.txt"
+
+    >   3257 /tmp/names-0-2.txt
+
+
+# -----------------------------------------------------
+# Create a new bucket.
+#[user@openstacker]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        mb \
+            --acl-public \
+            "s3://gaia-dr2-parquet-${setname:?}"
+
+
+    >   Bucket 's3://gaia-dr2-parquet-0-2/' created
+
+
+# -----------------------------------------------------
+# Add a copy of the selected files into the new container.
+#[user@openstacker]
+
+    for filename in $(cat "/tmp/names-${setname:?}.txt")
+    do
+        echo "File [${filename:?}]"
+        s3cmd \
+            --config ${HOME}/s3cfg \
+            cp \
+                "s3://gaia-dr2-parquet/${filename:?}" \
+                "s3://gaia-dr2-parquet-${setname:?}"
+    done
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Cluster is made up of 6 general.v1.medium nodes.
+
+          6 x (14 cores, 45Gi memory)
+        = 84 cores, 270Gi memory
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    spark.driver.cores      10
+    spark.driver.memory     20g
+    spark.executor.cores     4
+    spark.executor.memory   10g
+    spark.executor.instances 6
+
+    20+(6*10) = 80g
+
+    albert                - PASS 13s
+    gaia-dr2-parquet-0-32 - PASS 2s
+    gaia-dr2-parquet-0-16 - PASS 2s
+    gaia-dr2-parquet-0-8  - PASS 3s
+    gaia-dr2-parquet-0-4  - FAIL - stuck in PENDING
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+# -----------------------------------------------------
+
+    spark.driver.cores      10
+    spark.driver.memory     20g
+    spark.executor.cores     4
+    spark.executor.memory   10g
+    spark.executor.instances 8
+
+    20+(8*10) = 100g
+
+    albert                - PASS 16s
+    gaia-dr2-parquet-0-32 - PASS 2s
+    gaia-dr2-parquet-0-16 - PASS 3s
+    gaia-dr2-parquet-0-8  - PASS 3s
+    gaia-dr2-parquet-0-4  - FAIL - stuck in PENDING
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+
+    Workers sitting in limbo.
+    Ignoring hertbeat responses and timing out on missing responses
+    both at the same time.
+
+        WARN TransportResponseHandler: Ignoring response for RPC 7499350953517759262 from
+        spark-rhnvos.default.svc/10.100.2.32:22321 (81 bytes) since it is not outstanding
+
+        WARN Executor: Issue communicating with driver in heartbeater
+        org.apache.spark.rpc.RpcTimeoutException: Cannot receive any reply from
+        spark-rhnvos.default.svc:22321 in 10000 milliseconds.
+
+    Spark driver exceeds the allocated memory space.
+    Spark driver started out healthy.
+    Driver logs went quiet about the same time that workers reporting heartbeat errors.
+    Driver starts to consume memory at the same time.
+    Kubectl gets a socket closed error trying to get the logs.
+    8+ cores 21+g memory
+
+    Kill the driver process.
+    Socket is closed by peer in the notebook.
+
+
+# -----------------------------------------------------
+
+    spark.driver.cores      10
+    spark.driver.memory     20g
+    spark.executor.cores     4
+    spark.executor.memory   10g
+    spark.executor.instances 10
+
+    20+(10*10) = 120g
+
+    albert                - PASS 17s
+    gaia-dr2-parquet-0-32 - PASS 2s
+    gaia-dr2-parquet-0-16 - PASS 2s
+    gaia-dr2-parquet-0-8  - PASS 3s
+    gaia-dr2-parquet-0-4  - FAIL - stuck in PENDING
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+
+# -----------------------------------------------------
+
+    spark.driver.cores      10
+    spark.driver.memory     20g
+    spark.executor.cores     4
+    spark.executor.memory   10g
+    spark.executor.instances 20
+
+    20+(20*10) = 220g
+    20*4 = 80 cores
+
+    0/7 nodes are available: 6 Insufficient memory, 7 Insufficient cpu.
+
+# -----------------------------------------------------
+
+    kubectl top node
+
+    >   NAME                                      CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%
+    >   tiberius-20200814-v7ysv35h66ur-master-0   75m          3%     1325Mi          22%
+    >   tiberius-20200814-v7ysv35h66ur-node-0     49m          0%     9391Mi          20%
+    >   tiberius-20200814-v7ysv35h66ur-node-1     41m          0%     7027Mi          15%
+    >   tiberius-20200814-v7ysv35h66ur-node-2     54m          0%     9581Mi          21%
+    >   tiberius-20200814-v7ysv35h66ur-node-3     40m          0%     9296Mi          20%
+    >   tiberius-20200814-v7ysv35h66ur-node-4     8995m        64%    23049Mi         51%
+    >   tiberius-20200814-v7ysv35h66ur-node-5     60m          0%     9522Mi          21%
+
+
+    kubectl top pod
+
+    >   NAME                                                         CPU(cores)   MEMORY(bytes)
+    >   augusta-20200814-ingress-nginx-controller-779bf4dbc7-vffmt   4m           232Mi
+    >   spark-hrbtes                                                 8963m        21634Mi
+    >   valeria-20200814-kubernetes-dashboard-5f5644bc46-tbqp9       3m           27Mi
+    >   zeppelin-c2d20273ee0211c8-exec-1                             2m           2694Mi
+    >   zeppelin-c2d20273ee0211c8-exec-10                            2m           2734Mi
+    >   zeppelin-c2d20273ee0211c8-exec-11                            2m           2722Mi
+    >   zeppelin-c2d20273ee0211c8-exec-12                            3m           2765Mi
+    >   zeppelin-c2d20273ee0211c8-exec-14                            2m           1682Mi
+    >   zeppelin-c2d20273ee0211c8-exec-15                            2m           2738Mi
+    >   zeppelin-c2d20273ee0211c8-exec-17                            1m           378Mi
+    >   zeppelin-c2d20273ee0211c8-exec-2                             2m           1721Mi
+    >   zeppelin-c2d20273ee0211c8-exec-3                             2m           2716Mi
+    >   zeppelin-c2d20273ee0211c8-exec-4                             2m           2737Mi
+    >   zeppelin-c2d20273ee0211c8-exec-5                             2m           2714Mi
+    >   zeppelin-c2d20273ee0211c8-exec-6                             2m           2687Mi
+    >   zeppelin-c2d20273ee0211c8-exec-7                             3m           1936Mi
+    >   zeppelin-c2d20273ee0211c8-exec-8                             2m           2733Mi
+    >   zeppelin-c2d20273ee0211c8-exec-9                             2m           2724Mi
+    >   zeppelin-server-d78dc55f9-6qm5s                              4m           600Mi
+
+# -----------------------------------------------------
+
+    Many small workers
+
+    spark.driver.cores      10
+    spark.driver.memory     20g
+    spark.executor.cores     2
+    spark.executor.memory    8g
+    spark.executor.instances 20
+
+    20+(20*8) = 180g
+    10+(20*2) =  50cpu
+
+    albert                - PASS 22s
+    gaia-dr2-parquet-0-32 - PASS 3s
+    gaia-dr2-parquet-0-16 - PASS 2s
+    gaia-dr2-parquet-0-8  - PASS 4s
+    gaia-dr2-parquet-0-4  - FAIL - stuck in RUNNING
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+# -----------------------------------------------------
+
+    Few big workers
+
+    spark.driver.cores      10
+    spark.driver.memory     32g
+    spark.executor.cores     2
+    spark.executor.memory   32g
+    spark.executor.instances 5
+
+    32+(5*32) = 180g
+    10+(5*2)  =  50cpu
+
+    albert                - PASS 14s
+    gaia-dr2-parquet-0-32 - PASS 3s
+    gaia-dr2-parquet-0-16 - PASS 4s
+    gaia-dr2-parquet-0-8  - PASS 7s
+    gaia-dr2-parquet-0-4  - FAIL - stuck in RUNNING
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+# -----------------------------------------------------
+
+    What would make it fail on the smaller data sets ?
+    If we can find a config that fails for pq-0-8 or pq-0-16 then we
+    might have an idea of what is causing it.
+
+# -----------------------------------------------------
+
+    Few small workers.
+
+    spark.driver.cores      10
+    spark.driver.memory     32g
+    spark.executor.cores     2
+    spark.executor.memory    2g
+    spark.executor.instances 4
+
+    32+(4*2) = 38g
+    10+(4*2) =  18cpu
+
+    albert                - PASS 12s
+    gaia-dr2-parquet-0-32 - PASS 3s
+    gaia-dr2-parquet-0-16 - PASS 5s
+    gaia-dr2-parquet-0-8  - PASS 7s
+    gaia-dr2-parquet-0-4  - FAIL
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+# -----------------------------------------------------
+
+    Single small driver.
+    Few small workers.
+
+    spark.driver.cores       2
+    spark.driver.memory      2g
+    spark.executor.cores     2
+    spark.executor.memory    2g
+    spark.executor.instances 2
+
+    2+(2*2) = 6g
+    2+(2*2) = 6cpu
+
+    albert                - PASS 12s
+    gaia-dr2-parquet-0-32 - PASS 4s
+    gaia-dr2-parquet-0-16 - PASS 5s
+    gaia-dr2-parquet-0-8  - PASS 11s
+    gaia-dr2-parquet-0-4  - FAIL
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+
+# -----------------------------------------------------
+
+    Single tiny driver.
+    Single tiny workers.
+
+    spark.driver.cores       1
+    spark.driver.memory      1g
+    spark.executor.cores     1
+    spark.executor.memory    1g
+    spark.executor.instances 1
+
+    1+(1*1) = 2g
+    1+(1*1) = 2cpu
+
+    albert                - PASS 10s
+    gaia-dr2-parquet-0-32 - PASS 10s
+    gaia-dr2-parquet-0-16 - PASS 16s
+    gaia-dr2-parquet-0-8  - PASS 29s
+    gaia-dr2-parquet-0-4  - FAIL OutOfMemoryError: Java heap space
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+# -----------------------------------------------------
+
+    Is there something in the data !?
+
+# -----------------------------------------------------
+
+    Single tiny driver.
+    Single tiny workers.
+
+    spark.driver.cores       1
+    spark.driver.memory      512m
+    spark.executor.cores     1
+    spark.executor.memory    512m
+    spark.executor.instances 1
+
+    1+(1*1) = 2g
+    1+(1*1) = 2cpu
+
+    albert                - PASS 12s
+    gaia-dr2-parquet-0-32 - PASS 10s
+    gaia-dr2-parquet-0-16 - PASS 16s
+    gaia-dr2-parquet-0-8  - PASS 31s
+    gaia-dr2-parquet-0-4  - FAIL OutOfMemoryError: Java heap space
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+
+# -----------------------------------------------------
+
+    Single tiny driver.
+    Single tiny workers.
+
+    spark.driver.cores       1
+    spark.driver.memory      256m
+    spark.executor.cores     1
+    spark.executor.memory    512m
+    spark.executor.instances 1
+
+    1+(1*1) = 2g
+    1+(1*1) = 2cpu
+
+    config                  FAIL OutOfMemoryError: Java heap space
+    albert                - FAIL
+    gaia-dr2-parquet-0-32 - FAIL
+    gaia-dr2-parquet-0-16 - FAIL
+    gaia-dr2-parquet-0-8  - FAIL
+    gaia-dr2-parquet-0-4  - FAIL
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+# -----------------------------------------------------
+
+    Is there something in the data !?
+    Why does it always fail at the same point ?
+
+
+# -----------------------------------------------------
+# Select a different 1/4 of the files.
+#[user@openstacker]
+
+    setregex=1~4
+    setname=1-4
+
+    sed -n "
+        ${setregex:?}p
+        " \
+    '/tmp/all-names.txt' \
+    | tee "/tmp/names-${setname:?}.txt"
+
+    >   part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00004-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00008-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00012-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l "/tmp/names-${setname:?}.txt"
+
+    >   1629 /tmp/names-1-4.txt
+
+
+# -----------------------------------------------------
+# Create a new bucket.
+#[user@openstacker]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        mb \
+            --acl-public \
+            "s3://gaia-dr2-parquet-${setname:?}"
+
+    >   Bucket 's3://gaia-dr2-parquet-1-4/' created
+
+
+# -----------------------------------------------------
+# Add a copy of the selected files into the new container.
+#[user@openstacker]
+
+    for filename in $(cat "/tmp/names-${setname:?}.txt")
+    do
+        echo "File [${filename:?}]"
+        s3cmd \
+            --config ${HOME}/s3cfg \
+            cp \
+                "s3://gaia-dr2-parquet/${filename:?}" \
+                "s3://gaia-dr2-parquet-${setname:?}"
+    done
+
+
+
+
+
+# -----------------------------------------------------
+
+    Single tiny driver.
+    Single tiny workers.
+
+    spark.driver.cores       1
+    spark.driver.memory      1g
+    spark.executor.cores     1
+    spark.executor.memory    1g
+    spark.executor.instances 1
+
+    1+(1*1) = 2g
+    1+(1*1) = 2cpu
+
+    albert                - PASS 12s
+    gaia-dr2-parquet-0-32 - PASS 12s
+    gaia-dr2-parquet-0-16 - PASS 17s
+    gaia-dr2-parquet-0-8  - PASS 30s
+    gaia-dr2-parquet-1-4  - FAIL OutOfMemoryError: Java heap space
+    gaia-dr2-parquet-0-2  - FAIL
+    gaia-dr2-parquet      - FAIL
+
+
+# -----------------------------------------------------
+
+    one -> two
+
+    spark.driver.cores       2
+    spark.driver.memory      2g
+    spark.executor.cores     2
+    spark.executor.memory    2g
+    spark.executor.instances 2
+
+    albert                - PASS 11s
+    gaia-dr2-parquet-0-32 - PASS  4s
+    gaia-dr2-parquet-0-16 - PASS  7s
+    gaia-dr2-parquet-0-8  - PASS 11s
+    gaia-dr2-parquet-1-4  - FAIL
+    gaia-dr2-parquet-0-2  - FAIL
+
+
+    So - different quarter fails at the same place.
+    Implies it is something in the row count rather than the data.
+
+

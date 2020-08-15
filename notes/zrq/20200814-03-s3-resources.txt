@@ -19,6 +19,11 @@
 # </meta:header>
 #
 #
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
 
     Need to create smaller data sets for testing.
     Ideally, we scan the whole dataset and use the randmon key to select a subset.
@@ -926,11 +931,176 @@
     gaia-dr2-parquet-0-32 - PASS  4s
     gaia-dr2-parquet-0-16 - PASS  7s
     gaia-dr2-parquet-0-8  - PASS 11s
-    gaia-dr2-parquet-1-4  - FAIL
+    gaia-dr2-parquet-1-4  - FAIL OutOfMemoryError: Java heap space
     gaia-dr2-parquet-0-2  - FAIL
 
 
     So - different quarter fails at the same place.
     Implies it is something in the row count rather than the data.
 
+# -----------------------------------------------------
+
+    Actually - they aren't the same.
+
+    In a low memory system 1g or 2g, they fail in similar ways.
+    OutOfMemoryError: Java heap space
+
+    but we haven't tested high memory system with the other quarter.
+
+    spark.driver.cores      10
+    spark.driver.memory     20g
+    spark.executor.cores     4
+    spark.executor.memory   10g
+    spark.executor.instances 8
+
+    20+(8*10) = 100g
+
+    albert                - PASS 14s
+    gaia-dr2-parquet-0-32 - PASS 2s
+    gaia-dr2-parquet-0-16 - PASS 3s
+    gaia-dr2-parquet-0-8  - PASS 3s
+    gaia-dr2-parquet-1-4  - FAIL - hangs
+
+        After 1hr of memory leak
+            Exception in thread "spark-listener-group-shared"
+                java.lang.OutOfMemoryError: GC overhead limit exceeded
+
+
+    On a small system (2g per worker), 0-4 and 1-4 fail with OutOfMemoryError.
+    On a large system (10g per worker), 0-4 and 1-4 hang.
+
+    Can we cover all the data using 1/8 data sets ?
+
+    0-8, 1-8, 2-8, 3-8,
+    4-8, 5-8, 6-8, 7-8
+
+# -----------------------------------------------------
+# Generate the full set of 1/8 data sets.
+#[user@openstacker]
+
+    i=8
+
+    for j in {2..7}
+    do
+        setregex=${j}~${i}
+        setname=${j}-${i}
+        echo "Set [${setname:?}]"
+
+        sed -n "
+            ${setregex:?}p
+            " \
+        '/tmp/all-names.txt' \
+        | tee "/tmp/names-${setname:?}.txt"
+
+
+        s3cmd \
+            --config ${HOME}/s3cfg \
+            mb \
+                --acl-public \
+                "s3://gaia-dr2-parquet-${setname:?}"
+
+        for filename in $(cat "/tmp/names-${setname:?}.txt")
+        do
+            echo "File [${filename:?}]"
+            s3cmd \
+                --config ${HOME}/s3cfg \
+                cp \
+                    "s3://gaia-dr2-parquet/${filename:?}" \
+                    "s3://gaia-dr2-parquet-${setname:?}"
+        done
+    done
+
+
+    i=8
+    for j in {0..7}
+    do
+        setname=${j}-${i}
+        wc -l "/tmp/names-${setname:?}.txt"
+    done
+
+    >   814 /tmp/names-0-8.txt
+    >   815 /tmp/names-1-8.txt
+    >   815 /tmp/names-2-8.txt
+    >   814 /tmp/names-3-8.txt
+    >   814 /tmp/names-4-8.txt
+    >   814 /tmp/names-5-8.txt
+    >   814 /tmp/names-6-8.txt
+    >   814 /tmp/names-7-8.txt
+
+
+    i=8
+    for j in {0..7}
+    do
+        setname=${j}-${i}
+        s3cmd \
+            --config ${HOME}/s3cfg \
+            du \
+                "s3://gaia-dr2-parquet-${setname:?}"
+    done
+
+    >    63403624720     814 objects s3://gaia-dr2-parquet-0-8/
+    >    63496585687     815 objects s3://gaia-dr2-parquet-1-8/
+    >    63490826666     815 objects s3://gaia-dr2-parquet-2-8/
+    >    63459397235     814 objects s3://gaia-dr2-parquet-3-8/
+    >    63432827430     814 objects s3://gaia-dr2-parquet-4-8/
+    >    63453473081     814 objects s3://gaia-dr2-parquet-5-8/
+    >    63428993348     814 objects s3://gaia-dr2-parquet-6-8/
+    >    63413427980     814 objects s3://gaia-dr2-parquet-7-8/
+
+
+# -----------------------------------------------------
+
+    TODO Create a CephFS persistent share and install DR2
+    TODO Automate our create and delete process.
+
+    TODO Put OAuth proxy in front of Zeppelin
+    TODO Add user accounts to Zeppelin
+
+    TODO Enable Spark UI in Zeppelin launched Spark.
+    TODO Fix the Spark UI links in the Zeppelin UI.
+
+
+# -----------------------------------------------------
+
+    This is Dask not Spark but it sounds similar
+
+    Memory explodes when reading multiple parquet files #4256
+    https://github.com/dask/dask/issues/4256
+    https://github.com/dask/dask/issues/4256#issuecomment-443241539
+
+        "I figured a way to resize the partitions, created files of ~5mb instead of
+        180mb and now I am able to create much bigger thoughput in the pipeline."
+
+
+
+    https://stackoverflow.com/questions/45873155/out-of-memory-error-when-collecting-data-out-of-spark-cluster
+
+        If you are looking to just load the data into memory of the exceutors,
+        count() is also an action that will load the data into the executor's
+        memory which can be used by other processes.
+
+        If you want to extract the data, then try this along with other properties
+        when puling the data "--conf spark.driver.maxResultSize=10g".
+
+
+    https://stackoverflow.com/questions/42714291/how-to-force-dataframe-evaluation-in-spark
+    https://stackoverflow.com/a/45608978
+
+        "count does not act the same on RDD and DataFrame"
+
+        "count on RDD executes all the lineage and returns the sum of all sizes of the
+         iterators composing any partitions"
+
+     TL;DR rdd.count() loads all of the data
+
+
+    https://stackoverflow.com/questions/39087859/what-is-spark-driver-maxresultsize
+
+        spark.driver.maxResultSize protects the driver from large results
+
+
+    https://stackoverflow.com/questions/31574498/pyspark-memory-problems-when-using-count-on-sort-of-big-files
+
+        https://stackoverflow.com/questions/31574498/pyspark-memory-problems-when-using-count-on-sort-of-big-files#comment51354419_31574498
+        "I've had this issue when the file I'm reading is corrupted. I doubt that's the case, but it's worth checking"
 

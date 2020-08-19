@@ -21,6 +21,22 @@
 #
 
 
+## Issue with missing pylibs in Zeppelin/Spark Prototype
+## hdbscan not available anymore
+
+%spark.pyspark
+import hdbscan
+
+Fail to execute line 8: import hdbscan Traceback (most recent call last): File "/tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache/application_1588261403747_0058/container_1588261403747_0058_01_000001/tmp/zeppelin_pyspark-5478273134506538777.py", line 380, in <module> exec(code, _zcUserQueryNameSpace) File "<stdin>", line 8, in <module> ImportError: No module named hdbscan
+
+
+
+
+## The following was run on every worker node & on the master & zeppelin node
+## --------------------------------------------------------------------------
+
+
+## Update Zeppelin Spark Python version to Python3
 
 ## Set default python to python3
 sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
@@ -37,8 +53,8 @@ sudo /usr/bin/python3.7 -m pip install astropy
 sudo /usr/bin/python3.7 -m pip install healpy
 
 ## Additional libraries previously installed for future reference
-sudo /usr/bin/python3.7 -m pip install pandas
-sudo /usr/bin/python3.7 -m pip install requests
+# sudo /usr/bin/python3.7 -m pip install pandas
+# sudo /usr/bin/python3.7 -m pip install requests
 
 
 ## Create matplotlib and astropy config dirs
@@ -52,12 +68,342 @@ chmod -R 777 /home/.astropy
 chmod -R 777 /home/.cache/matplotlib
 
 ## Is this a security concern?
-
+## 775 or 755 produce exceptions 
 
 
 ## Set Zeppelin Spark Python version
 ## In the Zeppelin admin GUI
 ## Set zeppelin.pyspark.python parameter to:  python3
+
+
+
+
+## Update Aug18 23:00
+Import work, but Matplotlib does not display anything
+
+First attempt, disable IPython from Zeppelin Spark interpreter
+Go to Interpreters GUI page, set zeppelin.pyspark.useIPython to 'False'
+    Still not working
+
+Change interpreter back to 2.7
+    Nope..still not working
+
+
+
+
+## The following seems to work and produce a plot with healpy
+## https://stackoverflow.com/a/38564700
+
+
+%spark.pyspark
+
+import matplotlib.pyplot as plt; plt.rcdefaults()
+plt.switch_backend('agg')
+import numpy as np
+import healpy as hp
+import io
+
+def show(p):
+    img = io.StringIO()
+    p.savefig(img, format='svg')
+    img.seek(0)
+    print ("%html <div style='width:600px'>" + img.getvalue() + "</div>")
+
+
+# healpy constants
+NSIDE = 32
+NPIX = hp.nside2npix(NSIDE)
+
+# do the visualisation
+array_like = np.empty(NPIX)
+for item in counts_map.collect(): array_like[item[0]] = item[1] # by doing it the hard way in plain Spark map/reduce
+#for item in sql_df.rdd.collect():  array_like[item[0]] = item[1] # by doing it the easy SQL aggregate way through Spark SQL context
+hp.mollview(array_like, nest=True, title='Source counts at HEALPix level 5', norm='log')
+hp.graticule(coord='E', color='white')
+
+
+show(plt)
+
+
+
+
+
+## Update Zeppelin Spark Python version to Python2.7
+
+## Set default python to python3
+sudo update-alternatives --install /usr/bin/python python /usr/bin/python2.7 10
+
+## Delete the matplotlib cache & config directories
+sudo rm -r /home/.config/matplotlib/
+sudo rm -r /home/.cache/matplotlib/
+
+
+## Install Libraries needed by IPython
+      sudo /usr/bin/python2.7 -m pip install grpcio
+      sudo /usr/bin/python2.7 -m pip install jupyter
+      sudo /usr/bin/python2.7 -m pip install protobuf
+
+
+## Enable IPython
+
+In Zeppelin GUI (logged in as admin):
+Go to Interpreters GUI page, under Spark, set zeppelin.pyspark.useIPython to 'False'
+Restart Interpreter
+
+
+
+## Try running Sky count example:
+
+
+%spark.pyspark
+
+# counts by map keys
+counts_map = healpix_level_5.reduceByKey(lambda x,y: x + y)
+
+# sanity check
+print("Number of unique keys: ",counts_map.count())
+print("Number of partitions: ", counts_map.getNumPartitions())
+print(counts_map.sample(False, 0.001).collect())
+
+
+	Py4JJavaError: An error occurred while calling z:org.apache.spark.api.python.PythonRDD.collectAndServe.
+	: org.apache.spark.SparkException: Job aborted due to stage failure: Task 28 in stage 4.0 failed 4 times, most recent failure: Lost task 28.3 in stage 4.0 (TID 12552, stv-dev-worker-2, executor 5): org.apache.spark.api.python.PythonException: Traceback (most recent call last):
+	  File "/tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache/application_1588261403747_0108/container_1588261403747_0108_01_000006/pyspark.zip/pyspark/worker.py", line 267, in main
+	    ("%d.%d" % sys.version_info[:2], version))
+	Exception: Python in worker has different version 3.7 than that in driver 2.7, PySpark cannot run with different minor versions.Please check environment variables PYSPARK_PYTHON and PYSPARK_DRIVER_PYTHON are correctly set.
+
+
+
+## Exception produced
+## Driver Python version is still 3.7..
+
+
+
+
+## Set PYSPARK_PYTHON and PYSPARK_DRIVER_PYTHON to 2.7 in .bashrc on master & zeppelin node
+
+# nano ~/.bashrc
+export PYSPARK_PYTHON="python2.7"
+export PYSPARK_DRIVER_PYTHON="python2.7"
+
+
+## Restart Hadoop
+
+ssh stv-dev-master
+
+[fedora@stv-dev-master ~]$ stop-all.sh 
+WARNING: Stopping all Apache Hadoop daemons as fedora in 10 seconds.
+WARNING: Use CTRL-C to abort.
+Stopping namenodes on [stv-dev-master]
+Stopping datanodes
+Stopping secondary namenodes [stv-dev-master.novalocal]
+Stopping nodemanagers
+Stopping resourcemanager
+
+[fedora@stv-dev-master ~]$ start-all.sh 
+WARNING: Attempting to start all Apache Hadoop daemons as fedora in 10 seconds.
+WARNING: This is not a recommended production deployment configuration.
+WARNING: Use CTRL-C to abort.
+Starting namenodes on [stv-dev-master]
+stv-dev-master: ERROR: Cannot set priority of namenode process 24717
+Starting datanodes
+Starting secondary namenodes [stv-dev-master.novalocal]
+Starting resourcemanager
+Starting nodemanagers
+
+exit
+
+
+
+## Restart Zeppelin
+
+ssh stv-dev-zeppelin
+
+[fedora@stv-dev-zeppelin ~]$ /home/fedora/zeppelin/bin/zeppelin-daemon.sh restart
+Zeppelin stop                                              [  OK  ]
+Zeppelin start                                             [  OK  ]
+
+exit
+
+
+
+## Try executing Sky Counts example again..
+
+
+## The cell above that produced the exception is now working, but we get a new cell that fails:
+
+%spark.pyspark
+
+
+# plot up the sky counts
+import matplotlib.pyplot as plt
+
+import numpy as np
+import healpy as hp
+
+# healpy constants
+NSIDE = 32
+NPIX = hp.nside2npix(NSIDE)
+
+# do the visualisation
+array_like = np.empty(NPIX)
+for item in counts_map.collect(): array_like[item[0]] = item[1] # by doing it the hard way in plain Spark map/reduce
+#for item in sql_df.rdd.collect():  array_like[item[0]] = item[1] # by doing it the easy SQL aggregate way through Spark SQL context
+hp.mollview(array_like, nest=True, title='Source counts at HEALPix level 5', norm='log')
+hp.graticule(coord='E', color='white')
+
+
+
+/usr/lib64/python2.7/site-packages/astropy/coordinates/sky_coordinate.pyc in _get_frame(args, kwargs)
+   1586     if frame is not None:
+   1587         # Frame was provided as kwarg so validate and coerce into corresponding frame.
+-> 1588         frame_cls = _get_frame_class(frame)
+   1589         frame_specified_explicitly = True
+   1590     else:
+
+/usr/lib64/python2.7/site-packages/astropy/coordinates/sky_coordinate.pyc in _get_frame_class(frame)
+   1528         if frame not in frame_names:
+   1529             raise ValueError('Coordinate frame {0} not in allowed values {1}'
+-> 1530                              .format(frame, sorted(frame_names)))
+   1531         frame_cls = frame_transform_graph.lookup_name(frame)
+   1532 
+
+ValueError: Coordinate frame barycentricmeanecliptic not in allowed values ['altaz', 'barycentrictrueecliptic', 'cirs', 'fk4', 'fk4noeterms', 'fk5', 'galactic', 'galacticlsr', 'galactocentric', 'gcrs', 'geocentrictrueecliptic', 'hcrs', 'heliocentrictrueecliptic', 'icrs', 'itrs', 'lsr', 'precessedgeocentric', 'supergalactic']
+
+
+
+
+
+## Quick Test, we've setup the Spark interpreter to use Python3, but is it actually using that?
+
+%pyspark
+import sys, os
+print(sys.executable)
+
+/usr/bin/python2.7
+
+
+## Looks like the answer is no..
+## So we have to find a different way of changing the python version used by Spark..
+
+
+## Try changing default Python version in worker node
+
+[fedora@stv-dev-worker-3 ~]$ sudo update-alternatives --install /usr/bin/python python /usr/bin/python3 10
+[fedora@stv-dev-worker-3 ~]$ python
+Python 3.7.6 (default, Jan 30 2020, 10:29:04) 
+[GCC 9.2.1 20190827 (Red Hat 9.2.1-1)] on linux
+
+
+
+## Run the Notebook cell again:
+
+%pyspark
+import sys, os
+print(sys.executable)
+
+/usr/bin/python2.7
+
+## Nope..
+
+
+
+
+
+## The .bashrc values from above were probably wrong trying again..
+## On every node add following in .bashrc:
+
+export PYSPARK_PYTHON=/usr/bin/python3.7
+export PYSPARK_DRIVER_PYTHON=/usr/bin/python3.7
+
+
+## Restart Hadoop Services & Zeppelin
+
+
+## Run the Notebook cell again:
+
+%pyspark
+import sys, os
+print(sys.executable)
+
+Matplotlib created a temporary config/cache directory at /tmp/matplotlib-tju6obva because the default path (/home/.config/matplotlib) is not a writable directory; it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+/tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache/application_1588261403747_0121/container_1588261403747_0121_01_000001/tmp/zeppelin_pyspark-308097168461067732.py:179: UserWarning: Unable to load inline matplotlib backend, falling back to Agg
+  warnings.warn("Unable to load inline matplotlib backend, "
+
+/usr/bin/python3.7
+
+
+## Python version changed, but matplotlib exceptions showing up now..
+
+
+
+
+
+## Install IPython libraries on every node
+
+sudo /usr/bin/python3.7 -m pip install grpcio
+sudo /usr/bin/python3.7 -m pip install jupyter
+sudo /usr/bin/python3.7 -m pip install protobuf
+
+
+## Restart Hadoop Services & Zeppelin again
+
+ssh stv-dev-master
+stop-all.sh
+start.all.sh
+exit
+
+ssh stv-dev-zeppelin
+/home/fedora/zeppelin/bin/zeppelin-daemon.sh restart
+exit
+
+
+
+## Try running some cells again..
+
+%spark.pyspark
+import sys, os
+print(sys.executable)
+
+> /usr/bin/python3.7
+
+
+# This one works fine, on to the next one..
+
+
+%pyspark
+import matplotlib.pyplot as plt
+import numpy as np
+import healpy as hp
+hp.mollview(np.arange(12))
+plt.show()
+
+# Produces a nice image, but with a warning:
+
+atplotlib created a temporary config/cache directory at /tmp/matplotlib-0gkmxw39 because the default path (/home/.config/matplotlib) is not a writable directory; it is highly recommended to set the MPLCONFIGDIR environment variable to a writable directory, in particular to speed up the import of Matplotlib and to better support multiprocessing.
+/usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:920: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. In future versions, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = copy.copy(mpl.cm.get_cmap("viridis"))
+  newcm.set_over(newcm(1.0))
+/usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:921: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. In future versions, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = copy.copy(mpl.cm.get_cmap("viridis"))
+  newcm.set_under(bgcolor)
+/usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:922: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. In future versions, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = copy.copy(mpl.cm.get_cmap("viridis"))
+  newcm.set_bad(badcolor)
+/usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:211: MatplotlibDeprecationWarning: Passing parameters norm and vmin/vmax simultaneously is deprecated since 3.3 and will become an error two minor releases later. Please pass vmin/vmax directly to the norm when creating it.
+  **kwds
+<Figure size 612x388.8 with 2 Axes>
+
+
+
+## Let's create that .config/matplotlib directory again
+sudo mkdir -p /home/.config/matplotlib
+sudo mkdir -p /home/.cache/matplotlib
+sudo chmod -R 777 /home/.cache/matplotlib/
+sudo chmod -R 777 /home/.config/matplotlib/
+
+
+# Restart Interpreter (using Zeppelin GUI and try again)
+
+## ALl notebook cells seem to be working fine again
+
 
 
 

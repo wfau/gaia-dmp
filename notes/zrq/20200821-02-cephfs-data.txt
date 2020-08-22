@@ -184,22 +184,147 @@
 
     >   persistentvolume/pvc-10bb7a62-5fdf-4399-99c4-a37f01634f65 patched
 
+    The volume should stay, even if we delete the claim.
+    Don't know how to re-connect a new claim to the existing voluewm .. yet.
+
+    TODO
+    Can we create a volume and attach a claim manually ?
+
+    TODO
+    How do we mount this volume inside our Spark Pods.
+    https://spark.apache.org/docs/latest/running-on-kubernetes.html#using-kubernetes-volumes
+
+        spark.kubernetes.driver.volumes.[VolumeType].[VolumeName].mount.path=<mount path>
+        spark.kubernetes.driver.volumes.[VolumeType].[VolumeName].mount.readOnly=<true|false>
+        spark.kubernetes.driver.volumes.[VolumeType].[VolumeName].mount.subPath=<mount subPath>
+        spark.kubernetes.driver.volumes.[VolumeType].[VolumeName].options.[OptionName]=<value>
+
+
+
+        spark.kubernetes.driver.volumes.persistentVolumeClaim.gaia-dr2.mount.path=/gaia-dr2
+        spark.kubernetes.driver.volumes.persistentVolumeClaim.gaia-dr2.mount.readOnly=false
+        spark.kubernetes.driver.volumes.persistentVolumeClaim.gaia-dr2.options.claimName=gaia-dr2-volume-claim
+
+        spark.kubernetes.executor.volumes.persistentVolumeClaim.gaia-dr2.mount.path=/gaia-dr2
+        spark.kubernetes.executor.volumes.persistentVolumeClaim.gaia-dr2.mount.readOnly=true
+        spark.kubernetes.executor.volumes.persistentVolumeClaim.gaia-dr2.options.claimName=gaia-dr2-volume-claim
+
+    Tried setting these in the interpreter settings and in the notebook.
+    The executor.volumes settings worked, the driver.volumes are ignored.
+
+    Guess is .. the Zeppelin interpreter launches Spark in client mode, in the same Pod container as the
+    interpreter. So the interpreter can't add volumes to its own Pod.
+
+    I think the way to get the volume into the driver/interpreter Pod is by editing the interpreter-spec template.
+        ${zeppelin}/k8s/interpreter/100-interpreter-spec.yaml
+
+    ... but before we do that, check to see if we need the data volume mounted in the driver/interpreter Pod.
+
+    Change the setting to make the volume read/write to all.
+
+        spark.kubernetes.executor.volumes.persistentVolumeClaim.gaia-dr2.mount.readOnly=false
+
+    Also need to make the PersistentVolumeClaim read/write to many.
+
+        spec:
+          storageClassName: manila-cephfs-storage-class
+          accessModes:
+    -       - ReadWriteOnce
+    +       - ReadWriteMany
+
+
+# -----------------------------------------------------
+# Patch the active persistent volume and claim.
+#[user@kubernator]
+
+    kubectl patch \
+        persistentvolume \
+            pvc-10bb7a62-5fdf-4399-99c4-a37f01634f65 \
+                -p '{"spec": {"accessModes": ["ReadWriteMany"]}}'
+
+    >   persistentvolume/pvc-10bb7a62-5fdf-4399-99c4-a37f01634f65 patched
+
+
+
+    kubectl patch \
+        persistentvolumeclaim \
+            gaia-dr2-volume-claim \
+                -p '{"spec": {"accessModes": ["ReadWriteMany"]}}'
+
+    >   The PersistentVolumeClaim "gaia-dr2-volume-claim" is invalid: spec: Forbidden: is immutable after creation except resources.requests for bound claims
+
     #
-    # The volume should stay, even if we delete the claim.
-    # Don't know how to re-connect a new claim to the existing voluewm .. yet.
+    # Worth a try ...
     #
 
     #
-    # TODO
-    # Can we create a volume and attach a claim manually ?
+    # OK, delete the claim, edit the source and create a new claim.
+    #
+
+
+# -----------------------------------------------------
+# Delete, edit and create our persistent volume claim.
+#[user@kubernator]
+
+    kubectl delete \
+        persistentvolumeclaim \
+            gaia-dr2-volume-claim
+
+    >   persistentvolumeclaim "gaia-dr2-volume-claim" deleted
+
+    gedit \
+        experiments/zrq/kubernetes/manila/cephfs/gaia-dr2-volume-claim.yaml
+
+        accessModes:
+    -     - ReadWriteOnce
+    +     - ReadWriteMany
+
+
+    kubectl \
+        create \
+            --filename /kubernetes/manila/cephfs/gaia-dr2-volume-claim.yaml
+
+    >   persistentvolumeclaim/gaia-dr2-volume-claim created
+
+    #
+    # Deleting and creating the claim created a new 4Ti byte share.
+    # Good enough for now, but not what we want in the final system.
+    #
+
+
+
+# -----------------------------------------------------
+# Login to one of our executor Pods.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-96178f74127f514e-exec-1 \
+        -- \
+            /bin/bash
+
+        id
+
+    >   uid=185(185) gid=0(root) groups=0(root)
+
+        ls -al /gaia-dr2
+
+    >   total 0
+    >   drwxr-xr-x. 2 root root  0 Aug 21 19:26 .
+    >   drwxr-xr-x. 1 root root 55 Aug 21 19:29 ..
+
+
+    #
+    # The directory is owned by root,
+    # and we are uid 185.
     #
 
     #
-    # TODO
-    # How do we mount this volume inside our Spark Pods.
-    # https://spark.apache.org/docs/latest/running-on-kubernetes.html#using-kubernetes-volumes
-    #
+    # The fix seems to be using an initContainer.
+    # https://stackoverflow.com/questions/43544370/kubernetes-how-to-set-volumemount-user-group-and-file-permissions
 
+    # Not sure if we have that option.
 
 
 

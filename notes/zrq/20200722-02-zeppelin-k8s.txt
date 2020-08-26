@@ -1,0 +1,311 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    # Deleted old cluster.
+    # notes/zrq/20200718-03-openstack-delete.txt
+
+    # Created new cluster.
+    # notes/zrq/20200718-04-terraform-create.txt
+
+    # Run the K8s dashboard.
+    # notes/zrq/20200706-03-k8s-dashboard.txt
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${MAGNUM_CLUSTER:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/kubernetes:/kubernetes:z" \
+        --volume "${ZEPPELIN_CODE}:/zeppelin:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud, credentials and cluster names.
+#[user@kubernator]
+
+    # Deprecated - inherited from aglais.env
+    # cloudname=gaia-prod
+    # clustername=Tiberius
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube/${clustername:?}"
+    openstack \
+        --os-cloud "${cloudname:?}-super" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube/${clustername:?}"
+
+    >   'SHELL'
+
+
+# -----------------------------------------------------
+# Check kubectl can get the connection details for our cluster.
+#[user@kubernator]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.217:6443
+    >   Heapster is running at https://128.232.227.217:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.217:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Update our Zeppelin deployment template.
+#[user@kubernator]
+
+    sed -i '
+        s/apache\/zeppelin:0.9.0-SNAPSHOT/aglais\/zeppelin:latest/
+        ' /zeppelin/conf/zeppelin-site.xml.template
+
+    sed -i '
+        s/apache\/zeppelin:0.9.0-SNAPSHOT/aglais\/zeppelin:latest/
+        ' /zeppelin/k8s/zeppelin-server.yaml
+
+    # TODO - Change these to use XML and YAML paths.
+    # TODO - Changed in our fork, need to change in our image.
+
+
+# -----------------------------------------------------
+# Deploy Zeppelin using our template.
+#[user@kubernator]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        apply \
+            --filename "/zeppelin/k8s/zeppelin-server.yaml"
+
+    >   configmap/zeppelin-server-conf-map created
+    >   configmap/zeppelin-server-conf created
+    >   deployment.apps/zeppelin-server created
+    >   service/zeppelin-server created
+    >   serviceaccount/zeppelin-server created
+    >   role.rbac.authorization.k8s.io/zeppelin-server-role created
+    >   rolebinding.rbac.authorization.k8s.io/zeppelin-server-role-binding created
+
+
+# -----------------------------------------------------
+# Expose Zeppelin with a LoadBalancer.
+# The LoadBalancer provides access to HTTP on port 80.
+#[user@kubernator]
+
+    cat > /tmp/balancer.yaml << EOF
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: zeppelin-external
+spec:
+  ports:
+    - name: http
+      port: 80
+  selector:
+    app.kubernetes.io/name: zeppelin-server
+  type: LoadBalancer
+EOF
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        apply \
+            --filename /tmp/balancer.yaml
+
+    >   service/zeppelin-external created
+
+
+# -----------------------------------------------------
+# Get the external address.
+#[user@kubernator]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get service \
+            zeppelin-external
+
+    >   NAME                TYPE           CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
+    >   zeppelin-external   LoadBalancer   10.254.185.239   <pending>     80:32388/TCP   79s
+
+    >   NAME                TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)        AGE
+    >   zeppelin-external   LoadBalancer   10.254.185.239   128.232.227.194   80:32388/TCP   2m6s
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get service \
+            --output json \
+            zeppelin-external
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Service",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"annotations\":{},\"name\":\"zeppelin-external\",\"namespace\":\"default\"},\"spec\":{\"ports\":[{\"name\":\"http\",\"port\":80}],\"selector\":{\"app.kubernetes.io/name\":\"zeppelin-server\"},\"type\":\"LoadBalancer\"}}\n"
+    >           },
+    >           "creationTimestamp": "2020-07-22T17:26:10Z",
+    >           "name": "zeppelin-external",
+    >           "namespace": "default",
+    >           "resourceVersion": "6095",
+    >           "selfLink": "/api/v1/namespaces/default/services/zeppelin-external",
+    >           "uid": "ddb4bf37-7a3f-4b23-9e56-9f5d5f3a3f26"
+    >       },
+    >       "spec": {
+    >           "clusterIP": "10.254.185.239",
+    >           "externalTrafficPolicy": "Cluster",
+    >           "ports": [
+    >               {
+    >                   "name": "http",
+    >                   "nodePort": 32388,
+    >                   "port": 80,
+    >                   "protocol": "TCP",
+    >                   "targetPort": 80
+    >               }
+    >           ],
+    >           "selector": {
+    >               "app.kubernetes.io/name": "zeppelin-server"
+    >           },
+    >           "sessionAffinity": "None",
+    >           "type": "LoadBalancer"
+    >       },
+    >       "status": {
+    >           "loadBalancer": {
+    >               "ingress": [
+    >                   {
+    >                       "ip": "128.232.227.194"
+    >                   }
+    >               ]
+    >           }
+    >       }
+    >   }
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get service \
+            --output json \
+            zeppelin-external \
+    | jq -r '.status.loadBalancer.ingress[0].ip'
+
+    >   128.232.227.194
+
+
+# -----------------------------------------------------
+# Connect to the endpoint, logged in as anonymous.
+#[anon-zeppelin]
+
+# -----------------------------------------------------
+# Create a new MD note.
+#[anon-zeppelin]
+
+    # interpreter = md
+
+    %md
+    ## Welcome to my world
+
+    Yay - works :-)
+
+
+# -----------------------------------------------------
+# Create a new Python note.
+#[anon-zeppelin]
+
+    # interpreter = python
+
+    %python
+    print (1 + 1)
+
+    Yay - works :-)
+
+
+# -----------------------------------------------------
+# Create a PySpark note.
+#[anon-zeppelin]
+
+    %spark.pyspark
+    import random
+    NUM_SAMPLES = 2000000000
+
+    def inside(p):
+        x, y = random.random(), random.random()
+        return x*x + y*y < 1
+
+    count = sc.parallelize(xrange(0, NUM_SAMPLES)) \
+                 .filter(inside).count()
+    print "Pi is roughly %f" % (4.0 * count / NUM_SAMPLES)
+
+
+    #
+    # Failed to load the Spark container.
+    #
+
+    >   Failed to pull image "spark:2.4.5": rpc error: code = Unknown desc = repository docker.io/spark not found: does not exist or no pull access
+
+    #
+    # TODO We need to create our own docker image for Spark.
+    #
+
+    #
+    # Java stack trace shown in the Zeppelin note.
+    #
+
+    >   org.apache.zeppelin.interpreter.InterpreterException: java.io.IOException: Launching zeppelin interpreter on kubernetes is time out, kill it now
+    >       at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.open(RemoteInterpreter.java:134)
+    >       at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.getFormType(RemoteInterpreter.java:281)
+    >       at org.apache.zeppelin.notebook.Paragraph.jobRun(Paragraph.java:412)
+    >       at org.apache.zeppelin.notebook.Paragraph.jobRun(Paragraph.java:72)
+    >       at org.apache.zeppelin.scheduler.Job.run(Job.java:172)
+    >       at org.apache.zeppelin.scheduler.AbstractScheduler.runJob(AbstractScheduler.java:130)
+    >       at org.apache.zeppelin.scheduler.RemoteScheduler$JobRunner.run(RemoteScheduler.java:180)
+    >       at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+    >       at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+    >       at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$201(ScheduledThreadPoolExecutor.java:180)
+    >       at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:293)
+    >       at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    >       at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    >       at java.lang.Thread.run(Thread.java:748)
+    >   Caused by: java.io.IOException: Launching zeppelin interpreter on kubernetes is time out, kill it now
+    >       at org.apache.zeppelin.interpreter.launcher.K8sRemoteInterpreterProcess.start(K8sRemoteInterpreterProcess.java:143)
+    >       at org.apache.zeppelin.interpreter.ManagedInterpreterGroup.getOrCreateInterpreterProcess(ManagedInterpreterGroup.java:67)
+    >       at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.getOrCreateInterpreterProcess(RemoteInterpreter.java:110)
+    >       at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.internal_create(RemoteInterpreter.java:160)
+    >       at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.open(RemoteInterpreter.java:131)
+    >       ... 13 more
+
+
+

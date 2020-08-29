@@ -740,5 +740,491 @@ EOF
 
 
 
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a Manila share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share create \
+            --format json \
+            --name 'magruela-share' \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            5 \
+    | tee /tmp/magruela-share.json
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2020-08-29T13:17:01.000000",
+    >     "description": null,
+    >     "has_replicas": false,
+    >     "id": "a32ea61f-a922-4b9d-959b-a9d2d2e57c4b",
+    >     "is_public": false,
+    >     "metadata": {},
+    >     "mount_snapshot_support": false,
+    >     "name": "magruela-share",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8",
+    >     "share_type_name": "cephfsnativetype",
+    >     "size": 5,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "creating",
+    >     "task_state": null,
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "volume_type": "cephfsnativetype"
+    >   }
+
+    shareid=$(
+        jq -r '.id' /tmp/magruela-share.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                --format json \
+                "${shareid:?}" \
+    | tee /tmp/magruela-share.json
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2020-08-29T13:17:01.000000",
+    >     "description": null,
+    >     "export_locations": "\npath = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/64964470-5ed9-4fe8-a655-e89e0f6cf121\nid = c005fd86-70ba-4ea6-acb4-db8d0dcb9b20\npreferred = False",
+    >     "has_replicas": false,
+    >     "id": "a32ea61f-a922-4b9d-959b-a9d2d2e57c4b",
+    >     "is_public": false,
+    >     "mount_snapshot_support": false,
+    >     "name": "magruela-share",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "properties": {},
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8",
+    >     "share_type_name": "cephfsnativetype",
+    >     "size": 5,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "available",
+    >     "task_state": null,
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "volume_type": "cephfsnativetype"
+    >   }
+
+
+# -----------------------------------------------------
+# Extract the parts we need from the locations string.
+# https://tldp.org/LDP/abs/html/string-manipulation.html
+#[user@kubernator]
+
+    locations=$(
+        jq '.export_locations' /tmp/magruela-share.json
+        )
+
+    monitors=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\/\(.*\)$/\1/
+            s/,/\n/g
+            '
+            )
+
+    sharepath=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\/\(.*\)$/\2/
+            '
+            )
+
+    sharesize=$(
+        jq '.size' /tmp/magruela-share.json
+        )
+
+    for monitor in ${monitors}
+    do
+        echo "Monitor [${monitor}]"
+    done
+
+    >   Monitor [10.206.1.5:6789]
+    >   Monitor [10.206.1.6:6789]
+    >   Monitor [10.206.1.7:6789]
+
+    echo "
+Share path [${sharepath}]
+Share size [${sharesize}]
+"
+
+    >   Share path [volumes/_nogroup/64964470-5ed9-4fe8-a655-e89e0f6cf121]
+    >   Share size [5]
+
+
+# -----------------------------------------------------
+# Create a Kubernetes volume.
+# https://docs.openshift.com/container-platform/3.11/install_config/persistent_storage/selector_label_binding.html#selector-label-volume-define
+#[user@kubernator]
+
+    cat > /tmp/test-volume.yaml << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: magruela-volume
+  labels:
+    aglais-dataset:  test
+    aglais-datatype: text
+spec:
+  capacity:
+    storage: $((sharesize - 1))Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  cephfs:
+    path: ${sharepath}
+    monitors:
+$(
+    for monitor in ${monitors}
+    do
+        echo "      - ${monitor}"
+    done
+)
+EOF
+
+    kubectl \
+        apply \
+            --filename /tmp/test-volume.yaml
+
+    >   persistentvolume/magruela-volume created
+
+
+    kubectl get \
+        --output json \
+        persistentvolume magruela-volume
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolume",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"PersistentVolume\",\"metadata\":{\"annotations\":{},\"labels\":{\"aglais-dataset\":\"test\",\"aglais-datatype\":\"text\"},\"name\":\"magruela-volume\"},\"spec\":{\"accessModes\":[\"ReadWriteMany\"],\"capacity\":{\"storage\":\"4Gi\"},\"cephfs\":{\"monitors\":[\"10.206.1.5:6789\",\"10.206.1.6:6789\",\"10.206.1.7:6789\"],\"path\":\"volumes/_nogroup/64964470-5ed9-4fe8-a655-e89e0f6cf121\"},\"persistentVolumeReclaimPolicy\":\"Retain\"}}\n"
+    >           },
+    >           "creationTimestamp": "2020-08-29T14:15:32Z",
+    >           "finalizers": [
+    >               "kubernetes.io/pv-protection"
+    >           ],
+    >           "labels": {
+    >               "aglais-dataset": "test",
+    >               "aglais-datatype": "text"
+    >           },
+    >           "name": "magruela-volume",
+    >           "resourceVersion": "666509",
+    >           "selfLink": "/api/v1/persistentvolumes/magruela-volume",
+    >           "uid": "5ef26a70-e1dd-4986-bd1d-8eedeee099cc"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteMany"
+    >           ],
+    >           "capacity": {
+    >               "storage": "4Gi"
+    >           },
+    >           "cephfs": {
+    >               "monitors": [
+    >                   "10.206.1.5:6789",
+    >                   "10.206.1.6:6789",
+    >                   "10.206.1.7:6789"
+    >               ],
+    >               "path": "volumes/_nogroup/64964470-5ed9-4fe8-a655-e89e0f6cf121"
+    >           },
+    >           "persistentVolumeReclaimPolicy": "Retain",
+    >           "volumeMode": "Filesystem"
+    >       },
+    >       "status": {
+    >           "phase": "Available"
+    >       }
+    >   }
+
+
+# -----------------------------------------------------
+# Create a Kubernetes volume claim.
+# https://docs.openshift.com/container-platform/3.11/install_config/persistent_storage/selector_label_binding.html#selector-label-volume-define
+#[user@kubernator]
+
+    cat > /tmp/test-claim.yaml << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: magruela-claim
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+     requests:
+       storage: $((sharesize - 2))Gi
+  selector:
+    matchLabels:
+      aglais-dataset:  test
+      aglais-datatype: text
+EOF
+
+    kubectl \
+        apply \
+            --filename /tmp/test-claim.yaml
+
+    >   persistentvolumeclaim/magruela-claim created
+
+
+    kubectl get \
+        --output json \
+        persistentvolumeclaim magruela-claim
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolumeClaim",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"PersistentVolumeClaim\",\"metadata\":{\"annotations\":{},\"name\":\"magruela-claim\",\"namespace\":\"default\"},\"spec\":{\"accessModes\":[\"ReadWriteMany\"],\"resources\":{\"requests\":{\"storage\":\"3Gi\"}},\"selector\":{\"matchLabels\":{\"aglais-dataset\":\"test\",\"aglais-datatype\":\"text\"}}}}\n",
+    >               "pv.kubernetes.io/bind-completed": "yes",
+    >               "pv.kubernetes.io/bound-by-controller": "yes"
+    >           },
+    >           "creationTimestamp": "2020-08-29T14:17:41Z",
+    >           "finalizers": [
+    >               "kubernetes.io/pvc-protection"
+    >           ],
+    >           "name": "magruela-claim",
+    >           "namespace": "default",
+    >           "resourceVersion": "667188",
+    >           "selfLink": "/api/v1/namespaces/default/persistentvolumeclaims/magruela-claim",
+    >           "uid": "8c842b10-5eef-45fe-903f-bfabb1fc4381"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteMany"
+    >           ],
+    >           "resources": {
+    >               "requests": {
+    >                   "storage": "3Gi"
+    >               }
+    >           },
+    >           "selector": {
+    >               "matchLabels": {
+    >                   "aglais-dataset": "test",
+    >                   "aglais-datatype": "text"
+    >               }
+    >           },
+    >           "volumeMode": "Filesystem",
+    >           "volumeName": "magruela-volume"
+    >       },
+    >       "status": {
+    >           "accessModes": [
+    >               "ReadWriteMany"
+    >           ],
+    >           "capacity": {
+    >               "storage": "4Gi"
+    >           },
+    >           "phase": "Bound"
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        persistentvolume magruela-volume
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolume",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"PersistentVolume\",\"metadata\":{\"annotations\":{},\"labels\":{\"aglais-dataset\":\"test\",\"aglais-datatype\":\"text\"},\"name\":\"magruela-volume\"},\"spec\":{\"accessModes\":[\"ReadWriteMany\"],\"capacity\":{\"storage\":\"4Gi\"},\"cephfs\":{\"monitors\":[\"10.206.1.5:6789\",\"10.206.1.6:6789\",\"10.206.1.7:6789\"],\"path\":\"volumes/_nogroup/64964470-5ed9-4fe8-a655-e89e0f6cf121\"},\"persistentVolumeReclaimPolicy\":\"Retain\"}}\n",
+    >               "pv.kubernetes.io/bound-by-controller": "yes"
+    >           },
+    >           "creationTimestamp": "2020-08-29T14:15:32Z",
+    >           "finalizers": [
+    >               "kubernetes.io/pv-protection"
+    >           ],
+    >           "labels": {
+    >               "aglais-dataset": "test",
+    >               "aglais-datatype": "text"
+    >           },
+    >           "name": "magruela-volume",
+    >           "resourceVersion": "667186",
+    >           "selfLink": "/api/v1/persistentvolumes/magruela-volume",
+    >           "uid": "5ef26a70-e1dd-4986-bd1d-8eedeee099cc"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteMany"
+    >           ],
+    >           "capacity": {
+    >               "storage": "4Gi"
+    >           },
+    >           "cephfs": {
+    >               "monitors": [
+    >                   "10.206.1.5:6789",
+    >                   "10.206.1.6:6789",
+    >                   "10.206.1.7:6789"
+    >               ],
+    >               "path": "volumes/_nogroup/64964470-5ed9-4fe8-a655-e89e0f6cf121"
+    >           },
+    >           "claimRef": {
+    >               "apiVersion": "v1",
+    >               "kind": "PersistentVolumeClaim",
+    >               "name": "magruela-claim",
+    >               "namespace": "default",
+    >               "resourceVersion": "667183",
+    >               "uid": "8c842b10-5eef-45fe-903f-bfabb1fc4381"
+    >           },
+    >           "persistentVolumeReclaimPolicy": "Retain",
+    >           "volumeMode": "Filesystem"
+    >       },
+    >       "status": {
+    >           "phase": "Bound"
+    >       }
+    >   }
+
+    #
+    # Yay - Kubernetes volume controller matched the claim to the volume and linked them together.
+    # Match based on the labels and selectors we assigned to the volume and claim.
+    #
+
+# -----------------------------------------------------
+# Create a Pod that mounts the volume ....
+#[user@kubernator]
+
+    cat > /tmp/test-pod.yaml << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: test-pod-02
+  namespace: default
+spec:
+  volumes:
+    - name: magruela-data
+      persistentVolumeClaim:
+        claimName: magruela-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: test-container-01
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: magruela-data
+          mountPath: /magruela-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /local-data/date-log.txt;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename /tmp/test-pod.yaml
+
+    >   pod/test-pod-02 created
+
+
+# -----------------------------------------------------
+# Check the Pod status.
+#[user@kubernator]
+
+
+    kubectl \
+        describe pod \
+            test-pod-02
+
+    >   Name:         test-pod-02
+    >   Namespace:    default
+    >   Node:         tiberius-20200827-4tjt3wg4fxmz-node-0/10.0.0.112
+    >   Start Time:   Sat, 29 Aug 2020 15:01:51 +0000
+    >   Labels:       <none>
+    >   Annotations:  kubectl.kubernetes.io/last-applied-configuration:
+    >                   {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"name":"test-pod-02","namespace":"default"},"spec":{"containers":[{"args":["-...
+    >   Status:       Pending
+    >   IP:
+    >   Containers:
+    >     test-container-01:
+    >       Container ID:
+    >       Image:         fedora:latest
+    >       Image ID:
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Command:
+    >         /bin/sh
+    >       Args:
+    >         -c
+    >         while true; do date >> /local-data/date-log.txt; sleep 1; done
+    >       State:          Waiting
+    >         Reason:       ContainerCreating
+    >       Ready:          False
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /local-data from local-data (rw)
+    >         /magruela-data from magruela-data (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-vjk7x (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             False
+    >     ContainersReady   False
+    >     PodScheduled      True
+    >   Volumes:
+    >     magruela-data:
+    >       Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    >       ClaimName:  magruela-claim
+    >       ReadOnly:   false
+    >     local-data:
+    >       Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    >       Medium:
+    >       SizeLimit:  <unset>
+    >     default-token-vjk7x:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-vjk7x
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type     Reason       Age                  From                                            Message
+    >     ----     ------       ----                 ----                                            -------
+    >     Normal   Scheduled    <unknown>            default-scheduler                               Successfully assigned default/test-pod-02 to tiberius-20200827-4tjt3wg4fxmz-node-0
+    >     Warning  FailedMount  68s                  kubelet, tiberius-20200827-4tjt3wg4fxmz-node-0  Unable to attach or mount volumes: unmounted volumes=[magruela-data], unattached volumes=[magruela-data local-data default-token-vjk7x]: timed out waiting for the condition
+    >     Warning  FailedMount  63s (x9 over 3m11s)  kubelet, tiberius-20200827-4tjt3wg4fxmz-node-0  MountVolume.SetUp failed for volume "magruela-volume" : CephFS: mount failed: mount failed: exit status 32
+    >   Mounting command: mount
+    >   Mounting arguments: -t ceph -o name=admin,secretfile=/etc/ceph/admin.secret 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/64964470-5ed9-4fe8-a655-e89e0f6cf121 /var/lib/kubelet/pods/3366e6dd-abbf-4477-9db2-8fbdff5bc7d1/volumes/kubernetes.io~cephfs/magruela-volume
+    >   Output: mount: wrong fs type, bad option, bad superblock on 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/64964470-5ed9-4fe8-a655-e89e0f6cf121,
+    >          missing codepage or helper program, or other error
+
+
+
+
+
+
 
 

@@ -1,0 +1,349 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+
+    Magnum cluster
+        20200828-01-magnum-cluster.txt
+        Using Openstack COE, not Terraform.
+
+    Nginx-controller
+        20200807-06-nginx-ingress.txt
+            Helm based deploy.
+
+    Dashboard
+        20200807-07-dashboard.txt
+            Helm based deploy, followed by kubectl additions.
+
+    CephFS-router
+        20200820-05-cephfs-router.txt
+            Openstack calls to get configuration.
+            Terraform deploy.
+
+    CephFS-provider
+        20200821-01-cephfs-provider.txt
+            Kubectl based deploy.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/kubernetes:/kubernetes:z" \
+        atolmis/openstack-client \
+        bash
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# List our current shares.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share list
+
+    >   +--------------------------------------+----------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name           | Size | Share Proto | Status    | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+----------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ad1d9ca2-5b1c-4064-8c74-695286de6098 | gaia-dr2-share | 4399 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   +--------------------------------------+----------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# Get the details of our existing share.
+#[user@kubernator]
+
+    shareid=ad1d9ca2-5b1c-4064-8c74-695286de6098
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                --format json \
+                "${shareid:?}"
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2020-08-21T19:26:12.000000",
+    >     "description": "",
+    >     "export_locations": "\npath = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/0d4ce629-d290-4d7d-9d5e-9b94593196a0\nid = c8dd7596-c708-4c99-91e1-67021e99171a\npreferred = False",
+    >     "has_replicas": false,
+    >     "id": "ad1d9ca2-5b1c-4064-8c74-695286de6098",
+    >     "is_public": true,
+    >     "mount_snapshot_support": false,
+    >     "name": "gaia-dr2-share",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "properties": {
+    >       "kubernetes.io/created-for/pv/name": "pvc-b64d2646-55ca-4402-b6b3-76f70e47aa2c",
+    >       "kubernetes.io/created-for/pvc/namespace": "default",
+    >       "kubernetes.io/created-for/pvc/name": "gaia-dr2-volume-claim"
+    >     },
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8",
+    >     "share_type_name": "cephfsnativetype",
+    >     "size": 4399,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "available",
+    >     "task_state": null,
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "volume_type": "cephfsnativetype"
+    >   }
+
+    #
+    # Some metadata linking it to the original PersistentVolume
+    # and PersistentVolumeClaim.
+    #
+
+
+# -----------------------------------------------------
+# List our current share access rules.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access list \
+                "${shareid:?}"
+
+    >   +--------------------------------------+-------------+----------------+--------------+--------+------------------------------------------+----------------------------+----------------------------+
+    >   | id                                   | access_type | access_to      | access_level | state  | access_key                               | created_at                 | updated_at                 |
+    >   +--------------------------------------+-------------+----------------+--------------+--------+------------------------------------------+----------------------------+----------------------------+
+    >   | b6f44adf-2b00-481d-bfb2-99398af5c2de | cephx       | gaia-dr2-share | ro           | active | AQALYUhf1YHlEBAA0bhLz6UwEk478y1EAvVplQ== | 2020-08-28T01:42:34.000000 | 2020-08-28T01:42:35.000000 |
+    >   +--------------------------------------+-------------+----------------+--------------+--------+------------------------------------------+----------------------------+----------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access list \
+                --format json \
+                "${shareid:?}"
+
+    >   [
+    >     {
+    >       "id": "b6f44adf-2b00-481d-bfb2-99398af5c2de",
+    >       "access_type": "cephx",
+    >       "access_to": "gaia-dr2-share",
+    >       "access_level": "ro",
+    >       "state": "active",
+    >       "access_key": "AQALYUhf1YHlEBAA0bhLz6UwEk478y1EAvVplQ==",
+    >       "created_at": "2020-08-28T01:42:34.000000",
+    >       "updated_at": "2020-08-28T01:42:35.000000"
+    >     }
+    >   ]
+
+    #
+    # From the Manila provisioner documentation.
+    # (*) now replaced by CSI
+    # https://github.com/gman0/cloud-provider-openstack/blob/ef56215b90cac0cf92d1f750f2ab2e88e2ec01d5/docs/using-manila-provisioner.md
+
+        "In order to use an existing Manila share, parameters [osShareID or osShareName] and osShareAccessID must be supplied."
+
+    #
+    # Selector-Label Volume Binding
+    # https://docs.openshift.com/container-platform/3.11/install_config/persistent_storage/selector_label_binding.html
+
+        To bind a PVC to a specific PV as a cluster administrator:
+
+            Use pvc.spec.volumeName if you know the PV name.
+
+            Use pvc.spec.selector if you know the PV labels.
+
+        By specifying a selector, the PVC requires the PV to have specific labels
+
+
+        Pre-bind the PV to your PVC using the PVC namespace and name.
+        A PV defined as such will bind only to the specified PVC and to nothing else, as shown in the following example:
+
+            apiVersion: v1
+            kind: PersistentVolume
+            metadata:
+              name: mktg-ops--kafka--kafka-broker01
+            spec:
+              capacity:
+                storage: 15Gi
+              accessModes:
+                - ReadWriteOnce
+              claimRef:
+                  apiVersion: v1
+                  kind: PersistentVolumeClaim
+                  name: kafka-broker01
+                  namespace: default
+
+
+    #
+    # Our original dynamically allocated volume :
+    #
+
+        {
+            "apiVersion": "v1",
+            "kind": "PersistentVolume",
+            "metadata": {
+                "annotations": {
+                    "manila.cloud-provider-openstack.kubernetes.io/ID": "503db06d-0a85-4d58-a771-76caabf66868",
+                    "manila.cloud-provider-openstack.kubernetes.io/OSSecretName": "os-trustee",
+                    "manila.cloud-provider-openstack.kubernetes.io/OSSecretNamespace": "kube-system",
+                    "manila.cloud-provider-openstack.kubernetes.io/ProvisionType": "dynamic",
+                    "manila.cloud-provider-openstack.kubernetes.io/ShareSecretName": "manila-16da93cd-e35b-11ea-9386-0a580a640251",
+                    "manila.cloud-provider-openstack.kubernetes.io/ShareSecretNamespace": "default",
+                    "pv.kubernetes.io/provisioned-by": "manila-provisioner"
+                },
+            "creationTimestamp": "2020-08-21T03:05:01Z",
+            "finalizers": [
+                "kubernetes.io/pv-protection"
+            ],
+            "name": "pvc-10bb7a62-5fdf-4399-99c4-a37f01634f65",
+            "resourceVersion": "2126851",
+            "selfLink": "/api/v1/persistentvolumes/pvc-10bb7a62-5fdf-4399-99c4-a37f01634f65",
+            "uid": "5998da29-9fd3-444d-974a-0ccce5d7f4e8"
+        },
+        "spec": {
+            "accessModes": [
+                "ReadWriteOnce"
+            ],
+            "capacity": {
+                "storage": "4399G"
+            },
+            "cephfs": {
+                "monitors": [
+                    "10.206.1.5:6789",
+                    "10.206.1.6:6789",
+                    "10.206.1.7:6789"
+                ],
+                "path": "/volumes/_nogroup/616d38f4-d4fe-4421-bd03-e8fe5ae3ddb0",
+                "secretRef": {
+                    "name": "manila-16da93cd-e35b-11ea-9386-0a580a640251",
+                    "namespace": "default"
+                },
+                "user": "pvc-10bb7a62-5fdf-4399-99c4-a37f01634f65"
+            },
+            "claimRef": {
+                "apiVersion": "v1",
+                "kind": "PersistentVolumeClaim",
+                "name": "gaia-dr2-volume-claim",
+                "namespace": "default",
+                "resourceVersion": "2126819",
+                "uid": "10bb7a62-5fdf-4399-99c4-a37f01634f65"
+            },
+            "persistentVolumeReclaimPolicy": "Delete",
+            "storageClassName": "manila-cephfs-storage-class",
+            "volumeMode": "Filesystem"
+        },
+       "status": {
+           "phase": "Bound"
+       }
+   }
+
+
+    #
+    # Key parts of the spec:
+    #
+
+       "spec": {
+           "accessModes": [
+               "ReadWriteOnce"
+           ],
+           "capacity": {
+               "storage": "4399G"
+           },
+           "cephfs": {
+               "monitors": [
+                   "10.206.1.5:6789",
+                   "10.206.1.6:6789",
+                   "10.206.1.7:6789"
+               ],
+               "path": "/volumes/_nogroup/616d38f4-d4fe-4421-bd03-e8fe5ae3ddb0",
+               "secretRef": {
+                   "name": "manila-16da93cd-e35b-11ea-9386-0a580a640251",
+                   "namespace": "default"
+               },
+               "user": "pvc-10bb7a62-5fdf-4399-99c4-a37f01634f65"
+           },
+           "claimRef": {
+               "apiVersion": "v1",
+               "kind": "PersistentVolumeClaim",
+               "name": "gaia-dr2-volume-claim",
+               "namespace": "default",
+               "resourceVersion": "2126819",
+               "uid": "10bb7a62-5fdf-4399-99c4-a37f01634f65"
+           },
+           "persistentVolumeReclaimPolicy": "Delete",
+           "storageClassName": "manila-cephfs-storage-class",
+           "volumeMode": "Filesystem"
+       },
+
+
+    #
+    # Some match up, others I'm not sure where they came from.
+    # Problem is we don't have complete data - the PersistenVolumeClaim we have in our notes doesn't come from current Manila share.
+    # We need to create a new dynamic share and see how the fields match up.
+    #
+
+
+

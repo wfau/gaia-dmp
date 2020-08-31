@@ -1,0 +1,524 @@
+#7
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    # Spent too long trying to get the K8s Manila driver to work.
+    # The in-tree K8s Manila driver has been replaced by the Manila CSI plugin.
+    # All of the documentation, source code and issues point to the CSI plugin.
+    # Worth jumping ahead and trying out the CSI plugin.
+
+    Start again ...
+
+    Cluster delete
+        20200827-01-cluster-delete.txt
+        Explicitly delete the CephFS router
+            Delete the route
+            Delete the port
+            Delete the router
+
+    Magnum cluster
+        20200828-01-magnum-cluster.txt
+        Using Openstack directly, not Terraform.
+
+    Nginx-controller
+        20200807-06-nginx-ingress.txt
+            Helm based deploy.
+
+    Dashboard
+        20200807-07-dashboard.txt
+            Helm based deploy, followed by kubectl additions.
+
+    CephFS-router
+        20200820-05-cephfs-router.txt
+            Openstack calls to get configuration.
+            Terraform deploy.
+
+
+
+# -----------------------------------------------------
+# Checkout a copy of the Cloud Provider OpenStack repo.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    pushd "${AGLAIS_HOME}/external"
+
+        mkdir Kubernetes
+        pushd Kubernetes
+
+            git clone 'https://github.com/kubernetes/cloud-provider-openstack.git'
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/kubernetes:/kubernetes:z" \
+        --volume "${AGLAIS_HOME}/external/Kubernetes/cloud-provider-openstack:/cloud-provider-openstack:z" \
+        atolmis/openstack-client \
+        bash
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Install config editing tools.
+#[user@kubernator]
+
+    # TODO - add this to the kubernator image
+    mkdir "${HOME:?}/bin"
+    wget -O "${HOME:?}/bin/yq" https://github.com/mikefarah/yq/releases/download/3.3.2/yq_linux_amd64
+    chmod a+x "${HOME:?}/bin/yq"
+
+
+# -----------------------------------------------------
+# Install the CSI plugin using Helm.
+# https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/using-manila-csi-plugin.md#kubernetes-115
+#[user@kubernator]
+
+
+    cat > "/tmp/csi-manila-cephfs-helm-values.yaml" << EOF
+# Enabled Manila share protocols
+shareProtocols:
+   - protocolSelector: CEPHFS
+     fwdNodePluginEndpoint:
+       dir: /var/lib/kubelet/plugins/cephfs.csi.ceph.com
+       sockFile: csi.sock
+
+nameOverride: csi-manila-cephfs
+EOF
+
+
+    helm install \
+        csi-manila-cephfs \
+        /cloud-provider-openstack/charts/manila-csi-plugin \
+        --values "/tmp/csi-manila-cephfs-helm-values.yaml"
+
+    >   NAME: csi-manila-cephfs
+    >   LAST DEPLOYED: Mon Aug 31 03:44:43 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+
+
+# -----------------------------------------------------
+# Check all the parts are in place.
+# https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/using-manila-csi-plugin.md#verifying-the-deployment
+#[user@kubernator]
+
+    kubectl get all
+
+    >   NAME                                                           READY   STATUS    RESTARTS   AGE
+    >   pod/csi-manila-cephfs-controllerplugin-0                       3/3     Running   0          28s
+    >   pod/csi-manila-cephfs-nodeplugin-bs7zt                         2/2     Running   0          28s
+    >   pod/csi-manila-cephfs-nodeplugin-rjr78                         2/2     Running   0          28s
+    >   pod/csi-manila-cephfs-nodeplugin-wfpkx                         2/2     Running   0          28s
+    >   pod/csi-manila-cephfs-nodeplugin-zkzwg                         2/2     Running   0          28s
+    >   ....
+    >
+    >   NAME                                                          TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)                      AGE
+    >   service/csi-manila-cephfs-controllerplugin                    ClusterIP      10.254.110.103   <none>            12345/TCP                    28s
+    >   ....
+    >
+    >   NAME                                          DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+    >   daemonset.apps/csi-manila-cephfs-nodeplugin   4         4         4       4            4           <none>          28s
+    >   ....
+    >
+    >   NAME                                                  READY   AGE
+    >   statefulset.apps/csi-manila-cephfs-controllerplugin   1/1     28s
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our secrets.
+#[user@kubernator]
+
+    authurl=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.auth_url'
+        )
+
+    region=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.region_name'
+        )
+
+    credid=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.application_credential_id'
+        )
+
+    credsecret=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.application_credential_id'
+        )
+
+
+    cat > "/tmp/csi-manila-cephfs-secrets.yaml" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: csi-manila-cephfs-secrets
+  namespace: default
+stringData:
+  # Mandatory
+  os-authURL: "${authurl:?}"
+  os-region: "${region:?}"
+
+  # Authentication using user credentials
+  os-applicationCredentialID: "${credid:?}"
+  os-applicationCredentialSecret: "${credsecret:?}"
+
+EOF
+
+    kubectl apply \
+        --filename "/tmp/csi-manila-cephfs-secrets.yaml"
+
+    >   secret/csi-manila-cephfs-secrets created
+
+
+    kubectl describe \
+        secret \
+            csi-manila-cephfs-secrets
+
+    >   Name:         csi-manila-cephfs-secrets
+    >   Namespace:    default
+    >   Labels:       <none>
+    >   Annotations:
+    >   Type:         Opaque
+    >
+    >   Data
+    >   ====
+    >   os-applicationCredentialSecret:  32 bytes
+    >   os-authURL:                      47 bytes
+    >   os-region:                       9 bytes
+    >   os-applicationCredentialID:      32 bytes
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+# -----------------------------------------------------
+# List the available shares.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share list
+
+    >   +--------------------------------------+------------------------------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name                                     | Size | Share Proto | Status    | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+------------------------------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ad1d9ca2-5b1c-4064-8c74-695286de6098 | gaia-dr2-share                           | 4399 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | a32ea61f-a922-4b9d-959b-a9d2d2e57c4b | magruela-share                           |    5 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | d71dae9a-b508-4a54-a5e9-7a91e8548b1e | pvc-41814ac5-00cc-4ba3-ae8b-6eddad01ef0c |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   +--------------------------------------+------------------------------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# List our current share access rules.
+#[user@kubernator]
+
+    shareid=a32ea61f-a922-4b9d-959b-a9d2d2e57c4b
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access list \
+                "${shareid:?}"
+
+    >   +--------------------------------------+-------------+----------------+--------------+--------+----------------+----------------------------+----------------------------+
+    >   | id                                   | access_type | access_to      | access_level | state  | access_key     | created_at                 | updated_at                 |
+    >   +--------------------------------------+-------------+----------------+--------------+--------+----------------+----------------------------+----------------------------+
+    >   | f658ea33-daef-46da-8fff-82b23ced65de | cephx       | magruela-share | rw           | active | AQCE........== | 2020-08-31T04:24:36.000000 | 2020-08-31T04:24:36.000000 |
+    >   +--------------------------------------+-------------+----------------+--------------+--------+----------------+----------------------------+----------------------------+
+
+    shareaccessid=f658ea33-daef-46da-8fff-82b23ced65de
+
+
+# -----------------------------------------------------
+# Create our persistent volume.
+#[user@kubernator]
+
+    cat > "/tmp/magruela-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: magruela-volume
+  labels:
+    name: magruela-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 4Gi
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    volumeHandle: magruela-volume-handle
+    nodeStageSecretRef:
+      name: csi-manila-cephfs-secrets
+      namespace: default
+    nodePublishSecretRef:
+      name: csi-manila-cephfs-secrets
+      namespace: default
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${shareaccessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/magruela-volume.yaml"
+
+    >   persistentvolume/magruela-volume created
+
+
+    kubectl describe \
+        persistentvolume \
+            magruela-volume
+
+    >   Name:            magruela-volume
+    >   Labels:          name=magruela-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"name":"magruela-volume"},"name":"magruela-volume"},"s...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        4Gi
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      magruela-volume-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=f658ea33-daef-46da-8fff-82b23ced65de
+    >                              shareID=a32ea61f-a922-4b9d-959b-a9d2d2e57c4b
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Create our persistent volume claim.
+#[user@kubernator]
+
+    cat > "/tmp/magruela-claim.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: magruela-claim
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 3Gi
+  selector:
+    matchExpressions:
+    - key: name
+      operator: In
+      values: ["magruela-volume"]
+EOF
+
+    kubectl apply \
+        --filename "/tmp/magruela-claim.yaml"
+
+    >   persistentvolumeclaim/magruela-claim created
+
+
+    kubectl describe \
+        persistentvolumeclaim \
+            magruela-claim
+
+    >   Name:          magruela-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        magruela-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"magruela-claim","namespace":"default"},"spec":{"acc...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      4Gi
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Create a Pod that mounts the volume ....
+#[user@kubernator]
+
+    cat > /tmp/magruela-pod.yaml << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: magruela-pod
+  namespace: default
+spec:
+  volumes:
+    - name: magruela-data
+      persistentVolumeClaim:
+        claimName: magruela-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: magruela-container
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: magruela-data
+          mountPath: /magruela-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /local-data/date-log.txt;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename /tmp/magruela-pod.yaml
+
+    >   pod/magruela-pod created
+
+
+    kubectl \
+        describe pod \
+            magruela-pod
+
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                            Message
+    >     ----     ------       ----              ----                                            -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                               Successfully assigned default/magruela-pod to tiberius-20200831-cnt5rv7mw7ov-node-1
+    >     Warning  FailedMount  7s (x7 over 38s)  kubelet, tiberius-20200831-cnt5rv7mw7ov-node-1  MountVolume.MountDevice failed for volume "magruela-volume" : kubernetes.io/csi: ....
+
+    >   MountVolume.MountDevice failed for volume "magruela-volume" :
+    >       kubernetes.io/csi: attacher.MountDevice failed to create newCsiDriverClient:
+    >           driver name cephfs.manila.csi.openstack.org not found in the list of registered CSI drivers
+
+    #
+    # Nothing is easy on this project.
+    #
+
+
+    kubectl get CSIDriver
+
+    >   NAME                              CREATED AT
+    >   cephfs.manila.csi.openstack.org   2020-08-31T03:44:44Z
+
+
+    kubectl describe \
+        CSIDriver \
+            'cephfs.manila.csi.openstack.org'
+
+    >   Name:         cephfs.manila.csi.openstack.org
+    >   Namespace:
+    >   Labels:       app.kubernetes.io/managed-by=Helm
+    >   Annotations:  meta.helm.sh/release-name: csi-manila-cephfs
+    >                 meta.helm.sh/release-namespace: default
+    >   API Version:  storage.k8s.io/v1beta1
+    >   Kind:         CSIDriver
+    >   Metadata:
+    >     Creation Timestamp:  2020-08-31T03:44:44Z
+    >     Resource Version:    16054
+    >     Self Link:           /apis/storage.k8s.io/v1beta1/csidrivers/cephfs.manila.csi.openstack.org
+    >     UID:                 d9900a10-dab7-40b3-a36c-2a778d7a0240
+    >   Spec:
+    >     Attach Required:    false
+    >     Pod Info On Mount:  false
+    >     Volume Lifecycle Modes:
+    >       Persistent
+    >   Events:  <none>
+
+
+    #
+    # The Manila CSI driver documentation talks about being a proxy driver,
+    # and passing filesystem (CephFS or NFS) operations down to a lower
+    # level driver.
+    #
+    # It kind of implies we need to install the CephFS driver ?
+    # Or should everything we need be installed by our Helm install ?
+    #
+    # The error message says 'cephfs.manila.csi.openstack.org' is missing,
+    # not 'ceph-csi-cephfs'.
+    #
+    # There was a name length error whenm I installed, and I had
+    # to uninstall and install a second time.
+    # Is this a broken deployment ?
+    #
+
+    #
+    # Create from start ?
+    #
+

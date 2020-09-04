@@ -1,0 +1,192 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    # TODO Needs testing
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Release and delete all our floating IP addresses.
+#[user@openstacker]
+
+    for floatingid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            floating ip list \
+                --format json \
+        | jq -r '.[] | .ID'
+        )
+        do
+            echo "---- ----"
+            echo "Floating IP [${floatingid:?}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                floating ip unset \
+                    "${floatingid}"
+
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                floating ip delete \
+                    "${floatingid}"
+        done
+
+
+# -----------------------------------------------------
+# List our routers.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+
+
+# -----------------------------------------------------
+# Identify and delete our routers by cluster name.
+#[user@openstacker]
+
+    # Note - the subnet name includes a lowercase version of the clustername.
+    # So the 'jq' regex needs to convert ${clustername} to lowercase.
+
+    regex=^${clustername~}
+
+    for routerid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("'${regex:?}'")) | .ID'
+        )
+    do
+
+        echo "---- ---- ---- ----"
+        echo "Router [${routerid:?}]"
+
+        # Delete the router routes.
+        for routedesc in $(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                router show \
+                    --format json \
+                    "${routerid:?}" \
+            | jq -r '.routes[] | "gateway=" + .nexthop + ",destination=" + .destination'
+            )
+        do
+            echo "---- ----"
+            echo "Route  [${routedesc:?}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                router unset \
+                    --route "${routedesc:?}" \
+                    "${routerid:?}"
+        done
+
+        # Delete the router ports.
+        for portid in $(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                router show \
+                    --format json \
+                    "${routerid:?}" \
+                | jq -r '.interfaces_info[].port_id'
+                )
+                do
+                    echo "---- ----"
+                    echo "Port   [${portid}]"
+                    openstack \
+                        --os-cloud "${cloudname:?}" \
+                        router remove port \
+                            "${routerid:?}" \
+                            "${portid:?}"
+                done
+
+        # Delete the router.
+        echo "Router [${routerid:?}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router delete \
+                "${routerid:?}"
+    done
+
+
+# -----------------------------------------------------
+# Select and delete our cluster by name.
+#[user@openstacker]
+
+    # Note - the cluster name is NOT a lowercase version of the clustername.
+    # So the 'jq' regex needs to use the original ${clustername}.
+
+    regex=^${clustername}
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[] | select(.name | test("'${regex:?}'")) | .uuid'
+        )
+
+    echo "---- ---- ---- ----"
+    echo "Cluster [${clusterid:?}]"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster \
+            delete \
+            "${clusterid:?}"
+
+
+
+# -----------------------------------------------------
+# Watch the cluster list.
+#[user@openstacker]
+
+    watch \
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list
+
+    >   ....
+    >   ....
+
+

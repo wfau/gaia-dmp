@@ -1,0 +1,759 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+# -----------------------------------------------------
+
+Experiments:
+
+    Manila CSI modified version
+    20200905-02-modified-csi.txt
+
+    Test name : Adazoga
+
+    Connecting to a static share using application credentials
+    PASS
+
+    Connecting to a static share using username/password
+    ?? PASS - works once we found the right secret to use.
+
+
+# -----------------------------------------------------
+# Update our clouds config file.
+#[user@desktop]
+
+cat > "${HOME}/clouds.yaml" << EOF
+
+clouds:
+
+  gaia-prod:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-prod.APP_CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-prod.APP_CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-prod-super:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-prod.APX_CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-prod.APX_CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-prod-tester:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      username: '$(secret 'zrq-gaia-prod.TEST_USERNAME')'
+      password: '$(secret 'zrq-gaia-prod.TEST_PASSWORD')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+EOF
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Install YQ.
+# TODO - add this to the kubernator image
+#[user@kubernator]
+
+    mkdir   "${HOME:?}/bin"
+    wget -O "${HOME:?}/bin/yq" https://github.com/mikefarah/yq/releases/download/3.3.2/yq_linux_amd64
+    chmod a+x "${HOME:?}/bin/yq"
+
+
+# -----------------------------------------------------
+# Create our Secret set using application credentials.
+#[user@kubernator]
+
+    osauthurl=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.auth_url'
+        )
+
+    osregion=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.region_name'
+        )
+
+    oscredentialID=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.application_credential_id'
+        )
+
+    oscredentialsecret=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.application_credential_secret'
+        )
+
+    cat > "/tmp/adazoga-secrets.yaml" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: adazoga-secrets
+  namespace: default
+stringData:
+  os-authURL: "${osauthurl:?}"
+  os-region: "${osregion:?}"
+  os-applicationCredentialID: "${oscredentialID:?}"
+  os-applicationCredentialSecret: "${oscredentialsecret:?}"
+EOF
+
+    kubectl create \
+        --filename "/tmp/adazoga-secrets.yaml"
+
+    kubectl describe \
+        secret \
+            adazoga-secrets
+
+    >   Name:         adazoga-secrets
+    >   Namespace:    default
+    >   Labels:       <none>
+    >   Annotations:  <none>
+    >
+    >   Type:  Opaque
+    >
+    >   Data
+    >   ====
+    >   os-authURL:                      47 bytes
+    >   os-region:                       9 bytes
+    >   os-applicationCredentialID:      32 bytes
+    >   os-applicationCredentialSecret:  35 bytes
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+# -----------------------------------------------------
+# Create our target share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name 'adazoga-share' \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            5 \
+    | tee /tmp/adazoga-share.json
+
+    shareid=$(
+        jq -r '.id' /tmp/adazoga-share.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                "${shareid:?}"
+
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+    >   | Field                                 | Value                                                                                                         |
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+    >   | access_rules_status                   | active                                                                                                        |
+    >   | availability_zone                     | nova                                                                                                          |
+    >   | create_share_from_snapshot_support    | False                                                                                                         |
+    >   | created_at                            | 2020-09-06T03:00:54.000000                                                                                    |
+    >   | description                           | None                                                                                                          |
+    >   | export_locations                      |                                                                                                               |
+    >   |                                       | path = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/72b8b800-20ee-4cd1-8115-643bca0270d3 |
+    >   |                                       | id = fcc04f5d-af60-4ad0-b321-a07b0f2b5363                                                                     |
+    >   |                                       | preferred = False                                                                                             |
+    >   | has_replicas                          | False                                                                                                         |
+    >   | id                                    | 2e2d50d4-3e75-4fd8-a09e-e6f7163b242a                                                                          |
+    >   | is_public                             | False                                                                                                         |
+    >   | mount_snapshot_support                | False                                                                                                         |
+    >   | name                                  | adazoga-share                                                                                                 |
+    >   | project_id                            | 21b4ae3a2ea44bc5a9c14005ed2963af                                                                              |
+    >   | properties                            |                                                                                                               |
+    >   | replication_type                      | None                                                                                                          |
+    >   | revert_to_snapshot_support            | False                                                                                                         |
+    >   | share_group_id                        | None                                                                                                          |
+    >   | share_network_id                      | None                                                                                                          |
+    >   | share_proto                           | CEPHFS                                                                                                        |
+    >   | share_type                            | 5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8                                                                          |
+    >   | share_type_name                       | cephfsnativetype                                                                                              |
+    >   | size                                  | 5                                                                                                             |
+    >   | snapshot_id                           | None                                                                                                          |
+    >   | snapshot_support                      | False                                                                                                         |
+    >   | source_share_group_snapshot_member_id | None                                                                                                          |
+    >   | status                                | available                                                                                                     |
+    >   | task_state                            | None                                                                                                          |
+    >   | user_id                               | 98169f87de174ad4ac98c32e59646488                                                                              |
+    >   | volume_type                           | cephfsnativetype                                                                                              |
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create an access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            'AlbertAugustus' \
+    | tee /tmp/adazoga-access.json
+
+    accessid=$(
+        jq -r '.id' /tmp/adazoga-access.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                "${accessid:?}"
+
+    >   +--------------+------------------------------------------+
+    >   | Field        | Value                                    |
+    >   +--------------+------------------------------------------+
+    >   | id           | b8ea8f7b-086b-4da3-b462-bbf76438183f     |
+    >   | share_id     | 2e2d50d4-3e75-4fd8-a09e-e6f7163b242a     |
+    >   | access_level | rw                                       |
+    >   | access_to    | AlbertAugustus                           |
+    >   | access_type  | cephx                                    |
+    >   | state        | active                                   |
+    >   | access_key   | AQCw....................==               |
+    >   | created_at   | 2020-09-06T03:01:37.000000               |
+    >   | updated_at   | 2020-09-06T03:01:38.000000               |
+    >   | properties   |                                          |
+    >   +--------------+------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create our PersistentVolume, using the kube-system/os-trustee Secret.
+#[user@kubernator]
+
+    cat > "/tmp/adazoga-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: adazoga-volume
+  labels:
+    name: adazoga-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 4Gi
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    nodeStageSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    nodePublishSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    volumeHandle: adazoga-handle
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${accessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/adazoga-volume.yaml"
+
+    kubectl describe \
+        persistentvolume \
+            adazoga-volume
+
+    >   Name:            adazoga-volume
+    >   Labels:          name=adazoga-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"name":"adazoga-volume"},"name":"adazoga-volume"},"spe...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        4Gi
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      adazoga-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=b8ea8f7b-086b-4da3-b462-bbf76438183f
+    >                              shareID=2e2d50d4-3e75-4fd8-a09e-e6f7163b242a
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Create our PersistentVolumeClaim.
+#[user@kubernator]
+
+    cat > "/tmp/adazoga-claim.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: adazoga-claim
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 3Gi
+  selector:
+    matchExpressions:
+    - key: name
+      operator: In
+      values: ["adazoga-volume"]
+EOF
+
+    kubectl apply \
+        --filename "/tmp/adazoga-claim.yaml"
+
+    kubectl describe \
+        persistentvolumeclaim \
+            adazoga-claim
+
+    >   Name:          adazoga-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        adazoga-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"adazoga-claim","namespace":"default"},"spec":{"acce...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      4Gi
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Create our test Pod.
+#[user@kubernator]
+
+    cat > /tmp/adazoga-pod.yaml << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: adazoga-pod
+  namespace: default
+spec:
+  volumes:
+    - name: share-data
+      persistentVolumeClaim:
+        claimName: adazoga-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: adazoga-container
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: share-data
+          mountPath: /share-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /share-data/\${HOSTNAME}.log;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename /tmp/adazoga-pod.yaml
+
+    kubectl \
+        describe pod \
+            adazoga-pod
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/adazoga-pod to tiberius-20200906-ys543ic7ytad-node-2
+    >     Normal  Pulling    12s        kubelet, tiberius-20200906-ys543ic7ytad-node-2  Pulling image "fedora:latest"
+    >     Normal  Pulled     5s         kubelet, tiberius-20200906-ys543ic7ytad-node-2  Successfully pulled image "fedora:latest"
+    >     Normal  Created    5s         kubelet, tiberius-20200906-ys543ic7ytad-node-2  Created container adazoga-container
+    >     Normal  Started    5s         kubelet, tiberius-20200906-ys543ic7ytad-node-2  Started container adazoga-container
+
+
+# -----------------------------------------------------
+# Login to our Pod to check.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        adazoga-pod \
+        -- \
+            /bin/bash
+
+            tail -f /share-data/${HOSTNAME}.log
+
+    >   ....
+    >   ....
+    >   Sun Sep  6 03:10:37 UTC 2020
+    >   Sun Sep  6 03:10:38 UTC 2020
+    >   Sun Sep  6 03:10:39 UTC 2020
+    >   Sun Sep  6 03:10:40 UTC 2020
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Describe all the components
+#[user@kubernator]
+
+    kubectl describe \
+        secret \
+            adazoga-secrets
+
+    >   Name:         adazoga-secrets
+    >   Namespace:    default
+    >   Labels:       <none>
+    >   Annotations:  <none>
+    >
+    >   Type:  Opaque
+    >
+    >   Data
+    >   ====
+    >   os-applicationCredentialID:      32 bytes
+    >   os-applicationCredentialSecret:  35 bytes
+    >   os-authURL:                      47 bytes
+    >   os-region:                       9 bytes
+
+
+    kubectl describe \
+        persistentvolume \
+            adazoga-volume
+
+    >   Name:            adazoga-volume
+    >   Labels:          name=adazoga-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"name":"adazoga-volume"},"name":"adazoga-volume"},"spe...
+    >                    pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Bound
+    >   Claim:           default/adazoga-claim
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        4Gi
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      adazoga-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=b8ea8f7b-086b-4da3-b462-bbf76438183f
+    >                              shareID=2e2d50d4-3e75-4fd8-a09e-e6f7163b242a
+    >   Events:                <none>
+
+
+    kubectl describe \
+        persistentvolumeclaim \
+            adazoga-claim
+
+    >   Name:          adazoga-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        adazoga-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"adazoga-claim","namespace":"default"},"spec":{"acce...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      4Gi
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    adazoga-pod
+    >   Events:        <none>
+
+
+    kubectl describe \
+        pod \
+            adazoga-pod
+
+    >   Name:         adazoga-pod
+    >   Namespace:    default
+    >   Node:         tiberius-20200906-ys543ic7ytad-node-2/10.0.0.158
+    >   Start Time:   Sun, 06 Sep 2020 03:10:03 +0000
+    >   Labels:       <none>
+    >   Annotations:  kubectl.kubernetes.io/last-applied-configuration:
+    >                   {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"name":"adazoga-pod","namespace":"default"},"spec":{"containers":[{"args":["-...
+    >   Status:       Running
+    >   IP:           10.100.2.11
+    >   Containers:
+    >     adazoga-container:
+    >       Container ID:  docker://56f83c7582d4794d05e330d5b4a83355789e3c9f43dd661e98ece5ac7781ea69
+    >       Image:         fedora:latest
+    >       Image ID:      docker-pullable://docker.io/fedora@sha256:d6a6d60fda1b22b6d5fe3c3b2abe2554b60432b7b215adc11a2b5fae16f50188
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Command:
+    >         /bin/sh
+    >       Args:
+    >         -c
+    >         while true; do date >> /share-data/${HOSTNAME}.log; sleep 1; done
+    >       State:          Running
+    >         Started:      Sun, 06 Sep 2020 03:10:13 +0000
+    >       Ready:          True
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /local-data from local-data (rw)
+    >         /share-data from share-data (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-bfn7m (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             True
+    >     ContainersReady   True
+    >     PodScheduled      True
+    >   Volumes:
+    >     share-data:
+    >       Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    >       ClaimName:  adazoga-claim
+    >       ReadOnly:   false
+    >     local-data:
+    >       Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    >       Medium:
+    >       SizeLimit:  <unset>
+    >     default-token-bfn7m:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-bfn7m
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/adazoga-pod to tiberius-20200906-ys543ic7ytad-node-2
+    >     Normal  Pulling    2m26s      kubelet, tiberius-20200906-ys543ic7ytad-node-2  Pulling image "fedora:latest"
+    >     Normal  Pulled     2m19s      kubelet, tiberius-20200906-ys543ic7ytad-node-2  Successfully pulled image "fedora:latest"
+    >     Normal  Created    2m19s      kubelet, tiberius-20200906-ys543ic7ytad-node-2  Created container adazoga-container
+    >     Normal  Started    2m19s      kubelet, tiberius-20200906-ys543ic7ytad-node-2  Started container adazoga-container
+
+
+# -----------------------------------------------------
+# Delete our Pod, Claim, Volume and Secret.
+#[user@kubernator]
+
+    kubectl \
+        delete pod \
+            adazoga-pod
+
+    kubectl \
+        delete persistentvolumeclaim \
+            adazoga-claim
+
+    kubectl \
+        delete persistentvolume \
+            adazoga-volume
+
+    kubectl \
+        delete secret \
+            adazoga-secrets
+
+
+# -----------------------------------------------------
+# Create our Secret set using username and password.
+#[user@kubernator]
+
+    osdomain=default
+    osproject=iris-gaia-prod
+
+    osauthurl=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.auth_url'
+        )
+
+    osregion=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.region_name'
+        )
+
+    osusername=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.username'
+        )
+
+    ospassword=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.password'
+        )
+
+    cat > "/tmp/adazoga-secrets.yaml" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: adazoga-secrets
+  namespace: default
+stringData:
+  os-authURL:     "${osauthurl:?}"
+  os-region:      "${osregion:?}"
+  os-domainID:    "${osdomain:?}"
+  os-projectName: "${osproject:?}"
+  os-userName:    "${osusername:?}"
+  os-password:    "${ospassword:?}"
+EOF
+
+    kubectl create \
+        --filename "/tmp/adazoga-secrets.yaml"
+
+    kubectl describe \
+        secret \
+            adazoga-secrets
+
+    >   ....
+    >   ....
+    >   Data
+    >   ====
+    >   os-password:     37 bytes
+    >   os-projectName:  14 bytes
+    >   os-region:       9 bytes
+    >   os-userName:     17 bytes
+    >   os-authURL:      47 bytes
+    >   os-domainID:     7 bytes
+
+
+# -----------------------------------------------------
+# Create our Volume, Claim and Pod.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename "/tmp/adazoga-volume.yaml"
+
+    kubectl apply \
+        --filename "/tmp/adazoga-claim.yaml"
+
+    kubectl apply \
+        --filename "/tmp/adazoga-pod.yaml"
+
+    kubectl describe \
+        pod \
+            adazoga-pod
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/adazoga-pod to tiberius-20200906-ys543ic7ytad-node-2
+    >     Normal  Pulling    7s         kubelet, tiberius-20200906-ys543ic7ytad-node-2  Pulling image "fedora:latest"
+    >     Normal  Pulled     4s         kubelet, tiberius-20200906-ys543ic7ytad-node-2  Successfully pulled image "fedora:latest"
+    >     Normal  Created    4s         kubelet, tiberius-20200906-ys543ic7ytad-node-2  Created container adazoga-container
+    >     Normal  Started    4s         kubelet, tiberius-20200906-ys543ic7ytad-node-2  Started container adazoga-container
+
+
+# -----------------------------------------------------
+# Login to our Pod to check.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        adazoga-pod \
+        -- \
+            /bin/bash
+
+            tail -f /share-data/${HOSTNAME}.log
+
+    >   ....
+    >   ....
+    >   Sun Sep  6 03:17:44 UTC 2020
+    >   Sun Sep  6 03:17:45 UTC 2020
+    >   Sun Sep  6 03:17:46 UTC 2020
+    >   Sun Sep  6 03:17:47 UTC 2020
+
+
+

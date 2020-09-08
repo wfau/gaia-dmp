@@ -1,0 +1,316 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Install the CephFS CSI plugin using Helm charts from the ceph-csi project.
+
+    Setup shells tailing the CephFS CSI plugin Pod logs.
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Install the Ceph CSI plugin using Helm.
+# https://github.com/ceph/ceph-csi
+# https://github.com/ceph/ceph-csi/blob/master/charts/ceph-csi-cephfs/README.md#ceph-csi-cephfs
+#[user@openstacker]
+
+    helm repo add \
+        ceph-csi \
+            'https://ceph.github.io/csi-charts'
+
+    >   "ceph-csi" has been added to your repositories
+
+
+    kubectl create \
+        namespace \
+            ceph-csi-cephfs
+
+    >   namespace/ceph-csi-cephfs created
+
+
+    helm install \
+        --namespace "ceph-csi-cephfs" \
+        "ceph-csi-cephfs" \
+            ceph-csi/ceph-csi-cephfs
+
+    >   NAME: ceph-csi-cephfs
+    >   LAST DEPLOYED: Fri Sep  4 11:42:15 2020
+    >   NAMESPACE: ceph-csi-cephfs
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Examples on how to configure a storage class and start using the driver are here:
+    >   https://github.com/ceph/ceph-csi/tree/v3.1.0/examples/cephfs
+
+
+# -----------------------------------------------------
+# List the Ceph CSI Pods.
+#[user@openstacker]
+
+    kubectl get --namespace 'ceph-csi-cephfs' Pods
+
+    >   NAME                                           READY   STATUS    RESTARTS   AGE
+    >   ceph-csi-cephfs-nodeplugin-7msc5               3/3     Running   0          98s
+    >   ceph-csi-cephfs-nodeplugin-9d5zz               3/3     Running   0          98s
+    >   ceph-csi-cephfs-nodeplugin-lt7f9               3/3     Running   0          98s
+    >   ceph-csi-cephfs-nodeplugin-zndzw               3/3     Running   0          98s
+    >   ceph-csi-cephfs-provisioner-6c6c9c4f97-l5jx8   6/6     Running   0          98s
+    >   ceph-csi-cephfs-provisioner-6c6c9c4f97-m65h4   6/6     Running   0          98s
+    >   ceph-csi-cephfs-provisioner-6c6c9c4f97-xcx7d   6/6     Running   0          98s
+
+
+# -----------------------------------------------------
+# Setup a separate shell tailing the logs on a Ceph CSI provisioner.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+    podname=$(
+        kubectl get \
+            --output json \
+            --namespace 'ceph-csi-cephfs' \
+            --selector 'app=ceph-csi-cephfs,component=provisioner' \
+                Pods \
+        | jq -r '.items[0].metadata.name'
+        )
+
+    echo "Pod [${podname}]"
+
+    >   Pod [ceph-csi-cephfs-provisioner-6c6c9c4f97-l5jx8]
+
+
+    kubectl get \
+        --output json \
+        --namespace 'ceph-csi-cephfs' \
+        Pod \
+           "${podname:?}" \
+    | jq -r '.spec.containers | .[] | .name'
+
+    >   csi-provisioner
+    >   csi-snapshotter
+    >   csi-attacher
+    >   csi-resizer
+    >   csi-cephfsplugin
+    >   liveness-prometheus
+
+
+    kubectl \
+        logs \
+            --follow \
+            --namespace 'ceph-csi-cephfs' \
+           "${podname:?}" \
+            --container \
+                'csi-provisioner'
+
+    >   I0904 11:42:23.814896       1 feature_gate.go:243] feature gates: &{map[]}
+    >   I0904 11:42:23.814946       1 csi-provisioner.go:107] Version: v1.6.0-0-g321fa5c1c
+    >   I0904 11:42:23.814965       1 csi-provisioner.go:121] Building kube configs for running in cluster...
+    >   I0904 11:42:23.828908       1 connection.go:153] Connecting to unix:///csi/csi-provisioner.sock
+    >   W0904 11:42:33.829034       1 connection.go:172] Still connecting to unix:///csi/csi-provisioner.sock
+    >   W0904 11:42:43.829239       1 connection.go:172] Still connecting to unix:///csi/csi-provisioner.sock
+    >   W0904 11:42:53.829148       1 connection.go:172] Still connecting to unix:///csi/csi-provisioner.sock
+    >   I0904 11:42:55.516164       1 common.go:111] Probing CSI driver for readiness
+    >   I0904 11:42:55.516196       1 connection.go:182] GRPC call: /csi.v1.Identity/Probe
+    >   I0904 11:42:55.516201       1 connection.go:183] GRPC request: {}
+    >   I0904 11:42:55.518357       1 connection.go:185] GRPC response: {}
+    >   I0904 11:42:55.518729       1 connection.go:186] GRPC error: <nil>
+    >   I0904 11:42:55.518737       1 connection.go:182] GRPC call: /csi.v1.Identity/GetPluginInfo
+    >   I0904 11:42:55.518742       1 connection.go:183] GRPC request: {}
+    >   I0904 11:42:55.520096       1 connection.go:185] GRPC response: {"name":"cephfs.csi.ceph.com","vendor_version":"v3.1.0"}
+    >   I0904 11:42:55.520509       1 connection.go:186] GRPC error: <nil>
+    >   I0904 11:42:55.520518       1 csi-provisioner.go:163] Detected CSI driver cephfs.csi.ceph.com
+    >   W0904 11:42:55.520523       1 metrics.go:142] metrics endpoint will not be started because `metrics-address` was not specified.
+    >   I0904 11:42:55.520546       1 connection.go:182] GRPC call: /csi.v1.Identity/GetPluginCapabilities
+    >   I0904 11:42:55.520550       1 connection.go:183] GRPC request: {}
+    >   I0904 11:42:55.522937       1 connection.go:185] GRPC response: {"capabilities":[{"Type":{"Service":{"type":1}}},{"Type":{"VolumeExpansion":{"type":1}}},{"Type":{"Service":{"type":2}}}]}
+    >   I0904 11:42:55.524685       1 connection.go:186] GRPC error: <nil>
+    >   I0904 11:42:55.524695       1 connection.go:182] GRPC call: /csi.v1.Controller/ControllerGetCapabilities
+    >   I0904 11:42:55.524699       1 connection.go:183] GRPC request: {}
+    >   I0904 11:42:55.528368       1 connection.go:185] GRPC response: {"capabilities":[{"Type":{"Rpc":{"type":1}}},{"Type":{"Rpc":{"type":5}}},{"Type":{"Rpc":{"type":9}}},{"Type":{"Rpc":{"type":7}}}]}
+    >   I0904 11:42:55.531030       1 connection.go:186] GRPC error: <nil>
+    >   I0904 11:42:55.531438       1 controller.go:709] Using saving PVs to API server in background
+    >   I0904 11:42:55.531539       1 leaderelection.go:242] attempting to acquire leader lease  ceph-csi-cephfs/cephfs-csi-ceph-com...
+    >   I0904 11:42:55.533602       1 leaderelection.go:352] lock is held by ceph-csi-cephfs-provisioner-6c6c9c4f97-m65h4 and has not yet expired
+    >   I0904 11:42:55.533632       1 leaderelection.go:247] failed to acquire lease ceph-csi-cephfs/cephfs-csi-ceph-com
+    >   I0904 11:42:55.533639       1 leader_election.go:172] new leader detected, current leader: ceph-csi-cephfs-provisioner-6c6c9c4f97-m65h4
+    >   I0904 11:43:06.178995       1 leaderelection.go:352] lock is held by ceph-csi-cephfs-provisioner-6c6c9c4f97-m65h4 and has not yet expired
+    >   I0904 11:43:06.179023       1 leaderelection.go:247] failed to acquire lease ceph-csi-cephfs/cephfs-csi-ceph-com
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Setup a separate shell tailing the logs on a Ceph CSI nodeplugin.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+    podname=$(
+        kubectl get \
+            --output json \
+            --namespace 'ceph-csi-cephfs' \
+            --selector 'app=ceph-csi-cephfs,component=nodeplugin' \
+                Pods \
+        | jq -r '.items[0].metadata.name'
+        )
+
+    echo "Pod [${podname}]"
+
+    >   Pod [ceph-csi-cephfs-nodeplugin-7msc5]
+
+
+    kubectl get \
+        --output json \
+        --namespace 'ceph-csi-cephfs' \
+        Pod \
+           "${podname:?}" \
+    | jq -r '.spec.containers | .[] | .name'
+
+    >   driver-registrar
+    >   csi-cephfsplugin
+    >   liveness-prometheus
+
+
+    kubectl \
+        logs \
+            --follow \
+            --namespace 'ceph-csi-cephfs' \
+           "${podname:?}" \
+            --container \
+                'csi-cephfsplugin'
+
+    >   I0904 11:42:46.999054       1 cephcsi.go:123] Driver version: v3.1.0 and Git version: 5d48473582a31c21d9080d1d824db97ebf4a7a80
+    >   I0904 11:42:46.999589       1 cephcsi.go:141] Initial PID limit is set to -1
+    >   I0904 11:42:46.999634       1 cephcsi.go:150] Reconfigured PID limit to -1 (max)
+    >   I0904 11:42:46.999643       1 cephcsi.go:169] Starting driver type: cephfs with name: cephfs.csi.ceph.com
+    >   I0904 11:42:47.009214       1 volumemounter.go:87] loaded mounter: kernel
+    >   I0904 11:42:47.017745       1 volumemounter.go:98] loaded mounter: fuse
+    >   I0904 11:42:47.018418       1 server.go:118] Listening for connections on address: &net.UnixAddr{Name:"//csi/csi.sock", Net:"unix"}
+    >   I0904 11:42:47.540402       1 utils.go:159] ID: 1 GRPC call: /csi.v1.Identity/GetPluginInfo
+    >   I0904 11:42:47.541321       1 utils.go:160] ID: 1 GRPC request: {}
+    >   I0904 11:42:47.541343       1 identityserver-default.go:36] ID: 1 Using default GetPluginInfo
+    >   I0904 11:42:47.541779       1 utils.go:165] ID: 1 GRPC response: {"name":"cephfs.csi.ceph.com","vendor_version":"v3.1.0"}
+    >   I0904 11:42:47.559482       1 utils.go:159] ID: 2 GRPC call: /csi.v1.Node/NodeGetInfo
+    >   I0904 11:42:47.560370       1 utils.go:160] ID: 2 GRPC request: {}
+    >   I0904 11:42:47.560402       1 nodeserver-default.go:57] ID: 2 Using default NodeGetInfo
+    >   I0904 11:42:47.561466       1 utils.go:165] ID: 2 GRPC response: {"accessible_topology":{},"node_id":"tiberius-20200904-nj46yxjgkhty-node-2"}
+    >   I0904 11:43:47.169193       1 utils.go:159] ID: 3 GRPC call: /csi.v1.Identity/Probe
+    >   I0904 11:43:47.169801       1 utils.go:160] ID: 3 GRPC request: {}
+    >   I0904 11:43:47.170395       1 utils.go:165] ID: 3 GRPC response: {}
+    >   I0904 11:44:47.170349       1 utils.go:159] ID: 4 GRPC call: /csi.v1.Identity/Probe
+    >   ....
+    >   ....
+
+
+
+

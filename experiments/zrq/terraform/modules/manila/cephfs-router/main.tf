@@ -30,7 +30,7 @@ terraform {
     }
 
 provider "openstack" {
-    version = "~> 1.29"
+    version = "1.29"
     cloud = var.zrq_cloud_name
     }
 

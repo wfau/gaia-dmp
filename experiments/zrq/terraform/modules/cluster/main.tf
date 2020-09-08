@@ -30,7 +30,7 @@ terraform {
     }
 
 provider "openstack" {
-    version = "~> 1.29"
+    version = "1.29"
     cloud = var.zrq_cloud_name
     }
 
@@ -65,7 +65,7 @@ resource "null_resource" "kubeconfig" {
         }
 
     provisioner "local-exec" {
-        command = "mkdir -p ~/.kube/${var.zrq_cluster_name}; openstack --os-cloud ${var.zrq_cloud_name} coe cluster config ${var.zrq_cluster_name} --dir ~/.kube/${var.zrq_cluster_name} --force;"
+        command = "mkdir -p ~/.kube; openstack --os-cloud ${var.zrq_cloud_name} coe cluster config ${var.zrq_cluster_name} --dir ~/.kube --force;"
         }
 
     depends_on = [openstack_containerinfra_cluster_v1.zrq_cluster]

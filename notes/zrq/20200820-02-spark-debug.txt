@@ -1,0 +1,188 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+# -----------------------------------------------------
+
+    Follow on from previous notes.
+    notes/zrq/20200820-01-spark-debug.txt
+
+    Spark on Kubernetes documentation
+    https://spark.apache.org/docs/latest/running-on-kubernetes.html
+
+
+    Accessing the driver UI
+    https://spark.apache.org/docs/latest/running-on-kubernetes.html#accessing-driver-ui
+
+    Local Storage
+    https://spark.apache.org/docs/latest/running-on-kubernetes.html#local-storage
+
+
+        Spark supports using volumes to spill data during shuffles and other operations.
+        To use a volume as local storage, the volume’s name should starts with spark-local-dir-,
+        for example:
+
+            --conf spark.kubernetes.driver.volumes.[VolumeType].spark-local-dir-[VolumeName].mount.path=<mount path>
+            --conf spark.kubernetes.driver.volumes.[VolumeType].spark-local-dir-[VolumeName].mount.readOnly=false
+
+        If no volume is set as local storage, Spark uses temporary scratch space to spill data to
+        disk during shuffles and other operations. When using Kubernetes as the resource manager
+        the pods will be created with an emptyDir volume mounted for each directory listed in
+        spark.local.dir or the environment variable SPARK_LOCAL_DIRS.
+
+        If no directories are explicitly specified then a default directory is created and configured appropriately.
+
+        emptyDir volumes use the ephemeral storage feature of Kubernetes and do not persist beyond the life of the pod.
+
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname sparkui \
+        --publish 4040:4040 \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/kubernetes:/kubernetes:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}-super" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+    kubectl \
+        cluster-info
+
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Use kubectl to port forward the Spark driver UI.
+#[user@kubernator]
+
+    driverpod=$(
+        kubectl \
+            --output json \
+            get Pod \
+        | jq -r '.items[].metadata | select(.name | test("^spark.")) | .name '
+        )
+
+    echo "Driver pod [${driverpod}]"
+
+    >   Driver pod [spark-mvdymy]
+
+
+    kubectl port-forward \
+        "${driverpod:?}" \
+        4040:4040
+
+    >   Forwarding from 127.0.0.1:4040 -> 4040
+    >   Forwarding from [::1]:4040 -> 4040
+    >   ....
+
+
+    #
+    # Interesting .. after the job fails, Spark UI is unreachable.
+    # cpu is pegged as high
+    # memory is pegged at 33G
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# kubectl can still connect to the Pod
+#[zeppelin@spark-driver]
+
+    top
+
+    >   Tasks:   7 total,   1 running,   6 sleeping,   0 stopped,   0 zombie
+    >   %Cpu(s): 28.6 us,  0.1 sy,  0.0 ni, 71.1 id,  0.0 wa,  0.1 hi,  0.1 si,  0.0 st
+    >   KiB Mem : 46255536 total,   325608 free, 36514384 used,  9415544 buff/cache
+    >   KiB Swap:        0 total,        0 free,        0 used.  9028064 avail Mem
+    >   
+    >     PID USER      PR  NI    VIRT    RES    SHR S  %CPU %MEM     TIME+ COMMAND
+    >      57 zeppelin  20   0 40.814g 0.032t  47208 S 397.3 75.0 125:26.75 java
+    >       1 zeppelin  20   0    4504    704    628 S   0.0  0.0   0:00.01 sh
+    >       9 zeppelin  20   0   19848   3468   3060 S   0.0  0.0   0:00.00 interpreter.sh
+    >      56 zeppelin  20   0   19848   1900   1488 S   0.0  0.0   0:00.00 interpreter.sh
+    >     161 zeppelin  20   0  130492  20048   7296 S   0.0  0.0   0:00.62 python2
+    >     408 zeppelin  20   0   19928   3784   3276 S   0.0  0.0   0:00.00 bash
+    >     419 zeppelin  20   0   38296   3468   3012 R   0.0  0.0   0:00.01 top
+
+    #
+    # 'top' shows cpu at max (400%) and memory gdadually being consumed.
+    #
+
+# -----------------------------------------------------
+#[zeppelin@spark-driver]
+
+    df -h
+
+    >   Filesystem                 Size  Used Avail Use% Mounted on
+    >   overlay                     19G   14G  6.0G  69% /
+    >   tmpfs                       23G     0   23G   0% /dev
+    >   tmpfs                       23G     0   23G   0% /sys/fs/cgroup
+    >   /dev/mapper/atomicos-root   19G   14G  6.0G  69% /spark
+    >   shm                         64M     0   64M   0% /dev/shm
+    >   tmpfs                       23G   12K   23G   1% /run/secrets/kubernetes.io/serviceaccount
+    >   tmpfs                       23G     0   23G   0% /proc/acpi
+    >   tmpfs                       23G     0   23G   0% /proc/scsi
+    >   tmpfs                       23G     0   23G   0% /sys/firmware
+
+# -----------------------------------------------------
+#[zeppelin@spark-driver]
+
+    set
+
+    >   ....
+    >   SPARK_SUBMIT_OPTIONS='--master k8s://https://kubernetes.default.svc --deploy-mode client --driver-memory 32g --conf spark.kubernetes.namespace=default --conf spark.executor.instances=1 --conf spark.kubernetes.driver.pod.name=spark-mvdymy --conf spark.kubernetes.container.image=aglais/pyspark-mod:latest --conf spark.driver.bindAddress=0.0.0.0 --conf spark.driver.host=spark-mvdymy.default.svc --conf spark.driver.port=22321 --conf spark.blockManager.port=22322'
+    >   ....
+
+
+
+
+
+
+
+
+

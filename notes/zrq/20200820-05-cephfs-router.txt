@@ -1,0 +1,326 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Install a network router to access the CephFS share subnet from inside our cluster.
+    Based on earlier notes
+        notes/zrq/20200629-04-cephfs-router.txt
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname terraformer \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/terraform:/terraform:z" \
+        atolmis/terraform-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}-super" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@terraformer]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# List the existing Manila shares.
+#[user@terraformer]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
+
+    >   -
+
+
+# -----------------------------------------------------
+# Find the subnet and network ID for our cluster.
+#[user@terraformer]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+---------------------------------------------------------------------------------+--------------------------------------+---------------+
+    >   | ID                                   | Name                                                                            | Network                              | Subnet        |
+    >   +--------------------------------------+---------------------------------------------------------------------------------+--------------------------------------+---------------+
+    >   | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290 | cumulus-internal                                                                | ecb791d5-1022-447a-a79c-8f38a0f5c990 | 10.218.0.0/16 |
+    >   | b1c8314c-96ef-4380-b2c4-9bb092f3287e | tiberius-20200814-v7ysv35h66ur-network-epxuvgj2qn6k-private_subnet-r2mw4rre54w6 | 97de018a-cab3-4d01-a88a-bdeab9ff8771 | 10.0.0.0/24   |
+    >   +--------------------------------------+---------------------------------------------------------------------------------+--------------------------------------+---------------+
+
+
+    subnetid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("^'${clustername~}'")) | .ID'
+        )
+
+    # Note - the subnet name includes a lowercase version of the clustername.
+    # So the 'jq' select needs to convert ${clustername} to lowercase.
+
+    networkid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet show \
+                --format json \
+                "${subnetid:?}" \
+        | jq -r '.network_id'
+        )
+
+
+cat << EOF
+Subnet  [${subnetid:?}]
+Network [${networkid:?}]
+EOF
+
+    >   Subnet  [b1c8314c-96ef-4380-b2c4-9bb092f3287e]
+    >   Network [97de018a-cab3-4d01-a88a-bdeab9ff8771]
+
+
+# -----------------------------------------------------
+# Find the router ID for our cluster.
+#[user@terraformer]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                                                       | Status | State | Project                          |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | 68c8279d-6835-4344-8221-02a997446632 | tiberius-20200814-v7ysv35h66ur-network-epxuvgj2qn6k-extrouter-inu3tiwwxkyl | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+
+
+    routername=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("^'${clustername~}'")) | .Name'
+        )
+
+    # Again, the 'jq' select needs to convert ${clustername} to lowercase.
+
+
+cat << EOF
+Subnet  [${subnetid:?}]
+Router  [${routername:?}]
+Network [${networkid:?}]
+EOF
+
+    >   Subnet  [b1c8314c-96ef-4380-b2c4-9bb092f3287e]
+    >   Router  [tiberius-20200814-v7ysv35h66ur-network-epxuvgj2qn6k-extrouter-inu3tiwwxkyl]
+    >   Network [97de018a-cab3-4d01-a88a-bdeab9ff8771]
+
+
+# -----------------------------------------------------
+# Delete any old state.
+#[user@terraformer]
+
+    pushd /terraform/modules/manila/cephfs-router
+
+        rm -rf ./.terraform
+        rm -f  ./tfvars
+
+        rm -f  ./terraform.tfstate
+        rm -f  ./terraform.tfstate.backup
+
+    popd
+
+# -----------------------------------------------------
+# Create our tfvars file.
+#[user@terraformer]
+
+        cat > "${HOME}/cephfs-router.tfvars" << EOF
+zrq_cloud_name   = "${cloudname:?}"
+zrq_cluster_name = "${clustername:?}"
+zrq_magnum_router_name = "${routername:?}"
+zrq_magnum_network_id  = "${networkid:?}"
+EOF
+
+    cat "${HOME}/cephfs-router.tfvars"
+
+    >   zrq_cloud_name   = "gaia-prod"
+    >   zrq_cluster_name = "Tiberius-20200814"
+    >   zrq_magnum_router_name = "tiberius-20200814-v7ysv35h66ur-network-epxuvgj2qn6k-extrouter-inu3tiwwxkyl"
+    >   zrq_magnum_network_id  = "97de018a-cab3-4d01-a88a-bdeab9ff8771"
+
+
+# -----------------------------------------------------
+# Use Terraform to create our router.
+#[user@terraformer]
+
+    pushd /terraform/modules/manila/cephfs-router
+
+            terraform init
+
+    >   Initializing the backend...
+    >   
+    >   Initializing provider plugins...
+    >   - Checking for available provider plugins...
+    >   - Downloading plugin for provider "openstack" (terraform-providers/openstack) 1.29.0...
+    >   
+    >   Terraform has been successfully initialized!
+
+
+            terraform plan \
+                -var-file "${HOME}/cephfs-router.tfvars"
+
+    >   ....
+    >   
+    >     # openstack_networking_port_v2.zrq_ceph_router_port will be created
+    >     + resource "openstack_networking_port_v2" "zrq_ceph_router_port" {
+    >       ....
+    >       }
+    >   
+    >     # openstack_networking_router_interface_v2.zrq_ceph_router_interface will be created
+    >     + resource "openstack_networking_router_interface_v2" "zrq_ceph_router_interface" {
+    >       ....
+    >       }
+    >   
+    >     # openstack_networking_router_route_v2.zrq_ceph_router_route will be created
+    >     + resource "openstack_networking_router_route_v2" "zrq_ceph_router_route" {
+    >       ....
+    >       }
+    >   
+    >     # openstack_networking_router_v2.zrq_ceph_router will be created
+    >     + resource "openstack_networking_router_v2" "zrq_ceph_router" {
+    >       ....
+    >       }
+    >   
+    >   Plan: 4 to add, 0 to change, 0 to destroy.
+    >   ....
+
+
+            terraform apply \
+                -var-file "${HOME}/cephfs-router.tfvars"
+
+    >   ....
+    >   ....
+    >   openstack_networking_router_v2.zrq_ceph_router: Creating...
+    >   openstack_networking_port_v2.zrq_ceph_router_port: Creating...
+    >   openstack_networking_port_v2.zrq_ceph_router_port: Creation complete after 8s [id=e6acd212-5241-486c-ae13-93a210e18276]
+    >   openstack_networking_router_v2.zrq_ceph_router: Still creating... [10s elapsed]
+    >   openstack_networking_router_v2.zrq_ceph_router: Creation complete after 14s [id=4fe5693c-63c7-4144-aea8-e6222b9e33fc]
+    >   openstack_networking_router_interface_v2.zrq_ceph_router_interface: Creating...
+    >   openstack_networking_router_interface_v2.zrq_ceph_router_interface: Creation complete after 9s [id=e6acd212-5241-486c-ae13-93a210e18276]
+    >   openstack_networking_router_route_v2.zrq_ceph_router_route: Creating...
+    >   openstack_networking_router_route_v2.zrq_ceph_router_route: Creation complete after 4s [id=68c8279d-6835-4344-8221-02a997446632-route-10.206.0.0/16-10.0.0.40]
+    >   
+    >   Apply complete! Resources: 4 added, 0 changed, 0 destroyed.
+
+
+    popd
+
+
+# -----------------------------------------------------
+# Check the router details.
+#[user@terraformer]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                                                       | Status | State | Project                          |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | 4fe5693c-63c7-4144-aea8-e6222b9e33fc | tiberius-20200814-cluster-ceph-router                                      | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   | 68c8279d-6835-4344-8221-02a997446632 | tiberius-20200814-v7ysv35h66ur-network-epxuvgj2qn6k-extrouter-inu3tiwwxkyl | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+
+
+    routerid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${clustername~}'-cluster-ceph-router") | .ID'
+        )
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${routerid:?}"
+
+    >   {
+    >     ....
+    >     "name": "tiberius-20200814-cluster-ceph-router",
+    >     ....
+    >     "external_gateway_info": {
+    >       "network_id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290",
+    >           "ip_address": "10.218.2.100"
+    >         }
+    >       ]
+    >     },
+    >     ....
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "e6acd212-5241-486c-ae13-93a210e18276",
+    >         "ip_address": "10.0.0.40",
+    >         "subnet_id": "b1c8314c-96ef-4380-b2c4-9bb092f3287e"
+    >       }
+    >     ],
+    >     ....
+    >   }
+
+
+

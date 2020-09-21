@@ -1,0 +1,239 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+        Spark submission mode, [client|cluster].
+
+            Client mode, the Spark driver is launched in-process in the submitter.
+
+            Cluster mode, the Spark driver is launched in a separate node (Pod).
+
+            Zeppelin has a setting property for submit mode, buit it doesn't seem to make any difference.
+            Zeppelin interpreter ignores mode property and runs Spark driver as part of the interpreter.
+
+            Zeppelin launches the Spark interpreter in a separate node (Pod).
+            Configuration controls scope of the Spark interpreter, [global, per notebook].
+
+            Zeppelin launches the Spark interpreter using the interpreter-spec template
+                aglais-zeppelin/k8s/interpreter/100-interpreter-spec.yaml
+
+            Zeppelin on Kubernetes
+            https://zeppelin.apache.org/docs/0.9.0-SNAPSHOT/quickstart/kubernetes.html
+
+                "Zeppelin can run on clusters managed by Kubernetes.
+                 When Zeppelin runs in Pod, it creates pods for individual interpreter.
+                 Also Spark interpreter auto configured to use Spark on Kubernetes in client mode."
+
+                Key benefits are:
+                    Interpreter scale-out
+                    Spark interpreter auto configure Spark on Kubernetes
+                    Able to customize Kubernetes yaml file
+                    Spark UI access
+
+
+        CephFS persistent volume claims
+
+            Spark documentation describes properties for adding persistent volume claims to driver and executor nodes.
+
+                spark.kubernetes.driver.volumes.persistentVolumeClaim.gaia-dr2.mount.path=/gaia-dr2
+                spark.kubernetes.driver.volumes.persistentVolumeClaim.gaia-dr2.mount.readOnly=false
+                spark.kubernetes.driver.volumes.persistentVolumeClaim.gaia-dr2.options.claimName=gaia-dr2-volume-claim
+
+                spark.kubernetes.executor.volumes.persistentVolumeClaim.gaia-dr2.mount.path=/gaia-dr2
+                spark.kubernetes.executor.volumes.persistentVolumeClaim.gaia-dr2.mount.readOnly=true
+                spark.kubernetes.executor.volumes.persistentVolumeClaim.gaia-dr2.options.claimName=gaia-dr2-volume-claim
+
+            No problem getting them to work for the executor nodes.
+            Unable to get them to work for the driver/interpreter node.
+
+            Zeppelin launches the Spark interpreter using the interpreter-spec template
+                aglais-zeppelin/k8s/interpreter/100-interpreter-spec.yaml
+
+            The interpreter-spec template has template fields for specific properties.
+            Only the properties in the template are passed on to the Spark interpreter.
+            The template does not have anything to handle things like persistent volume claims.
+            In theory we could add our persistent volume claim to the template.
+
+            Worth a try, but before we do, worth checking to see if we need it.
+
+            My guess is we need the CephFS share visible from the driver in order to enumerate the
+            contents of a directory (count the parquet files and share them to the executors).
+
+            Simple test - can we scan a directory of parquet files from just the executor nodes.
+            Need to get some test data onto the CephFS share.
+            Turns out harder than expected.
+
+                Can't change the access mode of the persistent volume and persistent volume claim.
+                Needed to delete and re-create the persistent volume claim.
+                In the process, the dynamic allocation driver created a new CephFS share.
+                Need to change the persistent volume claim to re-use an existing CephFS share.
+
+            With persistent volume access mode ReadWriteOnce, we get a filesystem permission error.
+
+                Created a new share with ReadWriteMany mode.
+
+            With persistent volume access mode ReadWriteMany, we get a filesystem permission error.
+
+                The mounted directory is owned by root:root.
+                Zeppelin launches Spark with the non-root uid 185.
+
+                We need to add a vanilla Linux Pod that can access the same CephFS share.
+                Ideally, we should use a container with the S3 client.
+
+        TODO
+            Add Fedora Pod with write access to the persistent volume claim.
+            Add the S3 client, iterate the list of files in our S3 buckets.
+            Download the Parquet files and store them on the mounted share.
+
+            Run Zeppelin/Spark task to scan Parquet files in the CephFS share.
+
+
+
+
+
+        https://stackoverflow.com/questions/43544370/kubernetes-how-to-set-volumemount-user-group-and-file-permissions
+        https://kubernetes.io/docs/concepts/storage/persistent-volumes/#persistent-volumes
+
+        https://kubernetes.io/docs/concepts/storage/storage-classes/#mount-options
+
+            "PersistentVolumes that are dynamically created by a StorageClass will have
+             the mount options specified in the mountOptions field of the class."
+
+        https://kubernetes.io/docs/concepts/storage/storage-classes/#volume-binding-mode
+
+            "PersistentVolumes will be selected or provisioned conforming to the topology that is
+             specified by the Pod's scheduling constraints. These include, but are not limited to,
+             resource requirements, node selectors, pod affinity and anti-affinity, and taints
+             and tolerations."
+
+        https://kubernetes.io/docs/concepts/storage/storage-classes/#parameters
+
+            Need to check the source code of the Manila plug-in to find out
+            what properties and options it supports.
+
+
+
+
+
+        ----
+        Multi-user
+            Add static users to the Zeppelin config
+            Do we get separate Zeppelin contexts for each user.
+
+            Add the OAuth proxy in front of Zeppelin
+            How does that map to the Zeppelin users ?
+
+        How do we create per user storage ?
+            Needs to be accessible from all the executor nodes.
+            Per user CephFS share would be a good candidate for that.
+
+
+
+        Ephemeral storage in Spark with Kubernetes
+        https://stackoverflow.com/questions/53559461/how-to-set-ephemeral-storage-in-spark-with-kubernetes
+
+            We need this for temp working space on the executor nodes.
+
+
+        Spark Operator
+        https://operatorhub.io/operator/spark-gcp
+        https://github.com/GoogleCloudPlatform/spark-on-k8s-operator/blob/master/docs/user-guide.md
+
+            Interesting, but a diversion.
+            This works is useful for deploying a stand-alone Spark cluster.
+
+
+        Things missing from Spark on Kubernetes - are these a problem ?
+        https://spark.apache.org/docs/latest/running-on-kubernetes.html#future-work
+
+            Dynamic Resource Allocation and External Shuffle Service
+            Job Queues and Resource Management
+
+
+
+        Running Apache Spark on Kubernetes using PySpark
+        https://towardsdatascience.com/ignite-the-spark-68f3f988f642
+
+            "When data in the form of a Resilient Distributed Dataframe (RDD) is manipulated
+             by your Spark application, the RDD is split into a number of partitions and
+             distributed across these worker node/executor combinations for processing."
+
+            "The final result is aggregated across the nodes and sent back to the driver."
+
+        Which means the driver node will need temp space and user space.
+        We need a separate driver/interpreter node for each user.
+
+
+            "In cluster mode, after you submit an application using spark-submit, the SparkContext
+             created on behalf of your application will ask the kube-apiserver to setup a driver
+             node and a number of corresponding worker nodes (Pods) and proceed to run your
+             workload on top of them."
+
+            "Once all the data processing has finished, on tear down, the ephemeral worker node Pods
+             will be terminated automatically but the driver node Pod will remain so you can inspect
+             any logs before manually deleting it."
+
+
+            "In client mode, you create the Spark driver node as a Pod then create a SparkContext
+             using your favorite language’s API bindings before finally submitting work."
+
+        Zeppelin interpreter runs Spark driver in-process in the interpreter Pod.
+        We need separate interpreter Pod per user/notebook.
+
+
+    Spark Helm charts
+    https://github.com/helm/charts/tree/master/stable/spark
+    https://github.com/dbanda/charts/tree/master/stable/spark
+
+        Standard Yarn cluster mode Spark deployment.
+        Includes Zeppelin Pod with Ingress.
+
+    Worth an experiment to see they do what we need.
+    Still need all the S3 and CephFS data shares working.
+
+
+    Running Spark on K8s
+    https://skylerlehan.dev/running-spark-on-k8s-part-1-your-first-job/
+    https://skylerlehan.dev/running-spark-on-kubernetes-part-2-volumes/
+
+        Example of Spark accessing data via a persistent volume claim.
+
+        Note - running Spark submit in cluster mode.
+        Using [spark.kubernetes.{driver/executor}.volumes.persistentVolumeClaim.{claim.name}.data.mount.path]
+        to mount the data.
+        The driver mounts work because it is launching Spark in cluster mode.
+
+
+
+    Spark volumes
+    https://kubernetes.io/docs/concepts/storage/volumes/
+    https://kubernetes.io/docs/concepts/storage/volumes/#persistentvolumeclaim
+    https://spark.apache.org/docs/latest/running-on-kubernetes.html#volume-mounts
+    https://spark.apache.org/docs/latest/running-on-kubernetes.html#using-kubernetes-volumes
+
+    Spark cluster mode
+    https://spark.apache.org/docs/latest/cluster-overview.html
+
+    Spark gotchas
+    https://github.com/awesome-spark/spark-gotchas
+
+

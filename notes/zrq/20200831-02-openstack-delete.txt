@@ -1,0 +1,463 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    #
+    # Adding CephFS router means the simple COE 'delete cluster' fails.
+    # Need to delete the extra router before we can delete the cluster.
+    #
+    # The router was created using Terraform, but we didn't keep the state.
+    # So we need to delete the router manually.
+    #
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# List our routers.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                                                       | Status | State | Project                          |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | 027516d2-4984-47af-8099-cae47136aaad | tiberius-20200831-cluster-ceph-router                                      | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   | 5b9fbca7-1215-4f79-97e8-d4a03b7c34ac | tiberius-20200831-cnt5rv7mw7ov-network-neov5vorlozi-extrouter-ew7xb2o5o3b5 | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+
+
+# -----------------------------------------------------
+# Identify our Ceph router.
+#[user@openstacker]
+
+    routerid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("ceph-router")) | .ID'
+        )
+
+    echo "Router [${routerid}]"
+
+    >   Router [027516d2-4984-47af-8099-cae47136aaad]
+
+
+# -----------------------------------------------------
+# List the router details.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${routerid:?}"
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2020-08-31T03:10:30Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290",
+    >           "ip_address": "10.218.3.41"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "027516d2-4984-47af-8099-cae47136aaad",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "db62a0bb-3b85-4b1e-891a-5d37fb5b32d5",
+    >         "ip_address": "10.0.0.149",
+    >         "subnet_id": "b6f59e4d-8a3b-44e8-b368-7886b844dc18"
+    >       }
+    >     ],
+    >     "location": {
+    >       "cloud": "gaia-prod",
+    >       "region_name": "RegionOne",
+    >       "zone": null,
+    >       "project": {
+    >         "id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >         "name": null,
+    >         "domain_id": null,
+    >         "domain_name": null
+    >       }
+    >     },
+    >     "name": "tiberius-20200831-cluster-ceph-router",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "revision_number": 9,
+    >     "routes": [],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2020-08-31T03:10:45Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Delete the external route.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router unset \
+            "${routerid:?}" \
+            --external-gateway
+
+
+# -----------------------------------------------------
+# Delete all the internal ports.
+#[user@openstacker]
+
+    for portid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router show \
+                --format json \
+                "${routerid:?}" \
+        | jq -r '.interfaces_info[].port_id'
+        )
+    do
+        echo "Port [${portid:?}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router remove port \
+                "${routerid:?}" \
+                "${portid:?}"
+    done
+
+# -----------------------------------------------------
+# Delete the router.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router delete \
+            "${routerid:?}"
+
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+    >   +--------------------------------------+-------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | uuid                                 | name              | keypair          | node_count | master_count | status          | health_status |
+    >   +--------------------------------------+-------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | f01a8fea-7b30-4b1c-b844-5e1682acf139 | Tiberius-20200831 | zrq-gaia-keypair |          4 |            1 | CREATE_COMPLETE | HEALTHY       |
+    >   +--------------------------------------+-------------------+------------------+------------+--------------+-----------------+---------------+
+
+# -----------------------------------------------------
+# Delete our cluster, selecting by index.
+#[user@openstacker]
+
+    clusterid=$(
+        openstack \
+        --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[0] | .uuid'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster \
+            delete \
+            "${clusterid}"
+
+    >   Request to delete cluster f01a8fea-7b30-4b1c-b844-5e1682acf139 has been accepted.
+
+# -----------------------------------------------------
+# Watch the cluster list.
+#[user@openstacker]
+
+    watch \
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list
+
+
+    >   +--------------------------------------+-------------------+------------------+------------+--------------+---------------+---------------+
+    >   | uuid                                 | name              | keypair          | node_count | master_count | status        | health_status |
+    >   +--------------------------------------+-------------------+------------------+------------+--------------+---------------+---------------+
+    >   | f01a8fea-7b30-4b1c-b844-5e1682acf139 | Tiberius-20200831 | zrq-gaia-keypair |          4 |            1 | DELETE_FAILED | HEALTHY       |
+    >   +--------------------------------------+-------------------+------------------+------------+--------------+---------------+---------------+
+
+    #
+    # OK, what failed
+    #
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster \
+            show \
+                --format json \
+                "${clusterid}" \
+    | jq '.faults'
+
+    >   {
+    >     "default-worker": "Resource DELETE failed: Conflict: resources.network.resources.extrouter_inside: Router interface for subnet b6f59e4d-8a3b-44e8-b368-7886b844dc18 on router 5b9fbca7-1215-4f79-97e8-d4a03b7c34ac cannot be deleted, as it is required by one or more routes.\nNeutron server returns request_ids: ['req-79b02a77-336d-4e73-a627-c6077b45c9b6']",
+    >     "default-master": "Resource DELETE failed: Conflict: resources.network.resources.extrouter_inside: Router interface for subnet b6f59e4d-8a3b-44e8-b368-7886b844dc18 on router 5b9fbca7-1215-4f79-97e8-d4a03b7c34ac cannot be deleted, as it is required by one or more routes.\nNeutron server returns request_ids: ['req-79b02a77-336d-4e73-a627-c6077b45c9b6']"
+    >   }
+
+
+# -----------------------------------------------------
+# List the other router details.
+#[user@openstacker]
+
+    routerid=5b9fbca7-1215-4f79-97e8-d4a03b7c34ac
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${routerid:?}"
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2020-08-31T02:49:20Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "273123bb-70f6-4f51-a406-7fc4b446532d",
+    >           "ip_address": "128.232.227.184"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "5b9fbca7-1215-4f79-97e8-d4a03b7c34ac",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "8cba983a-5625-4087-bdce-76b0b1ef888f",
+    >         "ip_address": "10.0.0.1",
+    >         "subnet_id": "b6f59e4d-8a3b-44e8-b368-7886b844dc18"
+    >       }
+    >     ],
+    >     "location": {
+    >       "cloud": "gaia-prod",
+    >       "region_name": "RegionOne",
+    >       "zone": null,
+    >       "project": {
+    >         "id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >         "name": null,
+    >         "domain_id": null,
+    >         "domain_name": null
+    >       }
+    >     },
+    >     "name": "tiberius-20200831-cnt5rv7mw7ov-network-neov5vorlozi-extrouter-ew7xb2o5o3b5",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "revision_number": 10,
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.0.0.149",
+    >         "destination": "10.206.0.0/16"
+    >       }
+    >     ],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2020-08-31T03:10:53Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Delete the external route.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router unset \
+            "${routerid:?}" \
+            --external-gateway
+
+# -----------------------------------------------------
+# Delete the internal route.
+#[user@openstacker]
+
+    destination=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router show \
+                --format json \
+                "${routerid:?}" \
+        | jq -r '.routes[0].destination'
+        )
+
+    gateway=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router show \
+                --format json \
+                "${routerid:?}" \
+        | jq -r '.routes[0].nexthop'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router unset \
+            --route "gateway=${gateway:?},destination=${destination:?}" \
+            "${routerid:?}"
+
+# -----------------------------------------------------
+# Delete all the internal ports.
+#[user@openstacker]
+
+    for portid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router show \
+                --format json \
+                "${routerid:?}" \
+        | jq -r '.interfaces_info[].port_id'
+        )
+    do
+        echo "Port [${portid:?}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router remove port \
+                "${routerid:?}" \
+                "${portid:?}"
+    done
+
+
+# -----------------------------------------------------
+# Delete the router.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router delete \
+            "${routerid:?}"
+
+
+# -----------------------------------------------------
+# Delete the cluster.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster \
+            delete \
+            "${clusterid}"
+
+    >   Request to delete cluster f01a8fea-7b30-4b1c-b844-5e1682acf139 has been accepted.
+
+
+# -----------------------------------------------------
+# Watch the cluster list.
+#[user@openstacker]
+
+    watch \
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list
+
+    >   -
+
+
+# -----------------------------------------------------
+# List the remaining resources.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        volume list
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        port list
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        floating ip list
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer list
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+------------------+----------------------------------------------------------------------------+
+    >   | ID                                   | Name             | Subnets                                                                    |
+    >   +--------------------------------------+------------------+----------------------------------------------------------------------------+
+    >   | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | internet         | 180dc961-c52f-461a-b241-8f7a30d022a5, 273123bb-70f6-4f51-a406-7fc4b446532d |
+    >   | ecb791d5-1022-447a-a79c-8f38a0f5c990 | cumulus-internal | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290                                       |
+    >   +--------------------------------------+------------------+----------------------------------------------------------------------------+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +------------------+-------------------------------------------------+
+    >   | Name             | Fingerprint                                     |
+    >   +------------------+-------------------------------------------------+
+    >   | zrq-gaia-keypair | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +------------------+-------------------------------------------------+
+
+
+
+
+

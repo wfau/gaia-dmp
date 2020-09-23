@@ -18,11 +18,6 @@
 #   </meta:licence>
 # </meta:header>
 #
-#zrq-notes-time
-#zrq-notes-indent
-#zrq-notes-crypto
-#zrq-notes-ansible
-#zrq-notes-osformat
 #
 
 
@@ -129,19 +124,19 @@ EOF
     >   pod/drupal-operator-7f4b5dcdcb-zsqrz             2/2     Running       0          76s
     >   pod/drupal-site-drupal-5bdb456f5-ks6vv           0/1     Pending       0          10s
     >   ....
-    >   
+    >
     >   NAME                                             TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)                      AGE
     >   ....
     >   service/drupal-operator-metrics                  ClusterIP      10.254.29.179    <none>            8383/TCP,8686/TCP            48s
     >   service/drupal-site                              NodePort       10.254.174.100   <none>            80:30392/TCP                 0s
     >   ....
-    >   
+    >
     >   NAME                                             READY   UP-TO-DATE   AVAILABLE   AGE
     >   ....
     >   deployment.apps/drupal-operator                  1/1     1            1           76s
     >   deployment.apps/drupal-site-drupal               0/1     1            0           10s
     >   ....
-    >   
+    >
     >   NAME                                             DESIRED   CURRENT   READY   AGE
     >   ....
     >   replicaset.apps/drupal-operator-7f4b5dcdcb       1         1         1       76s
@@ -666,65 +661,218 @@ EOF
         csi-cinder \
         "${HOME}/cloud-provider-openstack/charts/cinder-csi-plugin"
 
-
     >   Error: unable to build kubernetes objects from release manifest: unable to recognize "": no matches for kind "CSIDriver" in version "storage.k8s.io/v1"
 
 
-
-
-
-
-
-
-
 # -----------------------------------------------------
-# Create PersistentVolumes to match the claims.
+# Try comment out the blank name overrides ?
 #[user@kubernator]
 
-Cinder CSI ...
+    sed -i '
+        s/^\(nameOverride\)/#\1/
+        s/^\(fullnameOverride\)/#\1/
+        ' "${HOME}/cloud-provider-openstack/charts/cinder-csi-plugin/values.yaml"
+
+# -----------------------------------------------------
+# Try copy the API URI from the Manila driver ?
+#[user@kubernator]
+
+    sed -i '
+        s/^\(apiVersion:\).*$/\1 storage.k8s.io\/v1beta1/
+        ' "${HOME}/cloud-provider-openstack/charts/cinder-csi-plugin/templates/cinder-csi-driver.yaml"
 
 
+# -----------------------------------------------------
+# Install the Cinder CSI plugin.
+#[user@kubernator]
+
+    helm install \
+        csi-cinder \
+        "${HOME}/cloud-provider-openstack/charts/cinder-csi-plugin"
+
+    >   NAME: csi-cinder
+    >   LAST DEPLOYED: Fri Sep 18 12:31:41 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the following storageClass csi-cinder-sc-retain and csi-cinder-sc-delete only for RWO volumes.
 
 
+# -----------------------------------------------------
+# Update a PersistentVolumeClaim to use the Cinder CSI storage class.
+#[user@kubernator]
+
+    kubectl patch \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc \
+                --patch \
+                    '{
+                    "spec": {
+                        "storageClassName": "csi-cinder-sc-retain"
+                        }
+                    }'
+
+    >   The PersistentVolumeClaim "drupal-site-files-pvc" is invalid: spec: Forbidden: is immutable after creation except resources.requests for bound claims
 
 
+# -----------------------------------------------------
+# Delete and replace a PersistentVolumeClaim.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc \
+    | jq '.spec.storageClassName = "csi-cinder-sc-retain"' \
+    | tee "/tmp/drupal-site-files-pvc.yaml"
+
+    >   ....
+    >   ....
 
 
+    kubectl delete \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc
+    >   persistentvolumeclaim "drupal-site-files-pvc" deleted
 
 
+    kubectl apply \
+        --filename \
+            "/tmp/drupal-site-files-pvc.yaml"
+
+    >   persistentvolumeclaim/drupal-site-files-pvc created
 
 
+    kubectl get \
+        --output json \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc \
+    | jq '.'
+
+    >   {
+    >     "apiVersion": "v1",
+    >     "kind": "PersistentVolumeClaim",
+    >     "metadata": {
+    >       "annotations": {
+    >         "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"PersistentVolumeClaim\",\"metadata\":{\"annotations\":{},\"creationTimestamp\":\"2020-09-18T03:40:23Z\",\"finalizers\":[\"kubernetes.io/pvc-protection\"],\"name\":\"drupal-site-files-pvc\",\"namespace\":\"default\",\"resourceVersion\":\"2354747\",\"selfLink\":\"/api/v1/namespaces/default/persistentvolumeclaims/drupal-site-files-pvc\",\"uid\":\"934a742c-eccc-4351-8839-d29ba1b99865\"},\"spec\":{\"accessModes\":[\"ReadWriteOnce\"],\"resources\":{\"requests\":{\"storage\":\"1Gi\"}},\"storageClassName\":\"csi-cinder-sc-retain\",\"volumeMode\":\"Filesystem\"},\"status\":{\"phase\":\"Pending\"}}\n",
+    >         "volume.beta.kubernetes.io/storage-provisioner": "cinder.csi.openstack.org"
+    >       },
+    >       "creationTimestamp": "2020-09-18T12:56:54Z",
+    >       "finalizers": [
+    >         "kubernetes.io/pvc-protection"
+    >       ],
+    >       "name": "drupal-site-files-pvc",
+    >       "namespace": "default",
+    >       "resourceVersion": "2533844",
+    >       "selfLink": "/api/v1/namespaces/default/persistentvolumeclaims/drupal-site-files-pvc",
+    >       "uid": "240a5ba2-9253-4617-99b2-932f2d61d385"
+    >     },
+    >     "spec": {
+    >       "accessModes": [
+    >         "ReadWriteOnce"
+    >       ],
+    >       "resources": {
+    >         "requests": {
+    >           "storage": "1Gi"
+    >         }
+    >       },
+    >       "storageClassName": "csi-cinder-sc-retain",
+    >       "volumeMode": "Filesystem"
+    >     },
+    >     "status": {
+    >       "phase": "Pending"
+    >     }
+    >   }
 
 
+# -----------------------------------------------------
+# Check the details of our StorageClass.
+#[user@kubernator]
+
+    kubectl get \
+        StorageClass
+
+    >   NAME                   PROVISIONER                RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+    >   csi-cinder-sc-delete   cinder.csi.openstack.org   Delete          Immediate           true                   26m
+    >   csi-cinder-sc-retain   cinder.csi.openstack.org   Retain          Immediate           true                   26m
 
 
+    kubectl get \
+        --output json \
+        StorageClass \
+            csi-cinder-sc-retain
+
+    >   {
+    >       "allowVolumeExpansion": true,
+    >       "apiVersion": "storage.k8s.io/v1",
+    >       "kind": "StorageClass",
+    >       "metadata": {
+    >           "annotations": {
+    >               "meta.helm.sh/release-name": "csi-cinder",
+    >               "meta.helm.sh/release-namespace": "default"
+    >           },
+    >           "creationTimestamp": "2020-09-18T12:31:42Z",
+    >           "labels": {
+    >               "app.kubernetes.io/managed-by": "Helm"
+    >           },
+    >           "name": "csi-cinder-sc-retain",
+    >           "resourceVersion": "2525590",
+    >           "selfLink": "/apis/storage.k8s.io/v1/storageclasses/csi-cinder-sc-retain",
+    >           "uid": "9720c854-9db2-494e-8886-db77452b05ef"
+    >       },
+    >       "provisioner": "cinder.csi.openstack.org",
+    >       "reclaimPolicy": "Retain",
+    >       "volumeBindingMode": "Immediate"
+    >   }
 
 
+# -----------------------------------------------------
+# Get the dashboard token.
+#[user@kubernator]
 
-
-
-
-
+    kubectl get \
+        --output json \
+        Secret \
+    | jq -r '.items[] | select(.metadata.name | startswith("valeria-account")) | .data.token  | @base64d'
 
 
 # -----------------------------------------------------
 # -----------------------------------------------------
-# Login to Zeppelin .....
+# Login to the dashboard and take a look around.
 #[user@desktop]
 
-    firefox --new-window "http://drupal.metagrid.xyz/" &
+    firefox --new-window "https://valeria.metagrid.xyz/" &
 
 
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Found a problem with the Cinder CSI Pods.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        Event \
+            --field-selector 'involvedObject.name=openstack-cinder-csi-controllerplugin-0' \
+    | jq '.items[].message'
+
+    >   "MountVolume.SetUp failed for volume \"cacert\" : hostPath type check failed: /etc/cacert is not a directory"
+    >   "Unable to attach or mount volumes: unmounted volumes=[cacert], unattached volumes=[csi-cinder-controller-sa-token-tj6r8 cacert socket-dir]: timed out waiting for the condition"
+    >   "Unable to attach or mount volumes: unmounted volumes=[cacert], unattached volumes=[cacert socket-dir csi-cinder-controller-sa-token-tj6r8]: timed out waiting for the condition"
 
 
+    From the Cinder CSI documentation:
+    https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/using-cinder-csi-plugin.md#using-the-helm-chart
+
+        "NOTE: This chart assumes that the cloud-config is found on the host under /etc/kubernetes/ and that your OpenStack cloud has cert under /etc/cacert."
+        - OK, but it doesn't say how to fix it if it isn't there
+        - lots of assumptions in the documentation
 
 
-
-
-
-
-
-
+    #
+    # Forget Cinder - try using a Manila share instead.
+    #
 
 
 

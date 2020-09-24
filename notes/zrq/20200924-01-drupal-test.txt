@@ -1,0 +1,466 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+# -----------------------------------------------------
+# Update our Drupal Dockerfile ...
+#[user@desktoop]
+
+    source "${HOME}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+        pushd 'experiments/zrq/drupal/docker'
+
+            gedit Dockermod &
+
+                ....
+                ....
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Build our Docker image.
+#[user@desktoop]
+
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    source "${HOME}/aglais.env"
+    buildah bud \
+        --format docker \
+        --tag aglais/drupal-mod:${buildtag:?} \
+        --tag aglais/drupal-mod:latest \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE}/experiments/zrq/drupal/docker/Dockermod" \
+        "${AGLAIS_CODE:?}/experiments/zrq/drupal/docker"
+
+
+# -----------------------------------------------------
+# Login to Docker hub.
+#[user@desktop]
+
+    buildah login \
+        --username $(secret docker.io.user) \
+        --password $(secret docker.io.pass) \
+        registry-1.docker.io
+
+
+# -----------------------------------------------------
+# Push our modified image to Docker hub.
+# If we use 'podman push' it doesn't recognise existing layers
+# and tries to push multiple giga-bytes of data.
+#[user@desktop]
+
+    buildah push "aglais/drupal-mod:${buildtag:?}"
+    buildah push "aglais/drupal-mod:latest"
+
+
+    echo "Latest [aglais/drupal-mod:${buildtag:?}]"
+
+    >   Latest [aglais/drupal-mod:20200924-045519]
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubenator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/zeppelin:/zeppelin:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/kubernetes:/kubernetes:ro,z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Install the Drupal Operator.
+# https://github.com/geerlingguy/drupal-operator
+#[user@kubernator]
+
+    kubectl apply \
+        --filename \
+            'https://raw.githubusercontent.com/geerlingguy/drupal-operator/master/deploy/drupal-operator.yaml'
+
+    >   clusterrole.rbac.authorization.k8s.io/drupal-operator created
+    >   clusterrolebinding.rbac.authorization.k8s.io/drupal-operator created
+    >   serviceaccount/drupal-operator created
+    >   deployment.apps/drupal-operator created
+    >   customresourcedefinition.apiextensions.k8s.io/drupals.drupal.drupal.org created
+
+
+# -----------------------------------------------------
+# Install our Drupal site.
+# https://github.com/geerlingguy/drupal-operator
+#[user@kubernator]
+
+    drupalimage=aglais/drupal-mod:20200924-045519
+    drupaldbpass=$(pwgen 20 1)
+
+    cat > "/tmp/drupal-site.yaml" << EOF
+---
+apiVersion: drupal.drupal.org/v1alpha1
+kind: Drupal
+metadata:
+  name: drupal-site
+  namespace: default
+spec:
+  # The container image to use for the Drupal deployment.
+  drupal_image: '${drupalimage:?}'
+
+  # Set this to 'true' to use a single-pod database managed by this operator.
+  manage_database: true
+  database_image: mariadb:10
+  database_pvc_size: 1Gi
+  database_password: ${drupaldbpass:?}
+
+  # Set this to 'true' to have this operator manage Ingress for the site.
+  manage_ingress: true
+  drupal_hostname: drupal.metagrid.xyz
+EOF
+
+    kubectl apply \
+        --filename \
+            "/tmp/drupal-site.yaml"
+
+    >   drupal.drupal.drupal.org/drupal-site created
+
+
+# -----------------------------------------------------
+# List the installed components.
+#[user@kubernator]
+
+    kubectl get all
+
+
+    >   NAME                                              READY   STATUS    RESTARTS   AGE
+    >   ....
+    >   pod/drupal-operator-7f4b5dcdcb-2srz4              2/2     Running   0          4m49s
+    >   pod/drupal-site-drupal-f7cbff677-rbrhp            0/1     Pending   0          61s
+    >   pod/drupal-site-mariadb-6c4d7fd7d5-l76qf          0/1     Pending   0          22s
+    >   ....
+    >   ....
+    >   
+    >   NAME                                              TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)                                  AGE
+    >   ....
+    >   service/drupal-operator-metrics                   ClusterIP      10.254.30.19     <none>            8383/TCP,8686/TCP                        4m29s
+    >   service/drupal-site                               NodePort       10.254.213.34    <none>            80:32318/TCP                             52s
+    >   service/drupal-site-mariadb                       ClusterIP      10.254.80.144    <none>            3306/TCP                                 14s
+    >   ....
+    >   ....
+    >   
+    >   NAME                                              READY   UP-TO-DATE   AVAILABLE   AGE
+    >   ....
+    >   deployment.apps/drupal-operator                   1/1     1            1           4m50s
+    >   deployment.apps/drupal-site-drupal                0/1     1            0           62s
+    >   deployment.apps/drupal-site-mariadb               0/1     1            0           23s
+    >   ....
+    >   ....
+    >   
+    >   NAME                                              DESIRED   CURRENT   READY   AGE
+    >   ....
+    >   replicaset.apps/drupal-operator-7f4b5dcdcb        1         1         1       4m50s
+    >   replicaset.apps/drupal-site-drupal-f7cbff677      1         1         0       62s
+    >   replicaset.apps/drupal-site-mariadb-6c4d7fd7d5    1         1         0       23s
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create a StorageClass for Manila shares using os-trustee secrets.
+#[user@kubernator]
+
+    cat > "/tmp/manila-trust-class.yaml" << EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: manila-trust-class
+provisioner: cephfs.manila.csi.openstack.org
+reclaimPolicy: Retain
+parameters:
+  type: cephfsnativetype
+
+  csi.storage.k8s.io/provisioner-secret-name: os-trustee
+  csi.storage.k8s.io/provisioner-secret-namespace: kube-system
+  csi.storage.k8s.io/node-stage-secret-name: os-trustee
+  csi.storage.k8s.io/node-stage-secret-namespace: kube-system
+  csi.storage.k8s.io/node-publish-secret-name: os-trustee
+  csi.storage.k8s.io/node-publish-secret-namespace: kube-system
+
+EOF
+
+    kubectl create \
+        --filename "/tmp/manila-trust-class.yaml"
+
+    kubectl describe \
+        storageclass \
+            manila-trust-class
+
+
+# -----------------------------------------------------
+# Delete and replace the 'files' PersistentVolumeClaim.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc \
+    | jq '.spec.storageClassName = "manila-trust-class" | del(.status) | del(.metadata.uid) | del(.metadata.annotations)' \
+    | tee "/tmp/drupal-site-files-pvc.yaml"
+
+    >   ....
+    >   ....
+
+
+    kubectl delete \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc
+
+    kubectl apply \
+        --filename \
+            "/tmp/drupal-site-files-pvc.yaml"
+
+    kubectl describe \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc
+
+    >   Name:          drupal-site-files-pvc
+    >   Namespace:     default
+    >   StorageClass:  manila-trust-class
+    >   Status:        Pending
+    >   Volume:
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"creationTimestamp":"2020-09-24T04:18:27Z","finalizers":["k...
+    >                  volume.beta.kubernetes.io/storage-provisioner: cephfs.manila.csi.openstack.org
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:
+    >   Access Modes:
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    drupal-site-drupal-f7cbff677-rbrhp
+    >   Events:
+    >     Type    Reason                Age                  From                         Message
+    >     ----    ------                ----                 ----                         -------
+    >     Normal  ExternalProvisioning  11s (x10 over 117s)  persistentvolume-controller  waiting for a volume to be created, either by external provisioner "cephfs.manila.csi.openstack.org" or manually created by system administrator
+
+
+# -----------------------------------------------------
+# Delete and replace the 'database' PersistentVolumeClaim.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        PersistentVolumeClaim \
+            drupal-site-db-pvc \
+    | jq '.spec.storageClassName = "manila-trust-class" | del(.status) | del(.metadata.uid) | del(.metadata.annotations)' \
+    | tee "/tmp/drupal-site-db-pvc.yaml"
+
+    >   ....
+    >   ....
+
+
+    kubectl delete \
+        PersistentVolumeClaim \
+            drupal-site-db-pvc
+
+    kubectl apply \
+        --filename \
+            "/tmp/drupal-site-db-pvc.yaml"
+
+    kubectl describe \
+        PersistentVolumeClaim \
+            drupal-site-db-pvc
+
+    >   Name:          drupal-site-db-pvc
+    >   Namespace:     default
+    >   StorageClass:  manila-trust-class
+    >   Status:        Pending
+    >   Volume:
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"creationTimestamp":"2020-09-24T04:19:05Z","finalizers":["k...
+    >                  volume.beta.kubernetes.io/storage-provisioner: cephfs.manila.csi.openstack.org
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:
+    >   Access Modes:
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    drupal-site-mariadb-6c4d7fd7d5-l76qf
+    >   Events:
+    >     Type    Reason                Age                From                         Message
+    >     ----    ------                ----               ----                         -------
+    >     Normal  ExternalProvisioning  15s (x3 over 23s)  persistentvolume-controller  waiting for a volume to be created, either by external provisioner "cephfs.manila.csi.openstack.org" or manually created by system administrator
+
+
+# -----------------------------------------------------
+# Fix the config sync location.
+# https://www.drupal.org/docs/configuration-management/changing-the-storage-location-of-the-sync-directory
+#[user@kubernator]
+
+    # TODO Does this need to be persistent?
+    # If not, could we use an emptyVolume {} ?
+
+    kubectl edit \
+        configmap \
+            drupal-site-drupal-config
+
+            apiVersion: v1
+            data:
+              settings.php: |-
+                <?php
+                ....
+                ....
+                $settings ....
+                $settings ....
+    +           $config_directories[CONFIG_SYNC_DIRECTORY] = 'sites/default/files/sync-ohh5Im9o-ThaebiT0';
+            ....
+            ....
+
+    >   configmap/drupal-site-drupal-config edited
+
+
+# -----------------------------------------------------
+# Check the Drupal Pod status.
+#[user@kubernator]
+
+    drupalpod=$(
+        kubectl get \
+            --output json \
+            Pod \
+        | jq -r '.items[] | .metadata.name | select(startswith("drupal-site-drupal"))'
+        )
+
+    echo "Drupal Pod [${drupalpod}]"
+
+    kubectl describe \
+        Pod \
+            ${drupalpod:?}
+
+    >   Name:           drupal-site-drupal-f7cbff677-rbrhp
+    >   Namespace:      default
+    >   Node:           <none>
+    >   Labels:         app=drupal
+    >                   pod-template-hash=f7cbff677
+    >   Annotations:    <none>
+    >   Status:         Pending
+    >   IP:
+    >   Controlled By:  ReplicaSet/drupal-site-drupal-f7cbff677
+    >   Containers:
+    >     drupal:
+    >       Image:        aglais/drupal-mod:20200924-045519
+    >       Port:         80/TCP
+    >       Host Port:    0/TCP
+    >       Liveness:     tcp-socket :80 delay=60s timeout=1s period=10s #success=1 #failure=3
+    >       Readiness:    tcp-socket :80 delay=30s timeout=1s period=10s #success=1 #failure=3
+    >       Environment:  <none>
+    >       Mounts:
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-pxrzv (ro)
+    >         /var/www/html/sites/default/ from drupal-settings (rw)
+    >         /var/www/html/sites/default/files/ from drupal-files (rw)
+    >   Conditions:
+    >     Type           Status
+    >     PodScheduled   False
+    >   Volumes:
+    >     drupal-settings:
+    >       Type:      ConfigMap (a volume populated by a ConfigMap)
+    >       Name:      drupal-site-drupal-config
+    >       Optional:  false
+    >     drupal-files:
+    >       Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    >       ClaimName:  drupal-site-files-pvc
+    >       ReadOnly:   false
+    >     default-token-pxrzv:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-pxrzv
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type     Reason             Age                  From                Message
+    >     ----     ------             ----                 ----                -------
+    >     Warning  FailedScheduling   <unknown>            default-scheduler   error while running "VolumeBinding" filter plugin for pod "drupal-site-drupal-f7cbff677-rbrhp": pod has unbound immediate PersistentVolumeClaims
+    >     Warning  FailedScheduling   <unknown>            default-scheduler   error while running "VolumeBinding" filter plugin for pod "drupal-site-drupal-f7cbff677-rbrhp": pod has unbound immediate PersistentVolumeClaims
+    >     Warning  FailedScheduling   <unknown>            default-scheduler   error while running "VolumeBinding" filter plugin for pod "drupal-site-drupal-f7cbff677-rbrhp": pod has unbound immediate PersistentVolumeClaims
+    >     Warning  FailedScheduling   <unknown>            default-scheduler   error while running "VolumeBinding" filter plugin for pod "drupal-site-drupal-f7cbff677-rbrhp": pod has unbound immediate PersistentVolumeClaims
+    >     Normal   NotTriggerScaleUp  13s (x121 over 20m)  cluster-autoscaler  pod didn't trigger scale-up (it wouldn't fit if a new node is added): 1 max limit reached
+
+
+    #
+    # Still waiting for the Manila volumes to be allocated :-(
+    #
+
+
+# -----------------------------------------------------
+# Create the config sync location inside the Pod.
+# TODO Add this as an ephemeral empty directory.
+#[user@kubernator]
+
+TODO
+
+
+    kubectl exec \
+        -it \
+            ${drupalpod:?} \
+                bash
+
+        syncdir=web/sites/default/files/sync-ohh5Im9o-ThaebiT0
+        mkdir "${syncdir:?}"
+        chown www-data:www-data "${syncdir:?}"
+
+
+
+

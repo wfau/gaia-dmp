@@ -1,0 +1,279 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Aiming to reduce the steps and amount of data transferred.
+
+    Build the Zeppelin code locally and insert the modified zeppelin-engine jar
+    into the zeppelin-mod image.
+
+    TODO rebuild with  -Pspark-3.0 -Pspark-scala-2.12
+
+
+# -----------------------------------------------------
+# Create the Eclipse project config.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+    pushd  "${ZEPPELIN_CODE:?}"
+
+        mvn clean install -D skipTests -P hadoop3
+
+        pushd zeppelin-zengine
+            mvn eclipse:eclipse -D skipTests -P hadoop3
+        popd
+    popd
+
+# -----------------------------------------------------
+# Create a lib directory in the Aglias code base.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+    pushd  "${AGLAIS_CODE:?}"
+
+        mkdir -p 'experiments/zrq/zeppelin/lib'
+
+        cat > 'experiments/zrq/zeppelin/.gitignore' << EOF
+lib/**
+EOF
+
+        cat> 'experiments/zrq/zeppelin/lib/README.txt' << EOF
+Contents of this directory are ignired by Git.
+EOF
+
+        git status
+        git add \
+            'experiments/zrq/zeppelin/.gitignore'
+        git commit -m 'Added ignore for lib directory' \
+            'experiments/zrq/zeppelin/.gitignore'
+
+    popd
+
+
+# -----------------------------------------------------
+# Make changes in the source code.
+#[user@desktop]
+
+    eclipse
+
+    source "${HOME}/aglais.env"
+    pushd  "${ZEPPELIN_CODE:?}"
+        pushd zeppelin-zengine
+
+            gedit src/main/java/org/apache/zeppelin/notebook/Paragraph.java &
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Build the Zeppelin code.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+    pushd  "${ZEPPELIN_CODE:?}"
+        pushd zeppelin-zengine
+
+            mvn clean install -D skipTests -P hadoop3
+
+        popd
+    popd
+
+# -----------------------------------------------------
+# Locate the modified zengine jar file.
+#[user@desktop]
+
+    pomversion=$(
+        xmlstarlet select \
+            -N 'mvn=http://maven.apache.org/POM/4.0.0' \
+            --template \
+                --value-of 'mvn:project/mvn:version' \
+            "${ZEPPELIN_CODE:?}/pom.xml"
+        )
+
+    jarname=zeppelin-zengine-${pomversion:?}.jar
+
+
+# -----------------------------------------------------
+# Link the modified zengine jar into the Aglais code base.
+#[user@desktop]
+
+    ln --force \
+        "${ZEPPELIN_CODE:?}/zeppelin-zengine/target/${jarname:?}" \
+        "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/lib/${jarname:?}"
+
+
+# -----------------------------------------------------
+# Build our modified Zeppelin image.
+#[user@desktop]
+
+    # This includes shiro.ini with hard test users.
+    # This includes an interpreter-spec with hard coded PVC.
+    # This includes a modified version of the zeppelin-engine jar.
+
+    buildsrc=20200914-174101
+
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    source "${HOME}/aglais.env"
+    buildah bud \
+        --format docker \
+        --tag aglais/zeppelin-mod:${buildtag:?} \
+        --tag aglais/zeppelin-mod:latest \
+        --build-arg "buildsrc=${buildsrc:?}" \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE}/experiments/zrq/zeppelin/docker/Dockermod" \
+        "${AGLAIS_CODE:?}/experiments/zrq/zeppelin"
+
+
+# -----------------------------------------------------
+# Login to Docker hub.
+#[user@desktop]
+
+    buildah login \
+        --username $(secret docker.io.user) \
+        --password $(secret docker.io.pass) \
+        registry-1.docker.io
+
+
+# -----------------------------------------------------
+# Push our modified image to Docker hub.
+# If we use 'podman push' it doesn't recognise existing layers
+# and tries to push multiple giga-bytes of data.
+#[user@desktop]
+
+    buildah push "aglais/zeppelin-mod:${buildtag:?}"
+    buildah push "aglais/zeppelin-mod:latest"
+
+
+# -----------------------------------------------------
+# Edit our zeppelin-server deployment template.
+#[user@desktop]
+
+    # TODO Replace Gedit with Sed.
+
+cat << EOF
+----
+Build tag [${buildtag:?}]
+Pom version [${pomversion:?}]
+----
+EOF
+
+
+    source "${HOME}/aglais.env"
+
+    sed -i '
+        s/zeppelin-mod:.*$/zeppelin-mod:'${buildtag:?}'/
+        ' "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/k8s/zeppelin-server.yaml"
+
+    diff "${ZEPPELIN_CODE:?}/k8s/zeppelin-server.yaml" \
+         "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/k8s/zeppelin-server.yaml"
+
+        31,33c31,33
+        <   ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE: spark:2.4.5
+        <   ZEPPELIN_K8S_CONTAINER_IMAGE: apache/zeppelin-interpreter:0.9.0-aglais-0.0.1
+        <   ZEPPELIN_HOME: /opt/zeppelin
+        ---
+        >   ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE: aglais/pyspark-mod:2020.08.11
+        >   ZEPPELIN_K8S_CONTAINER_IMAGE: aglais/zeppelin-mod:20200915-152716
+        >   ZEPPELIN_HOME: /zeppelin
+        118c118
+        <         image: apache/zeppelin-server:0.9.0-aglais-0.0.1
+        ---
+        >         image: aglais/zeppelin-mod:20200915-152716
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubenator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/zeppelin:/zeppelin:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/kubernetes:/kubernetes:ro,z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Deploy Zeppelin.
+#[root@kubenator]
+
+    kubectl delete \
+        deployment zeppelin-server
+
+    kubectl apply \
+        --filename \
+            "/zeppelin/k8s/zeppelin-server.yaml"
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin .....
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.metagrid.xyz/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Experiments with Angular/HTML.
+#[user@Zeppelin]
+
+
+    <div class="alert alert-danger" role="alert">
+      This is a danger alert with <a href="#" class="alert-link">an example link</a>. Give it a click if you like.
+    </div>
+
+
+
+

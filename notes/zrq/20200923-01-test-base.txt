@@ -1,0 +1,257 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Setup Kubernetes cluster using clouds.yaml configured with application credentials
+
+        Delete Kubernetes cluster
+        20200904-01-cluster-delete.txt
+
+        Magnum cluster
+        20200828-01-magnum-cluster.txt
+
+        Nginx-controller
+        20200807-06-nginx-ingress.txt
+
+        Dashboard
+        20200807-07-dashboard.txt
+
+        CephFS-router
+        20200820-05-cephfs-router.txt
+
+        CephFS-CSI
+        20200904-02-cephfs-csi.txt
+
+        Manila-CSI
+        20200904-03-manila-csi.txt
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubenator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/zeppelin:/zeppelin:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/kubernetes:/kubernetes:ro,z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Get the Dashboard token.
+#[root@kubenator]
+
+    kubectl get \
+        --output json \
+        secret \
+    | jq -r '
+        .items[]
+        | select(
+            .metadata.name
+            | startswith(
+                "valeria-account"
+                )
+            )
+        | .data.token
+        | @base64d
+        '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Use the token to login to the dashboard ...
+#[user@desktop]
+
+    firefox --new-window "https://valeria.metagrid.xyz/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Deploy Zeppelin.
+#[root@kubenator]
+
+    kubectl delete \
+        deployment zeppelin-server
+
+    kubectl apply \
+        --filename \
+            "/zeppelin/k8s/zeppelin-server.yaml"
+
+    >   configmap/zeppelin-server-conf-map created
+    >   configmap/zeppelin-server-conf created
+    >   deployment.apps/zeppelin-server created
+    >   service/zeppelin-server created
+    >   serviceaccount/zeppelin-server created
+    >   role.rbac.authorization.k8s.io/zeppelin-server-role created
+    >   rolebinding.rbac.authorization.k8s.io/zeppelin-server-role-binding created
+
+
+# -----------------------------------------------------
+# Create our SSL keys and store them in a Kubernetes secret.
+# https://github.com/kubernetes/ingress-nginx/blob/master/docs/examples/PREREQUISITES.md#tls-certificates
+#[user@kubernator]
+
+    hostname=zeppelin.metagrid.xyz
+    certname=zeppelin-tls-secret
+
+    openssl req \
+        -x509 \
+        -sha256 \
+        -nodes \
+        -days 365 \
+        -newkey rsa:2048 \
+        -keyout /tmp/tls.key \
+        -out    /tmp/tls.crt \
+        -subj "/CN=${hostname:?}/O=Aglais"
+
+    >   Generating a RSA private key
+    >   ....................................+++++
+    >   ....................................+++++
+    >   writing new private key to '/tmp/tls.key'
+
+
+    kubectl create secret \
+        tls \
+        ${certname} \
+            --key  /tmp/tls.key \
+            --cert /tmp/tls.crt
+
+    >   secret/zeppelin-tls-secret created
+
+
+# -----------------------------------------------------
+# Create a SSL Ingress for Zeppelin.
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#deployment
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#validation
+#[user@kubernator]
+
+    cat << EOF > /tmp/zeppelin-tls-ingress.yaml
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: zeppelin-tls-ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-passthrough: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  tls:
+    - hosts:
+      - ${hostname:?}
+      secretName: ${certname:?}
+  rules:
+    - host: ${hostname:?}
+      http:
+        paths:
+        - path: /
+          backend:
+            serviceName: zeppelin-server
+            servicePort: 80
+EOF
+
+    kubectl apply \
+        --filename /tmp/zeppelin-tls-ingress.yaml
+
+    >   ingress.networking.k8s.io/zeppelin-tls-ingress created
+
+
+    kubectl describe \
+        Ingress \
+            zeppelin-tls-ingress
+
+    >   Name:             zeppelin-tls-ingress
+    >   Namespace:        default
+    >   Address:          128.232.227.128
+    >   Default backend:  default-http-backend:80 (<none>)
+    >   TLS:
+    >     zeppelin-tls-secret terminates zeppelin.metagrid.xyz
+    >   Rules:
+    >     Host                   Path  Backends
+    >     ----                   ----  --------
+    >     zeppelin.metagrid.xyz
+    >                            /   http-svc:80 (<none>)
+    >   Annotations:
+    >     kubectl.kubernetes.io/last-applied-configuration:  {"apiVersion":"networking.k8s.io/v1beta1", .... }
+    >
+    >   Events:
+    >     Type    Reason  Age   From                      Message
+    >     ----    ------  ----  ----                      -------
+    >     Normal  CREATE  55s   nginx-ingress-controller  Ingress default/zeppelin-tls-ingress
+    >     Normal  UPDATE  21s   nginx-ingress-controller  Ingress default/zeppelin-tls-ingress
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Update our internal DNS
+#[user@dns-serer]
+
+    aglais-001  A      128.232.227.128
+
+    valeria     CNAME  aglais-001.metagrid.xyz.
+    zeppelin    CNAME  aglais-001.metagrid.xyz.
+    drupal      CNAME  aglais-001.metagrid.xyz.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin ...
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.metagrid.xyz/" &
+
+
+
+

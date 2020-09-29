@@ -1,0 +1,2229 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Continue from previous notes
+        20200928-04-gaia-cephfs.txt
+
+    We had problems mounting the existing static CephFS share of Gaia DR2.
+    Suspect it may be because the static CephFS share was created by converting a dynamic share.
+
+    Plan is to create a new static CephFS share from clean and import the data.
+    Repeat the experiment using the kube-system/os-trustee Secret.
+    Result : using the kube-system/os-trustee Secret still doesn't work.
+
+    Reviewing previous notes:
+
+        Prev experiment:
+            20200904-04-manila-csi-static.txt
+            works OK
+
+        Repeated the experiment:
+            20200904-04-manila-csi-static.txt
+            works OK
+
+        Three differences:
+
+            Prev experiment created a 4Gi byte share
+            This experiment is tryin to create a 5Ti byte share.
+
+            Prev experiment had a simple 'access_to' name : AlbertAugustus
+            This experiment has a '-' in the 'access_to' name : 'gaia-admin'
+                Seen an issue that suggests Ceph might need plain [a-z] without punctuation?
+
+            Try creating a smaller share ?
+                - tried, nope
+            Try creating with simple 'access_to' name ?
+                - tried, nope
+
+            Prev experiment created a private share
+            This experiment created a public share
+
+            Try creating a private share ?
+
+
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# Install YQ.
+# TODO - add this to the kubernator image
+#[user@kubernator]
+
+    mkdir   "${HOME:?}/bin"
+    wget -O "${HOME:?}/bin/yq" https://github.com/mikefarah/yq/releases/download/3.3.2/yq_linux_amd64
+    chmod a+x "${HOME:?}/bin/yq"
+
+
+# -----------------------------------------------------
+# List the current shares.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
+
+    >   +--------------------------------------+------------------------------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name                                     | Size | Share Proto | Status    | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+------------------------------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ad1d9ca2-5b1c-4064-8c74-695286de6098 | gaia-dr2-share                           | 4399 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 8611ddef-087a-4032-b02f-b8d7b1e280a7 | pvc-16eaf7c5-57e1-403e-aecf-f2dbe4fdf0a6 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | 77587c48-3a34-4f21-9769-a3df932a1195 | pvc-1f1750b4-94c0-4b56-800d-50d7abf923a0 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | 0e1e1421-bb29-4e35-b21b-4e32b397f52f | pvc-2b42b52e-b0b3-4708-b85f-e8e36697a668 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | b9c3d40d-81db-460e-8779-60e7e2221c26 | pvc-67919d92-b56e-4306-b241-00a812676ea3 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | b0fdeefe-5886-4e0e-8231-187facb514b5 | pvc-70e6f042-2047-48f0-be91-0e8846a383ce |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | f5ad90af-29c6-447d-8b8a-967d5ccc7e45 | pvc-e41dc65c-f3d9-4c27-8987-797016ebce36 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   +--------------------------------------+------------------------------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# Create a new static share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --public true \
+            --name 'gaia-dr2' \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            5000 \
+    | tee /tmp/gaiadr2-share.json
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2020-09-29T02:22:24.000000",
+    >     "description": null,
+    >     "has_replicas": false,
+    >     "id": "1409d3d5-80f8-4868-a652-924089d90db5",
+    >     "is_public": true,
+    >     "metadata": {},
+    >     "mount_snapshot_support": false,
+    >     "name": "gaia-dr2",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8",
+    >     "share_type_name": "cephfsnativetype",
+    >     "size": 5000,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "creating",
+    >     "task_state": null,
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "volume_type": "cephfsnativetype"
+    >   }
+
+
+    shareid=$(
+        jq -r '.id' /tmp/gaiadr2-share.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                "${shareid:?}"
+
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+    >   | Field                                 | Value                                                                                                         |
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+    >   | access_rules_status                   | active                                                                                                        |
+    >   | availability_zone                     | nova                                                                                                          |
+    >   | create_share_from_snapshot_support    | False                                                                                                         |
+    >   | created_at                            | 2020-09-29T02:22:24.000000                                                                                    |
+    >   | description                           | None                                                                                                          |
+    >   | export_locations                      |                                                                                                               |
+    >   |                                       | path = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/08b01b5b-a395-487a-ba5e-2b2af29209a7 |
+    >   |                                       | id = c0409d8d-f5b4-4e97-ac8f-029b6bcdf01e                                                                     |
+    >   |                                       | preferred = False                                                                                             |
+    >   | has_replicas                          | False                                                                                                         |
+    >   | id                                    | 1409d3d5-80f8-4868-a652-924089d90db5                                                                          |
+    >   | is_public                             | True                                                                                                          |
+    >   | mount_snapshot_support                | False                                                                                                         |
+    >   | name                                  | gaia-dr2                                                                                                      |
+    >   | project_id                            | 21b4ae3a2ea44bc5a9c14005ed2963af                                                                              |
+    >   | properties                            |                                                                                                               |
+    >   | replication_type                      | None                                                                                                          |
+    >   | revert_to_snapshot_support            | False                                                                                                         |
+    >   | share_group_id                        | None                                                                                                          |
+    >   | share_network_id                      | None                                                                                                          |
+    >   | share_proto                           | CEPHFS                                                                                                        |
+    >   | share_type                            | 5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8                                                                          |
+    >   | share_type_name                       | cephfsnativetype                                                                                              |
+    >   | size                                  | 5000                                                                                                          |
+    >   | snapshot_id                           | None                                                                                                          |
+    >   | snapshot_support                      | False                                                                                                         |
+    >   | source_share_group_snapshot_member_id | None                                                                                                          |
+    >   | status                                | available                                                                                                     |
+    >   | task_state                            | None                                                                                                          |
+    >   | user_id                               | 98169f87de174ad4ac98c32e59646488                                                                              |
+    >   | volume_type                           | cephfsnativetype                                                                                              |
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share.
+#[user@kubernator]
+
+    accessname=gaia-admin
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${accessname:?}" \
+    | tee "/tmp/${accessname}.json"
+
+    >   {
+    >     "id": "6958d3d3-1e95-4651-b462-6edb4f48389a",
+    >     "share_id": "1409d3d5-80f8-4868-a652-924089d90db5",
+    >     "access_level": "rw",
+    >     "access_to": "gaia-admin",
+    >     "access_type": "cephx",
+    >     "state": "queued_to_apply",
+    >     "access_key": null,
+    >     "created_at": "2020-09-29T02:29:45.000000",
+    >     "updated_at": null,
+    >     "properties": ""
+    >   }
+
+
+    accessid=$(
+        jq -r '.id' "/tmp/${accessname}.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                "${accessid:?}"
+
+    >   +--------------+------------------------------------------+
+    >   | Field        | Value                                    |
+    >   +--------------+------------------------------------------+
+    >   | id           | 6958d3d3-1e95-4651-b462-6edb4f48389a     |
+    >   | share_id     | 1409d3d5-80f8-4868-a652-924089d90db5     |
+    >   | access_level | rw                                       |
+    >   | access_to    | gaia-admin                               |
+    >   | access_type  | cephx                                    |
+    >   | state        | active                                   |
+    >   | access_key   | AQAZ ........ DA3w==                     |
+    >   | created_at   | 2020-09-29T02:29:45.000000               |
+    >   | updated_at   | 2020-09-29T02:29:45.000000               |
+    >   | properties   |                                          |
+    >   +--------------+------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create a PersistentVolume using the kube-system/os-trustee Secret.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ${accessname}-volume
+  labels:
+    name: ${accessname}-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 5Ti
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    nodeStageSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    nodePublishSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    volumeHandle: ${accessname}-handle
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${accessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-volume.yaml"
+
+    kubectl describe \
+        persistentvolume \
+            "${accessname}-volume"
+
+    >   Name:            gaia-admin-volume
+    >   Labels:          name=gaia-admin-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"name":"gaia-admin-volume"},"name":"gaia-admin-volume"...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        5Ti
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      gaia-admin-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=6958d3d3-1e95-4651-b462-6edb4f48389a
+    >                              shareID=1409d3d5-80f8-4868-a652-924089d90db5
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Create a PersistentVolumeClaim.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-claim.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${accessname}-claim
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Ti
+  selector:
+    matchExpressions:
+    - key: name
+      operator: In
+      values: ["${accessname}-volume"]
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-claim.yaml"
+
+    kubectl describe \
+        persistentvolumeclaim \
+            "${accessname}-claim"
+
+    >   Name:          gaia-admin-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        gaia-admin-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"gaia-admin-claim","namespace":"default"},"spec":{"a...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      5Ti
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Create a test Pod to mount the volume.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-pod.yaml" << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: ${accessname}-pod
+  namespace: default
+spec:
+  volumes:
+    - name: share-data
+      persistentVolumeClaim:
+        claimName: ${accessname}-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: ${accessname}-container
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: share-data
+          mountPath: /share-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /share-data/\${HOSTNAME}.log;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-pod.yaml"
+
+    kubectl \
+        describe pod \
+            "${accessname}-pod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age                 From                                            Message
+    >     ----     ------       ----                ----                                            -------
+    >     Normal   Scheduled    <unknown>           default-scheduler                               Successfully assigned default/gaia-admin-pod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  60s (x8 over 2m4s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >     Warning  FailedMount  1s                  kubelet, tiberius-20200923-nqzekodqww64-node-3  Unable to attach or mount volumes: unmounted volumes=[share-data], unattached volumes=[local-data default-token-pxrzv share-data]: timed out waiting for the condition
+
+
+# -----------------------------------------------------
+# Delete the Pod, Claim, Volume and Secret.
+#[user@kubernator]
+
+    kubectl \
+        delete Pod \
+            "${accessname}-pod"
+
+    kubectl \
+        delete PersistentVolumeClaim \
+            "${accessname}-claim"
+
+    kubectl \
+        delete PersistentVolume \
+            "${accessname}-volume"
+
+    kubectl \
+        delete Secret \
+            "${accessname}-secret"
+
+# -----------------------------------------------------
+# Try creating a smaller share ?
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --public true \
+            --name 'gaia-dr2' \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            5 \
+    | tee /tmp/gaiadr2-share.json
+
+    shareid=$(
+        jq -r '.id' /tmp/gaiadr2-share.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                "${shareid:?}"
+
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+    >   | Field                                 | Value                                                                                                         |
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+    >   | access_rules_status                   | active                                                                                                        |
+    >   | availability_zone                     | nova                                                                                                          |
+    >   | create_share_from_snapshot_support    | False                                                                                                         |
+    >   | created_at                            | 2020-09-29T03:59:32.000000                                                                                    |
+    >   | description                           | None                                                                                                          |
+    >   | export_locations                      |                                                                                                               |
+    >   |                                       | path = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/d6639869-94af-4f25-b546-b188cb8376d1 |
+    >   |                                       | id = da0180ee-cbf0-4218-80e5-7b1f4f2d5f09                                                                     |
+    >   |                                       | preferred = False                                                                                             |
+    >   | has_replicas                          | False                                                                                                         |
+    >   | id                                    | 120f9a24-ed46-4311-9c87-291936d41176                                                                          |
+    >   | is_public                             | True                                                                                                          |
+    >   | mount_snapshot_support                | False                                                                                                         |
+    >   | name                                  | gaia-dr2                                                                                                      |
+    >   | project_id                            | 21b4ae3a2ea44bc5a9c14005ed2963af                                                                              |
+    >   | properties                            |                                                                                                               |
+    >   | replication_type                      | None                                                                                                          |
+    >   | revert_to_snapshot_support            | False                                                                                                         |
+    >   | share_group_id                        | None                                                                                                          |
+    >   | share_network_id                      | None                                                                                                          |
+    >   | share_proto                           | CEPHFS                                                                                                        |
+    >   | share_type                            | 5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8                                                                          |
+    >   | share_type_name                       | cephfsnativetype                                                                                              |
+    >   | size                                  | 5                                                                                                             |
+    >   | snapshot_id                           | None                                                                                                          |
+    >   | snapshot_support                      | False                                                                                                         |
+    >   | source_share_group_snapshot_member_id | None                                                                                                          |
+    >   | status                                | available                                                                                                     |
+    >   | task_state                            | None                                                                                                          |
+    >   | user_id                               | 98169f87de174ad4ac98c32e59646488                                                                              |
+    >   | volume_type                           | cephfsnativetype                                                                                              |
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share (with simplified name).
+#[user@kubernator]
+
+    accessname=gaia-admin
+    accessceph=${accessname//-/}
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${accessceph:?}" \
+    | tee "/tmp/${accessname}.json"
+
+    accessid=$(
+        jq -r '.id' "/tmp/${accessname}.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                "${accessid:?}"
+
+    >   +--------------+------------------------------------------+
+    >   | Field        | Value                                    |
+    >   +--------------+------------------------------------------+
+    >   | id           | a4da0127-70db-4107-b727-4c8564c8c4d9     |
+    >   | share_id     | 120f9a24-ed46-4311-9c87-291936d41176     |
+    >   | access_level | rw                                       |
+    >   | access_to    | gaiaadmin                                |
+    >   | access_type  | cephx                                    |
+    >   | state        | active                                   |
+    >   | access_key   | AQA8sXJfH23fLxAAkX6E+gm2fIA33XX2Re4x6Q== |
+    >   | created_at   | 2020-09-29T03:59:56.000000               |
+    >   | updated_at   | 2020-09-29T03:59:56.000000               |
+    >   | properties   |                                          |
+    >   +--------------+------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create a PersistentVolume using the kube-system/os-trustee Secret.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ${accessname}-volume
+  labels:
+    aglaistag: ${accessname}-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 5Gi
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    nodeStageSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    nodePublishSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    volumeHandle: ${accessname}-handle
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${accessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-volume.yaml"
+
+    kubectl describe \
+        persistentvolume \
+            "${accessname}-volume"
+
+    >   Name:            gaia-admin-volume
+    >   Labels:          aglaistag=gaia-admin-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"aglaistag":"gaia-admin-volume"},"name":"gaia-admin-vo...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        5Gi
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      gaia-admin-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=a4da0127-70db-4107-b727-4c8564c8c4d9
+    >                              shareID=120f9a24-ed46-4311-9c87-291936d41176
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Create a PersistentVolumeClaim.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-claim.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${accessname}-claim
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+  selector:
+    matchExpressions:
+    - key: aglaistag
+      operator: In
+      values: ["${accessname}-volume"]
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-claim.yaml"
+
+    kubectl describe \
+        persistentvolumeclaim \
+            "${accessname}-claim"
+
+    >   Name:          gaia-admin-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        gaia-admin-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"gaia-admin-claim","namespace":"default"},"spec":{"a...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      5Gi
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Create a test Pod to mount the volume.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-pod.yaml" << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: ${accessname}-pod
+  namespace: default
+spec:
+  volumes:
+    - name: share-data
+      persistentVolumeClaim:
+        claimName: ${accessname}-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: ${accessname}-container
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: share-data
+          mountPath: /share-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /share-data/\${HOSTNAME}.log;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-pod.yaml"
+
+    kubectl \
+        describe pod \
+            "${accessname}-pod"
+
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age        From                                            Message
+    >     ----     ------       ----       ----                                            -------
+    >     Normal   Scheduled    <unknown>  default-scheduler                               Successfully assigned default/gaia-admin-pod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  0s         kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+# -----------------------------------------------------
+# Identify the CephFS CSI Pod on node-3.
+#[user@kubernator]
+
+    kubectl get \
+        Namespace
+
+    >   NAME              STATUS   AGE
+    >   ceph-csi-cephfs   Active   5d1h
+    >   default           Active   5d14h
+    >   ....
+
+    kubectl get \
+        --namespace ceph-csi-cephfs \
+        Pod
+
+    >   NAME                                           READY   STATUS    RESTARTS   AGE
+    >   ceph-csi-cephfs-nodeplugin-p6p5f               3/3     Running   0          5d1h
+    >   ceph-csi-cephfs-nodeplugin-v8jbb               3/3     Running   0          5d1h
+    >   ceph-csi-cephfs-nodeplugin-x7h5j               3/3     Running   0          5d1h
+    >   ceph-csi-cephfs-nodeplugin-xzjhv               3/3     Running   0          5d1h
+    >   ceph-csi-cephfs-provisioner-6c6c9c4f97-h7k9l   6/6     Running   0          5d1h
+    >   ceph-csi-cephfs-provisioner-6c6c9c4f97-nltbq   6/6     Running   0          5d1h
+    >   ceph-csi-cephfs-provisioner-6c6c9c4f97-nzg5f   6/6     Running   0          5d1h
+
+
+    kubectl get \
+        --output json \
+        --namespace ceph-csi-cephfs \
+        Pod \
+    | jq '.items[] | {name: .metadata.name, node: .spec.nodeName} '
+
+    >   {
+    >     "name": "ceph-csi-cephfs-nodeplugin-p6p5f",
+    >     "node": "tiberius-20200923-nqzekodqww64-node-2"
+    >   }
+    >   {
+    >     "name": "ceph-csi-cephfs-nodeplugin-v8jbb",
+    >     "node": "tiberius-20200923-nqzekodqww64-node-3"
+    >   }
+    >   {
+    >     "name": "ceph-csi-cephfs-nodeplugin-x7h5j",
+    >     "node": "tiberius-20200923-nqzekodqww64-node-1"
+    >   }
+    >   {
+    >     "name": "ceph-csi-cephfs-nodeplugin-xzjhv",
+    >     "node": "tiberius-20200923-nqzekodqww64-node-0"
+    >   }
+    >   {
+    >     "name": "ceph-csi-cephfs-provisioner-6c6c9c4f97-h7k9l",
+    >     "node": "tiberius-20200923-nqzekodqww64-node-0"
+    >   }
+    >   {
+    >     "name": "ceph-csi-cephfs-provisioner-6c6c9c4f97-nltbq",
+    >     "node": "tiberius-20200923-nqzekodqww64-node-1"
+    >   }
+    >   {
+    >     "name": "ceph-csi-cephfs-provisioner-6c6c9c4f97-nzg5f",
+    >     "node": "tiberius-20200923-nqzekodqww64-node-2"
+    >   }
+
+
+    kubectl logs \
+        --follow \
+        --namespace ceph-csi-cephfs \
+            ceph-csi-cephfs-nodeplugin-v8jbb \
+            --container csi-cephfsplugin
+
+    >   ....
+    >   ....
+    >   I0929 04:26:22.697848       1 utils.go:159] ID: 7703 GRPC call: /csi.v1.Identity/Probe
+    >   I0929 04:26:22.698330       1 utils.go:160] ID: 7703 GRPC request: {}
+    >   I0929 04:26:22.698663       1 utils.go:165] ID: 7703 GRPC response: {}
+    >   I0929 04:27:22.697765       1 utils.go:159] ID: 7704 GRPC call: /csi.v1.Identity/Probe
+    >   I0929 04:27:22.698230       1 utils.go:160] ID: 7704 GRPC request: {}
+    >   I0929 04:27:22.698568       1 utils.go:165] ID: 7704 GRPC response: {}
+    >   I0929 04:27:42.418826       1 utils.go:159] ID: 7705 Req-ID: gaia-admin-handle GRPC call: /csi.v1.Node/NodeStageVolume
+    >   I0929 04:27:42.421942       1 utils.go:160] ID: 7705 Req-ID: gaia-admin-handle GRPC request: {"staging_target_path":"/var/lib/kubelet/plugins/kubernetes.io/csi/pv/gaia-admin-volume/globalmount","volume_capability":{"AccessType":{"Mount":{}},"access_mode":{"mode":5}},"volume_id":"gaia-admin-handle"}
+    >   E0929 04:27:42.421979       1 utils.go:163] ID: 7705 Req-ID: gaia-admin-handle GRPC error: rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+# -----------------------------------------------------
+# Delete the Pod, Claim, Volume and Secret.
+#[user@kubernator]
+
+    kubectl \
+        delete Pod \
+            "${accessname}-pod"
+
+    kubectl \
+        delete PersistentVolumeClaim \
+            "${accessname}-claim"
+
+    kubectl \
+        delete PersistentVolume \
+            "${accessname}-volume"
+
+    kubectl \
+        delete Secret \
+            "${accessname}-secret"
+
+# -----------------------------------------------------
+# Delete the share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share delete \
+            "${shareid:?}"
+
+
+# -----------------------------------------------------
+# Create a private share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --public false \
+            --name 'gaia-dr2' \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            5 \
+    | tee /tmp/gaiadr2-share.json
+
+    shareid=$(
+        jq -r '.id' /tmp/gaiadr2-share.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                "${shareid:?}"
+
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+    >   | Field                                 | Value                                                                                                         |
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+    >   | access_rules_status                   | active                                                                                                        |
+    >   | availability_zone                     | nova                                                                                                          |
+    >   | create_share_from_snapshot_support    | False                                                                                                         |
+    >   | created_at                            | 2020-09-29T04:47:47.000000                                                                                    |
+    >   | description                           | None                                                                                                          |
+    >   | export_locations                      |                                                                                                               |
+    >   |                                       | path = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/d02e53f1-afca-45ab-84aa-662aea93d0d4 |
+    >   |                                       | id = 18f794f6-69bd-4c27-97d6-121915ac316a                                                                     |
+    >   |                                       | preferred = False                                                                                             |
+    >   | has_replicas                          | False                                                                                                         |
+    >   | id                                    | 7199f136-2d10-4afa-b21b-0c3631fc6dac                                                                          |
+    >   | is_public                             | False                                                                                                         |
+    >   | mount_snapshot_support                | False                                                                                                         |
+    >   | name                                  | gaia-dr2                                                                                                      |
+    >   | project_id                            | 21b4ae3a2ea44bc5a9c14005ed2963af                                                                              |
+    >   | properties                            |                                                                                                               |
+    >   | replication_type                      | None                                                                                                          |
+    >   | revert_to_snapshot_support            | False                                                                                                         |
+    >   | share_group_id                        | None                                                                                                          |
+    >   | share_network_id                      | None                                                                                                          |
+    >   | share_proto                           | CEPHFS                                                                                                        |
+    >   | share_type                            | 5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8                                                                          |
+    >   | share_type_name                       | cephfsnativetype                                                                                              |
+    >   | size                                  | 5                                                                                                             |
+    >   | snapshot_id                           | None                                                                                                          |
+    >   | snapshot_support                      | False                                                                                                         |
+    >   | source_share_group_snapshot_member_id | None                                                                                                          |
+    >   | status                                | available                                                                                                     |
+    >   | task_state                            | None                                                                                                          |
+    >   | user_id                               | 98169f87de174ad4ac98c32e59646488                                                                              |
+    >   | volume_type                           | cephfsnativetype                                                                                              |
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share (with simplified name).
+#[user@kubernator]
+
+    accessname=gaia-admin
+    accessceph=${accessname//-/}
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${accessceph:?}" \
+    | tee "/tmp/${accessname}.json"
+
+    accessid=$(
+        jq -r '.id' "/tmp/${accessname}.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                "${accessid:?}"
+
+    >   +--------------+------------------------------------------+
+    >   | Field        | Value                                    |
+    >   +--------------+------------------------------------------+
+    >   | id           | 56cc67bd-9683-45f3-b2fc-d2a4fcd62f2d     |
+    >   | share_id     | 7199f136-2d10-4afa-b21b-0c3631fc6dac     |
+    >   | access_level | rw                                       |
+    >   | access_to    | gaiaadmin                                |
+    >   | access_type  | cephx                                    |
+    >   | state        | active                                   |
+    >   | access_key   | AQCRvHJf0XUDDxAAcWqJLCudBKdgHUBMYBguKw== |
+    >   | created_at   | 2020-09-29T04:48:16.000000               |
+    >   | updated_at   | 2020-09-29T04:48:17.000000               |
+    >   | properties   |                                          |
+    >   +--------------+------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create a PersistentVolume using the kube-system/os-trustee Secret.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ${accessname}-volume
+  labels:
+    aglaistag: ${accessname}-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 5Gi
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    nodeStageSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    nodePublishSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    volumeHandle: ${accessname}-handle
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${accessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-volume.yaml"
+
+    kubectl describe \
+        persistentvolume \
+            "${accessname}-volume"
+
+    >   Name:            gaia-admin-volume
+    >   Labels:          aglaistag=gaia-admin-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"aglaistag":"gaia-admin-volume"},"name":"gaia-admin-vo...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        5Gi
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      gaia-admin-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=56cc67bd-9683-45f3-b2fc-d2a4fcd62f2d
+    >                              shareID=7199f136-2d10-4afa-b21b-0c3631fc6dac
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Create a PersistentVolumeClaim.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-claim.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${accessname}-claim
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+  selector:
+    matchExpressions:
+    - key: aglaistag
+      operator: In
+      values: ["${accessname}-volume"]
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-claim.yaml"
+
+    kubectl describe \
+        persistentvolumeclaim \
+            "${accessname}-claim"
+
+    >   Name:          gaia-admin-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        gaia-admin-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"gaia-admin-claim","namespace":"default"},"spec":{"a...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      5Gi
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Create a test Pod to mount the volume.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-pod.yaml" << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: ${accessname}-pod
+  namespace: default
+spec:
+  volumes:
+    - name: share-data
+      persistentVolumeClaim:
+        claimName: ${accessname}-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: ${accessname}-container
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: share-data
+          mountPath: /share-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /share-data/\${HOSTNAME}.log;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-pod.yaml"
+
+    kubectl \
+        describe pod \
+            "${accessname}-pod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age        From                                            Message
+    >     ----     ------       ----       ----                                            -------
+    >     Normal   Scheduled    <unknown>  default-scheduler                               Successfully assigned default/gaia-admin-pod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  0s         kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+    OK - I'm confused.
+    Dostinkie share works.
+    Gaia share fails.
+
+
+# -----------------------------------------------------
+# List all the Dostinkie components.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        pod \
+            dostinkie-pod
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Pod",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"annotations\":{},\"name\":\"dostinkie-pod\",\"namespace\":\"default\"},\"spec\":{\"containers\":[{\"args\":[\"-c\",\"while true; do date \\u003e\\u003e /share-data/${HOSTNAME}.log; sleep 1; done\"],\"command\":[\"/bin/sh\"],\"image\":\"fedora:latest\",\"name\":\"dostinkie-container\",\"volumeMounts\":[{\"mountPath\":\"/share-data\",\"name\":\"share-data\"},{\"mountPath\":\"/local-data\",\"name\":\"local-data\"}]}],\"volumes\":[{\"name\":\"share-data\",\"persistentVolumeClaim\":{\"claimName\":\"dostinkie-claim\"}},{\"emptyDir\":{},\"name\":\"local-data\"}]}}\n"
+    >           },
+    >           "creationTimestamp": "2020-09-29T03:14:51Z",
+    >           "name": "dostinkie-pod",
+    >           "namespace": "default",
+    >           "resourceVersion": "2587946",
+    >           "selfLink": "/api/v1/namespaces/default/pods/dostinkie-pod",
+    >           "uid": "31856c66-9efb-42c4-8c16-984da0597aa7"
+    >       },
+    >       "spec": {
+    >           "containers": [
+    >               {
+    >                   "args": [
+    >                       "-c",
+    >                       "while true; do date \u003e\u003e /share-data/${HOSTNAME}.log; sleep 1; done"
+    >                   ],
+    >                   "command": [
+    >                       "/bin/sh"
+    >                   ],
+    >                   "image": "fedora:latest",
+    >                   "imagePullPolicy": "Always",
+    >                   "name": "dostinkie-container",
+    >                   "resources": {},
+    >                   "terminationMessagePath": "/dev/termination-log",
+    >                   "terminationMessagePolicy": "File",
+    >                   "volumeMounts": [
+    >                       {
+    >                           "mountPath": "/share-data",
+    >                           "name": "share-data"
+    >                       },
+    >                       {
+    >                           "mountPath": "/local-data",
+    >                           "name": "local-data"
+    >                       },
+    >                       {
+    >                           "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+    >                           "name": "default-token-pxrzv",
+    >                           "readOnly": true
+    >                       }
+    >                   ]
+    >               }
+    >           ],
+    >           "dnsPolicy": "ClusterFirst",
+    >           "enableServiceLinks": true,
+    >           "nodeName": "tiberius-20200923-nqzekodqww64-node-3",
+    >           "restartPolicy": "Always",
+    >           "schedulerName": "default-scheduler",
+    >           "securityContext": {},
+    >           "serviceAccount": "default",
+    >           "serviceAccountName": "default",
+    >           "terminationGracePeriodSeconds": 30,
+    >           "tolerations": [
+    >               {
+    >                   "effect": "NoExecute",
+    >                   "key": "node.kubernetes.io/not-ready",
+    >                   "operator": "Exists",
+    >                   "tolerationSeconds": 300
+    >               },
+    >               {
+    >                   "effect": "NoExecute",
+    >                   "key": "node.kubernetes.io/unreachable",
+    >                   "operator": "Exists",
+    >                   "tolerationSeconds": 300
+    >               }
+    >           ],
+    >           "volumes": [
+    >               {
+    >                   "name": "share-data",
+    >                   "persistentVolumeClaim": {
+    >                       "claimName": "dostinkie-claim"
+    >                   }
+    >               },
+    >               {
+    >                   "emptyDir": {},
+    >                   "name": "local-data"
+    >               },
+    >               {
+    >                   "name": "default-token-pxrzv",
+    >                   "secret": {
+    >                       "defaultMode": 420,
+    >                       "secretName": "default-token-pxrzv"
+    >                   }
+    >               }
+    >           ]
+    >       },
+    >       "status": {
+    >           "conditions": [
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-09-29T03:14:51Z",
+    >                   "status": "True",
+    >                   "type": "Initialized"
+    >               },
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-09-29T03:15:02Z",
+    >                   "status": "True",
+    >                   "type": "Ready"
+    >               },
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-09-29T03:15:02Z",
+    >                   "status": "True",
+    >                   "type": "ContainersReady"
+    >               },
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-09-29T03:14:51Z",
+    >                   "status": "True",
+    >                   "type": "PodScheduled"
+    >               }
+    >           ],
+    >           "containerStatuses": [
+    >               {
+    >                   "containerID": "docker://d182300b2549b1560f71fd55a5dc3471f61347c6d5c8d70d896b70243fd86774",
+    >                   "image": "docker.io/fedora:latest",
+    >                   "imageID": "docker-pullable://docker.io/fedora@sha256:d6a6d60fda1b22b6d5fe3c3b2abe2554b60432b7b215adc11a2b5fae16f50188",
+    >                   "lastState": {},
+    >                   "name": "dostinkie-container",
+    >                   "ready": true,
+    >                   "restartCount": 0,
+    >                   "started": true,
+    >                   "state": {
+    >                       "running": {
+    >                           "startedAt": "2020-09-29T03:15:02Z"
+    >                       }
+    >                   }
+    >               }
+    >           ],
+    >           "hostIP": "10.0.0.41",
+    >           "phase": "Running",
+    >           "podIP": "10.100.2.14",
+    >           "podIPs": [
+    >               {
+    >                   "ip": "10.100.2.14"
+    >               }
+    >           ],
+    >           "qosClass": "BestEffort",
+    >           "startTime": "2020-09-29T03:14:51Z"
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        persistentvolumeclaim \
+            dostinkie-claim
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolumeClaim",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"PersistentVolumeClaim\",\"metadata\":{\"annotations\":{},\"name\":\"dostinkie-claim\",\"namespace\":\"default\"},\"spec\":{\"accessModes\":[\"ReadWriteMany\"],\"resources\":{\"requests\":{\"storage\":\"3Gi\"}},\"selector\":{\"matchExpressions\":[{\"key\":\"name\",\"operator\":\"In\",\"values\":[\"dostinkie-volume\"]}]}}}\n",
+    >               "pv.kubernetes.io/bind-completed": "yes",
+    >               "pv.kubernetes.io/bound-by-controller": "yes"
+    >           },
+    >           "creationTimestamp": "2020-09-29T03:14:35Z",
+    >           "finalizers": [
+    >               "kubernetes.io/pvc-protection"
+    >           ],
+    >           "name": "dostinkie-claim",
+    >           "namespace": "default",
+    >           "resourceVersion": "2587795",
+    >           "selfLink": "/api/v1/namespaces/default/persistentvolumeclaims/dostinkie-claim",
+    >           "uid": "43ea77af-d288-493d-9238-e7b710b45a4f"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteMany"
+    >           ],
+    >           "resources": {
+    >               "requests": {
+    >                   "storage": "3Gi"
+    >               }
+    >           },
+    >           "selector": {
+    >               "matchExpressions": [
+    >                   {
+    >                       "key": "name",
+    >                       "operator": "In",
+    >                       "values": [
+    >                           "dostinkie-volume"
+    >                       ]
+    >                   }
+    >               ]
+    >           },
+    >           "volumeMode": "Filesystem",
+    >           "volumeName": "dostinkie-volume"
+    >       },
+    >       "status": {
+    >           "accessModes": [
+    >               "ReadWriteMany"
+    >           ],
+    >           "capacity": {
+    >               "storage": "4Gi"
+    >           },
+    >           "phase": "Bound"
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        persistentvolume \
+            dostinkie-volume
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolume",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"PersistentVolume\",\"metadata\":{\"annotations\":{},\"labels\":{\"name\":\"dostinkie-volume\"},\"name\":\"dostinkie-volume\"},\"spec\":{\"accessModes\":[\"ReadWriteMany\"],\"capacity\":{\"storage\":\"4Gi\"},\"csi\":{\"driver\":\"cephfs.manila.csi.openstack.org\",\"nodePublishSecretRef\":{\"name\":\"os-trustee\",\"namespace\":\"kube-system\"},\"nodeStageSecretRef\":{\"name\":\"os-trustee\",\"namespace\":\"kube-system\"},\"volumeAttributes\":{\"shareAccessID\":\"8a73b154-034e-45fe-8e51-0ec58114205d\",\"shareID\":\"f14a2454-6385-41f8-a89e-3fd8e51e2fb6\"},\"volumeHandle\":\"dostinkie-handle\"}}}\n",
+    >               "pv.kubernetes.io/bound-by-controller": "yes"
+    >           },
+    >           "creationTimestamp": "2020-09-29T03:13:45Z",
+    >           "finalizers": [
+    >               "kubernetes.io/pv-protection"
+    >           ],
+    >           "labels": {
+    >               "name": "dostinkie-volume"
+    >           },
+    >           "name": "dostinkie-volume",
+    >           "resourceVersion": "2587793",
+    >           "selfLink": "/api/v1/persistentvolumes/dostinkie-volume",
+    >           "uid": "743a3a32-789f-420e-811d-83d93eabafd3"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteMany"
+    >           ],
+    >           "capacity": {
+    >               "storage": "4Gi"
+    >           },
+    >           "claimRef": {
+    >               "apiVersion": "v1",
+    >               "kind": "PersistentVolumeClaim",
+    >               "name": "dostinkie-claim",
+    >               "namespace": "default",
+    >               "resourceVersion": "2587790",
+    >               "uid": "43ea77af-d288-493d-9238-e7b710b45a4f"
+    >           },
+    >           "csi": {
+    >               "driver": "cephfs.manila.csi.openstack.org",
+    >               "nodePublishSecretRef": {
+    >                   "name": "os-trustee",
+    >                   "namespace": "kube-system"
+    >               },
+    >               "nodeStageSecretRef": {
+    >                   "name": "os-trustee",
+    >                   "namespace": "kube-system"
+    >               },
+    >               "volumeAttributes": {
+    >                   "shareAccessID": "8a73b154-034e-45fe-8e51-0ec58114205d",
+    >                   "shareID": "f14a2454-6385-41f8-a89e-3fd8e51e2fb6"
+    >               },
+    >               "volumeHandle": "dostinkie-handle"
+    >           },
+    >           "persistentVolumeReclaimPolicy": "Retain",
+    >           "volumeMode": "Filesystem"
+    >       },
+    >       "status": {
+    >           "phase": "Bound"
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        persistentvolume \
+            dostinkie-volume \
+    | jq '.spec.csi.volumeAttributes'
+
+    >   {
+    >     "shareAccessID": "8a73b154-034e-45fe-8e51-0ec58114205d",
+    >     "shareID": "f14a2454-6385-41f8-a89e-3fd8e51e2fb6"
+    >   }
+
+
+    shareid=$(
+        kubectl get \
+            --output json \
+            persistentvolume \
+                dostinkie-volume \
+        | jq -r '.spec.csi.volumeAttributes.shareID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share show \
+            --format json \
+            "${shareid:?}"
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2020-09-29T03:13:00.000000",
+    >     "description": null,
+    >     "export_locations": "\npath = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/340b1ce8-ab09-4d50-8841-1b0757a29217\nid = 2a84de77-1e30-4707-b03e-c51897d8d1bb\npreferred = False",
+    >     "has_replicas": false,
+    >     "id": "f14a2454-6385-41f8-a89e-3fd8e51e2fb6",
+    >     "is_public": false,
+    >     "mount_snapshot_support": false,
+    >     "name": "dostinkie-share",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "properties": {},
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8",
+    >     "share_type_name": "cephfsnativetype",
+    >     "size": 5,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "available",
+    >     "task_state": null,
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "volume_type": "cephfsnativetype"
+    >   }
+
+
+    accessid=$(
+        kubectl get \
+            --output json \
+            persistentvolume \
+                dostinkie-volume \
+        | jq -r '.spec.csi.volumeAttributes.shareAccessID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access show \
+            --format json \
+            "${accessid:?}"
+
+    >   {
+    >     "id": "8a73b154-034e-45fe-8e51-0ec58114205d",
+    >     "share_id": "f14a2454-6385-41f8-a89e-3fd8e51e2fb6",
+    >     "access_level": "rw",
+    >     "access_to": "AlbertAugustus",
+    >     "access_type": "cephx",
+    >     "state": "active",
+    >     "access_key": "AQBNpnJfRxnoMRAAiXptQDpjBcXzETrmUwthQA==",
+    >     "created_at": "2020-09-29T03:13:17.000000",
+    >     "updated_at": "2020-09-29T03:13:17.000000",
+    >     "properties": ""
+    >   }
+
+
+
+
+# -----------------------------------------------------
+# List all the Gaia components.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        pod \
+            gaia-admin-pod
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Pod",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Pod\",\"metadata\":{\"annotations\":{},\"name\":\"gaia-admin-pod\",\"namespace\":\"default\"},\"spec\":{\"containers\":[{\"args\":[\"-c\",\"while true; do date \\u003e\\u003e /share-data/${HOSTNAME}.log; sleep 1; done\"],\"command\":[\"/bin/sh\"],\"image\":\"fedora:latest\",\"name\":\"gaia-admin-container\",\"volumeMounts\":[{\"mountPath\":\"/share-data\",\"name\":\"share-data\"},{\"mountPath\":\"/local-data\",\"name\":\"local-data\"}]}],\"volumes\":[{\"name\":\"share-data\",\"persistentVolumeClaim\":{\"claimName\":\"gaia-admin-claim\"}},{\"emptyDir\":{},\"name\":\"local-data\"}]}}\n"
+    >           },
+    >           "creationTimestamp": "2020-09-29T04:49:29Z",
+    >           "name": "gaia-admin-pod",
+    >           "namespace": "default",
+    >           "resourceVersion": "2619018",
+    >           "selfLink": "/api/v1/namespaces/default/pods/gaia-admin-pod",
+    >           "uid": "d4aa2e23-0c09-4b3c-a39b-c5c58051175f"
+    >       },
+    >       "spec": {
+    >           "containers": [
+    >               {
+    >                   "args": [
+    >                       "-c",
+    >                       "while true; do date \u003e\u003e /share-data/${HOSTNAME}.log; sleep 1; done"
+    >                   ],
+    >                   "command": [
+    >                       "/bin/sh"
+    >                   ],
+    >                   "image": "fedora:latest",
+    >                   "imagePullPolicy": "Always",
+    >                   "name": "gaia-admin-container",
+    >                   "resources": {},
+    >                   "terminationMessagePath": "/dev/termination-log",
+    >                   "terminationMessagePolicy": "File",
+    >                   "volumeMounts": [
+    >                       {
+    >                           "mountPath": "/share-data",
+    >                           "name": "share-data"
+    >                       },
+    >                       {
+    >                           "mountPath": "/local-data",
+    >                           "name": "local-data"
+    >                       },
+    >                       {
+    >                           "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+    >                           "name": "default-token-pxrzv",
+    >                           "readOnly": true
+    >                       }
+    >                   ]
+    >               }
+    >           ],
+    >           "dnsPolicy": "ClusterFirst",
+    >           "enableServiceLinks": true,
+    >           "nodeName": "tiberius-20200923-nqzekodqww64-node-3",
+    >           "restartPolicy": "Always",
+    >           "schedulerName": "default-scheduler",
+    >           "securityContext": {},
+    >           "serviceAccount": "default",
+    >           "serviceAccountName": "default",
+    >           "terminationGracePeriodSeconds": 30,
+    >           "tolerations": [
+    >               {
+    >                   "effect": "NoExecute",
+    >                   "key": "node.kubernetes.io/not-ready",
+    >                   "operator": "Exists",
+    >                   "tolerationSeconds": 300
+    >               },
+    >               {
+    >                   "effect": "NoExecute",
+    >                   "key": "node.kubernetes.io/unreachable",
+    >                   "operator": "Exists",
+    >                   "tolerationSeconds": 300
+    >               }
+    >           ],
+    >           "volumes": [
+    >               {
+    >                   "name": "share-data",
+    >                   "persistentVolumeClaim": {
+    >                       "claimName": "gaia-admin-claim"
+    >                   }
+    >               },
+    >               {
+    >                   "emptyDir": {},
+    >                   "name": "local-data"
+    >               },
+    >               {
+    >                   "name": "default-token-pxrzv",
+    >                   "secret": {
+    >                       "defaultMode": 420,
+    >                       "secretName": "default-token-pxrzv"
+    >                   }
+    >               }
+    >           ]
+    >       },
+    >       "status": {
+    >           "conditions": [
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-09-29T04:49:29Z",
+    >                   "status": "True",
+    >                   "type": "Initialized"
+    >               },
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-09-29T04:49:29Z",
+    >                   "message": "containers with unready status: [gaia-admin-container]",
+    >                   "reason": "ContainersNotReady",
+    >                   "status": "False",
+    >                   "type": "Ready"
+    >               },
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-09-29T04:49:29Z",
+    >                   "message": "containers with unready status: [gaia-admin-container]",
+    >                   "reason": "ContainersNotReady",
+    >                   "status": "False",
+    >                   "type": "ContainersReady"
+    >               },
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-09-29T04:49:29Z",
+    >                   "status": "True",
+    >                   "type": "PodScheduled"
+    >               }
+    >           ],
+    >           "containerStatuses": [
+    >               {
+    >                   "image": "fedora:latest",
+    >                   "imageID": "",
+    >                   "lastState": {},
+    >                   "name": "gaia-admin-container",
+    >                   "ready": false,
+    >                   "restartCount": 0,
+    >                   "started": false,
+    >                   "state": {
+    >                       "waiting": {
+    >                           "reason": "ContainerCreating"
+    >                       }
+    >                   }
+    >               }
+    >           ],
+    >           "hostIP": "10.0.0.41",
+    >           "phase": "Pending",
+    >           "qosClass": "BestEffort",
+    >           "startTime": "2020-09-29T04:49:29Z"
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        persistentvolumeclaim \
+            gaia-admin-claim
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolumeClaim",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"PersistentVolumeClaim\",\"metadata\":{\"annotations\":{},\"name\":\"gaia-admin-claim\",\"namespace\":\"default\"},\"spec\":{\"accessModes\":[\"ReadWriteMany\"],\"resources\":{\"requests\":{\"storage\":\"5Gi\"}},\"selector\":{\"matchExpressions\":[{\"key\":\"aglaistag\",\"operator\":\"In\",\"values\":[\"gaia-admin-volume\"]}]}}}\n",
+    >               "pv.kubernetes.io/bind-completed": "yes",
+    >               "pv.kubernetes.io/bound-by-controller": "yes"
+    >           },
+    >           "creationTimestamp": "2020-09-29T04:49:03Z",
+    >           "finalizers": [
+    >               "kubernetes.io/pvc-protection"
+    >           ],
+    >           "name": "gaia-admin-claim",
+    >           "namespace": "default",
+    >           "resourceVersion": "2618866",
+    >           "selfLink": "/api/v1/namespaces/default/persistentvolumeclaims/gaia-admin-claim",
+    >           "uid": "6072aea9-f3ac-45e1-bc12-39569bb5a686"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteMany"
+    >           ],
+    >           "resources": {
+    >               "requests": {
+    >                   "storage": "5Gi"
+    >               }
+    >           },
+    >           "selector": {
+    >               "matchExpressions": [
+    >                   {
+    >                       "key": "aglaistag",
+    >                       "operator": "In",
+    >                       "values": [
+    >                           "gaia-admin-volume"
+    >                       ]
+    >                   }
+    >               ]
+    >           },
+    >           "volumeMode": "Filesystem",
+    >           "volumeName": "gaia-admin-volume"
+    >       },
+    >       "status": {
+    >           "accessModes": [
+    >               "ReadWriteMany"
+    >           ],
+    >           "capacity": {
+    >               "storage": "5Gi"
+    >           },
+    >           "phase": "Bound"
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        persistentvolume \
+            gaia-admin-volume
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolume",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"PersistentVolume\",\"metadata\":{\"annotations\":{},\"labels\":{\"aglaistag\":\"gaia-admin-volume\"},\"name\":\"gaia-admin-volume\"},\"spec\":{\"accessModes\":[\"ReadWriteMany\"],\"capacity\":{\"storage\":\"5Gi\"},\"csi\":{\"driver\":\"cephfs.manila.csi.openstack.org\",\"nodePublishSecretRef\":{\"name\":\"os-trustee\",\"namespace\":\"kube-system\"},\"nodeStageSecretRef\":{\"name\":\"os-trustee\",\"namespace\":\"kube-system\"},\"volumeAttributes\":{\"shareAccessID\":\"56cc67bd-9683-45f3-b2fc-d2a4fcd62f2d\",\"shareID\":\"7199f136-2d10-4afa-b21b-0c3631fc6dac\"},\"volumeHandle\":\"gaia-admin-handle\"}}}\n",
+    >               "pv.kubernetes.io/bound-by-controller": "yes"
+    >           },
+    >           "creationTimestamp": "2020-09-29T04:48:43Z",
+    >           "finalizers": [
+    >               "kubernetes.io/pv-protection"
+    >           ],
+    >           "labels": {
+    >               "aglaistag": "gaia-admin-volume"
+    >           },
+    >           "name": "gaia-admin-volume",
+    >           "resourceVersion": "2618864",
+    >           "selfLink": "/api/v1/persistentvolumes/gaia-admin-volume",
+    >           "uid": "e01fcd4b-9b56-43aa-909b-2a5c3b6e8df6"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteMany"
+    >           ],
+    >           "capacity": {
+    >               "storage": "5Gi"
+    >           },
+    >           "claimRef": {
+    >               "apiVersion": "v1",
+    >               "kind": "PersistentVolumeClaim",
+    >               "name": "gaia-admin-claim",
+    >               "namespace": "default",
+    >               "resourceVersion": "2618861",
+    >               "uid": "6072aea9-f3ac-45e1-bc12-39569bb5a686"
+    >           },
+    >           "csi": {
+    >               "driver": "cephfs.manila.csi.openstack.org",
+    >               "nodePublishSecretRef": {
+    >                   "name": "os-trustee",
+    >                   "namespace": "kube-system"
+    >               },
+    >               "nodeStageSecretRef": {
+    >                   "name": "os-trustee",
+    >                   "namespace": "kube-system"
+    >               },
+    >               "volumeAttributes": {
+    >                   "shareAccessID": "56cc67bd-9683-45f3-b2fc-d2a4fcd62f2d",
+    >                   "shareID": "7199f136-2d10-4afa-b21b-0c3631fc6dac"
+    >               },
+    >               "volumeHandle": "gaia-admin-handle"
+    >           },
+    >           "persistentVolumeReclaimPolicy": "Retain",
+    >           "volumeMode": "Filesystem"
+    >       },
+    >       "status": {
+    >           "phase": "Bound"
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        persistentvolume \
+            gaia-admin-volume \
+    | jq '.spec.csi.volumeAttributes'
+
+    >   {
+    >     "shareAccessID": "56cc67bd-9683-45f3-b2fc-d2a4fcd62f2d",
+    >     "shareID": "7199f136-2d10-4afa-b21b-0c3631fc6dac"
+    >   }
+
+
+    shareid=$(
+        kubectl get \
+            --output json \
+            persistentvolume \
+                gaia-admin-volume \
+        | jq -r '.spec.csi.volumeAttributes.shareID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share show \
+            --format json \
+            "${shareid:?}"
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2020-09-29T04:47:47.000000",
+    >     "description": null,
+    >     "export_locations": "\npath = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/d02e53f1-afca-45ab-84aa-662aea93d0d4\nid = 18f794f6-69bd-4c27-97d6-121915ac316a\npreferred = False",
+    >     "has_replicas": false,
+    >     "id": "7199f136-2d10-4afa-b21b-0c3631fc6dac",
+    >     "is_public": false,
+    >     "mount_snapshot_support": false,
+    >     "name": "gaia-dr2",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "properties": {},
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8",
+    >     "share_type_name": "cephfsnativetype",
+    >     "size": 5,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "available",
+    >     "task_state": null,
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "volume_type": "cephfsnativetype"
+    >   }
+
+
+    accessid=$(
+        kubectl get \
+            --output json \
+            persistentvolume \
+                gaia-admin-volume \
+        | jq -r '.spec.csi.volumeAttributes.shareAccessID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access show \
+            --format json \
+            "${accessid:?}"
+
+    >   {
+    >     "id": "56cc67bd-9683-45f3-b2fc-d2a4fcd62f2d",
+    >     "share_id": "7199f136-2d10-4afa-b21b-0c3631fc6dac",
+    >     "access_level": "rw",
+    >     "access_to": "gaiaadmin",
+    >     "access_type": "cephx",
+    >     "state": "active",
+    >     "access_key": "AQCRvHJf0XUDDxAAcWqJLCudBKdgHUBMYBguKw==",
+    >     "created_at": "2020-09-29T04:48:16.000000",
+    >     "updated_at": "2020-09-29T04:48:17.000000",
+    >     "properties": ""
+    >   }
+
+
+    #
+    # I can't see the difference between them :-(
+    # I must be missing something obvious.
+    #
+
+
+# -----------------------------------------------------
+# Delete the Pod, Claim, Volume and Secret.
+#[user@kubernator]
+
+    kubectl \
+        delete Pod \
+            "${accessname}-pod"
+
+    kubectl \
+        delete PersistentVolumeClaim \
+            "${accessname}-claim"
+
+    kubectl \
+        delete PersistentVolume \
+            "${accessname}-volume"
+
+
+    #
+    # Is it the size ?
+    # Differenmce between G byte and Gi byte ?
+    #
+
+# -----------------------------------------------------
+# Create a PersistentVolume using the kube-system/os-trustee Secret.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ${accessname}-volume
+  labels:
+    aglaistag: ${accessname}-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 5G
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    nodeStageSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    nodePublishSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    volumeHandle: ${accessname}-handle
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${accessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-volume.yaml"
+
+    kubectl describe \
+        persistentvolume \
+            "${accessname}-volume"
+
+    >   Name:            gaia-admin-volume
+    >   Labels:          aglaistag=gaia-admin-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"aglaistag":"gaia-admin-volume"},"name":"gaia-admin-vo...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        5G
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      gaia-admin-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=56cc67bd-9683-45f3-b2fc-d2a4fcd62f2d
+    >                              shareID=7199f136-2d10-4afa-b21b-0c3631fc6dac
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Create a PersistentVolumeClaim.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-claim.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${accessname}-claim
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 5G
+  selector:
+    matchExpressions:
+    - key: aglaistag
+      operator: In
+      values: ["${accessname}-volume"]
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-claim.yaml"
+
+    kubectl describe \
+        persistentvolumeclaim \
+            "${accessname}-claim"
+
+    >   Name:          gaia-admin-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        gaia-admin-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"gaia-admin-claim","namespace":"default"},"spec":{"a...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      5G
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Create a test Pod to mount the volume.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-pod.yaml" << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: ${accessname}-pod
+  namespace: default
+spec:
+  volumes:
+    - name: share-data
+      persistentVolumeClaim:
+        claimName: ${accessname}-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: ${accessname}-container
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: share-data
+          mountPath: /share-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /share-data/\${HOSTNAME}.log;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-pod.yaml"
+
+    kubectl \
+        describe pod \
+            "${accessname}-pod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age              From                                            Message
+    >     ----     ------       ----             ----                                            -------
+    >     Normal   Scheduled    <unknown>        default-scheduler                               Successfully assigned default/gaia-admin-pod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  2s (x4 over 5s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+# -----------------------------------------------------
+# Delete the Pod, Claim, Volume and Secret.
+#[user@kubernator]
+
+    kubectl \
+        delete Pod \
+            "${accessname}-pod"
+
+    kubectl \
+        delete PersistentVolumeClaim \
+            "${accessname}-claim"
+
+    kubectl \
+        delete PersistentVolume \
+            "${accessname}-volume"
+
+
+# -----------------------------------------------------
+# Create a PersistentVolume using the kube-system/os-trustee Secret.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ${accessname}-volume
+  labels:
+    aglaistag: ${accessname}-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 4G
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    nodeStageSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    nodePublishSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    volumeHandle: ${accessname}-handle
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${accessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-volume.yaml"
+
+    kubectl describe \
+        persistentvolume \
+            "${accessname}-volume"
+
+    >   Name:            gaia-admin-volume
+    >   Labels:          aglaistag=gaia-admin-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"aglaistag":"gaia-admin-volume"},"name":"gaia-admin-vo...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        4G
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      gaia-admin-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=56cc67bd-9683-45f3-b2fc-d2a4fcd62f2d
+    >                              shareID=7199f136-2d10-4afa-b21b-0c3631fc6dac
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Create a PersistentVolumeClaim.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-claim.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${accessname}-claim
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 4G
+  selector:
+    matchExpressions:
+    - key: aglaistag
+      operator: In
+      values: ["${accessname}-volume"]
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-claim.yaml"
+
+    kubectl describe \
+        persistentvolumeclaim \
+            "${accessname}-claim"
+
+    >   Name:          gaia-admin-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        gaia-admin-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"gaia-admin-claim","namespace":"default"},"spec":{"a...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      4G
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Create a test Pod to mount the volume.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-pod.yaml" << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: ${accessname}-pod
+  namespace: default
+spec:
+  volumes:
+    - name: share-data
+      persistentVolumeClaim:
+        claimName: ${accessname}-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: ${accessname}-container
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: share-data
+          mountPath: /share-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /share-data/\${HOSTNAME}.log;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-pod.yaml"
+
+    kubectl \
+        describe pod \
+            "${accessname}-pod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age        From                                            Message
+    >     ----     ------       ----       ----                                            -------
+    >     Normal   Scheduled    <unknown>  default-scheduler                               Successfully assigned default/gaia-admin-pod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  0s         kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+
+
+
+
+
+

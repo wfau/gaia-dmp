@@ -1,0 +1,267 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Test - can we mount a PersistentVolume onto the existing gaia-dr2-share.
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/helm:/helm:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/kubernetes:/kubernetes:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Get our Dashboard token.
+#[root@kubenator]
+
+    kubectl get \
+        --output json \
+        secret \
+    | jq -r '
+        .items[]
+        | select(
+            .metadata.name
+            | startswith(
+                "valeria-account"
+                )
+            )
+        | .data.token
+        | @base64d
+        '
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+# -----------------------------------------------------
+# Update the share params (public).
+#[user@kubernator]
+
+    sharename=gaia-dr2
+    sharesize=5000
+    sharepublic=false
+
+# -----------------------------------------------------
+# Locate the exiting share.
+#[user@kubernator]
+
+    shareid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share list \
+                --format json \
+        | jq -r '.[] | select( .Name == "'${sharename:?}'-share") | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw" \
+    > "/tmp/${sharename:?}-rw-access.json"
+
+    rwaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-rw-access.json"
+        )
+
+
+# -----------------------------------------------------
+# Create a RO access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro" \
+    > "/tmp/${sharename:?}-ro-access.json"
+
+    roaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-ro-access.json"
+        )
+
+# -----------------------------------------------------
+# Create our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "gaia-dr2"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: false
+
+csi:
+  access: "ReadWriteMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: gaia-dr2
+    >   LAST DEPLOYED: Sat Oct  3 00:29:56 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/gaia-dr2-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Normal  Pulled     13s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Container image "fedora:32" already present on machine
+    >     Normal  Created    13s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Created container gaia-dr2-container
+    >     Normal  Started    13s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Started container gaia-dr2-container
+
+
+# -----------------------------------------------------
+# Connect to the Pod and check we can access the dataset.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        "${sharename:?}-testpod" \
+            -- \
+                bash
+
+        ls -al /share-data
+
+    >   drwxrwxrwx. 8 root root 999049389120 Aug 23 05:16 .
+    >   drwxr-xr-x. 1 root root           53 Oct  3 00:30 ..
+    >   drwxr-xr-x. 2 root root  31681808533 Aug 22 14:48 gaia-dr2-16-0
+    >   drwxr-xr-x. 2 root root 253756272164 Aug 22 16:46 gaia-dr2-2-0
+    >   drwxr-xr-x. 2 root root  15792075406 Aug 22 14:35 gaia-dr2-32-0
+    >   drwxr-xr-x. 2 root root 126836452150 Aug 22 15:43 gaia-dr2-4-0
+    >   drwxr-xr-x. 2 root root  63403624720 Aug 22 15:06 gaia-dr2-8-0
+    >   drwxr-xr-x. 2 root root 507579156147 Aug 23 06:57 gaia-dr2-full
+
+
+        ls -al /share-data/gaia-dr2-32-0
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root     40076776 Apr 21 12:46 part-06399-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     39164050 Apr 21 12:48 part-06431-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     35834808 Apr 21 12:50 part-06463-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     32470158 Apr 21 12:53 part-06495-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+
+
+        du -h /share-data
+
+    >   15G	/share-data/gaia-dr2-32-0
+    >   119G	/share-data/gaia-dr2-4-0
+    >   30G	/share-data/gaia-dr2-16-0
+    >   60G	/share-data/gaia-dr2-8-0
+    >   237G	/share-data/gaia-dr2-2-0
+    >   473G	/share-data/gaia-dr2-full
+    >   931G	/share-data
+
+
+
+

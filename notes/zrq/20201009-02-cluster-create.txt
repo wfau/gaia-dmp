@@ -1,0 +1,292 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    #
+    # Unable to create K8s cluster since Monday (5th Oct).
+    # Discussion with Paul Browne on Slack.
+    # "Hi @Dave Morris , the issue with this has been found and fixed, and quotas on all 3 Gaia projects raised."
+    #
+
+
+# -----------------------------------------------------
+# Set our cloud and cluster name.
+#[user@desktop]
+
+    sed -i "
+        s/^AGLAIS_CLOUD=.*$/AGLAIS_CLOUD=gaia-prod/
+        " "${HOME:?}/aglais.env"
+
+    sed -i "
+        s/^CLUSTER_NAME=.*$/CLUSTER_NAME=Tiberius-$(date '+%Y%m%d')/
+        " "${HOME:?}/aglais.env"
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the name of our first keypair.
+#[user@openstacker]
+
+    keyname=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair list \
+                --format json \
+        | jq -r '.[0] | .Name'
+        )
+
+
+# -----------------------------------------------------
+# Get the ID of the tiny, small and medium flavors.
+#[user@openstacker]
+
+    tyflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.tiny") | .ID'
+        )
+
+    smflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.small") | .ID'
+        )
+
+    mdflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.medium") | .ID'
+        )
+
+    lgflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.large") | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Get the uuid for the '1.17' template.
+#[user@openstacker]
+
+    templateid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster template list \
+                --format json \
+        | jq -r '.[] | select(.name | test("1.17.2")) | .uuid'
+        )
+
+
+# -----------------------------------------------------
+# Create a new cluster.
+#[user@openstacker]
+
+    mscount=1
+    msflavor=${tyflavor}
+    wkcount=4
+    wkflavor=${mdflavor}
+
+cat << EOF
+Key pair      [${keyname:?}]
+Master count  [${mscount}]
+Master flavor [${msflavor}]
+Worker count  [${wkcount}]
+Worker flavor [${wkflavor}]
+Template uuid [${templateid}]
+EOF
+
+    >   Key pair      [zrq-gaia-keypair]
+    >   Master count  [1]
+    >   Master flavor [406a17e0-afd0-47d3-a6ad-8b19198bdd97]
+    >   Worker count  [4]
+    >   Worker flavor [996c1c8c-c934-411c-9631-b74eb2829631]
+    >   Template uuid [40963ffb-4439-49f8-8e80-f511fc11c4a9]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}"-super \
+        coe cluster create \
+            --keypair       "${keyname:?}" \
+            --master-count  "${mscount:?}" \
+            --master-flavor "${msflavor:?}" \
+            --node-count    "${wkcount:?}" \
+            --flavor        "${wkflavor:?}" \
+            --cluster-template "${templateid:?}" \
+            "${clustername:?}"
+
+    >   Request to create cluster d64b4679-afc0-4875-80b2-aa87d01d538d accepted
+
+
+# -----------------------------------------------------
+# Watch the component lists.
+#[user@openstacker]
+
+    watch \
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer list
+
+    >   +--------------------------------------+-------------------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+    >   | id                                   | name                                                                          | project_id                       | vip_address | provisioning_status | provider |
+    >   +--------------------------------------+-------------------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+    >   | 0ad486ec-7358-4bda-9bf3-811724aa6ad3 | tiberius-20201009-ddekgti33piz-etcd_lb-cs67ovyt5ytj-loadbalancer-hdzdua5obq5v | 21b4ae3a2ea44bc5a9c14005ed2963af | 10.0.0.221  | ACTIVE              | amphora  |
+    >   | 922d8f84-5f24-412c-aab5-4ece58d1c4ad | tiberius-20201009-ddekgti33piz-api_lb-fi2qz6zk6pmo-loadbalancer-b33quzjkvqom  | 21b4ae3a2ea44bc5a9c14005ed2963af | 10.0.0.36   | ACTIVE              | amphora  |
+    >   +--------------------------------------+-------------------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+
+
+    watch \
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list
+
+    >   +--------------------------------------+-----------------------------------------+--------+-------------------+-------------------------+-------------------+
+    >   | ID                                   | Name                                    | Status | Networks          | Image                   | Flavor            |
+    >   +--------------------------------------+-----------------------------------------+--------+-------------------+-------------------------+-------------------+
+    >   | 54fbae30-473f-4aba-85bc-588c561346b6 | tiberius-20201009-ddekgti33piz-node-3   | ACTIVE | private=10.0.0.92 | FedoraAtomic29-20191126 | general.v1.medium |
+    >   | accc43c7-8b9e-43f0-99fc-2aa85d6b81d3 | tiberius-20201009-ddekgti33piz-node-1   | ACTIVE | private=10.0.0.52 | FedoraAtomic29-20191126 | general.v1.medium |
+    >   | b4a33d7b-96cc-4a44-950d-55db0db2fbb4 | tiberius-20201009-ddekgti33piz-node-2   | ACTIVE | private=10.0.0.27 | FedoraAtomic29-20191126 | general.v1.medium |
+    >   | c1e49466-bc61-4108-b23c-03df465d3866 | tiberius-20201009-ddekgti33piz-node-0   | ACTIVE | private=10.0.0.94 | FedoraAtomic29-20191126 | general.v1.medium |
+    >   | 81ea4362-d4e5-4c3f-a657-e191043e6678 | tiberius-20201009-ddekgti33piz-master-0 | ACTIVE | private=10.0.0.80 | FedoraAtomic29-20191126 | general.v1.tiny   |
+    >   +--------------------------------------+-----------------------------------------+--------+-------------------+-------------------------+-------------------+
+
+
+    watch \
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list
+
+    >   +--------------------------------------+-------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | uuid                                 | name              | keypair          | node_count | master_count | status          | health_status |
+    >   +--------------------------------------+-------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | d64b4679-afc0-4875-80b2-aa87d01d538d | Tiberius-20201009 | zrq-gaia-keypair |          4 |            1 | CREATE_COMPLETE | HEALTHY       |
+    >   +--------------------------------------+-------------------+------------------+------------+--------------+-----------------+---------------+
+
+
+# -----------------------------------------------------
+# Get the details of our cluster.
+#[user@openstacker]
+
+    clusteruuid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[] | select(.name == "'${clustername}'") | .uuid'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster show \
+            "${clusteruuid}"
+
+    >   +----------------------+--------------------------------------------------------------------+
+    >   | Field                | Value                                                              |
+    >   +----------------------+--------------------------------------------------------------------+
+    >   | status               | CREATE_COMPLETE                                                    |
+    >   | health_status        | HEALTHY                                                            |
+    >   | cluster_template_id  | 40963ffb-4439-49f8-8e80-f511fc11c4a9                               |
+    >   | node_addresses       | ['10.0.0.94', '10.0.0.52', '10.0.0.27', '10.0.0.92']               |
+    >   | uuid                 | d64b4679-afc0-4875-80b2-aa87d01d538d                               |
+    >   | stack_id             | 7dc909e6-3bac-4a64-8f97-6e3ccf6507e7                               |
+    >   | status_reason        | None                                                               |
+    >   | created_at           | 2020-10-09T02:13:21+00:00                                          |
+    >   | updated_at           | 2020-10-09T02:19:16+00:00                                          |
+    >   | coe_version          | v1.17.2                                                            |
+    >   | labels               | {'auto_healing_controller': 'magnum-auto-healer', .... }           |
+    >   | labels_overridden    |                                                                    |
+    >   | labels_skipped       |                                                                    |
+    >   | labels_added         |                                                                    |
+    >   | faults               |                                                                    |
+    >   | keypair              | zrq-gaia-keypair                                                   |
+    >   | api_address          | https://128.232.227.196:6443                                       |
+    >   | master_addresses     | ['10.0.0.80']                                                      |
+    >   | create_timeout       | 60                                                                 |
+    >   | node_count           | 4                                                                  |
+    >   | discovery_url        | https://discovery.etcd.io/d0b91370b069787bce26c5dca8f96a22         |
+    >   | master_count         | 1                                                                  |
+    >   | container_version    | 1.12.6                                                             |
+    >   | name                 | Tiberius-20201009                                                  |
+    >   | master_flavor_id     | 406a17e0-afd0-47d3-a6ad-8b19198bdd97                               |
+    >   | flavor_id            | 996c1c8c-c934-411c-9631-b74eb2829631                               |
+    >   | health_status_reason | {'tiberius-20201009-ddekgti33piz-node-2.Ready': 'True', ... }      |
+    >   | project_id           | 21b4ae3a2ea44bc5a9c14005ed2963af                                   |
+    >   +----------------------+--------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Take a peek at the discovery url.
+#[user@openstacker]
+
+    curl -s 'https://discovery.etcd.io/d0b91370b069787bce26c5dca8f96a22' \
+    | jq '.'
+
+    >   {
+    >     "action": "get",
+    >     "node": {
+    >       "key": "/d0b91370b069787bce26c5dca8f96a22",
+    >       "dir": true,
+    >       "nodes": [
+    >         {
+    >           "key": "/d0b91370b069787bce26c5dca8f96a22/7e297f4e808af4ec",
+    >           "value": "tiberius-20201009-ddekgti33piz-master-0=https://10.0.0.80:2380",
+    >           "modifiedIndex": 49823197,
+    >           "createdIndex": 49823197
+    >         }
+    >       ],
+    >       "modifiedIndex": 49822798,
+    >       "createdIndex": 49822798
+    >     }
+    >   }
+
+
+
+

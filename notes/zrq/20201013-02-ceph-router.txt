@@ -1,0 +1,542 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --env "ANSIBLE_CODE=/mnt/ansible" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/ansible:/mnt/ansible:ro,z" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Create our Ansible include vars file.
+#[root@ansibler]
+
+    cat > /tmp/ansible-vars.yml << EOF
+buildtag:  'aglais-$(date '+%Y%m%d')'
+cloudname: '${cloudname}'
+clouduser: '${clouduser}'
+EOF
+
+
+# -----------------------------------------------------
+# Run the scripts from the ansible directory.
+#[root@ansibler]
+
+    pushd "${ANSIBLE_CODE:?}"
+
+
+# -----------------------------------------------------
+# Create our network, with the Ceph router.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory "hosts.yml" \
+        "01-create-network.yml"
+
+    >   fatal: [localhost]: FAILED! => {
+    >       "changed": false,
+    >       "msg": "Error attaching interface to router e665ac3b-b5be-400e-81c2-266bc25baf15:
+    >           Client Error for url: https://cumulus.openstack.hpc.cam.ac.uk:9696/v2.0/routers/e665ac3b-b5be-400e-81c2-266bc25baf15/add_router_interface.json,
+    >           IP address 10.10.0.1 already allocated in subnet ee827763-e9cb-4899-a306-b9480a695573"
+    >           }
+
+    #
+    # Remove the Ansible code to create the Ceph router.
+    #
+
+# -----------------------------------------------------
+# Create our network, without the Ceph router.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory "hosts.yml" \
+        "01-create-network.yml"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# List the routers.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+-----------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                    | Status | State | Project                          |
+    >   +--------------------------------------+-----------------------------------------+--------+-------+----------------------------------+
+    >   | 1154d12f-9c1f-440d-a457-18399ed2e9d5 | ceph-router                             | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   | 18583e75-6cc8-429d-807c-c78df769c9cc | aglais-20201013-internal-network-router | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   +--------------------------------------+-----------------------------------------+--------+-------+----------------------------------+
+
+
+# -----------------------------------------------------
+# List the networks.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+----------------------------------+----------------------------------------------------------------------------+
+    >   | ID                                   | Name                             | Subnets                                                                    |
+    >   +--------------------------------------+----------------------------------+----------------------------------------------------------------------------+
+    >   | 12aae567-6522-44a5-bc7f-7e32f8faa2c0 | aglais-20201013-internal-network | ee827763-e9cb-4899-a306-b9480a695573                                       |
+    >   | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | internet                         | 180dc961-c52f-461a-b241-8f7a30d022a5, 273123bb-70f6-4f51-a406-7fc4b446532d |
+    >   | ecb791d5-1022-447a-a79c-8f38a0f5c990 | cumulus-internal                 | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290                                       |
+    >   +--------------------------------------+----------------------------------+----------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# List the subnets.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+-----------------------------------------+--------------------------------------+---------------+
+    >   | ID                                   | Name                                    | Network                              | Subnet        |
+    >   +--------------------------------------+-----------------------------------------+--------------------------------------+---------------+
+    >   | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290 | cumulus-internal                        | ecb791d5-1022-447a-a79c-8f38a0f5c990 | 10.218.0.0/16 |
+    >   | ee827763-e9cb-4899-a306-b9480a695573 | aglais-20201013-internal-network-subnet | 12aae567-6522-44a5-bc7f-7e32f8faa2c0 | 10.10.0.0/16  |
+    >   +--------------------------------------+-----------------------------------------+--------------------------------------+---------------+
+
+
+# -----------------------------------------------------
+# Get our project ID.
+#[root@ansibler]
+
+    projectid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            project list \
+                --format json \
+        | jq -r '.[] | select(.Name == "iris-'${cloudname}'") | .ID'
+        )
+
+    echo "Project [${projectid:?}]"
+
+# -----------------------------------------------------
+# Create a new Ceph router.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router create \
+            --enable \
+            --project "${projectid:?}" \
+            'ceph-router'
+
+    >   +-------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | Field                   | Value                                                                                                                                                     |
+    >   +-------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | admin_state_up          | UP                                                                                                                                                        |
+    >   | availability_zone_hints |                                                                                                                                                           |
+    >   | availability_zones      |                                                                                                                                                           |
+    >   | created_at              | 2020-10-13T12:47:05Z                                                                                                                                      |
+    >   | description             |                                                                                                                                                           |
+    >   | external_gateway_info   | null                                                                                                                                                      |
+    >   | flavor_id               | None                                                                                                                                                      |
+    >   | id                      | 1154d12f-9c1f-440d-a457-18399ed2e9d5                                                                                                                      |
+    >   | location                | cloud='gaia-prod', project.domain_id=, project.domain_name=, project.id='21b4ae3a2ea44bc5a9c14005ed2963af', project.name=, region_name='RegionOne', zone= |
+    >   | name                    | ceph-router                                                                                                                                               |
+    >   | project_id              | 21b4ae3a2ea44bc5a9c14005ed2963af                                                                                                                          |
+    >   | revision_number         | 2                                                                                                                                                         |
+    >   | routes                  |                                                                                                                                                           |
+    >   | status                  | ACTIVE                                                                                                                                                    |
+    >   | tags                    |                                                                                                                                                           |
+    >   | updated_at              | 2020-10-13T12:47:05Z                                                                                                                                      |
+    >   +-------------------------+-----------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+    newrouterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name == "ceph-router") | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${newrouterid:?}"
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2020-10-13T12:47:05Z",
+    >     "description": "",
+    >     "external_gateway_info": null,
+    >     "flavor_id": null,
+    >     "id": "1154d12f-9c1f-440d-a457-18399ed2e9d5",
+    >     "interfaces_info": [],
+    >     "location": {
+    >       "cloud": "gaia-prod",
+    >       "region_name": "RegionOne",
+    >       "zone": null,
+    >       "project": {
+    >         "id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >         "name": null,
+    >         "domain_id": null,
+    >         "domain_name": null
+    >       }
+    >     },
+    >     "name": "ceph-router",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "revision_number": 6,
+    >     "routes": [],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2020-10-13T12:47:08Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Set the external gateway network.
+#[root@ansibler]
+
+    cumulusnetid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+                --format json \
+        | jq -r '.[] | select(.Name == "cumulus-internal") | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --external-gateway "${cumulusnetid:?}" \
+            "${newrouterid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${newrouterid:?}"
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2020-10-13T12:47:05Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290",
+    >           "ip_address": "10.218.1.122"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "1154d12f-9c1f-440d-a457-18399ed2e9d5",
+    >     "interfaces_info": [],
+    >     "location": {
+    >       "cloud": "gaia-prod",
+    >       "region_name": "RegionOne",
+    >       "zone": null,
+    >       "project": {
+    >         "id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >         "name": null,
+    >         "domain_id": null,
+    >         "domain_name": null
+    >       }
+    >     },
+    >     "name": "ceph-router",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "revision_number": 8,
+    >     "routes": [],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2020-10-13T12:56:03Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Create a network port for our cluster subnet.
+#[root@ansibler]
+
+    clusternetid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("^aglais")) | .ID'
+        )
+
+    clustersubid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("^aglais")) | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        port create \
+            --format json \
+            --network "${clusternetid:?}" \
+            --fixed-ip "subnet=${clustersubid:?}" \
+        'aglais-subnet-port' \
+    | tee '/tmp/aglais-subnet-port.json'
+
+    >   {
+    >     "admin_state_up": true,
+    >     "allowed_address_pairs": [],
+    >     "binding_host_id": null,
+    >     "binding_profile": null,
+    >     "binding_vif_details": null,
+    >     "binding_vif_type": null,
+    >     "binding_vnic_type": "normal",
+    >     "created_at": "2020-10-13T13:20:38Z",
+    >     "data_plane_status": null,
+    >     "description": "",
+    >     "device_id": "",
+    >     "device_owner": "",
+    >     "dns_assignment": [
+    >       {
+    >         "hostname": "host-10-10-0-158",
+    >         "ip_address": "10.10.0.158",
+    >         "fqdn": "host-10-10-0-158.iris.cumulus.local."
+    >       }
+    >     ],
+    >     "dns_domain": null,
+    >     "dns_name": "",
+    >     "extra_dhcp_opts": [],
+    >     "fixed_ips": [
+    >       {
+    >         "subnet_id": "ee827763-e9cb-4899-a306-b9480a695573",
+    >         "ip_address": "10.10.0.158"
+    >       }
+    >     ],
+    >     "id": "42dad17e-f99b-45c2-a40e-398145f9a0da",
+    >     "ip_allocation": null,
+    >     "location": {
+    >       "cloud": "gaia-prod",
+    >       "region_name": "RegionOne",
+    >       "zone": null,
+    >       "project": {
+    >         "id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >         "name": null,
+    >         "domain_id": null,
+    >         "domain_name": null
+    >       }
+    >     },
+    >     "mac_address": "fa:16:3e:70:ed:88",
+    >     "name": "aglais-subnet-port",
+    >     "network_id": "12aae567-6522-44a5-bc7f-7e32f8faa2c0",
+    >     "port_security_enabled": false,
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "propagate_uplink_status": null,
+    >     "qos_network_policy_id": null,
+    >     "qos_policy_id": null,
+    >     "resource_request": null,
+    >     "revision_number": 1,
+    >     "security_group_ids": [
+    >       "aa63efff-7c67-4f29-ba7c-a1d85695407b"
+    >     ],
+    >     "status": "DOWN",
+    >     "tags": [],
+    >     "trunk_details": null,
+    >     "updated_at": "2020-10-13T13:20:39Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Add the network port to the Ceph router.
+#[root@ansibler]
+
+    newportid=$(
+        jq -r '.id' /tmp/aglais-subnet-port.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router add port \
+            "${newrouterid:?}" \
+            "${newportid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${newrouterid:?}"
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2020-10-13T12:47:05Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290",
+    >           "ip_address": "10.218.1.122"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "1154d12f-9c1f-440d-a457-18399ed2e9d5",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "42dad17e-f99b-45c2-a40e-398145f9a0da",
+    >         "ip_address": "10.10.0.158",
+    >         "subnet_id": "ee827763-e9cb-4899-a306-b9480a695573"
+    >       }
+    >     ],
+    >     "location": {
+    >       "cloud": "gaia-prod",
+    >       "region_name": "RegionOne",
+    >       "zone": null,
+    >       "project": {
+    >         "id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >         "name": null,
+    >         "domain_id": null,
+    >         "domain_name": null
+    >       }
+    >     },
+    >     "name": "ceph-router",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "revision_number": 9,
+    >     "routes": [],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2020-10-13T13:23:59Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Add a route for the Ceph network to our original router.
+#[root@ansibler]
+
+    nexthop=$(
+        jq -r '.fixed_ips[0].ip_address' '/tmp/aglais-subnet-port.json'
+        )
+
+    oldrouterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("^aglais")) | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=10.206.0.0/16,gateway=${nexthop:?}" \
+            "${oldrouterid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${oldrouterid:?}"
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2020-10-13T11:22:45Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "273123bb-70f6-4f51-a406-7fc4b446532d",
+    >           "ip_address": "128.232.227.221"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "18583e75-6cc8-429d-807c-c78df769c9cc",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "289e714c-d974-48f1-aab3-5d7f7635a1d7",
+    >         "ip_address": "10.10.0.1",
+    >         "subnet_id": "ee827763-e9cb-4899-a306-b9480a695573"
+    >       }
+    >     ],
+    >     "location": {
+    >       "cloud": "gaia-prod",
+    >       "region_name": "RegionOne",
+    >       "zone": null,
+    >       "project": {
+    >         "id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >         "name": null,
+    >         "domain_id": null,
+    >         "domain_name": null
+    >       }
+    >     },
+    >     "name": "aglais-20201013-internal-network-router",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "revision_number": 10,
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.10.0.158",
+    >         "destination": "10.206.0.0/16"
+    >       }
+    >     ],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2020-10-13T14:21:00Z"
+    >   }
+
+

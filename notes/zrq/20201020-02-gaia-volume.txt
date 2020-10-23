@@ -25,7 +25,19 @@
 #zrq-notes-osformat
 #
 
-    Create a K8s PersistentVolumeClaim for the Gaia DR" share.
+    Target:
+
+        Create a K8s PersistentVolumeClaim for the Gaia DR2 share.
+
+    Result:
+
+        MountVolume.MountDevice failed for volume "gaia-dr2-volume"
+            chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/gaia-dr2-volume/globalmount
+                permission denied
+
+        Repeat the cluster create from clean.
+        Everything works as intended.
+
 
 # -----------------------------------------------------
 # Create a container to work with.
@@ -48,7 +60,7 @@
 
 # -----------------------------------------------------
 # Get the connection details for our cluster.
-#[user@kubernator]
+#[root@kubernator]
 
     mkdir -p "${HOME}/.kube"
     openstack \
@@ -69,14 +81,14 @@
 # -----------------------------------------------------
 # Set the Manila API version.
 # https://stackoverflow.com/a/58806536
-#[user@kubernator]
+#[root@kubernator]
 
     export OS_SHARE_API_VERSION=2.51
 
 
 # -----------------------------------------------------
 # List the available shares.
-#[user@kubernator]
+#[root@kubernator]
 
     openstack \
         --os-cloud "${cloudname:?}" \
@@ -94,7 +106,7 @@
 
 # -----------------------------------------------------
 # Locate the Gaia DR2 share by name.
-#[user@kubernator]
+#[root@kubernator]
 
     sharename=gaia-dr2
 
@@ -113,7 +125,7 @@
 
 # -----------------------------------------------------
 # Get size of the share (in Gbytes).
-#[user@kubernator]
+#[root@kubernator]
 
     sharesize=$(
         openstack \
@@ -126,14 +138,12 @@
 
     echo "Share size [${sharesize:?}]"
 
-    sharesize=4300
-
     >   Share size [4399]
 
 
 # -----------------------------------------------------
 # List the access rules for this share.
-#[user@kubernator]
+#[root@kubernator]
 
     openstack \
         --os-cloud "${cloudname:?}" \
@@ -151,7 +161,7 @@
 # -----------------------------------------------------
 # Get the id of the ReadWrite access rule.
 # (*) need to make the claim ReadWrite because we there are unresolved issues with ReadOnly claims.
-#[user@kubernator]
+#[root@kubernator]
 
     accessid=$(
         openstack \
@@ -169,7 +179,7 @@
 
 # -----------------------------------------------------
 # Create the values file for our Chart.
-#[user@kubernator]
+#[root@kubernator]
 
 cat > "/tmp/${sharename:?}-values.yaml" << EOF
 
@@ -193,7 +203,7 @@ EOF
 
 # -----------------------------------------------------
 # Install our Manila share PVC chart.
-#[user@kubernator]
+#[root@kubernator]
 
     helm install \
         "${sharename:?}" \
@@ -212,7 +222,7 @@ EOF
 
 # -----------------------------------------------------
 # Check the associated test Pod.
-#[user@kubernator]
+#[root@kubernator]
 
     kubectl describe \
         Pod \
@@ -228,11 +238,72 @@ EOF
     >     Warning  FailedMount  2s (x6 over 18s)  kubelet, tiberius-20201020-wqzkucqq5dys-node-3  MountVolume.MountDevice failed for volume "gaia-dr2-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/gaia-dr2-volume/globalmount: permission denied
 
 
+    MountVolume.MountDevice failed for volume "gaia-dr2-volume"
+        rpc error
+            code = Internal
+            desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/gaia-dr2-volume/globalmount
+                permission denied
+
+
+    Looking for clues, my guess is changed ownership or permissions during the direct Ceph VM mount ?
+    The error message doesn't tell us what UID is trying to execute the chmod and what UID the chmod is for ?
+
+    Guess:
+
+        1) Permission issues with the directories or files in the share.
+            Options:
+                1.1) Run the Ansible deploy and check we can mount the Ceph volume.
+                1.2) Create a gateway VM and use it to login to the K8s worker node.
+
+        2) Permission issues on the K8s worker node.
+            Creating/deleting/creating the Pod may have left a orphanned directory on the node.
+            The mount directory name is the same each time, so deleting and creating the Pod will re-use the same path on the host node.
+            Options:
+                2.1) Repeat the cluster create from clean ?
 
 
 
 # -----------------------------------------------------
-# Connect to the test Pod and check we can access the dataset.
+# -----------------------------------------------------
+
+    Repeat the cluster create from clean.
+        - Everything works as intended.
+
+    This sounds similar to these issues:
+        https://github.com/kubernetes/kubernetes/pull/87978
+        https://github.com/kubernetes/kubernetes/issues/87977
+        https://github.com/kubernetes/kubernetes/issues/79780
+
+    A mount point on a node left behind from a previous volume mount blocking a new mount using the same volume name.
+
+    We need to set up a way to make it easy to ssh into cluster nodes.
+        - Add a gateway VM on the cluster LAN ?
+        - Use a Pod in the cluster, passing ssh-agent socket forward ?
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the associated test Pod.
+#[root@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/gaia-dr2-testpod to tiberius-20201022-ao2uy7o3v2yz-node-1
+    >     Normal  Pulling    82s        kubelet, tiberius-20201022-ao2uy7o3v2yz-node-1  Pulling image "fedora:32"
+    >     Normal  Pulled     74s        kubelet, tiberius-20201022-ao2uy7o3v2yz-node-1  Successfully pulled image "fedora:32"
+    >     Normal  Created    74s        kubelet, tiberius-20201022-ao2uy7o3v2yz-node-1  Created container gaia-dr2-container
+    >     Normal  Started    74s        kubelet, tiberius-20201022-ao2uy7o3v2yz-node-1  Started container gaia-dr2-container
+
+
+# -----------------------------------------------------
+# Connect to our test Pod and check we can access the dataset.
 #[user@kubernator]
 
     kubectl exec \
@@ -244,18 +315,41 @@ EOF
 
         ls -al /share-data
 
-    >   ....
-    >   ....
+    >   drwxrwxrwx. 9 root root 999049389671 Oct 12 02:04 .
+    >   drwxr-xr-x. 1 root root           53 Oct 22 04:12 ..
+    >   drwxr-xr-x. 2 root root  31681808533 Aug 22 14:48 gaia-dr2-16-0
+    >   drwxr-xr-x. 2 root root 253756272164 Aug 22 16:46 gaia-dr2-2-0
+    >   drwxr-xr-x. 2 root root  15792075406 Aug 22 14:35 gaia-dr2-32-0
+    >   drwxr-xr-x. 2 root root 126836452150 Aug 22 15:43 gaia-dr2-4-0
+    >   drwxr-xr-x. 2 root root  63403624720 Aug 22 15:06 gaia-dr2-8-0
+    >   drwxr-xr-x. 2 root root 507579156147 Aug 23 06:57 gaia-dr2-full
+    >   drwxrwxr-x. 2 1000 1000          551 Oct 12 14:06 test
 
 
         ls -al /share-data/gaia-dr2-32-0
 
     >   ....
     >   ....
+    >   -rw-r--r--. 1 root root     40076776 Apr 21  2020 part-06399-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     39164050 Apr 21  2020 part-06431-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     35834808 Apr 21  2020 part-06463-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     32470158 Apr 21  2020 part-06495-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
 
 
         du -h /share-data
 
-    >   ....
-    >   ....
+    >   15G	/share-data/gaia-dr2-32-0
+    >   119G	/share-data/gaia-dr2-4-0
+    >   30G	/share-data/gaia-dr2-16-0
+    >   60G	/share-data/gaia-dr2-8-0
+    >   237G	/share-data/gaia-dr2-2-0
+    >   2.0K	/share-data/test
+    >   473G	/share-data/gaia-dr2-full
+    >   931G	/share-data
+
+
+
+
+
+
 

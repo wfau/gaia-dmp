@@ -1,0 +1,507 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#  
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+# Useful Links 
+# --------------------
+https://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/ReservationSystem.html
+https://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/CapacityScheduler.html
+
+
+# Can we use the reservation system in our default config?
+
+curl http://master01:8088/ws/v1/cluster/reservation/list
+{"RemoteException":{"exception":"BadRequestException","message":"java.lang.Exception: Reservation is not enabled. Please enable & try again","javaClassName":"org.apache.hadoop.yarn.webapp.BadRequestException"}}
+
+
+# --------------------------------
+
+pushd /opt/hadoop/
+
+
+# Looks like no, lets try adding a config entry to enable
+
+nano etc/hadoop/yarn-site.xml
+
+..
+
+	<property>
+	    <name>yarn.resourcemanager.reservation-system.enable</name>
+	    <value>true</value>
+	</property>
+
+	<property>
+	    <name>yarn.scheduler.capacity.root.default.show-reservations-as-queues</name>
+	    <value>true</value>
+	</property>
+
+	<property>
+	    <name>yarn.resourcemanager.reservation-system.planfollower.time-step</name>
+	    <value>60000</value>
+	</property>
+
+
+..
+
+nano etc/hadoop/capacity-scheduler.xml
+
+  <property>
+    <name>yarn.scheduler.capacity.root.queues</name>
+    <value>gaia</value>
+    <description>The top-level queues below root.</description>
+  </property>
+
+..
+
+
+# From Master node:
+
+curl http://master01:8088/ws/v1/cluster/reservation/list
+
+{"RemoteException":{"exception":"BadRequestException","message":"java.lang.Exception: The specified queue: gaia is not managed by reservation system. Please try again with a valid reservable queue.","javaClassName":"org.apache.hadoop.yarn.webapp.BadRequestException"}}
+
+nano etc/hadoop/yarn-site.xml
+
+..
+
+
+	<property>
+	    <name>yarn.scheduler.capacity.gaia.reservable</name>
+	    <value>true</value>
+	</property>
+
+..
+
+
+
+curl http://master01:8088/ws/v1/cluster/reservation/list?queue=gaia
+
+{"RemoteException":{"exception":"BadRequestException","message":"java.lang.Exception: The specified queue: gaia is not managed by reservation system. Please try again with a valid reservable queue.","javaClassName":"org.apache.hadoop.yarn.webapp.BadRequestException"}}
+
+
+curl http://master01:8088/ws/v1/cluster/reservation/list
+
+{"RemoteException":{"exception":"BadRequestException","message":"java.lang.Exception: The specified queue: default is not managed by reservation system. Please try again with a valid reservable queue.","javaClassName":"org.apache.hadoop.yarn.webapp.BadRequestException"}}[fedora@aglais-20201008-master01 hadoop]$ 
+
+
+# --------------------------------
+
+
+# Ok so we need we need to make a queue managable by the reservation system, but the above config didn't do the trick
+# Going back to the documentation:
+
+"
+The ReservationSystem is integrated with the CapacityScheduler queue hierachy and can be configured for any LeafQueue currently. The CapacityScheduler supports the following parameters to tune the ReservationSystem:
+
+Property	Description
+yarn.scheduler.capacity.<queue-path>.reservable- 	Mandatory parameter: indicates to the ReservationSystem that the queue’s resources is available for users to reserve. Boolean value expected. The default value is false, i.e. reservations are not enabled in LeafQueues by default.
+
+"
+
+
+# So what should queue path be? 
+
+The CapacityScheduler has a predefined queue called root. All queues in the system are children of the root queue.
+Further queues can be setup by configuring yarn.scheduler.capacity.root.queues with a list of comma-separated child queues.
+The configuration for CapacityScheduler uses a concept called queue path to configure the hierarchy of queues. The queue path is the full path of the queue’s hierarchy, starting at root, with . (dot) as the delimiter.
+A given queue’s children can be defined with the configuration knob: yarn.scheduler.capacity.<queue-path>.queues. Children do not inherit properties directly from the parent unless otherwise noted.
+Here is an example with three top-level child-queues a, b and c and some sub-queues for a and b:
+
+<property>
+  <name>yarn.scheduler.capacity.root.queues</name>
+  <value>a,b,c</value>
+  <description>The queues at the this level (root is the root queue).
+  </description>
+</property>
+
+<property>
+  <name>yarn.scheduler.capacity.root.a.queues</name>
+  <value>a1,a2</value>
+  <description>The queues at the this level (root is the root queue).
+  </description>
+</property>
+
+<property>
+  <name>yarn.scheduler.capacity.root.b.queues</name>
+  <value>b1,b2,b3</value>
+  <description>The queues at the this level (root is the root queue).
+  </description>
+</property>
+
+
+
+
+# Let's try making root  & gaia queues reservable: 
+
+..
+<property>
+    <name>yarn.scheduler.capacity.root.gaia.reservable</name>
+    <value>true</value>
+</property>
+
+<property>
+    <name>yarn.scheduler.capacity.root.reservable</name>
+    <value>true</value>
+</property>
+
+..
+
+
+# Exceptions when restarting..
+
+
+java.lang.IllegalStateException: Only Leaf Queues can be reservable for root
+	at org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerQueueManager.parseQueue(CapacitySchedulerQueueManager.java:265)
+	at org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerQueueManager.initializeQueues(CapacitySchedulerQueueManager.java:158)
+	at org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler.initializeQueues(CapacityScheduler.java:715)
+	at org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler.initScheduler(CapacityScheduler.java:360)
+	at org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler.serviceInit(CapacityScheduler.java:425)
+	at org.apache.hadoop.service.AbstractService.init(AbstractService.java:164)
+	at org.apache.hadoop.service.CompositeService.serviceInit(CompositeService.java:108)
+	at org.apache.hadoop.yarn.server.resourcemanager.ResourceManager$RMActiveServices.serviceInit(ResourceManager.java:819)
+	at org.apache.hadoop.service.AbstractService.init(AbstractService.java:164)
+	at org.apache.hadoop.yarn.server.resourcemanager.ResourceManager.createAndInitActiveServices(ResourceManager.java:1224)
+	at org.apache.hadoop.yarn.server.resourcemanager.ResourceManager.serviceInit(ResourceManager.java:318)
+	at org.apache.hadoop.service.AbstractService.init(AbstractService.java:164)
+	at org.apache.hadoop.yarn.server.resourcemanager.ResourceManager.main(ResourceManager.java:1506)
+2020-10-25 11:10:47,556 INFO org.apache.hadoop.yarn.server.resourcemanager.ResourceManager: SHUTDOWN_MSG: 
+
+
+
+
+# Ok, instead of root, maybe default?
+
+curl http://master01:8088/ws/v1/cluster/reservation/list
+{}
+
+curl http://master01:8088/ws/v1/cluster/reservation/list?queue=gaia
+{"RemoteException":{"exception":"BadRequestException","message":"java.lang.Exception: The specified queue: gaia
+
+
+# Yay, default works, but gaia doesn't.. Let's ignore the gaia queue for now and focus on default
+
+
+# --------------------------------
+
+
+# Let's check if we can create a reservation now
+# https://hadoop.apache.org/docs/current/hadoop-yarn/hadoop-yarn-site/ResourceManagerRest.html#Cluster_Reservation_API_Create
+
+"
+Cluster Reservation API Create
+Use the New Reservation API, to obtain a reservation-id which can then be used as part of the Cluster Reservation API Submit to submit reservations.
+This feature is currently in the alpha stage and may change in the future.
+
+POST http://rm-http-address:port/ws/v1/cluster/reservation/new-reservation
+"
+
+
+curl -X POST  http://master01:8088/ws/v1/cluster/reservation/new-reservation
+{"reservation-id":"reservation_1603624448124_0001"}
+
+curl http://master01:8088/ws/v1/cluster/reservation/list
+{}
+
+# ???? New reservation gave us back a reponse with a reservation ID, but listing doesn't show us anything yet
+ 
+#---------------------------------
+
+
+# Next step: Submitting our Reservation.. 
+
+"
+Cluster Reservation API Submit
+The Cluster Reservation API can be used to submit reservations. When submitting a reservation the user specifies the constraints in terms of resources, and time that is required. The resulting response is successful if the reservation can be made. If a reservation-id is used to submit a reservation multiple times, the request will succeed if the reservation definition is the same, but only one reservation will be created. If the reservation definition is different, the server will respond with an error response. When the reservation is made, the user can use the reservation-id used to submit the reservation to get access to the resources by specifying it as part of Cluster Submit Applications API.
+
+POST http://rm-http-address:port/ws/v1/cluster/reservation/submit
+"
+
+
+#!/bin/bash
+
+body=$(cat  << EOF
+{
+  "queue" : "default",
+  "reservation-id":"reservation_1603624448124_0001",
+  "reservation-definition" : {
+     "arrival" : 1765541532000,
+     "deadline" : 1765542252000,
+     "reservation-name" : "res_1",
+     "reservation-requests" : {
+	"reservation-request-interpreter" : 0,
+	"reservation-request" : [
+	   {
+	     "duration" : 60000,
+	     "num-containers" : 5,
+	     "min-concurrency" : 5,
+	     "capability" : {
+	       "memory" : 15,
+	       "vCores" : 1
+	     }
+	   },
+	   {
+	     "duration" : 120000,
+	     "num-containers" : 2,
+	     "min-concurrency" : 1,
+	     "capability" : {
+	       "memory" : 10,
+	       "vCores" : 1
+	     }
+	   }
+	]
+     }
+   }
+}
+EOF
+)
+
+
+
+curl -H "Content-Type: application/json" -X POST -d "$body" http://master01:8088/ws/v1/cluster/reservation/submit
+
+# Empty response [HTTP/200]
+
+# Check reservations:
+curl  http://master01:8088/ws/v1/cluster/reservation/list
+{"reservations":{"acceptance-time":"1603630943890","user":"dr.who","reservation-id":"reservation_1603624448124_0001","reservation-definition":{"arrival":"1765541532000","deadline":"1765542252000","reservation-requests":{"reservation-request-interpreter":"0","reservation-request":[{"capability":{"memory":"15","vCores":"1","resourceInformations":{"resourceInformation":[{"maximumAllocation":"9223372036854775807","minimumAllocation":"0","name":"memory-mb","resourceType":"COUNTABLE","units":"Mi","value":"15"},{"maximumAllocation":"9223372036854775807","minimumAllocation":"0","name":"vcores","resourceType":"COUNTABLE","units":"","value":"1"}]}},"min-concurrency":"5","num-containers":"5","duration":"60000"},{"capability":{"memory":"10","vCores":"1","resourceInformations":{"resourceInformation":[{"maximumAllocation":"9223372036854775807","minimumAllocation":"0","name":"memory-mb","resourceType":"COUNTABLE","units":"Mi","value":"10"},{"maximumAllocation":"9223372036854775807","minimumAllocation":"0","name":"vcores","resourceType":"COUNTABLE","units":"","value":"1"}]}},"min-concurrency":"1","num-containers":"2","duration":"120000"}]},"reservation-name":"res_1","priority":"0","recurrence-expression":"0"}}}
+
+
+
+# Okay that seems to have worked, but the timestamps are wrong, try again with actual timestamps
+
+# But first Delete the reservation
+
+curl -X POST -H "Content-Type: application/json" \
+ -d '{"reservation-id" : "reservation_1603624448124_0001"}' \
+http://master01:8088/ws/v1/cluster/reservation/delete
+
+curl  http://master01:8088/ws/v1/cluster/reservation/list
+{}
+
+
+
+# -----------------------------
+		
+# New Reservation
+
+curl -X POST  http://master01:8088/ws/v1/cluster/reservation/new-reservation
+{"reservation-id":"reservation_1603624448124_0002"}
+
+date +%s
+1603631905
+
+
+body=$(cat  << EOF
+{
+  "queue" : "default",
+  "reservation-id":"reservation_1603624448124_0002",
+  "reservation-definition" : {
+     "arrival" : 1603631905,
+     "deadline" : 1603632905,
+     "reservation-name" : "res_1",
+     "reservation-requests" : {
+	"reservation-request-interpreter" : 0,
+	"reservation-request" : [
+	   {
+	     "duration" : 60000,
+	     "num-containers" : 5,
+	     "min-concurrency" : 5,
+	     "capability" : {
+	       "memory" : 15,
+	       "vCores" : 1
+	     }
+	   },
+	   {
+	     "duration" : 120000,
+	     "num-containers" : 2,
+	     "min-concurrency" : 1,
+	     "capability" : {
+	       "memory" : 10,
+	       "vCores" : 1
+	     }
+	   }
+	]
+     }
+   }
+}
+EOF
+)
+
+
+
+curl -H "Content-Type: application/json" -X POST -d "$body" http://master01:8088/ws/v1/cluster/reservation/submit
+{"RemoteException":{"exception":"BadRequestException","message":"java.lang.Exception: The specified deadline: 1603632905 is the past. Please try again with deadline in the future.","javaClassName":"org.apache.hadoop.yarn.webapp.BadRequestException"}}
+
+# We cannot create a reservation in the past..Or that date timestamp is wrong
+
+# Update the Reservation with a new date range
+
+
+echo ${EPOCHREALTIME/./}                                                        
+1603633848465401
+
+
+body=$(cat  << EOF
+{
+  "queue" : "default",
+  "reservation-id":"reservation_1603624448124_0002",
+  "reservation-definition" : {
+     "arrival" : 1603633395767615,
+     "deadline" : 1603636861585894,
+     "reservation-name" : "res_1",
+     "reservation-requests" : {
+	"reservation-request-interpreter" : 0,
+	"reservation-request" : [
+	   {
+	     "duration" : 60000,
+	     "num-containers" : 5,
+	     "min-concurrency" : 5,
+	     "capability" : {
+	       "memory" : 15,
+	       "vCores" : 1
+	     }
+	   },
+	   {
+	     "duration" : 120000,
+	     "num-containers" : 2,
+	     "min-concurrency" : 1,
+	     "capability" : {
+	       "memory" : 10,
+	       "vCores" : 1
+	     }
+	   }
+	]
+     }
+   }
+}
+EOF
+)
+
+
+
+curl -H "Content-Type: application/json" -X POST -d "$body" http://master01:8088/ws/v1/cluster/reservation/update
+
+
+curl  http://master01:8088/ws/v1/cluster/reservation/list
+
+{"reservations":{"acceptance-time":"1603633428345","user":"dr.who","reservation-id":"reservation_1603624448124_0002","reservation-definition":{"arrival":"1603633395767615","deadline":"1603636861585894","reservation-requests":{"reservation-request-interpreter":"0","reservation-request":[{"capability":{"memory":"15","vCores":"1","resourceInformations":{"resourceInformation":[{"maximumAllocation":"9223372036854775807","minimumAllocation":"0","name":"memory-mb","resourceType":"COUNTABLE","units":"Mi","value":"15"},{"maximumAllocation":"9223372036854775807","minimumAllocation":"0","name":"vcores","resourceType":"COUNTABLE","units":"","value":"1"}]}},"min-concurrency":"5","num-containers":"5","duration":"60000"},{"capability":{"memory":"10","vCores":"1","resourceInformations":{"resourceInformation":[{"maximumAllocation":"9223372036854775807","minimumAllocation":"0","name":"memory-mb","resourceType":"COUNTABLE","units":"Mi","value":"10"},{"maximumAllocation":"9223372036854775807","minimumAllocation":"0","name":"vcores","resourceType":"COUNTABLE","units":"","value":"1"}]}},"min-concurrency":"1","num-containers":"2","duration":"120000"}]},"reservation-name":"res_1","priority":"0","recurrence-expression":"0"}}}
+
+
+# Check Yarn logs:
+
+2020-10-25 13:50:43,164 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: nodeUpdate: worker02:46811 cluster capacity: <memory:60000, vCores:24>
+2020-10-25 13:50:43,164 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: Node being looked for scheduling worker02:46811 availableResource: <memory:20000, vCores:8>
+2020-10-25 13:50:43,164 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Trying to schedule on node: worker02, available: <memory:20000, vCores:8>
+2020-10-25 13:50:43,297 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: nodeUpdate: worker01:36871 cluster capacity: <memory:60000, vCores:24>
+2020-10-25 13:50:43,297 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: Node being looked for scheduling worker01:36871 availableResource: <memory:20000, vCores:8>
+2020-10-25 13:50:43,298 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Trying to schedule on node: worker01, available: <memory:20000, vCores:8>
+2020-10-25 13:50:43,463 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AbstractAutoCreatedLeafQueue: successfully changed to 0.0 for queue default-default
+2020-10-25 13:50:43,463 INFO org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Set entitlement for AutoCreatedLeafQueue default-default  to 0.0 request was (0.0)
+2020-10-25 13:50:43,463 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AbstractAutoCreatedLeafQueue: successfully changed to 1.0 for queue default-default
+2020-10-25 13:50:43,464 INFO org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Set entitlement for AutoCreatedLeafQueue default-default  to 1.0 request was (1.0)
+2020-10-25 13:50:43,830 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: nodeUpdate: worker03:40107 cluster capacity: <memory:60000, vCores:24>
+2020-10-25 13:50:43,830 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: Node being looked for scheduling worker03:40107 availableResource: <memory:20000, vCores:8>
+2020-10-25 13:50:43,830 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Trying to schedule on node: worker03, available: <memory:20000, vCores:8>
+2020-10-25 13:50:43,830 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.ParentQueue: Skip this queue=root, because it doesn't need more resource, schedulingMode=RESPECT_PARTITION_EXCLUSIVITY node-partition=
+2020-10-25 13:50:44,165 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: nodeUpdate: worker02:46811 cluster capacity: <memory:60000, vCores:24>
+2020-10-25 13:50:44,165 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: Node being looked for scheduling worker02:46811 availableResource: <memory:20000, vCores:8>
+2020-10-25 13:50:44,165 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Trying to schedule on node: worker02, available: <memory:20000, vCores:8>
+2020-10-25 13:50:44,298 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: nodeUpdate: worker01:36871 cluster capacity: <memory:60000, vCores:24>
+2020-10-25 13:50:44,298 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: Node being looked for scheduling worker01:36871 availableResource: <memory:20000, vCores:8>
+2020-10-25 13:50:44,298 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Trying to schedule on node: worker01, available: <memory:20000, vCores:8>
+2020-10-25 13:50:44,464 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AbstractAutoCreatedLeafQueue: successfully changed to 0.0 for queue default-default
+2020-10-25 13:50:44,464 INFO org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Set entitlement for AutoCreatedLeafQueue default-default  to 0.0 request was (0.0)
+2020-10-25 13:50:44,464 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AbstractAutoCreatedLeafQueue: successfully changed to 1.0 for queue default-default
+2020-10-25 13:50:44,464 INFO org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Set entitlement for AutoCreatedLeafQueue default-default  to 1.0 request was (1.0)
+2020-10-25 13:50:44,832 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: nodeUpdate: worker03:40107 cluster capacity: <memory:60000, vCores:24>
+2020-10-25 13:50:44,832 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.AbstractYarnScheduler: Node being looked for scheduling worker03:40107 availableResource: <memory:20000, vCores:8>
+2020-10-25 13:50:44,832 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Trying to schedule on node: worker03, available: <memory:20000, vCores:8>
+2020-10-25 13:50:44,832 DEBUG org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.ParentQueue: Skip this queue=root, because it doesn't need more resource, schedulingMode=RESPECT_PARTITION_EXCLUSIVITY node-partition=
+
+
+
+# Nothing shows up in the Yarn GUI..Not sure what we should expect, or how to know if the reservation was successful 
+
+
+# -----------------------------
+
+
+# Let's try again some different params
+echo ${EPOCHREALTIME/./}
+1603634047188185
+1603634288061476
+         S
+
+S = Seconds
+
+
+
+# Delete the reservation
+
+curl -X POST -H "Content-Type: application/json" \
+ -d '{"reservation-id" : "reservation_1603636146875_0002"}' \
+http://master01:8088/ws/v1/cluster/reservation/delete
+
+curl  http://master01:8088/ws/v1/cluster/reservation/list
+{}
+
+		
+# New Reservation
+
+curl -X POST  http://master01:8088/ws/v1/cluster/reservation/new-reservation
+{"reservation-id":"reservation_1603636146875_0002"}
+
+
+
+body=$(cat  << EOF
+{
+  "queue" : "default",
+  "reservation-id":"reservation_1603636146875_0003",
+  "reservation-definition" : {
+     "arrival" : 1603636246875,
+     "deadline" : 1604636146875,
+     "priority" : 1,
+     "reservation-name" : "res_2",
+     "reservation-requests" : {
+	"reservation-request-interpreter" : 0,
+	"reservation-request" : [
+	   {
+	     "duration" : 6000000,
+	     "num-containers" : 2,
+	     "min-concurrency" : 2,
+	     "capability" : {
+	       "memory" : 2,
+	       "vCores" : 1
+	     }
+	   }	 
+	]
+     }
+   }
+}
+EOF
+)
+
+
+
+curl -H "Content-Type: application/json" -X POST -d "$body" http://master01:8088/ws/v1/cluster/reservation/submit
+
+

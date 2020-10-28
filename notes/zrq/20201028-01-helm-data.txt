@@ -1,0 +1,225 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+
+    Target:
+
+        Install Gaia DR2
+
+    Result:
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/helm:/helm:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+    kubectl \
+        cluster-info
+
+
+--START--
+Kubernetes master is running at https://....
+Heapster is running at https://....
+CoreDNS is running at https://....
+--END--
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[root@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# List the available shares.
+#[root@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Locate the Gaia DR2 share by name.
+#[root@kubernator]
+
+    sharename=gaia-dr2
+
+    shareid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share list \
+                --format json \
+        | jq -r '.[] | select( .Name | startswith("'${sharename:?}'")) | .ID'
+        )
+
+    echo "Share ID [${shareid:?}]"
+
+    >   Share ID [ad1d9ca2-5b1c-4064-8c74-695286de6098]
+
+
+# -----------------------------------------------------
+# Get size of the share (in Gbytes).
+#[root@kubernator]
+
+    sharesize=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share show \
+                --format json \
+                "${shareid:?}" \
+        | jq -r '.size'
+        )
+
+    echo "Share size [${sharesize:?}]"
+
+    >   Share size [4399]
+
+
+# -----------------------------------------------------
+# List the access rules for this share.
+#[root@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access list \
+            "${shareid:?}"
+
+    >   +--------------------------------------+-------------+-------------+--------------+--------+----------------+----------------------------+----------------------------+
+    >   | id                                   | access_type | access_to   | access_level | state  | access_key     | created_at                 | updated_at                 |
+    >   +--------------------------------------+-------------+-------------+--------------+--------+----------------+----------------------------+----------------------------+
+    >   | cfdf30de-cd36-4352-8ff1-c797c75efa7d | cephx       | gaia-dr2-ro | ro           | active | AQDj....N21g== | 2020-10-03T00:29:23.000000 | 2020-10-03T00:29:23.000000 |
+    >   | e2b663f1-0524-48b9-9d46-2f8c3f09c0c2 | cephx       | gaia-dr2-rw | rw           | active | AQDX....7+Mg== | 2020-10-03T00:29:11.000000 | 2020-10-03T00:29:11.000000 |
+    >   +--------------------------------------+-------------+-------------+--------------+--------+----------------+----------------------------+----------------------------+
+
+
+# -----------------------------------------------------
+# Get the id of the ReadWrite access rule.
+# (*) need to make the claim ReadWrite because we there are unresolved issues with ReadOnly claims.
+#[root@kubernator]
+
+    accessid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share access list \
+                --format json \
+                "${shareid:?}" \
+        | jq -r '.[] | select(.access_level == "rw") | .id'
+        )
+
+    echo "Access rule [${accessid:?}]"
+
+    >   Access rule [e2b663f1-0524-48b9-9d46-2f8c3f09c0c2]
+
+
+# -----------------------------------------------------
+# Create the values file for our Helm chart.
+#[root@kubernator]
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "gaia-dr2"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: false
+
+csi:
+  access: "ReadWriteMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${accessid:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Manila share PVC chart.
+#[root@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+
+    >   NAME: gaia-dr2
+    >   LAST DEPLOYED: Tue Oct 20 15:41:26 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check the associated test Pod.
+#[root@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+

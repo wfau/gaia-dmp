@@ -1,0 +1,284 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+
+    Target:
+
+        Install read/write share for data import.
+
+    Sources:
+
+            Previous notes
+            20201027-01-helm-main.txt
+            20201029-01-helm-data.txt
+            20201030-01-user-data.txt
+
+    Result:
+
+        Working deploy of the 10 Tbyte read/write user data.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/helm:/helm:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[root@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# List the available shares.
+#[root@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
+
+    >   +--------------------------------------+-----------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name            |  Size | Share Proto | Status    | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+-----------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | 2e46b5a5-c5d9-44c0-b11c-310c222f4818 | aglais-gaia-dr2 |   512 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | ad1d9ca2-5b1c-4064-8c74-695286de6098 | aglais-gaia-old |  4399 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 6852b819-7395-4786-80c0-06fa9cebcc65 | aglais-user-nch | 10240 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   +--------------------------------------+-----------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# Locate the user data share by name.
+#[root@kubernator]
+
+    sharename=aglais-user-nch
+
+    shareid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share list \
+                --format json \
+        | jq -r '.[] | select( .Name | startswith("'${sharename:?}'")) | .ID'
+        )
+
+cat << EOF
+Share ID [${shareid:?}]
+EOF
+
+    >   Share ID [6852b819-7395-4786-80c0-06fa9cebcc65]
+
+
+# -----------------------------------------------------
+# Get size of the share (in Gbytes).
+#[root@kubernator]
+
+    sharesize=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share show \
+                --format json \
+                "${shareid:?}" \
+        | jq -r '.size'
+        )
+
+cat << EOF
+Share size [${sharesize:?}]
+EOF
+
+    >   Share size [10240]
+
+
+# -----------------------------------------------------
+# List the access rules for this share.
+#[root@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access list \
+            "${shareid:?}"
+
+    >   +--------------------------------------+-------------+-----------------+--------------+--------+----------------+----------------------------+----------------------------+
+    >   | id                                   | access_type | access_to       | access_level | state  | access_key     | created_at                 | updated_at                 |
+    >   +--------------------------------------+-------------+-----------------+--------------+--------+----------------+----------------------------+----------------------------+
+    >   | 7b7e7561-b212-4412-bc2e-45cc90d4e8d4 | cephx       | userdata-nch-rw | rw           | active | AQBZ....RMsw== | 2020-10-15T13:15:04.000000 | 2020-10-15T13:15:05.000000 |
+    >   +--------------------------------------+-------------+-----------------+--------------+--------+----------------+----------------------------+----------------------------+
+
+
+# -----------------------------------------------------
+# Get the id of the ReadWrite access rule.
+#[root@kubernator]
+
+    accessid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share access list \
+                --format json \
+                "${shareid:?}" \
+        | jq -r '.[] | select(.access_level == "rw") | .id'
+        )
+
+cat << EOF
+Access rule [${accessid:?}]
+EOF
+
+    >   Access rule [7b7e7561-b212-4412-bc2e-45cc90d4e8d4]
+
+
+# -----------------------------------------------------
+# Create the values file for our Helm chart.
+#[root@kubernator]
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "user-nch"
+
+mount:
+  path: '/aglais/user/nch'
+  readonly: false
+
+csi:
+  size:    ${sharesize:?}
+  access: "ReadWriteMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${accessid:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Uupgrade (install) our Manila share.
+# Use 'upgrade --install' to make the command idempotent
+# https://github.com/helm/helm/issues/3134
+#[root@kubernator]
+
+    namespace=${clustername,,}
+    chartname=${sharename,,}
+
+    helm upgrade \
+        --install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        "${chartname:?}" \
+        "/helm/aglais/tools/manila-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   Release "aglais-user-nch" does not exist. Installing it now.
+    >   NAME: aglais-user-nch
+    >   LAST DEPLOYED: Fri Oct 30 14:24:07 2020
+    >   NAMESPACE: tiberius-20201028
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check the test Pod is healthy.
+#[root@kubernator]
+
+    kubectl describe \
+        --namespace "${namespace:?}" \
+        Pod \
+            "${chartname:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned tiberius-20201028/aglais-user-nch-testpod to tiberius-20201028-4iqh4hianc5r-node-1
+    >     Normal  Pulling    13s        kubelet, tiberius-20201028-4iqh4hianc5r-node-1  Pulling image "fedora:latest"
+    >     Normal  Pulled     10s        kubelet, tiberius-20201028-4iqh4hianc5r-node-1  Successfully pulled image "fedora:latest"
+    >     Normal  Created    10s        kubelet, tiberius-20201028-4iqh4hianc5r-node-1  Created container aglais-user-nch-container
+    >     Normal  Started    10s        kubelet, tiberius-20201028-4iqh4hianc5r-node-1  Started container aglais-user-nch-container
+
+
+# -----------------------------------------------------
+# Login to the test Pod and check the data.
+#[root@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        --namespace "${namespace:?}" \
+        "${chartname:?}-testpod" \
+            -- \
+                bash
+
+        ls -al /aglais/user
+
+    >   total 1
+    >   drwxr-xr-x. 3 root root   17 Oct 30 14:24 .
+    >   drwxr-xr-x. 3 root root   18 Oct 30 14:24 ..
+    >   drwxrwxrwx. 2 1000 users 256 Oct 15 14:26 nch
+
+
+        df -h /aglais/user/nch
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        10T     0   10T   0% /aglais/user/nch
+
+

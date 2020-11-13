@@ -68,6 +68,12 @@ app.kubernetes.io/instance: "{{ .Release.Name }}"
 app.kubernetes.io/version: "{{ .Chart.AppVersion }}"
 {{- end }}
 app.kubernetes.io/managed-by: "{{ .Release.Service }}"
+{{ if .Values.aglais.dataset }}
+aglais.dataset: "{{ .Values.aglais.dataset }}"
+{{ end }}
+{{ if .Values.aglais.userid }}
+aglais.userid: "{{ .Values.aglais.userid }}"
+{{ end }}
 {{- end -}}
 
 

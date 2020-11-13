@@ -1,0 +1,890 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+
+# Update the Zeppelin container spec.
+
+
+# -----------------------------------------------------
+# Check the Gaia volume is mounted in the interpreter Pod template.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    gedit "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/k8s/interpreter/100-interpreter-spec.yaml"
+
+
+            volumeMounts:
+          {% if zeppelin.k8s.interpreter.group.name == "spark" %}
+            - name: spark-home
+              mountPath: /spark
+    +       - name: aglais-gaia-dr2
+    +         mountPath: /aglais/data/gaia/dr2
+    +         readOnly: true
+          {% endif %}
+          {% if zeppelin.k8s.interpreter.group.name == "spark" %}
+          initContainers:
+          - name: spark-home-init
+            image: {{zeppelin.k8s.spark.container.image}}
+            command: ["sh", "-c", "cp -r /opt/spark/* /spark/"]
+            volumeMounts:
+            - name: spark-home
+              mountPath: /spark
+          {% endif %}
+          volumes:
+          {% if zeppelin.k8s.interpreter.group.name == "spark" %}
+          - name: spark-home
+            emptyDir: {}
+    +     - name: aglais-gaia-dr2
+    +       persistentVolumeClaim:
+    +         claimName: aglais-gaia-dr2-claim
+          {% endif %}
+
+
+# -----------------------------------------------------
+# Check the lib directory exists.
+# Needed because lib is on a different un-merged branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE:?}/experiments/zrq/zeppelin"
+
+        if [ ! -d 'lib' ]
+        then
+            echo "Making [$(pwd)][lib]"
+            mkdir 'lib'
+            touch 'lib/empty'
+        fi
+
+    popd
+
+
+# -----------------------------------------------------
+# Update the zeppelin-mod image.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    builddir=$(mktemp -d)
+    buildsrc=20200914-174101
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    buildah bud \
+        --format docker \
+        --tag aglais/zeppelin-mod:latest \
+        --tag aglais/zeppelin-mod:${buildtag:?} \
+        --build-arg "buildsrc=${buildsrc:?}" \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/docker/Dockermod" \
+        "${AGLAIS_CODE:?}/experiments/zrq/zeppelin"
+
+    >   STEP 1: FROM aglais/zeppelin-main:20200914-174101
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   STEP 5: LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+    >   STEP 6: LABEL buildtag="${buildtag}"
+    >   STEP 7: LABEL buildtime="${buildtime}"
+    >   STEP 8: LABEL gitrepo="https://github.com/wfau/aglais"
+    >   STEP 9: COPY lib/* /zeppelin/lib
+    >   STEP 10: COPY k8s/interpreter/100-interpreter-spec.yaml /zeppelin/k8s/interpreter/
+    >   STEP 11: COPY conf/shiro.ini /zeppelin/conf/shiro.ini
+    >   STEP 12: COMMIT aglais/zeppelin-mod:latest
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Push the modified image to Docker hub.
+#[user@desktop]
+
+    buildah login \
+        --username $(secret docker.io.user) \
+        --password $(secret docker.io.pass) \
+        registry-1.docker.io
+
+    >   Login Succeeded!
+
+    buildah push "aglais/zeppelin-mod:${buildtag:?}"
+
+    >   Getting image source signatures
+    >   Copying blob a5791c8427f1 skipped: already exists
+    >   Copying blob 87c128261339 skipped: already exists
+    >   Copying blob e06660e80cf4 skipped: already exists
+    >   Copying blob 41a253a417e6 skipped: already exists
+    >   Copying blob bd59303cdc70 skipped: already exists
+    >   Copying blob dcc0cc99372e skipped: already exists
+    >   Copying blob 557b620717e5 done
+    >   Copying config d8f6ed02bb done
+    >   Writing manifest to image destination
+    >   Storing signatures
+
+
+    buildah push "aglais/zeppelin-mod:latest"
+
+    >   Getting image source signatures
+    >   Copying blob bd59303cdc70 skipped: already exists
+    >   Copying blob a5791c8427f1 skipped: already exists
+    >   Copying blob 41a253a417e6 skipped: already exists
+    >   Copying blob dcc0cc99372e skipped: already exists
+    >   Copying blob e06660e80cf4 skipped: already exists
+    >   Copying blob 87c128261339 skipped: already exists
+    >   Copying blob 557b620717e5 [--------------------------------------] 0.0b / 0.0b
+    >   Copying config d8f6ed02bb [--------------------------------------] 0.0b / 15.7KiB
+    >   Writing manifest to image destination
+    >   Storing signatures
+
+
+# -----------------------------------------------------
+# Create a container to work with (including buildtag).
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "buildtag=${buildtag:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/helm:/helm:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Set the chart values.
+#[user@kubernator]
+
+    zepphost=zeppelin.metagrid.xyz
+
+    cat > "/tmp/zeppelin-values.yaml" << EOF
+
+zeppelin_server_hostname: "${zepphost:?}"
+zeppelin_server_image:    "aglais/zeppelin-mod:${buildtag:?}"
+
+EOF
+
+
+# -----------------------------------------------------
+# Fetch the chart dependencies.
+#[user@kubernator]
+
+    helm dependency update \
+        "/helm/aglais/tools/zeppelin"
+
+    >   -
+
+
+# -----------------------------------------------------
+# Update (install) our deployment.
+# Use 'upgrade --install' to make the command idempotent
+#[user@kubernator]
+
+    namespace=${clustername,,}
+    chartname=aglais-zeppelin
+
+    helm upgrade \
+        --debug \
+        --install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        "${chartname:?}" \
+        "/helm/aglais/tools/zeppelin" \
+        --values "/tmp/zeppelin-values.yaml"
+
+    >   history.go:52: [debug] getting history for release aglais-zeppelin
+    >   Release "aglais-zeppelin" does not exist. Installing it now.
+    >   install.go:159: [debug] Original chart version: ""
+    >   install.go:176: [debug] CHART PATH: /helm/aglais/tools/zeppelin
+    >   
+    >   client.go:108: [debug] creating 1 resource(s)
+    >   client.go:108: [debug] creating 8 resource(s)
+    >   NAME: aglais-zeppelin
+    >   LAST DEPLOYED: Wed Nov  4 06:50:15 2020
+    >   NAMESPACE: tiberius-20201028
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   USER-SUPPLIED VALUES:
+    >   zeppelin_server_hostname: zeppelin.metagrid.xyz
+    >   zeppelin_server_image: aglais/zeppelin-mod:20201104-063957
+    >   
+    >   COMPUTED VALUES:
+    >   spark_worker_image: aglais/pyspark-mod:latest
+    >   zeppelin_server_hostname: zeppelin.metagrid.xyz
+    >   zeppelin_server_image: aglais/zeppelin-mod:20201104-063957
+    >   zeppelin_server_tlscert: zeppelin-tls-secret
+    >   
+    >   HOOKS:
+    >   MANIFEST:
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-account.yaml
+    >   apiVersion: v1
+    >   kind: ServiceAccount
+    >   metadata:
+    >     name: zeppelin-server-account
+    >     labels:
+    >       aglais.name: "aglais-zeppelin-zeppelin-server-account"
+    >       helm.sh/chart:  "aglais-zeppelin-0.0.1"
+    >       app.kubernetes.io/name: "aglais-zeppelin"
+    >       app.kubernetes.io/instance: "aglais-zeppelin"
+    >       app.kubernetes.io/version: "0.0.1"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-nginx-config.yaml
+    >   apiVersion: v1
+    >   kind: ConfigMap
+    >   metadata:
+    >     name: zeppelin-nginx-config
+    >     labels:
+    >       aglais.name: "aglais-zeppelin-zeppelin-nginx-config"
+    >       helm.sh/chart:  "aglais-zeppelin-0.0.1"
+    >       app.kubernetes.io/name: "aglais-zeppelin"
+    >       app.kubernetes.io/instance: "aglais-zeppelin"
+    >       app.kubernetes.io/version: "0.0.1"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   data:
+    >     nginx.conf: |
+    >       daemon off;
+    >       worker_processes auto;
+    >       events {
+    >         worker_connections 1024;
+    >       }
+    >       http {
+    >         map $http_upgrade $connection_upgrade {
+    >           default upgrade;
+    >           '' close;
+    >         }
+    >   
+    >         # first server block will be default. Proxy zeppelin server.
+    >         server {
+    >           listen 80;
+    >           location / {
+    >             proxy_pass http://localhost:8080;
+    >             proxy_set_header Host $host;
+    >             proxy_http_version 1.1;
+    >             proxy_set_header Upgrade $http_upgrade;
+    >             proxy_set_header Connection $connection_upgrade;
+    >             proxy_redirect http://localhost $scheme://SERVICE_DOMAIN;
+    >           }
+    >         }
+    >   
+    >         # match request domain [port]-[service].[serviceDomain]
+    >         # proxy extra service such as spark-ui
+    >         server {
+    >           listen 80;
+    >           server_name "~(?<svc_port>[0-9]+)-(?<svc_name>[^.]*)\.(.*)";
+    >           location / {
+    >             resolver 127.0.0.1:53 ipv6=off;
+    >             proxy_pass http://$svc_name.NAMESPACE.svc:$svc_port;
+    >             proxy_set_header Host $host;
+    >             proxy_http_version 1.1;
+    >             proxy_set_header Upgrade $http_upgrade;
+    >             proxy_set_header Connection $connection_upgrade;
+    >             proxy_redirect http://localhost $scheme://SERVICE_DOMAIN;
+    >   
+    >             # redirect rule for spark ui. 302 redirect response misses port number of service domain
+    >             proxy_redirect ~(http:[/]+[0-9]+[-][^-]+[-][^.]+)[^/]+(\/jobs.*) $1.SERVICE_DOMAIN$2;
+    >           }
+    >         }
+    >       }
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-conf.yaml
+    >   apiVersion: v1
+    >   kind: ConfigMap
+    >   metadata:
+    >     name: zeppelin-server-config
+    >     labels:
+    >       aglais.name: "aglais-zeppelin-zeppelin-server-config"
+    >       helm.sh/chart:  "aglais-zeppelin-0.0.1"
+    >       app.kubernetes.io/name: "aglais-zeppelin"
+    >       app.kubernetes.io/instance: "aglais-zeppelin"
+    >       app.kubernetes.io/version: "0.0.1"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   data:
+    >     # 'serviceDomain' is a Domain name to use for accessing Zeppelin UI.
+    >     # Should point IP address of 'zeppelin-server' service.
+    >     #
+    >     # Wildcard subdomain need to be point the same IP address to access service inside of Pod (such as SparkUI).
+    >     # i.e. if service domain is 'local.zeppelin-project.org', DNS configuration should make 'local.zeppelin-project.org' and '*.local.zeppelin-project.org' point the same address.
+    >     #
+    >     # Default value is 'local.zeppelin-project.org' while it points 127.0.0.1 and `kubectl port-forward zeppelin-server` will give localhost to connects.
+    >     # If you have your ingress controller configured to connect to `zeppelin-server` service and have a domain name for it (with wildcard subdomain point the same address), you can replace serviceDomain field with your own domain.
+    >     SERVICE_DOMAIN: local.zeppelin-project.org:8080
+    >   
+    >     ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE: "aglais/pyspark-mod:latest"
+    >     ZEPPELIN_K8S_CONTAINER_IMAGE: "aglais/zeppelin-mod:20201104-063957"
+    >     # This needs to match the name set in zeppelin-server-service.yaml
+    >     ZEPPELIN_K8S_SERVICE_NAME: zeppelin-server-service
+    >   
+    >     ZEPPELIN_HOME: /zeppelin
+    >     ZEPPELIN_SERVER_RPC_PORTRANGE: 12320:12320
+    >   
+    >     # default value of 'master' property for spark interpreter.
+    >     SPARK_MASTER: k8s://https://kubernetes.default.svc
+    >     # default value of 'SPARK_HOME' property for spark interpreter.
+    >     SPARK_HOME: /spark
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-account.yaml
+    >   kind: Role
+    >   apiVersion: rbac.authorization.k8s.io/v1
+    >   metadata:
+    >     name: zeppelin-server-role
+    >     labels:
+    >       aglais.name: "aglais-zeppelin-zeppelin-server-role"
+    >       helm.sh/chart:  "aglais-zeppelin-0.0.1"
+    >       app.kubernetes.io/name: "aglais-zeppelin"
+    >       app.kubernetes.io/instance: "aglais-zeppelin"
+    >       app.kubernetes.io/version: "0.0.1"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   rules:
+    >   - apiGroups: [""]
+    >     resources: ["pods", "services"]
+    >     verbs: ["create", "get", "update", "patch", "list", "delete", "watch"]
+    >   - apiGroups: ["rbac.authorization.k8s.io"]
+    >     resources: ["roles", "rolebindings"]
+    >     verbs: ["bind", "create", "get", "update", "patch", "list", "delete", "watch"]
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-account.yaml
+    >   kind: RoleBinding
+    >   apiVersion: rbac.authorization.k8s.io/v1
+    >   metadata:
+    >     name: zeppelin-server-role-binding
+    >     labels:
+    >       aglais.name: "aglais-zeppelin-zeppelin-server-binding"
+    >       helm.sh/chart:  "aglais-zeppelin-0.0.1"
+    >       app.kubernetes.io/name: "aglais-zeppelin"
+    >       app.kubernetes.io/instance: "aglais-zeppelin"
+    >       app.kubernetes.io/version: "0.0.1"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   subjects:
+    >   - kind: ServiceAccount
+    >     name: zeppelin-server-account
+    >   roleRef:
+    >     kind: Role
+    >     name: zeppelin-server-role
+    >     apiGroup: rbac.authorization.k8s.io
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-service.yaml
+    >   kind: Service
+    >   apiVersion: v1
+    >   metadata:
+    >     name: zeppelin-server-service # This must match ZEPPELIN_K8S_SERVICE_NAME config property.
+    >     labels:
+    >       aglais.name: "aglais-zeppelin-zeppelin-server-service"
+    >       helm.sh/chart:  "aglais-zeppelin-0.0.1"
+    >       app.kubernetes.io/name: "aglais-zeppelin"
+    >       app.kubernetes.io/instance: "aglais-zeppelin"
+    >       app.kubernetes.io/version: "0.0.1"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   spec:
+    >     ports:
+    >       - name: http
+    >         port: 80
+    >       - name: rpc # port name is referenced in the code. So it shouldn't be changed.
+    >         port: 12320
+    >     selector:
+    >       app.kubernetes.io/name: zeppelin-server-pods
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-deploy.yaml
+    >   apiVersion: apps/v1
+    >   kind: Deployment
+    >   metadata:
+    >     name: zeppelin-server-deploy
+    >     labels:
+    >       app.kubernetes.io/name: zeppelin-server-deploy
+    >       aglais.name: "aglais-zeppelin-zeppelin-server-deploy"
+    >       helm.sh/chart:  "aglais-zeppelin-0.0.1"
+    >       app.kubernetes.io/name: "aglais-zeppelin"
+    >       app.kubernetes.io/instance: "aglais-zeppelin"
+    >       app.kubernetes.io/version: "0.0.1"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   spec:
+    >     replicas: 1
+    >     selector:
+    >       matchLabels:
+    >         app.kubernetes.io/name: zeppelin-server-pods
+    >     strategy:
+    >       type: RollingUpdate
+    >     template:
+    >       metadata:
+    >         labels:
+    >           app.kubernetes.io/name: zeppelin-server-pods
+    >       spec:
+    >         serviceAccountName: zeppelin-server-account
+    >         volumes:
+    >         - name: nginx-conf
+    >           configMap:
+    >             name: zeppelin-nginx-config
+    >             items:
+    >             - key: nginx.conf
+    >               path: nginx.conf
+    >         containers:
+    >         - name: zeppelin-server-actual
+    >           image: "aglais/zeppelin-mod:20201104-063957"
+    >           command: ["sh", "-c", "$(ZEPPELIN_HOME)/bin/zeppelin.sh"]
+    >           lifecycle:
+    >             preStop:
+    >               exec:
+    >                 # SIGTERM triggers a quick exit; gracefully terminate instead
+    >                 command: ["sh", "-c", "ps -ef | grep org.apache.zeppelin.server.ZeppelinServer | grep -v grep | awk '{print $2}' | xargs kill"]
+    >           ports:
+    >           - name: http
+    >             containerPort: 8080
+    >           - name: https
+    >             containerPort: 8443
+    >           - name: rpc
+    >             containerPort: 12320
+    >           env:
+    >           - name: POD_UID
+    >             valueFrom:
+    >               fieldRef:
+    >                 apiVersion: v1
+    >                 fieldPath: metadata.uid
+    >           - name: POD_NAME
+    >             valueFrom:
+    >               fieldRef:
+    >                 apiVersion: v1
+    >                 fieldPath: metadata.name
+    >           envFrom:
+    >           - configMapRef:
+    >               name: zeppelin-server-config
+    >         # volumeMounts:
+    >         #  - name: zeppelin-server-notebook-volume     # configure this to persist notebook
+    >         #    mountPath: /zeppelin/notebook
+    >         #  - name: zeppelin-server-conf                # configure this to persist Zeppelin configuration
+    >         #    mountPath: /zeppelin/conf
+    >         #  - name: zeppelin-server-custom-k8s          # configure this to mount customized Kubernetes spec for interpreter
+    >         #    mountPath: /zeppelin/k8s
+    >         - name: zeppelin-server-nginx
+    >           image: nginx:1.14.0
+    >           command: ["/bin/sh", "-c"]
+    >           env:
+    >           - name: SERVICE_DOMAIN
+    >             valueFrom:
+    >               configMapKeyRef:
+    >                 name: zeppelin-server-config
+    >                 key: SERVICE_DOMAIN
+    >           args:
+    >             - cp -f /tmp/conf/nginx.conf /etc/nginx/nginx.conf;
+    >               sed -i -e "s/SERVICE_DOMAIN/$SERVICE_DOMAIN/g" /etc/nginx/nginx.conf;
+    >               sed -i -e "s/NAMESPACE/$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)/g" /etc/nginx/nginx.conf;
+    >               cat /etc/nginx/nginx.conf;
+    >               /usr/sbin/nginx
+    >           volumeMounts:
+    >             - name: nginx-conf
+    >               mountPath: /tmp/conf
+    >           lifecycle:
+    >             preStop:
+    >               exec:
+    >                 # SIGTERM triggers a quick exit; gracefully terminate instead
+    >                 command: ["/usr/sbin/nginx", "-s", "quit"]
+    >         - name: zeppelin-server-dnsmasq  # nginx requires dns resolver for dynamic dns resolution
+    >           image: "janeczku/go-dnsmasq:release-1.0.5"
+    >           args:
+    >             - --listen
+    >             - "127.0.0.1:53"
+    >             - --default-resolver
+    >             - --append-search-domains
+    >             - --hostsfile=/etc/hosts
+    >             - --verbose
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-ingress.yaml
+    >   apiVersion: networking.k8s.io/v1beta1
+    >   kind: Ingress
+    >   metadata:
+    >     name: zeppelin-server-ingress
+    >     annotations:
+    >       kubernetes.io/ingress.class: nginx
+    >       nginx.ingress.kubernetes.io/ssl-passthrough: "false"
+    >       nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    >     labels:
+    >       aglais.name: "aglais-zeppelin-zeppelin-server-ingress"
+    >       helm.sh/chart:  "aglais-zeppelin-0.0.1"
+    >       app.kubernetes.io/name: "aglais-zeppelin"
+    >       app.kubernetes.io/instance: "aglais-zeppelin"
+    >       app.kubernetes.io/version: "0.0.1"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   spec:
+    >     tls:
+    >       - hosts:
+    >         - "zeppelin.metagrid.xyz"
+    >         secretName: "zeppelin-tls-secret"
+    >     rules:
+    >       - host: "zeppelin.metagrid.xyz"
+    >         http:
+    >           paths:
+    >           - path: /
+    >             backend:
+    >               serviceName: zeppelin-server-service
+    >               servicePort: 80
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-nginx-config.yaml
+    >   #
+    >   # Licensed to the Apache Software Foundation (ASF) under one or more
+    >   # contributor license agreements.  See the NOTICE file distributed with
+    >   # this work for additional information regarding copyright ownership.
+    >   # The ASF licenses this file to You under the Apache License, Version 2.0
+    >   # (the "License"); you may not use this file except in compliance with
+    >   # the License.  You may obtain a copy of the License at
+    >   #
+    >   #    http://www.apache.org/licenses/LICENSE-2.0
+    >   #
+    >   # Unless required by applicable law or agreed to in writing, software
+    >   # distributed under the License is distributed on an "AS IS" BASIS,
+    >   # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    >   # See the License for the specific language governing permissions and
+    >   # limitations under the License.
+    >   #
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-account.yaml
+    >   #
+    >   # Licensed to the Apache Software Foundation (ASF) under one or more
+    >   # contributor license agreements.  See the NOTICE file distributed with
+    >   # this work for additional information regarding copyright ownership.
+    >   # The ASF licenses this file to You under the Apache License, Version 2.0
+    >   # (the "License"); you may not use this file except in compliance with
+    >   # the License.  You may obtain a copy of the License at
+    >   #
+    >   #    http://www.apache.org/licenses/LICENSE-2.0
+    >   #
+    >   # Unless required by applicable law or agreed to in writing, software
+    >   # distributed under the License is distributed on an "AS IS" BASIS,
+    >   # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    >   # See the License for the specific language governing permissions and
+    >   # limitations under the License.
+    >   #
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-conf.yaml
+    >   #
+    >   # Licensed to the Apache Software Foundation (ASF) under one or more
+    >   # contributor license agreements.  See the NOTICE file distributed with
+    >   # this work for additional information regarding copyright ownership.
+    >   # The ASF licenses this file to You under the Apache License, Version 2.0
+    >   # (the "License"); you may not use this file except in compliance with
+    >   # the License.  You may obtain a copy of the License at
+    >   #
+    >   #    http://www.apache.org/licenses/LICENSE-2.0
+    >   #
+    >   # Unless required by applicable law or agreed to in writing, software
+    >   # distributed under the License is distributed on an "AS IS" BASIS,
+    >   # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    >   # See the License for the specific language governing permissions and
+    >   # limitations under the License.
+    >   #
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-deploy.yaml
+    >   #
+    >   # Licensed to the Apache Software Foundation (ASF) under one or more
+    >   # contributor license agreements.  See the NOTICE file distributed with
+    >   # this work for additional information regarding copyright ownership.
+    >   # The ASF licenses this file to You under the Apache License, Version 2.0
+    >   # (the "License"); you may not use this file except in compliance with
+    >   # the License.  You may obtain a copy of the License at
+    >   #
+    >   #    http://www.apache.org/licenses/LICENSE-2.0
+    >   #
+    >   # Unless required by applicable law or agreed to in writing, software
+    >   # distributed under the License is distributed on an "AS IS" BASIS,
+    >   # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    >   # See the License for the specific language governing permissions and
+    >   # limitations under the License.
+    >   #
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-ingress.yaml
+    >   #
+    >   # <meta:header>
+    >   #   <meta:licence>
+    >   #     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+    >   #
+    >   #     This information is free software: you can redistribute it and/or modify
+    >   #     it under the terms of the GNU General Public License as published by
+    >   #     the Free Software Foundation, either version 3 of the License, or
+    >   #     (at your option) any later version.
+    >   #
+    >   #     This information is distributed in the hope that it will be useful,
+    >   #     but WITHOUT ANY WARRANTY; without even the implied warranty of
+    >   #     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    >   #     GNU General Public License for more details.
+    >   #
+    >   #     You should have received a copy of the GNU General Public License
+    >   #     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+    >   #   </meta:licence>
+    >   # </meta:header>
+    >   #
+    >   # https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#deployment
+    >   # https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#validation
+    >   #
+    >   ---
+    >   # Source: aglais-zeppelin/templates/zeppelin-server-service.yaml
+    >   #
+    >   # Licensed to the Apache Software Foundation (ASF) under one or more
+    >   # contributor license agreements.  See the NOTICE file distributed with
+    >   # this work for additional information regarding copyright ownership.
+    >   # The ASF licenses this file to You under the Apache License, Version 2.0
+    >   # (the "License"); you may not use this file except in compliance with
+    >   # the License.  You may obtain a copy of the License at
+    >   #
+    >   #    http://www.apache.org/licenses/LICENSE-2.0
+    >   #
+    >   # Unless required by applicable law or agreed to in writing, software
+    >   # distributed under the License is distributed on an "AS IS" BASIS,
+    >   # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    >   # See the License for the specific language governing permissions and
+    >   # limitations under the License.
+    >   #
+    >   
+    >   NOTES:
+    >   TODO - add some notes ...
+
+
+# -----------------------------------------------------
+# Get the Dashboard token.
+#[user@kubernator]
+
+    dashname=aglais-dashboard
+
+    secretname=$(
+        kubectl \
+            --output json \
+            --namespace "${namespace:?}" \
+            get \
+                ServiceAccount \
+                    "${dashname:?}-kubernetes-dashboard" \
+        | jq -r '.secrets[0].name'
+        )
+
+    kubectl \
+        --output json \
+        --namespace "${namespace:?}" \
+        get secret \
+            "${secretname:?}" \
+    | jq -r '.data.token | @base64d'
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin and test ...
+#[user@desktop]
+
+    firefox --new-window "https://zeppelin.metagrid.xyz/" &
+
+    #
+    # Yay - works.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Mount the Gaia data in our Spark workers.
+#[user@zeppelin]
+
+# --------------------------------
+%spark.conf
+
+spark.executor.instances 10
+
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.mount.path        /aglais/data/gaia/dr2
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.mount.readOnly    true
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.options.claimName aglais-gaia-dr2-claim
+
+    >   Took 0 sec. Last updated by user1 at November 04 2020, 6:55:33 AM
+
+
+# --------------------------------
+%spark.pyspark
+
+gs_df = sqlContext.read.parquet(
+    "/aglais/data/gaia/dr2"
+    )
+
+print("DF count: ", gs_df.count())
+print("DF partitions: ", gs_df.rdd.getNumPartitions())
+
+    >   Took 2 min 5 sec. Last updated by user1 at November 04 2020, 6:57:38 AM.
+
+    >   Took 14 sec. Last updated by user1 at November 04 2020, 6:58:32 AM.
+
+
+# --------------------------------
+%spark.pyspark
+
+# following https://spark.apache.org/docs/latest/sql-data-sources-parquet.html
+gs_df.createOrReplaceTempView("gaia_source")
+sql_df = spark.sql("SELECT floor(source_id / 562949953421312) AS hpx5, COUNT(*) AS n, AVG(pmra) AS avgPmRa, AVG(pmdec) AS avgPmDec FROM gaia_source GROUP BY hpx5")
+print (sql_df.take(10))
+
+    >   [
+    >   Row(
+    >       hpx5=10422,
+    >       n=772169,
+    >       avgPmRa=-6.471648041093022,
+    >       avgPmDec=-2.2199168268053686
+    >       )
+    >   Row(
+    >       hpx5=29, n=11515
+    >       avgPmRa=5.124681039428918
+    >       avgPmDec=-6.428914686141356
+    >       )
+    >   Row(
+    >       hpx5=26
+    >       n=10501
+    >       avgPmRa=5.634856905407194
+    >       avgPmDec=-6.80074327151223
+    >       )
+    >   Row(
+    >       hpx5=9968
+    >       n=331942
+    >       avgPmRa=-1.3943595052938238
+    >       avgPmDec=2.2695498193758357
+    >       )
+    >   Row(
+    >       hpx5=2453
+    >       n=18618
+    >       avgPmRa=-4.529530423651317
+    >       avgPmDec=-3.9636398933104484
+    >       )
+    >   Row(
+    >       hpx5=11938
+    >       n=664701
+    >       avgPmRa=-1.5526806119479626
+    >       avgPmDec=-4.930975643874072
+    >       )
+    >   Row(
+    >       hpx5=7225
+    >       n=862172
+    >       avgPmRa=-1.4151927204070307
+    >       avgPmDec=-3.1944690137506977
+    >       )
+    >   Row(
+    >       hpx5=2250
+    >       n=11724
+    >       avgPmRa=-7.3792155177175625
+    >       avgPmDec=-6.221912264698537
+    >       )
+    >   Row(
+    >       hpx5=9945
+    >       n=328850
+    >       avgPmRa=-1.8786368515968297
+    >       avgPmDec=2.5052444207598237
+    >       )
+    >   Row(
+    >       hpx5=9715
+    >       n=30316
+    >       avgPmRa=-6.9570748287385085
+    >       avgPmDec=-0.3858221484941282
+    >       )
+    >   ]
+
+    >   Took 2 min 19 sec. Last updated by user1 at November 04 2020, 7:07:19 AM.
+
+
+# --------------------------------
+%spark.pyspark
+
+# plot up the sky counts
+#import matplotlib.pyplot as plt
+import numpy as np
+import healpy as hp
+
+
+
+    >   ModuleNotFoundError Traceback (most recent call last)
+    >   <ipython-input-19-9ce0af3b1661> in <module>
+    >         2 #import matplotlib.pyplot as plt
+    >         3 import numpy as np
+    >   ----> 4 import healpy as hp
+    >   
+    >   ModuleNotFoundError: No module named 'healpy'
+    >   ERROR
+
+
+
+
+
+
+# --------------------------------
+%spark.pyspark
+
+# healpy constants
+NSIDE = 32
+NPIX = hp.nside2npix(NSIDE)
+
+# do the visualisation
+array_data = np.empty(NPIX)
+for item in sql_df.rdd.collect():  array_data[item[0]] = item[2]
+#array_data = np.array(sql_df.select('hpx5', 'avgPmRa').collect()) ... or somesuch more efficient (elegant, pythonic, vectorized) way of creating the required input for HEALPy?!
+hp.mollview(array_data, nest=True, title='Mean RA proper motion at HEALPix level 5', cmap='rainbow')
+hp.graticule(coord='E', color='white')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

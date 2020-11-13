@@ -1,0 +1,1994 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Continue from previous notes
+        20201002-01-manila-static.txt
+
+    Go back to a single share, access rule, volume, claim and pod.
+    Start with what we expect works, ... and work from there.
+
+Results:
+
+    grep 'TEST\|PASS\|FAIL' 20201002-02-manila-static.txt
+
+    TEST - public ...
+    FAIL - public, rwaccess, os-trustee, readonly:true,  ReadOnlyMany
+    FAIL - public, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+    FAIL - public, rwaccess, os-trustee, readonly:false, ReadWriteMany
+
+    TEST - private ...
+    PASS - private, rwaccess, os-trustee, readonly:false, ReadWriteMany
+    PASS - private, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+
+    FAIL - private, roaccess, os-trustee, readonly:true, ReadOnlyMany
+    FAIL - private, rwaccess, os-trustee, readonly:true, ReadOnlyMany
+
+    TEST - public ...
+    PASS - public, rwaccess, os-trustee, readonly:false, ReadWriteMany
+    PASS - public, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+    PASS - public, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+
+    TEST - private ...
+    FAIL - private, roaccess, os-trustee, readonly:true,  ReadOnlyMany
+    FAIL - private, roaccess, os-trustee, readonly:false, ReadOnlyMany
+    FAIL - private, rwaccess, os-trustee, readonly:true,  ReadOnlyMany
+    FAIL - private, rwaccess, os-trustee, readonly:false, ReadOnlyMany
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/helm:/helm:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/kubernetes:/kubernetes:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Get our Dashboard token.
+#[root@kubenator]
+
+    kubectl get \
+        --output json \
+        secret \
+    | jq -r '
+        .items[]
+        | select(
+            .metadata.name
+            | startswith(
+                "valeria-account"
+                )
+            )
+        | .data.token
+        | @base64d
+        '
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+# -----------------------------------------------------
+
+    TEST - public ...
+
+# -----------------------------------------------------
+# Set the share params (public share).
+#[user@kubernator]
+
+    sharename=hilka-qz1
+    sharesize=5000
+    sharepublic=true
+
+# -----------------------------------------------------
+# Create a new static share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name   "${sharename:?}" \
+            --public "${sharepublic:?}" \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            "${sharesize:?}" \
+    > "/tmp/${sharename:?}-share.json"
+
+    shareid=$(
+        jq -r '.id' "/tmp/${sharename:?}-share.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                --format json \
+                "${shareid:?}"
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2020-10-02T11:53:37.000000",
+    >     "description": null,
+    >     "export_locations": "\npath = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/3b424e1f-477e-4efb-b7e7-767168842477\nid = 21f19278-90ac-4731-b386-5587ed6c90d8\npreferred = False",
+    >     "has_replicas": false,
+    >     "id": "81e3b8f9-6601-4e9e-8d0e-464799755c3c",
+    >     "is_public": true,
+    >     "mount_snapshot_support": false,
+    >     "name": "hilka-qz1",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "properties": {},
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8",
+    >     "share_type_name": "cephfsnativetype",
+    >     "size": 5000,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "available",
+    >     "task_state": null,
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "volume_type": "cephfsnativetype"
+    >   }
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw" \
+    > "/tmp/${sharename:?}-rw-access.json"
+
+    rwaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-rw-access.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                --format json \
+                "${rwaccess:?}"
+
+    >   {
+    >     "id": "dd8406b5-946c-4a81-8111-3c90d9bff99e",
+    >     "share_id": "81e3b8f9-6601-4e9e-8d0e-464799755c3c",
+    >     "access_level": "rw",
+    >     "access_to": "hilka-qz1-rw",
+    >     "access_type": "cephx",
+    >     "state": "active",
+    >     "access_key": "AQAlFXdfc8w9IBAAjQwi5ne7z2jl3ayvrYm23w==",
+    >     "created_at": "2020-10-02T11:55:17.000000",
+    >     "updated_at": "2020-10-02T11:55:17.000000",
+    >     "properties": ""
+    >   }
+
+
+# -----------------------------------------------------
+# Create a RO access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro" \
+    > "/tmp/${sharename:?}-ro-access.json"
+
+    roaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-ro-access.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                --format json \
+                "${roaccess:?}"
+
+    >   {
+    >     "id": "58d71b44-4d90-45a7-8601-8869e39bf04a",
+    >     "share_id": "81e3b8f9-6601-4e9e-8d0e-464799755c3c",
+    >     "access_level": "ro",
+    >     "access_to": "hilka-qz1-ro",
+    >     "access_type": "cephx",
+    >     "state": "active",
+    >     "access_key": "AQA4FXdfdQWZNRAAGKDZlJ31W+0ARK59L5YD7A==",
+    >     "created_at": "2020-10-02T11:55:36.000000",
+    >     "updated_at": "2020-10-02T11:55:37.000000",
+    >     "properties": ""
+    >   }
+
+# -----------------------------------------------------
+
+    TEST - public, rwaccess, os-trustee, readonly:true, ReadOnlyMany
+
+# -----------------------------------------------------
+# Create our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: true
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        --debug \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   install.go:159: [debug] Original chart version: ""
+    >   install.go:176: [debug] CHART PATH: /helm/manila-static-share
+    >   
+    >   client.go:108: [debug] creating 3 resource(s)
+    >   NAME: hilka-qz1
+    >   LAST DEPLOYED: Fri Oct  2 12:22:38 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   USER-SUPPLIED VALUES:
+    >   aglais:
+    >     dataset: test-data
+    >   openstack:
+    >     accessid: dd8406b5-946c-4a81-8111-3c90d9bff99e
+    >     shareid: 81e3b8f9-6601-4e9e-8d0e-464799755c3c
+    >   share:
+    >     name: hilka-qz1
+    >     readonly: true
+    >     size: 5000
+    >   
+    >   COMPUTED VALUES:
+    >   aglais:
+    >     dataset: test-data
+    >   csi:
+    >     ceph:
+    >       secrets:
+    >         publish:
+    >           name: os-trustee
+    >           namespace: kube-system
+    >         staging:
+    >           name: os-trustee
+    >           namespace: kube-system
+    >     manila:
+    >       access: ReadOnlyMany
+    >       reclaim: Retain
+    >   openstack:
+    >     accessid: dd8406b5-946c-4a81-8111-3c90d9bff99e
+    >     shareid: 81e3b8f9-6601-4e9e-8d0e-464799755c3c
+    >   share:
+    >     name: hilka-qz1
+    >     readonly: true
+    >     size: 5000
+    >   testpod:
+    >     image: fedora:32
+    >   
+    >   HOOKS:
+    >   MANIFEST:
+    >   ---
+    >   # Source: manila-static-share/templates/volume.yaml
+    >   apiVersion: v1
+    >   kind: PersistentVolume
+    >   metadata:
+    >     name: "hilka-qz1-volume"
+    >     labels:
+    >       aglais.name:    "hilka-qz1-volume"
+    >       aglais.dataset: "test-data"
+    >       helm.sh/chart:  "manila-static-share-0.0.1"
+    >       app.kubernetes.io/name:       "manila-static-share"
+    >       app.kubernetes.io/instance:   "hilka-qz1"
+    >       app.kubernetes.io/version:    "0.0.1"
+    >       app.kubernetes.io/component:  "test-data"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   spec:
+    >     persistentVolumeReclaimPolicy: "Retain"
+    >     accessModes:
+    >     - "ReadOnlyMany"
+    >     capacity:
+    >       storage: "5000G"
+    >     csi:
+    >       driver: cephfs.manila.csi.openstack.org
+    >       nodeStageSecretRef:
+    >         name: "os-trustee"
+    >         namespace: "kube-system"
+    >       nodePublishSecretRef:
+    >         name: "os-trustee"
+    >         namespace: "kube-system"
+    >       volumeHandle: "hilka-qz1-handle"
+    >       volumeAttributes:
+    >         shareID: "81e3b8f9-6601-4e9e-8d0e-464799755c3c"
+    >         shareAccessID: "dd8406b5-946c-4a81-8111-3c90d9bff99e"
+    >   ---
+    >   # Source: manila-static-share/templates/volume-claim.yaml
+    >   apiVersion: v1
+    >   kind: PersistentVolumeClaim
+    >   metadata:
+    >     name: "hilka-qz1-claim"
+    >     labels:
+    >       aglais.name:    "hilka-qz1-claim"
+    >       aglais.dataset: "test-data"
+    >       helm.sh/chart:  "manila-static-share-0.0.1"
+    >       app.kubernetes.io/name:       "manila-static-share"
+    >       app.kubernetes.io/instance:   "hilka-qz1"
+    >       app.kubernetes.io/version:    "0.0.1"
+    >       app.kubernetes.io/component:  "test-data"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   spec:
+    >     accessModes:
+    >     - "ReadOnlyMany"
+    >     resources:
+    >       requests:
+    >         storage: "5000G"
+    >     selector:
+    >       matchLabels:
+    >         aglais.name: "hilka-qz1-volume"
+    >   ---
+    >   # Source: manila-static-share/templates/test-pod.yaml
+    >   apiVersion: v1
+    >   kind: Pod
+    >   metadata:
+    >     name: "hilka-qz1-testpod"
+    >     labels:
+    >       aglais.name:    "hilka-qz1"
+    >       aglais.dataset: "test-data"
+    >       helm.sh/chart:  "manila-static-share-0.0.1"
+    >       app.kubernetes.io/name:       "manila-static-share"
+    >       app.kubernetes.io/instance:   "hilka-qz1"
+    >       app.kubernetes.io/version:    "0.0.1"
+    >       app.kubernetes.io/component:  "test-data"
+    >       app.kubernetes.io/managed-by: "Helm"
+    >   spec:
+    >     volumes:
+    >       - name: share-data
+    >         persistentVolumeClaim:
+    >           claimName: "hilka-qz1-claim"
+    >           readOnly: true
+    >       - name: local-data
+    >         emptyDir: {}
+    >     containers:
+    >       - name: "hilka-qz1-container"
+    >         image: "fedora:32"
+    >         volumeMounts:
+    >           - name: share-data
+    >             mountPath: /share-data
+    >             readOnly: true
+    >           - name: local-data
+    >             mountPath: /local-data
+    >             readOnly: false
+    >         command: ["/bin/sh"]
+    >         args:
+    >           - "-c"
+    >           - >-
+    >             while true; do
+    >             date >> /local-data/${HOSTNAME}.log;
+    >             sleep 1;
+    >             done
+
+
+# -----------------------------------------------------
+# Check all the components are there.
+#[user@kubernator]
+
+    kubectl describe \
+        PersistentVolume \
+            "${sharename:?}-volume"
+
+    >   Name:            hilka-qz1-volume
+    >   Labels:          aglais.dataset=test-data
+    >                    aglais.name=hilka-qz1-volume
+    >                    app.kubernetes.io/component=test-data
+    >                    app.kubernetes.io/instance=hilka-qz1
+    >                    app.kubernetes.io/managed-by=Helm
+    >                    app.kubernetes.io/name=manila-static-share
+    >                    app.kubernetes.io/version=0.0.1
+    >                    helm.sh/chart=manila-static-share-0.0.1
+    >   Annotations:     meta.helm.sh/release-name: hilka-qz1
+    >                    meta.helm.sh/release-namespace: default
+    >                    pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Bound
+    >   Claim:           default/hilka-qz1-claim
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    ROX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        5T
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      hilka-qz1-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=dd8406b5-946c-4a81-8111-3c90d9bff99e
+    >                              shareID=81e3b8f9-6601-4e9e-8d0e-464799755c3c
+    >   Events:                <none>
+
+
+    kubectl describe \
+        PersistentVolumeClaim \
+            "${sharename:?}-claim"
+
+    >   Name:          hilka-qz1-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        hilka-qz1-volume
+    >   Labels:        aglais.dataset=test-data
+    >                  aglais.name=hilka-qz1-claim
+    >                  app.kubernetes.io/component=test-data
+    >                  app.kubernetes.io/instance=hilka-qz1
+    >                  app.kubernetes.io/managed-by=Helm
+    >                  app.kubernetes.io/name=manila-static-share
+    >                  app.kubernetes.io/version=0.0.1
+    >                  helm.sh/chart=manila-static-share-0.0.1
+    >   Annotations:   meta.helm.sh/release-name: hilka-qz1
+    >                  meta.helm.sh/release-namespace: default
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      5T
+    >   Access Modes:  ROX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    hilka-qz1-testpod
+    >   Events:        <none>
+
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   Name:         hilka-qz1-testpod
+    >   Namespace:    default
+    >   Node:         tiberius-20200923-nqzekodqww64-node-3/10.0.0.41
+    >   Start Time:   Fri, 02 Oct 2020 12:22:38 +0000
+    >   Labels:       aglais.dataset=test-data
+    >                 aglais.name=hilka-qz1
+    >                 app.kubernetes.io/component=test-data
+    >                 app.kubernetes.io/instance=hilka-qz1
+    >                 app.kubernetes.io/managed-by=Helm
+    >                 app.kubernetes.io/name=manila-static-share
+    >                 app.kubernetes.io/version=0.0.1
+    >                 helm.sh/chart=manila-static-share-0.0.1
+    >   Annotations:  meta.helm.sh/release-name: hilka-qz1
+    >                 meta.helm.sh/release-namespace: default
+    >   Status:       Pending
+    >   IP:
+    >   Containers:
+    >     hilka-qz1-container:
+    >       Container ID:
+    >       Image:         fedora:32
+    >       Image ID:
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Command:
+    >         /bin/sh
+    >       Args:
+    >         -c
+    >         while true; do date >> /local-data/${HOSTNAME}.log; sleep 1; done
+    >       State:          Waiting
+    >         Reason:       ContainerCreating
+    >       Ready:          False
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /local-data from local-data (rw)
+    >         /share-data from share-data (ro)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-pxrzv (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             False
+    >     ContainersReady   False
+    >     PodScheduled      True
+    >   Volumes:
+    >     share-data:
+    >       Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    >       ClaimName:  hilka-qz1-claim
+    >       ReadOnly:   true
+    >     local-data:
+    >       Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    >       Medium:
+    >       SizeLimit:  <unset>
+    >     default-token-pxrzv:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-pxrzv
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type     Reason       Age               From                                            Message
+    >     ----     ------       ----              ----                                            -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                               Successfully assigned default/hilka-qz1-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  8s (x7 over 40s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "hilka-qz1-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+# -----------------------------------------------------
+
+    FAIL - public, rwaccess, os-trustee, readonly:true, ReadOnlyMany
+
+    "stage secrets cannot be nil or empty"
+    Very boring ....
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        "${sharename:?}"
+
+    >   release "hilka-qz1" uninstalled
+
+# -----------------------------------------------------
+
+    TEST - public, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: false
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+csi:
+  manila:
+    access:  "ReadWriteOnce"
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        --debug \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >     Type     Reason       Age                From                                            Message
+    >     ----     ------       ----               ----                                            -------
+    >     Normal   Scheduled    <unknown>          default-scheduler                               Successfully assigned default/hilka-qz1-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  13s (x7 over 46s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "hilka-qz1-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+# -----------------------------------------------------
+
+    FAIL - public, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+
+    "stage secrets cannot be nil or empty"
+    Very boring ....
+
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        "${sharename:?}"
+
+    >   release "hilka-qz1" uninstalled
+
+# -----------------------------------------------------
+
+    TEST - public, rwaccess, os-trustee, readonly:false, ReadWriteMany
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: false
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+csi:
+  manila:
+    access:  "ReadWriteMany"
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        --debug \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >     Type     Reason       Age                From                                            Message
+    >     ----     ------       ----               ----                                            -------
+    >     Normal   Scheduled    <unknown>          default-scheduler                               Successfully assigned default/hilka-qz1-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  15s (x6 over 31s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "hilka-qz1-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+# -----------------------------------------------------
+
+    FAIL - public, rwaccess, os-trustee, readonly:false, ReadWriteMany
+
+    All of them !?
+    ReadWriteMany, ReadWriteOnce, ReadOnlyMany
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        "${sharename:?}"
+
+    >   release "hilka-qz1" uninstalled
+
+# -----------------------------------------------------
+# Delete our Manila share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share delete \
+            "${shareid:?}"
+
+    >   -
+
+# -----------------------------------------------------
+
+    TEST - private ...
+
+# -----------------------------------------------------
+# Update the share params (private share).
+#[user@kubernator]
+
+    sharename=hilka-qz2
+    sharesize=5000
+    sharepublic=false
+
+# -----------------------------------------------------
+# Create a new static share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name   "${sharename:?}" \
+            --public "${sharepublic:?}" \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            "${sharesize:?}" \
+    > "/tmp/${sharename:?}-share.json"
+
+    shareid=$(
+        jq -r '.id' "/tmp/${sharename:?}-share.json"
+        )
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw" \
+    > "/tmp/${sharename:?}-rw-access.json"
+
+    rwaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-rw-access.json"
+        )
+
+
+# -----------------------------------------------------
+# Create a RO access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro" \
+    > "/tmp/${sharename:?}-ro-access.json"
+
+    roaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-ro-access.json"
+        )
+
+# -----------------------------------------------------
+
+    TEST - private, rwaccess, os-trustee, readonly:false, ReadWriteMany
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: false
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+csi:
+  manila:
+    access:  "ReadWriteMany"
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        --debug \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/hilka-qz2-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Normal  Pulled     13s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Container image "fedora:32" already present on machine
+    >     Normal  Created    13s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Created container hilka-qz2-container
+    >     Normal  Started    13s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Started container hilka-qz2-container
+
+# -----------------------------------------------------
+
+    PASS - private, rwaccess, os-trustee, readonly:false, ReadWriteMany
+
+# -----------------------------------------------------
+# Connect to the Pod and check we can write to the shared data.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        "${sharename:?}-testpod" \
+            -- \
+                bash
+
+        ls -al /share-data/
+
+    >   drwxrwxrwx. 2 root root  0 Oct  2 14:49 .
+    >   drwxr-xr-x. 1 root root 53 Oct  2 14:50 ..
+
+
+        for i in {0..8}
+        do
+            date >> /share-data/${HOSTNAME:?}.log
+        done
+
+        tail    /share-data/${HOSTNAME:?}.log
+
+    >   ....
+    >   ....
+    >   Fri Oct  2 14:52:13 UTC 2020
+    >   Fri Oct  2 14:52:13 UTC 2020
+    >   Fri Oct  2 14:52:13 UTC 2020
+    >   Fri Oct  2 14:52:13 UTC 2020
+
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        --debug \
+        "${sharename:?}"
+
+    >   release "hilka-qz1" uninstalled
+
+# -----------------------------------------------------
+
+    TEST - private, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+
+# -----------------------------------------------------
+# Update our Chart files.
+#[user@kubernator]
+
+    # Simplify some of the levels.
+    # Move boilerplate into _helper.tpl
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: false
+
+csi:
+  access: "ReadWriteOnce"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-qz2
+    >   LAST DEPLOYED: Fri Oct  2 15:37:03 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/hilka-qz2-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Normal  Pulled     11s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Container image "fedora:32" already present on machine
+    >     Normal  Created    11s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Created container hilka-qz2-container
+    >     Normal  Started    11s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Started container hilka-qz2-container
+
+# -----------------------------------------------------
+
+    PASS - private, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+
+# -----------------------------------------------------
+# Connect to the Pod and check we can write to the shared data.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        "${sharename:?}-testpod" \
+            -- \
+                bash
+
+        for i in {0..8}
+        do
+            date >> /share-data/${HOSTNAME:?}.log
+        done
+
+        tail    /share-data/${HOSTNAME:?}.log
+
+    >   ....
+    >   ....
+    >   Fri Oct  2 15:38:08 UTC 2020
+    >   Fri Oct  2 15:38:08 UTC 2020
+    >   Fri Oct  2 15:38:08 UTC 2020
+    >   Fri Oct  2 15:38:08 UTC 2020
+
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        --debug \
+        "${sharename:?}"
+
+    >   ....
+    >   ....
+    >   release "hilka-qz1" uninstalled
+
+# -----------------------------------------------------
+
+    TEST - private, roaccess, os-trustee, readonly:true, ReadOnlyMany
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: true
+
+csi:
+  access: "ReadOnlyMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${roaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-qz2
+    >   LAST DEPLOYED: Fri Oct  2 15:39:31 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                            Message
+    >     ----     ------       ----              ----                                            -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                               Successfully assigned default/hilka-qz2-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  4s (x5 over 12s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "hilka-qz2-volume" : rpc error: code = Internal desc = an error (exit status 22) occurred while running ceph-fuse args: [/var/lib/kubelet/plugins/kubernetes.io/csi/pv/hilka-qz2-volume/globalmount -m 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789 -c /etc/ceph/ceph.conf -n client.hilka-qz2-ro --keyfile=***stripped*** -r /volumes/_nogroup/f503ccf5-9b0d-4608-a7fc-423653265299 -o nonempty ,ro]
+
+# -----------------------------------------------------
+
+    FAIL - private, roaccess, os-trustee, readonly:true, ReadOnlyMany
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        --debug \
+        "${sharename:?}"
+
+    >   ....
+    >   ....
+    >   release "hilka-qz2" uninstalled
+
+# -----------------------------------------------------
+
+    TEST - private, rwaccess, os-trustee, readonly:true, ReadOnlyMany
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: true
+
+csi:
+  access: "ReadOnlyMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-qz2
+    >   LAST DEPLOYED: Fri Oct  2 15:44:35 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >     Type     Reason       Age               From                                            Message
+    >     ----     ------       ----              ----                                            -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                               Successfully assigned default/hilka-qz2-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  6s (x5 over 14s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "hilka-qz2-volume" : rpc error: code = Internal desc = an error (exit status 22) occurred while running ceph-fuse args: [/var/lib/kubelet/plugins/kubernetes.io/csi/pv/hilka-qz2-volume/globalmount -m 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789 -c /etc/ceph/ceph.conf -n client.hilka-qz2-ro --keyfile=***stripped*** -r /volumes/_nogroup/f503ccf5-9b0d-4608-a7fc-423653265299 -o nonempty ,ro]
+
+# -----------------------------------------------------
+
+    FAIL - private, rwaccess, os-trustee, readonly:true, ReadOnlyMany
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        --debug \
+        "${sharename:?}"
+
+    >   ....
+    >   ....
+    >   release "hilka-qz2" uninstalled
+
+
+# -----------------------------------------------------
+# Delete our Manila share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share delete \
+            "${shareid:?}"
+
+    >   -
+
+
+# -----------------------------------------------------
+
+    TEST - public ...
+
+# -----------------------------------------------------
+# Update the share params (public).
+#[user@kubernator]
+
+    sharename=hilka-$(pwgen -A 5 1)
+    sharesize=5000
+    sharepublic=true
+
+# -----------------------------------------------------
+# Create a new static share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name   "${sharename:?}" \
+            --public "${sharepublic:?}" \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            "${sharesize:?}" \
+    > "/tmp/${sharename:?}-share.json"
+
+    shareid=$(
+        jq -r '.id' "/tmp/${sharename:?}-share.json"
+        )
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw" \
+    > "/tmp/${sharename:?}-rw-access.json"
+
+    rwaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-rw-access.json"
+        )
+
+
+# -----------------------------------------------------
+# Create a RO access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro" \
+    > "/tmp/${sharename:?}-ro-access.json"
+
+    roaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-ro-access.json"
+        )
+
+# -----------------------------------------------------
+
+    TEST - public, rwaccess, os-trustee, readonly:false, ReadWriteMany
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: false
+
+csi:
+  access: "ReadWriteMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-iek9c
+    >   LAST DEPLOYED: Fri Oct  2 16:03:44 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/hilka-iek9c-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Normal  Pulled     11s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Container image "fedora:32" already present on machine
+    >     Normal  Created    11s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Created container hilka-iek9c-container
+    >     Normal  Started    11s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Started container hilka-iek9c-container
+
+# -----------------------------------------------------
+
+    PASS - public, rwaccess, os-trustee, readonly:false, ReadWriteMany
+
+# -----------------------------------------------------
+# Connect to the Pod and check we can write to the shared data.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        "${sharename:?}-testpod" \
+            -- \
+                bash
+
+        for i in {0..8}
+        do
+            date >> /share-data/${HOSTNAME:?}.log
+        done
+
+        tail    /share-data/${HOSTNAME:?}.log
+
+    >   ....
+    >   ....
+    >   Fri Oct  2 16:04:45 UTC 2020
+    >   Fri Oct  2 16:04:45 UTC 2020
+    >   Fri Oct  2 16:04:45 UTC 2020
+    >   Fri Oct  2 16:04:45 UTC 2020
+
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        --debug \
+        "${sharename:?}"
+
+# -----------------------------------------------------
+
+    TEST - public, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: false
+
+csi:
+  access: "ReadWriteOnce"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-iek9c
+    >   LAST DEPLOYED: Fri Oct  2 16:06:57 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/hilka-iek9c-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Normal  Pulled     9s         kubelet, tiberius-20200923-nqzekodqww64-node-3  Container image "fedora:32" already present on machine
+    >     Normal  Created    9s         kubelet, tiberius-20200923-nqzekodqww64-node-3  Created container hilka-iek9c-container
+    >     Normal  Started    9s         kubelet, tiberius-20200923-nqzekodqww64-node-3  Started container hilka-iek9c-container
+
+# -----------------------------------------------------
+
+    PASS - public, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+
+# -----------------------------------------------------
+# Connect to the Pod and check we can write to the shared data.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        "${sharename:?}-testpod" \
+            -- \
+                bash
+
+        for i in {0..8}
+        do
+            date >> /share-data/${HOSTNAME:?}.log
+        done
+
+        tail    /share-data/${HOSTNAME:?}.log
+
+    >   ....
+    >   ....
+    >   Fri Oct  2 16:07:38 UTC 2020
+    >   Fri Oct  2 16:07:38 UTC 2020
+    >   Fri Oct  2 16:07:38 UTC 2020
+    >   Fri Oct  2 16:07:38 UTC 2020
+
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        --debug \
+        "${sharename:?}"
+
+# -----------------------------------------------------
+
+    TEST - public, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: false
+
+csi:
+  access: "ReadWriteOnce"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-iek9c
+    >   LAST DEPLOYED: Fri Oct  2 16:30:27 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/hilka-iek9c-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Normal  Pulled     14s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Container image "fedora:32" already present on machine
+    >     Normal  Created    14s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Created container hilka-iek9c-container
+    >     Normal  Started    14s        kubelet, tiberius-20200923-nqzekodqww64-node-3  Started container hilka-iek9c-container
+
+# -----------------------------------------------------
+
+    PASS - public, rwaccess, os-trustee, readonly:false, ReadWriteOnce
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        --debug \
+        "${sharename:?}"
+
+    >   ....
+    >   ....
+    >   release "hilka-iek9c" uninstalled
+
+
+# -----------------------------------------------------
+# Delete our Manila share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share delete \
+            "${shareid:?}"
+
+    >   -
+
+# -----------------------------------------------------
+
+    TEST - private ...
+
+# -----------------------------------------------------
+# Update the share params (private).
+#[user@kubernator]
+
+    sharename=hilka-$(pwgen -A 5 1)
+    sharesize=5000
+    sharepublic=false
+
+# -----------------------------------------------------
+# Create a new static share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name   "${sharename:?}" \
+            --public "${sharepublic:?}" \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            "${sharesize:?}" \
+    > "/tmp/${sharename:?}-share.json"
+
+    shareid=$(
+        jq -r '.id' "/tmp/${sharename:?}-share.json"
+        )
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw" \
+    > "/tmp/${sharename:?}-rw-access.json"
+
+    rwaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-rw-access.json"
+        )
+
+
+# -----------------------------------------------------
+# Create a RO access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro" \
+    > "/tmp/${sharename:?}-ro-access.json"
+
+    roaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-ro-access.json"
+        )
+
+# -----------------------------------------------------
+
+    TEST - private, roaccess, os-trustee, readonly:true,  ReadOnlyMany
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: true
+
+csi:
+  access: "ReadOnlyMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${roaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-dei8k
+    >   LAST DEPLOYED: Fri Oct  2 16:48:40 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                            Message
+    >     ----     ------       ----              ----                                            -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                               Successfully assigned default/hilka-dei8k-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  4s (x5 over 12s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "hilka-dei8k-volume" : rpc error: code = Internal desc = an error (exit status 22) occurred while running ceph-fuse args: [/var/lib/kubelet/plugins/kubernetes.io/csi/pv/hilka-dei8k-volume/globalmount -m 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789 -c /etc/ceph/ceph.conf -n client.hilka-dei8k-ro --keyfile=***stripped*** -r /volumes/_nogroup/4576ba00-91ac-4c18-b7c4-d9dc80a28e19 -o nonempty ,ro]
+
+# -----------------------------------------------------
+
+    FAIL - private, roaccess, os-trustee, readonly:true,  ReadOnlyMany
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        --debug \
+        "${sharename:?}"
+
+# -----------------------------------------------------
+
+    TEST - private, roaccess, os-trustee, readonly:false, ReadOnlyMany
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: true
+
+csi:
+  access: "ReadOnlyMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${roaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-dei8k
+    >   LAST DEPLOYED: Fri Oct  2 16:51:01 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                            Message
+    >     ----     ------       ----              ----                                            -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                               Successfully assigned default/hilka-dei8k-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  7s (x5 over 15s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "hilka-dei8k-volume" : rpc error: code = Internal desc = an error (exit status 22) occurred while running ceph-fuse args: [/var/lib/kubelet/plugins/kubernetes.io/csi/pv/hilka-dei8k-volume/globalmount -m 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789 -c /etc/ceph/ceph.conf -n client.hilka-dei8k-ro --keyfile=***stripped*** -r /volumes/_nogroup/4576ba00-91ac-4c18-b7c4-d9dc80a28e19 -o nonempty ,ro]
+
+# -----------------------------------------------------
+
+    FAIL - private, roaccess, os-trustee, readonly:false, ReadOnlyMany
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        --debug \
+        "${sharename:?}"
+
+# -----------------------------------------------------
+
+    TEST - private, rwaccess, os-trustee, readonly:true,  ReadOnlyMany
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: true
+
+csi:
+  access: "ReadOnlyMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-dei8k
+    >   LAST DEPLOYED: Fri Oct  2 16:53:13 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                            Message
+    >     ----     ------       ----              ----                                            -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                               Successfully assigned default/hilka-dei8k-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  7s (x5 over 15s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "hilka-dei8k-volume" : rpc error: code = Internal desc = an error (exit status 22) occurred while running ceph-fuse args: [/var/lib/kubelet/plugins/kubernetes.io/csi/pv/hilka-dei8k-volume/globalmount -m 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789 -c /etc/ceph/ceph.conf -n client.hilka-dei8k-ro --keyfile=***stripped*** -r /volumes/_nogroup/4576ba00-91ac-4c18-b7c4-d9dc80a28e19 -o nonempty ,ro]
+
+# -----------------------------------------------------
+
+    FAIL - private, rwaccess, os-trustee, readonly:true,  ReadOnlyMany
+
+# -----------------------------------------------------
+# Delete our Chart deployment.
+#[user@kubernator]
+
+    helm delete \
+        --debug \
+        "${sharename:?}"
+
+# -----------------------------------------------------
+
+    TEST - private, rwaccess, os-trustee, readonly:false, ReadOnlyMany
+
+# -----------------------------------------------------
+# Update our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name: ${sharename:?}
+  size: ${sharesize:?}
+  readonly: false
+
+csi:
+  access: "ReadOnlyMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${rwaccess:?}
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-dei8k
+    >   LAST DEPLOYED: Fri Oct  2 16:55:47 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check our test Pod.
+#[user@kubernator]
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                            Message
+    >     ----     ------       ----              ----                                            -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                               Successfully assigned default/hilka-dei8k-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  7s (x5 over 15s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "hilka-dei8k-volume" : rpc error: code = Internal desc = an error (exit status 22) occurred while running ceph-fuse args: [/var/lib/kubelet/plugins/kubernetes.io/csi/pv/hilka-dei8k-volume/globalmount -m 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789 -c /etc/ceph/ceph.conf -n client.hilka-dei8k-ro --keyfile=***stripped*** -r /volumes/_nogroup/4576ba00-91ac-4c18-b7c4-d9dc80a28e19 -o nonempty ,ro]
+
+# -----------------------------------------------------
+
+    FAIL - private, rwaccess, os-trustee, readonly:false, ReadOnlyMany
+
+# -----------------------------------------------------
+

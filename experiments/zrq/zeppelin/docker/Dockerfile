@@ -15,7 +15,7 @@
 
 ARG buildsrc
 
-FROM aglais/zeppelinbase:${buildsrc}
+FROM aglais/zeppelin-base:${buildsrc}
 MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
 
 ARG buildsrc

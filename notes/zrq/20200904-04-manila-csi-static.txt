@@ -1,0 +1,1138 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+# -----------------------------------------------------
+
+Experiments:
+
+    Manila CSI version v1.18.0
+    20200904-03-manila-csi.txt
+
+    Test name : Dostinkie
+
+    Connecting to a static share using application credentials
+    FAIL - validation error.
+
+    Connecting to a static share using username/password
+    PASS - works once we found the right secret to use.
+
+
+# -----------------------------------------------------
+# Update our clouds config file.
+#[user@desktop]
+
+cat > "${HOME}/clouds.yaml" << EOF
+
+clouds:
+
+  gaia-prod:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-prod.APP_CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-prod.APP_CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-prod-super:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'zrq-gaia-prod.APX_CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'zrq-gaia-prod.APX_CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-prod-tester:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      username: '$(secret 'zrq-gaia-prod.TEST_USERNAME')'
+      password: '$(secret 'zrq-gaia-prod.TEST_PASSWORD')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+EOF
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Install YQ.
+# TODO - add this to the kubernator image
+#[user@kubernator]
+
+    mkdir   "${HOME:?}/bin"
+    wget -O "${HOME:?}/bin/yq" https://github.com/mikefarah/yq/releases/download/3.3.2/yq_linux_amd64
+    chmod a+x "${HOME:?}/bin/yq"
+
+
+# -----------------------------------------------------
+# Create our Secret set using application credentials.
+#[user@kubernator]
+
+    osauthurl=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.auth_url'
+        )
+
+    osregion=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.region_name'
+        )
+
+    oscredentialID=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.application_credential_id'
+        )
+
+    oscredentialsecret=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.application_credential_secret'
+        )
+
+    cat > "/tmp/dostinkie-secrets.yaml" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dostinkie-secrets
+  namespace: default
+stringData:
+  os-authURL: "${osauthurl:?}"
+  os-region: "${osregion:?}"
+  os-applicationCredentialID: "${oscredentialID:?}"
+  os-applicationCredentialSecret: "${oscredentialsecret:?}"
+EOF
+
+    kubectl create \
+        --filename "/tmp/dostinkie-secrets.yaml"
+
+    kubectl describe \
+        secret \
+            dostinkie-secrets
+
+
+    >   Name:         dostinkie-secrets
+    >   Namespace:    default
+    >   Labels:       <none>
+    >   Annotations:  <none>
+    >
+    >   Type:  Opaque
+    >
+    >   Data
+    >   ====
+    >   os-authURL:                      47 bytes
+    >   os-region:                       9 bytes
+    >   os-applicationCredentialID:      32 bytes
+    >   os-applicationCredentialSecret:  35 bytes
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+# -----------------------------------------------------
+# Create our target share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name 'dostinkie-share' \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            5 \
+    | tee /tmp/dostinkie-share.json
+
+    shareid=$(
+        jq -r '.id' /tmp/dostinkie-share.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                "${shareid:?}"
+
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+    >   | Field                                 | Value                                                                                                         |
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+    >   | access_rules_status                   | active                                                                                                        |
+    >   | availability_zone                     | nova                                                                                                          |
+    >   | create_share_from_snapshot_support    | False                                                                                                         |
+    >   | created_at                            | 2020-09-05T13:33:03.000000                                                                                    |
+    >   | description                           | None                                                                                                          |
+    >   | export_locations                      |                                                                                                               |
+    >   |                                       | path = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/1b18f5a9-bb93-46e5-b3fe-733c9a142180 |
+    >   |                                       | id = 4d1173b1-7cbb-452f-8aef-1a49ef3e2a42                                                                     |
+    >   |                                       | preferred = False                                                                                             |
+    >   | has_replicas                          | False                                                                                                         |
+    >   | id                                    | 60bfb9eb-3254-4647-8f89-e291bad87420                                                                          |
+    >   | is_public                             | False                                                                                                         |
+    >   | mount_snapshot_support                | False                                                                                                         |
+    >   | name                                  | dostinkie-share                                                                                               |
+    >   | project_id                            | 21b4ae3a2ea44bc5a9c14005ed2963af                                                                              |
+    >   | properties                            |                                                                                                               |
+    >   | replication_type                      | None                                                                                                          |
+    >   | revert_to_snapshot_support            | False                                                                                                         |
+    >   | share_group_id                        | None                                                                                                          |
+    >   | share_network_id                      | None                                                                                                          |
+    >   | share_proto                           | CEPHFS                                                                                                        |
+    >   | share_type                            | 5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8                                                                          |
+    >   | share_type_name                       | cephfsnativetype                                                                                              |
+    >   | size                                  | 5                                                                                                             |
+    >   | snapshot_id                           | None                                                                                                          |
+    >   | snapshot_support                      | False                                                                                                         |
+    >   | source_share_group_snapshot_member_id | None                                                                                                          |
+    >   | status                                | available                                                                                                     |
+    >   | task_state                            | None                                                                                                          |
+    >   | user_id                               | 98169f87de174ad4ac98c32e59646488                                                                              |
+    >   | volume_type                           | cephfsnativetype                                                                                              |
+    >   +---------------------------------------+---------------------------------------------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create an access rule for our share.
+#
+
+    All of the documentation for this refers to managing NFS shares.
+    The only examples I can find describe granting IP access to a subnet.
+
+        +--------------+--------------------------------------+
+        | share_id     | 8d8b854b-ec32-43f1-acc0-1b2efa7c3400 |
+        | access_type  | ip                                   |
+        | access_to    | 20.0.0.0/24                          |
+        | access_level | ro                                   |
+        +--------------+--------------------------------------+
+
+    The dynamic share created by the CSI plugin just uses the share name.
+    Which is probably just placeholder ?
+
+    This has a bit more information:
+    https://docs.openstack.org/manila/queens/admin/shared-file-systems-crud-share.html#manage-access-to-share
+    Again, concentrates on NFS,but does mention the other options.
+
+    * ip    Authenticates an instance through its IP address.
+            A valid format is XX.XX.XX.XX or XX.XX.XX.XX/XX. For example 0.0.0.0/0.
+
+    * user  Authenticates by a specified user or group name.
+            A valid value is an alphanumeric string that can contain some special characters and is from 4 to 32 characters long.
+
+    * cert  Authenticates an instance through a TLS certificate. Specify the TLS identity as the IDENTKEY.
+            A valid value is any string up to 64 characters long in the common name (CN) of the certificate.
+            The meaning of a string depends on its interpretation.
+
+    * cephx Ceph authentication system. Specify the Ceph auth ID that needs to be authenticated and authorized
+            for share access by the Ceph back end.
+            A valid value must be non-empty, consist of ASCII printable characters, and not contain periods.
+
+    Based on this:
+    https://documentation.suse.com/ses/6/html/ses-all/cha-storage-cephx.html
+
+        The Ceph client chooses a name and requests a key.
+        The Ceph server generates a username and access key pair and returns the key.
+        The Ceph client and server use the shared key to authenticate messages.
+
+    So, my guess is we can have anything we like in the 'access_to' field,
+    because it is just a name.
+
+    The Ceph client in Openstack will send the username to the Ceph server
+    and invoke 'ceph auth get-or-create-key' to get the key.
+
+
+# -----------------------------------------------------
+# Create an access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            'AlbertAugustus' \
+    | tee /tmp/dostinkie-access.json
+
+    accessid=$(
+        jq -r '.id' /tmp/dostinkie-access.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                "${accessid:?}"
+
+    >   +--------------+------------------------------------------+
+    >   | Field        | Value                                    |
+    >   +--------------+------------------------------------------+
+    >   | id           | f92d9cfd-d283-48f8-83bf-17dcbaa23b4e     |
+    >   | share_id     | 60bfb9eb-3254-4647-8f89-e291bad87420     |
+    >   | access_level | rw                                       |
+    >   | access_to    | AlbertAugustus                           |
+    >   | access_type  | cephx                                    |
+    >   | state        | active                                   |
+    >   | access_key   | AQCw..............................==     |
+    >   | created_at   | 2020-09-05T14:11:59.000000               |
+    >   | updated_at   | 2020-09-05T14:12:00.000000               |
+    >   | properties   |                                          |
+    >   +--------------+------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create our persistent volume.
+#[user@kubernator]
+
+    #
+    # Documentation is thin on what secrets to include here.
+    # Some examples have:
+    #
+    #     nodeStageSecretRef:
+    #       name: csi-manila-cephfs-secrets
+    #       namespace: default
+    #     nodePublishSecretRef:
+    #       name: csi-manila-cephfs-secrets
+    #       namespace: default
+    #
+    # Without acually saying _why_ these need to be here.
+    # As far as I can tell, these are secrets to be passed on to the lower level CSI driver to create the volume.
+    # These secrets are also associated with StorageClass examples.
+    # Again, without acually saying _why_.
+    #
+    # I think, seeing as the share already exists and we are just publishing it, then the
+    # username and access key from the Openstack share access should be sufficient.
+    #
+
+    cat > "/tmp/dostinkie-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: dostinkie-volume
+  labels:
+    name: dostinkie-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 4Gi
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    volumeHandle: dostinkie-volume-handle
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${accessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-volume.yaml"
+
+    kubectl describe \
+        persistentvolume \
+            dostinkie-volume
+
+    >   Name:            dostinkie-volume
+    >   Labels:          name=dostinkie-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"name":"dostinkie-volume"},"name":"dostinkie-volume"},...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        4Gi
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      dostinkie-volume-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=f92d9cfd-d283-48f8-83bf-17dcbaa23b4e
+    >                              shareID=60bfb9eb-3254-4647-8f89-e291bad87420
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Create our PersistentVolumeClaim.
+#[user@kubernator]
+
+    cat > "/tmp/dostinkie-claim.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dostinkie-claim
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 3Gi
+  selector:
+    matchExpressions:
+    - key: name
+      operator: In
+      values: ["dostinkie-volume"]
+EOF
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-claim.yaml"
+
+    kubectl describe \
+        persistentvolumeclaim \
+            dostinkie-claim
+
+    >   Name:          dostinkie-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        dostinkie-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"dostinkie-claim","namespace":"default"},"spec":{"ac...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      4Gi
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Check the logs ...
+#[user@kubernator]
+
+    #
+    # Nothing yet ....
+    #
+
+
+# -----------------------------------------------------
+# Create our test Pod.
+#[user@kubernator]
+
+    cat > /tmp/dostinkie-pod.yaml << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: dostinkie-pod
+  namespace: default
+spec:
+  volumes:
+    - name: share-data
+      persistentVolumeClaim:
+        claimName: dostinkie-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: dostinkie-container
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: share-data
+          mountPath: /share-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /share-data/\${HOSTNAME}.log;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename /tmp/dostinkie-pod.yaml
+
+    kubectl \
+        describe pod \
+            dostinkie-pod
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age              From                                            Message
+    >     ----     ------       ----             ----                                            -------
+    >     Normal   Scheduled    <unknown>        default-scheduler                               Successfully assigned default/dostinkie-pod to tiberius-20200904-nj46yxjgkhty-node-0
+    >     Warning  FailedMount  1s (x4 over 5s)  kubelet, tiberius-20200904-nj46yxjgkhty-node-0  MountVolume.MountDevice failed for volume "dostinkie-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+    >   MountVolume.MountDevice failed for volume "dostinkie-volume" :
+    >       rpc error:
+    >           code = InvalidArgument
+    >           desc = stage secrets cannot be nil or empty
+
+    #
+    # OK, but which secrets do we use ?
+    #
+
+        * Our own application credentials ?
+        * A secret created from the share access key ?
+        * A secret owned by the Manila CSI plugin ?
+        * A secret owned by the CephFS CSI plugin ?
+
+    #
+    # In previous experiment, we used our application credentials as the secret.
+    # 20200831-01-manila-csi.txt
+    #
+
+
+# -----------------------------------------------------
+# Delete our Pod, Claim and Volume.
+#[user@kubernator]
+
+    kubectl \
+        delete pod \
+            dostinkie-pod
+
+    kubectl \
+        delete persistentvolumeclaim \
+            dostinkie-claim
+
+    kubectl \
+        delete persistentvolume \
+            dostinkie-volume
+
+
+# -----------------------------------------------------
+# Create our persistent volume.
+#[user@kubernator]
+
+    #
+    # Documentation is thin on what secrets to include here.
+    # Examples are:
+    #
+    #     nodeStageSecretRef:
+    #       name: csi-manila-cephfs-secrets
+    #       namespace: default
+    #     nodePublishSecretRef:
+    #       name: csi-manila-cephfs-secrets
+    #       namespace: default
+    #
+    # Without acually saying _why_ these need to be here.
+    # As far as I can tell, these are secrets to be passed on to the lower level CSI driver to create the volume.
+    # These secrets are also associated with StorageClass examples.
+    # Again, without acually saying _why_.
+    #
+    # This manual explains how to template the secret name and namespace:
+    # https://kubernetes-csi.github.io/docs/secrets-and-credentials-storage-class.html
+    # .. but not _what_ to put in the secrets.
+    #
+    # In previous experiment, we used our application credentials as the secret.
+    # 20200831-01-manila-csi.txt
+    #
+
+    cat > "/tmp/dostinkie-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: dostinkie-volume
+  labels:
+    name: dostinkie-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 4Gi
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    nodeStageSecretRef:
+      name: dostinkie-secrets
+      namespace: default
+    nodePublishSecretRef:
+      name: dostinkie-secrets
+      namespace: default
+    volumeHandle: dostinkie-handle
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${accessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-volume.yaml"
+
+    kubectl describe \
+        persistentvolume \
+            dostinkie-volume
+
+    >   Name:            dostinkie-volume
+    >   Labels:          name=dostinkie-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"name":"dostinkie-volume"},"name":"dostinkie-volume"},...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        4Gi
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      dostinkie-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=f92d9cfd-d283-48f8-83bf-17dcbaa23b4e
+    >                              shareID=60bfb9eb-3254-4647-8f89-e291bad87420
+    >   Events:                <none>
+
+# -----------------------------------------------------
+# Create our persistent volume claim.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-claim.yaml"
+
+    kubectl describe \
+        persistentvolumeclaim \
+            dostinkie-claim
+
+    >   Name:          dostinkie-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        dostinkie-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"dostinkie-claim","namespace":"default"},"spec":{"ac...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      4Gi
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Create our test Pod.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-pod.yaml"
+
+    kubectl describe \
+        pod \
+            dostinkie-pod
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                            Message
+    >     ----     ------       ----              ----                                            -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                               Successfully assigned default/dostinkie-pod to tiberius-20200904-nj46yxjgkhty-node-0
+    >     Warning  FailedMount  5s (x5 over 13s)  kubelet, tiberius-20200904-nj46yxjgkhty-node-0  MountVolume.MountDevice failed for volume "dostinkie-volume" : rpc error: code = InvalidArgument desc = invalid OpenStack secrets: parameter 'os-authURL' requires exactly one of [os-password os-trustID] parameters
+
+
+# -----------------------------------------------------
+# Delete our Pod, Claim, Volume and Secret.
+#[user@kubernator]
+
+    kubectl \
+        delete pod \
+            dostinkie-pod
+
+    kubectl \
+        delete persistentvolumeclaim \
+            dostinkie-claim
+
+    kubectl \
+        delete persistentvolume \
+            dostinkie-volume
+
+    kubectl \
+        delete secret \
+            dostinkie-secrets
+
+
+# -----------------------------------------------------
+# Create our Secret set using username and password.
+#[user@kubernator]
+
+    osdomain=default
+    osproject=iris-gaia-prod
+
+    osauthurl=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.auth_url'
+        )
+
+    osregion=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.region_name'
+        )
+
+    osusername=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.username'
+        )
+
+    ospassword=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.password'
+        )
+
+    cat > "/tmp/dostinkie-secrets.yaml" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dostinkie-secrets
+  namespace: default
+stringData:
+  os-authURL:     "${osauthurl:?}"
+  os-region:      "${osregion:?}"
+  os-domainID:    "${osdomain:?}"
+  os-projectName: "${osproject:?}"
+  os-userName:    "${osusername:?}"
+  os-password:    "${ospassword:?}"
+EOF
+
+    kubectl create \
+        --filename "/tmp/dostinkie-secrets.yaml"
+
+    kubectl describe \
+        secret \
+            dostinkie-secrets
+
+    >   ....
+    >   ....
+    >   Data
+    >   ====
+    >   os-region:       9 bytes
+    >   os-userName:     17 bytes
+    >   os-authURL:      47 bytes
+    >   os-domainID:     7 bytes
+    >   os-password:     37 bytes
+    >   os-projectName:  14 bytes
+
+
+# -----------------------------------------------------
+# Create our Volume, Claim and Pod.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-volume.yaml"
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-claim.yaml"
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-pod.yaml"
+
+    kubectl describe \
+        pod \
+            dostinkie-pod
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age                From                                            Message
+    >     ----     ------       ----               ----                                            -------
+    >     Normal   Scheduled    <unknown>          default-scheduler                               Successfully assigned default/dostinkie-pod to tiberius-20200904-nj46yxjgkhty-node-3
+    >     Warning  FailedMount  81s                kubelet, tiberius-20200904-nj46yxjgkhty-node-3  MountVolume.MountDevice failed for volume "dostinkie-volume" : rpc error: code = Unauthenticated desc = failed to create Manila v2 client: failed to authenticate: Authentication failed
+    >     Warning  FailedMount  17s (x7 over 80s)  kubelet, tiberius-20200904-nj46yxjgkhty-node-3  MountVolume.MountDevice failed for volume "dostinkie-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+# -----------------------------------------------------
+# Check our Volume specification.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        persistentvolume \
+            dostinkie-volume \
+    | jq '.spec'
+
+    >   {
+    >     "accessModes": [
+    >       "ReadWriteMany"
+    >     ],
+    >     "capacity": {
+    >       "storage": "4Gi"
+    >     },
+    >     "claimRef": {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolumeClaim",
+    >       "name": "dostinkie-claim",
+    >       "namespace": "default",
+    >       "resourceVersion": "557679",
+    >       "uid": "02926d7f-9778-493d-aa02-0dea890f240b"
+    >     },
+    >     "csi": {
+    >       "driver": "cephfs.manila.csi.openstack.org",
+    >       "nodePublishSecretRef": {
+    >         "name": "dostinkie-secrets",
+    >         "namespace": "default"
+    >       },
+    >       "nodeStageSecretRef": {
+    >         "name": "dostinkie-secrets",
+    >         "namespace": "default"
+    >       },
+    >       "volumeAttributes": {
+    >         "shareAccessID": "f92d9cfd-d283-48f8-83bf-17dcbaa23b4e",
+    >         "shareID": "60bfb9eb-3254-4647-8f89-e291bad87420"
+    >       },
+    >       "volumeHandle": "dostinkie-handle"
+    >     },
+    >     "persistentVolumeReclaimPolicy": "Retain",
+    >     "volumeMode": "Filesystem"
+    >   }
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Discovered kube-system/os-trustee works for the dynamic example, so trying them here.
+    # 20200905-01-manila-testing.txt
+
+        csi.storage.k8s.io/provisioner-secret-name: os-trustee
+        csi.storage.k8s.io/provisioner-secret-namespace: kube-system
+
+
+# -----------------------------------------------------
+# Delete our Pod, Claim and Volume.
+#[user@kubernator]
+
+    kubectl \
+        delete pod \
+            dostinkie-pod
+
+    kubectl \
+        delete persistentvolumeclaim \
+            dostinkie-claim
+
+    kubectl \
+        delete persistentvolume \
+            dostinkie-volume
+
+# -----------------------------------------------------
+# Create our PersistentVolume, using the kube-system/os-trustee Secret.
+#[user@kubernator]
+
+    cat > "/tmp/dostinkie-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: dostinkie-volume
+  labels:
+    name: dostinkie-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 4Gi
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    nodeStageSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    nodePublishSecretRef:
+      name: os-trustee
+      namespace: kube-system
+    volumeHandle: dostinkie-handle
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${accessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-volume.yaml"
+
+    kubectl describe \
+        persistentvolume \
+            dostinkie-volume
+
+
+    >   Name:            dostinkie-volume
+    >   Labels:          name=dostinkie-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"name":"dostinkie-volume"},"name":"dostinkie-volume"},...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        4Gi
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      dostinkie-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=f92d9cfd-d283-48f8-83bf-17dcbaa23b4e
+    >                              shareID=60bfb9eb-3254-4647-8f89-e291bad87420
+    >   Events:                <none>
+
+
+
+# -----------------------------------------------------
+# Create our Claim and Pod.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-claim.yaml"
+
+    kubectl apply \
+        --filename "/tmp/dostinkie-pod.yaml"
+
+    kubectl describe \
+        pod \
+            dostinkie-pod
+
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/dostinkie-pod to tiberius-20200904-nj46yxjgkhty-node-0
+    >     Normal  Pulling    14s        kubelet, tiberius-20200904-nj46yxjgkhty-node-0  Pulling image "fedora:latest"
+    >     Normal  Pulled     7s         kubelet, tiberius-20200904-nj46yxjgkhty-node-0  Successfully pulled image "fedora:latest"
+    >     Normal  Created    7s         kubelet, tiberius-20200904-nj46yxjgkhty-node-0  Created container dostinkie-container
+    >     Normal  Started    7s         kubelet, tiberius-20200904-nj46yxjgkhty-node-0  Started container dostinkie-container
+
+
+# -----------------------------------------------------
+# Login to our Pod to check.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        dostinkie-pod \
+        -- \
+            /bin/bash
+
+            tail -f /share-data/${HOSTNAME}.log
+
+    >   ....
+    >   ....
+    >   Sun Sep  6 01:38:00 UTC 2020
+    >   Sun Sep  6 01:38:01 UTC 2020
+    >   Sun Sep  6 01:38:02 UTC 2020
+    >   Sun Sep  6 01:38:03 UTC 2020
+    >   Sun Sep  6 01:38:04 UTC 2020
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Describe all the components
+#[user@kubernator]
+
+    kubectl describe \
+        secret \
+            dostinkie-secrets
+
+    >   Name:         dostinkie-secrets
+    >   Namespace:    default
+    >   Labels:       <none>
+    >   Annotations:  <none>
+    >
+    >   Type:  Opaque
+    >
+    >   Data
+    >   ====
+    >   os-projectName:  14 bytes
+    >   os-region:       9 bytes
+    >   os-userName:     17 bytes
+    >   os-authURL:      47 bytes
+    >   os-domainID:     7 bytes
+    >   os-password:     37 bytes
+
+
+    kubectl describe \
+        persistentvolume \
+            dostinkie-volume
+
+    >   Name:            dostinkie-volume
+    >   Labels:          name=dostinkie-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"name":"dostinkie-volume"},"name":"dostinkie-volume"},...
+    >                    pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Bound
+    >   Claim:           default/dostinkie-claim
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        4Gi
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      dostinkie-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=f92d9cfd-d283-48f8-83bf-17dcbaa23b4e
+    >                              shareID=60bfb9eb-3254-4647-8f89-e291bad87420
+    >   Events:                <none>
+
+
+    kubectl describe \
+        persistentvolumeclaim \
+            dostinkie-claim
+
+    >   Name:          dostinkie-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        dostinkie-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"dostinkie-claim","namespace":"default"},"spec":{"ac...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      4Gi
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    dostinkie-pod
+    >   Events:        <none>
+
+
+
+    kubectl describe \
+        pod \
+            dostinkie-pod
+
+    >   Name:         dostinkie-pod
+    >   Namespace:    default
+    >   Node:         tiberius-20200904-nj46yxjgkhty-node-0/10.0.0.168
+    >   Start Time:   Sun, 06 Sep 2020 01:36:18 +0000
+    >   Labels:       <none>
+    >   Annotations:  kubectl.kubernetes.io/last-applied-configuration:
+    >                   {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"name":"dostinkie-pod","namespace":"default"},"spec":{"containers":[{"args":[...
+    >   Status:       Running
+    >   IP:           10.100.5.19
+    >   Containers:
+    >     dostinkie-container:
+    >       Container ID:  docker://b5a22512b2179247e2e0621eb383b345eed32459ade29d694cbdaf16e44a8c53
+    >       Image:         fedora:latest
+    >       Image ID:      docker-pullable://docker.io/fedora@sha256:d6a6d60fda1b22b6d5fe3c3b2abe2554b60432b7b215adc11a2b5fae16f50188
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Command:
+    >         /bin/sh
+    >       Args:
+    >         -c
+    >         while true; do date >> /share-data/${HOSTNAME}.log; sleep 1; done
+    >       State:          Running
+    >         Started:      Sun, 06 Sep 2020 01:36:28 +0000
+    >       Ready:          True
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /local-data from local-data (rw)
+    >         /share-data from share-data (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-f6s86 (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             True
+    >     ContainersReady   True
+    >     PodScheduled      True
+    >   Volumes:
+    >     share-data:
+    >       Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    >       ClaimName:  dostinkie-claim
+    >       ReadOnly:   false
+    >     local-data:
+    >       Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    >       Medium:
+    >       SizeLimit:  <unset>
+    >     default-token-f6s86:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-f6s86
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/dostinkie-pod to tiberius-20200904-nj46yxjgkhty-node-0
+    >     Normal  Pulling    3m2s       kubelet, tiberius-20200904-nj46yxjgkhty-node-0  Pulling image "fedora:latest"
+    >     Normal  Pulled     2m55s      kubelet, tiberius-20200904-nj46yxjgkhty-node-0  Successfully pulled image "fedora:latest"
+    >     Normal  Created    2m55s      kubelet, tiberius-20200904-nj46yxjgkhty-node-0  Created container dostinkie-container
+    >     Normal  Started    2m55s      kubelet, tiberius-20200904-nj46yxjgkhty-node-0  Started container dostinkie-container
+
+
+

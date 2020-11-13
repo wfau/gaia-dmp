@@ -1,0 +1,574 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    # Deleted old cluster.
+    # notes/zrq/20200718-03-openstack-delete.txt
+
+    # Created new cluster.
+    # notes/zrq/20200718-04-terraform-create.txt
+
+    # Run the K8s dashboard.
+    # notes/zrq/20200706-03-k8s-dashboard.txt
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${MAGNUM_CLUSTER:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/kubernetes:/kubernetes:z" \
+        --volume "${ZEPPELIN_CODE}:/zeppelin:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud, credentials and cluster names.
+#[user@kubernator]
+
+    # Deprecated - inherited from aglais.env
+    # cloudname=gaia-prod
+    # clustername=Tiberius
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube/${clustername:?}"
+    openstack \
+        -v -v -v \
+        --os-cloud "${cloudname:?}-super" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube/${clustername:?}"
+
+    >   'SHELL'
+
+
+# -----------------------------------------------------
+# Check kubectl can get the connection details for our cluster.
+#[user@kubernator]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.217:6443
+    >   Heapster is running at https://128.232.227.217:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.217:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Install config editing tools.
+#[user@kubernator]
+
+    # TODO - add this to the kubernator image
+    dnf install xmlstarlet
+
+
+    # TODO - add this to the kubernator image
+    mkdir "${HOME:?}/bin"
+    wget -O "${HOME:?}/bin/yq" https://github.com/mikefarah/yq/releases/download/3.3.2/yq_linux_amd64
+    chmod a+x "${HOME:?}/bin/yq"
+
+
+# -----------------------------------------------------
+# Update our Zeppelin deployment template.
+#[user@kubernator]
+
+    zpimage='aglais/zeppelin:latest'
+    dkimage='aglais/zeppelin:latest'
+    spimage='aglais/spark:latest'
+
+    filepath=/zeppelin/conf
+    filename=zeppelin-site.xml
+    backup=${filepath:?}/${filename:?}.backup
+    target=${filepath:?}/${filename:?}.template
+
+    mv --force "${target:?}" "${backup:?}"
+
+    xmlstarlet edit \
+         --update "//property[name='zeppelin.k8s.container.image']/value" \
+         --value  "${zpimage:?}" \
+         --update "//property[name='zeppelin.k8s.spark.container.image']/value" \
+         --value  "${spimage:?}" \
+         --update "//property[name='zeppelin.docker.container.image']/value" \
+         --value  "${dkimage:?}" \
+        "${original:?}" \
+    | tee "${template:?}"
+
+    #
+    # This messes with the formatting in the dcoument.
+    # 1. Deletes blank lines.
+    # 2. Changes tabs to space.
+    # 3. Changes <value></value> to </value>
+
+# -----------------------------------------------------
+# Update our Zeppelin server configuration.
+#[user@kubernator]
+
+    filepath=/zeppelin/k8s
+    filename=zeppelin-server.yaml
+    backup=${filepath:?}/${filename:?}.backup
+    target=${filepath:?}/${filename:?}
+
+    cp --force "${target:?}" "${backup:?}"
+
+    yq write \
+        --inplace \
+        "${target:?}" \
+        'data.ZEPPELIN_K8S_CONTAINER_IMAGE' "${zpimage:?}"
+
+    yq write \
+        --inplace \
+        "${target:?}" \
+        'data.ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE' "${spimage:?}"
+
+    # Third location is harder to define.
+    # 2nd block
+    #   spec.template.spec.containers.[0].image
+    #   "${zpimage:?}"
+
+# -----------------------------------------------------
+# Deploy Zeppelin using our template.
+#[user@kubernator]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        apply \
+            --filename "/zeppelin/k8s/zeppelin-server.yaml"
+
+    >   configmap/zeppelin-server-conf-map created
+    >   configmap/zeppelin-server-conf created
+    >   deployment.apps/zeppelin-server created
+    >   service/zeppelin-server created
+    >   serviceaccount/zeppelin-server created
+    >   role.rbac.authorization.k8s.io/zeppelin-server-role created
+    >   rolebinding.rbac.authorization.k8s.io/zeppelin-server-role-binding created
+
+
+# -----------------------------------------------------
+# Expose Zeppelin with a LoadBalancer.
+# The LoadBalancer provides access to HTTP on port 80.
+#[user@kubernator]
+
+    cat > /tmp/balancer.yaml << EOF
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: zeppelin-external
+spec:
+  ports:
+    - name: http
+      port: 80
+  selector:
+    app.kubernetes.io/name: zeppelin-server
+  type: LoadBalancer
+EOF
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        apply \
+            --filename /tmp/balancer.yaml
+
+    >   service/zeppelin-external created
+
+
+# -----------------------------------------------------
+# Get the external address.
+#[user@kubernator]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get service \
+            zeppelin-external
+
+    >   NAME                TYPE           CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
+    >   zeppelin-external   LoadBalancer   10.254.185.239   <pending>     80:32388/TCP   79s
+
+    >   NAME                TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)        AGE
+    >   zeppelin-external   LoadBalancer   10.254.185.239   128.232.227.194   80:32388/TCP   2m6s
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get service \
+            --output json \
+            zeppelin-external
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Service",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Service\",\"metadata\":{\"annotations\":{},\"name\":\"zeppelin-external\",\"namespace\":\"default\"},\"spec\":{\"ports\":[{\"name\":\"http\",\"port\":80}],\"selector\":{\"app.kubernetes.io/name\":\"zeppelin-server\"},\"type\":\"LoadBalancer\"}}\n"
+    >           },
+    >           "creationTimestamp": "2020-07-22T17:26:10Z",
+    >           "name": "zeppelin-external",
+    >           "namespace": "default",
+    >           "resourceVersion": "6095",
+    >           "selfLink": "/api/v1/namespaces/default/services/zeppelin-external",
+    >           "uid": "ddb4bf37-7a3f-4b23-9e56-9f5d5f3a3f26"
+    >       },
+    >       "spec": {
+    >           "clusterIP": "10.254.185.239",
+    >           "externalTrafficPolicy": "Cluster",
+    >           "ports": [
+    >               {
+    >                   "name": "http",
+    >                   "nodePort": 32388,
+    >                   "port": 80,
+    >                   "protocol": "TCP",
+    >                   "targetPort": 80
+    >               }
+    >           ],
+    >           "selector": {
+    >               "app.kubernetes.io/name": "zeppelin-server"
+    >           },
+    >           "sessionAffinity": "None",
+    >           "type": "LoadBalancer"
+    >       },
+    >       "status": {
+    >           "loadBalancer": {
+    >               "ingress": [
+    >                   {
+    >                       "ip": "128.232.227.194"
+    >                   }
+    >               ]
+    >           }
+    >       }
+    >   }
+
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        get service \
+            --output json \
+            zeppelin-external \
+    | jq -r '.status.loadBalancer.ingress[0].ip'
+
+    >   128.232.227.194
+
+
+# -----------------------------------------------------
+# Connect to the endpoint, logged in as anonymous.
+#[anon-zeppelin]
+
+# -----------------------------------------------------
+# Create a new MD note.
+#[anon-zeppelin]
+
+    # interpreter = md
+
+    %md
+    ## Welcome to my world
+
+    Yay - works :-)
+
+
+# -----------------------------------------------------
+# Create a new Python note.
+#[anon-zeppelin]
+
+    # interpreter = python
+
+    %python
+    print (1 + 1)
+
+    Yay - works :-)
+
+
+# -----------------------------------------------------
+# Create a PySpark note.
+#[anon-zeppelin]
+
+%spark.pyspark
+import random
+NUM_SAMPLES = 2000000000
+
+def inside(p):
+    x, y = random.random(), random.random()
+    return x*x + y*y < 1
+
+count = sc.parallelize(xrange(0, NUM_SAMPLES)) \
+             .filter(inside).count()
+print "Pi is roughly %f" % (4.0 * count / NUM_SAMPLES)
+
+
+    #
+    # Failed to load the Spark container.
+    #
+
+    >   Failed to pull image "spark:2.4.5": rpc error: code = Unknown desc = repository docker.io/spark not found: does not exist or no pull access
+
+    #
+    # TODO We need to create our own docker image for Spark.
+    #
+
+    #
+    # Java stack trace shown in the Zeppelin note.
+    #
+
+    >   org.apache.zeppelin.interpreter.InterpreterException: java.io.IOException: Launching zeppelin interpreter on kubernetes is time out, kill it now
+    >       at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.open(RemoteInterpreter.java:134)
+    >       at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.getFormType(RemoteInterpreter.java:281)
+    >       at org.apache.zeppelin.notebook.Paragraph.jobRun(Paragraph.java:412)
+    >       at org.apache.zeppelin.notebook.Paragraph.jobRun(Paragraph.java:72)
+    >       at org.apache.zeppelin.scheduler.Job.run(Job.java:172)
+    >       at org.apache.zeppelin.scheduler.AbstractScheduler.runJob(AbstractScheduler.java:130)
+    >       at org.apache.zeppelin.scheduler.RemoteScheduler$JobRunner.run(RemoteScheduler.java:180)
+    >       at java.util.concurrent.Executors$RunnableAdapter.call(Executors.java:511)
+    >       at java.util.concurrent.FutureTask.run(FutureTask.java:266)
+    >       at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.access$201(ScheduledThreadPoolExecutor.java:180)
+    >       at java.util.concurrent.ScheduledThreadPoolExecutor$ScheduledFutureTask.run(ScheduledThreadPoolExecutor.java:293)
+    >       at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    >       at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    >       at java.lang.Thread.run(Thread.java:748)
+    >   Caused by: java.io.IOException: Launching zeppelin interpreter on kubernetes is time out, kill it now
+    >       at org.apache.zeppelin.interpreter.launcher.K8sRemoteInterpreterProcess.start(K8sRemoteInterpreterProcess.java:143)
+    >       at org.apache.zeppelin.interpreter.ManagedInterpreterGroup.getOrCreateInterpreterProcess(ManagedInterpreterGroup.java:67)
+    >       at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.getOrCreateInterpreterProcess(RemoteInterpreter.java:110)
+    >       at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.internal_create(RemoteInterpreter.java:160)
+    >       at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.open(RemoteInterpreter.java:131)
+    >       ... 13 more
+
+
+    #
+    # Think I might have found the cause.
+    # Tests using the K8s dashboard
+
+    # A pod using an image from atolmis WORKS
+        atolmis/fedora:2019.09.24
+
+    # A pod using an image from aglais FAILS
+         aglais/pyspark:2020.07.22
+
+
+    # The difference is :
+    # atolmis images were created using Docker,
+    # aglais images were created using Buildah.
+
+    # https://github.com/containers/buildah/issues/575#issuecomment-384308227
+
+        This confirms that buildah creates an OCI manifest, the Nexus registry
+        (presumably) accepts it, but then returns it using a Docker schema2
+        Content-Type.
+
+        That ultimately needs to be fixed in Nexus, either to reject OCI input
+        as unrecognized, or to return it correctly (maybe converting to other
+        formats if the client does not support reading OCI).
+
+        It seems, though, that buildah can be forced to upload using the Docker
+        schema2, using something like buildah bud --format=docker. That could
+        be a workaround in the meantime.
+
+
+    #
+    # Build new images and push them to the repo.
+    # notes/zrq/20200724-03-buildah-images.txt
+
+
+
+# -----------------------------------------------------
+# Update our data map.
+#[user@kubernator]
+
+    mapname=zeppelin-server-conf-map
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${clustername:?}/config" \
+        patch \
+            configmap "${mapname:?}" \
+            -p '{
+                "data":{
+                    "ZEPPELIN_K8S_CONTAINER_IMAGE":"aglais/zeppelin:latest",
+                    "ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE":"aglais/pyspark-mod:2020.07.24"
+                    }
+                }'
+
+
+    #
+    # OK, got to the next stage ..
+    # PySpark worker launched OK, but fails with Python version errors.
+
+    #
+    # Exception: Python in worker has different version 2.7 than that in driver 3.7,
+    #   PySpark cannot run with different minor versions.
+    #   Please check environment variables PYSPARK_PYTHON and PYSPARK_DRIVER_PYTHON are correctly set.
+    #
+
+    #
+    # Found a matching issue ..
+    # https://issues.apache.org/jira/browse/ZEPPELIN-1265
+    # When zeppelin.pyspark.python is set to use Python 3, Zeppelin starts the Spark master process with python3.
+    # However, this configuration is not reflected on the executors and they use what they can find in PYSPARK_PYTHON
+    # envvar, which defaults to Python 2.
+
+    #
+    # Also found a setting for Sprk version in the Zeppelin build.
+    # spark/pom.xml
+    #   <!-- spark versions -->
+    #   <spark.version>2.4.5</spark.version>
+    #   <spark.scala.version>2.11.12</spark.scala.version>
+    #   <spark.scala.binary.version>2.11</spark.scala.binary.version>
+
+    # https://issues.apache.org/jira/browse/ZEPPELIN-1265?focusedCommentId=15891850&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel#comment-15891850
+    # You can set PYSPARK_PYTHON and PYSPARK_DRIVER_PYTHON after ZEPPELIN-2195
+
+    # In the Zeppelin source.
+
+
+
+
+    # In the Spark binary.
+
+        grep -r 'PYSPARK_PYTHON=' *
+
+            bin/pyspark:  PYSPARK_PYTHON=python
+            kubernetes/dockerfiles/spark/entrypoint.sh:    export PYSPARK_PYTHON="python"
+            kubernetes/dockerfiles/spark/entrypoint.sh:    export PYSPARK_PYTHON="python3"
+            python/pyspark/find_spark_home.py:                "'PYSPARK_PYTHON=python3 pyspark'.\n", file=sys.stderr)
+
+        grep -r 'PYSPARK_DRIVER_PYTHON=' *
+
+            bin/pyspark2.cmd:  set PYSPARK_DRIVER_PYTHON=python
+            bin/pyspark2.cmd:  if not [%PYSPARK_PYTHON%] == [] set PYSPARK_DRIVER_PYTHON=%PYSPARK_PYTHON%
+            bin/pyspark:# is set in the user's environment. Instead, users should set PYSPARK_DRIVER_PYTHON=ipython
+            bin/pyspark:  PYSPARK_DRIVER_PYTHON=$PYSPARK_PYTHON
+            bin/find-spark-home:     PYSPARK_DRIVER_PYTHON="${PYSPARK_PYTHON:-"python"}"
+            kubernetes/dockerfiles/spark/entrypoint.sh:    export PYSPARK_DRIVER_PYTHON="python"
+            kubernetes/dockerfiles/spark/entrypoint.sh:    export PYSPARK_DRIVER_PYTHON="python3"
+
+        # entrypoint.sh looks odd because it is setting PYSPARK_DRIVER_PYTHON twice
+
+            if [ "$PYSPARK_MAJOR_PYTHON_VERSION" == "2" ]; then
+                pyv="$(python -V 2>&1)"
+                export PYTHON_VERSION="${pyv:7}"
+                export PYSPARK_PYTHON="python"
+                export PYSPARK_DRIVER_PYTHON="python"
+            elif [ "$PYSPARK_MAJOR_PYTHON_VERSION" == "3" ]; then
+                pyv3="$(python3 -V 2>&1)"
+                export PYTHON_VERSION="${pyv3:7}"
+                export PYSPARK_PYTHON="python3"
+                export PYSPARK_DRIVER_PYTHON="python3"
+            fi
+
+        # Also a Spark config property
+
+            Soon to be released Spark 2.4 now supports running PySpark applications on Kubernetes.
+            Both Python 2.x and 3.x are supported, and the major version of Python can be specified
+            using the new configuration property spark.kubernetes.pyspark.pythonVersion, which can
+            have value 2 or 3 but defaults to 2.
+
+            Spark ships with a Dockerfile of a base image with the Python binding that is required
+            to run PySpark applications on Kubernetes. Users can use the Dockerfile to build a base
+            image or customize it to build a custom image.
+
+        # Found this in the Zeppelin code base
+        # spark/interpreter/target/spark-2.4.5/resource-managers/kubernetes/core/src/main/scala/org/apache/spark/deploy/k8s/Config.scala
+
+          val PYSPARK_MAJOR_PYTHON_VERSION =
+            ConfigBuilder("spark.kubernetes.pyspark.pythonVersion")
+              .doc("This sets the major Python version. Either 2 or 3. (Python2 or Python3)")
+              .stringConf
+              .checkValue(pv => List("2", "3").contains(pv),
+                "Ensure that major Python version is either Python2 or Python3")
+              .createWithDefault("2")
+
+        # Zeppelin includes spark-2.4.5.
+        # Spark spark-2.4.5 k8s/Config.scala defaults "spark.kubernetes.pyspark.pythonVersion" to "2"
+
+        # 1. Update this to spark-3.0.0.
+        # 2. Check the value of "spark.kubernetes.pyspark.pythonVersion"
+
+        # Updated Spark version property, running the Zeppelin build ...
+
+
+        spark/pom.xml
+
+            <spark.version>3.0.0</spark.version>
+
+        # Didn't work, because there is another setting for the Spark version, in the default profile.
+
+        spark/pom.xml
+
+            <profile>
+                <id>spark-3.0</id>
+                <properties>
+                    <spark.version>3.0.0</spark.version>
+                    <protobuf.version>2.5.0</protobuf.version>
+                    <py4j.version>0.10.9</py4j.version>
+                </properties>
+            </profile>
+
+            <profile>
+                <id>spark-2.4</id>
+                <activation>
+                    <activeByDefault>true</activeByDefault>
+                </activation>
+                <properties>
+                    <spark.version>2.4.5</spark.version>
+                    <protobuf.version>2.5.0</protobuf.version>
+                    <py4j.version>0.10.7</py4j.version>
+                </properties>
+            </profile>
+
+
+        # Try again ..
+
+        mvn install -D skipTests -P spark-3.0
+
+            [ERROR] Failed to execute goal on project spark-interpreter: Could not resolve dependencies for
+                project org.apache.zeppelin:spark-interpreter:jar:0.9.0-SNAPSHOT:
+            The following artifacts could not be resolved:
+                org.apache.spark:spark-repl_2.11:jar:3.0.0,
+                org.apache.spark:spark-core_2.11:jar:3.0.0,
+                org.apache.spark:spark-hive_2.11:jar:3.0.0:
+            Could not find artifact
+                org.apache.spark:spark-repl_2.11:jar:3.0.0
+            in central (https://repo.maven.apache.org/maven2) -> [Help 1]
+
+        # Need to set the Scala version too.
+
+
+        mvn install -D skipTests -P spark-3.0 -P spark-scala-2.12
+
+
+        # So now Zeppelin includes Spark 3.0 components, and the default Python version is 3.
+
+        # Now we need to package this into a container image and deploy it ...
+
+
+
+

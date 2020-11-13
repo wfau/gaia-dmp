@@ -1,0 +1,872 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Long term goal - next few days
+
+        Create a share in Openstack.
+        Set the properties in Openstack
+        Attach a Kubernetes PersistenVolume
+        Attach a Kubernetes PersistenVolumeClaim
+
+    Short term goal - right now
+
+        Use existing PersistenVolume and PersistenVolumeClaim
+        Check Spark has access to the PersistenVolumeClaim
+        Deploy a Fedora Pod with access to the same PersistenVolumeClaim
+            Install S3 client
+            Configure S3 client to access our Swift S3 share
+            Use S3 client to download Parquet files onto PersistenVolumeClaim mount
+
+# -----------------------------------------------------
+# Get a list of the Pods.
+#[user@kubernator]
+
+    kubectl get pods
+
+    >   NAME                                                         READY   STATUS    RESTARTS   AGE
+    >   augusta-20200814-ingress-nginx-controller-779bf4dbc7-vffmt   1/1     Running   0          8d
+    >   manila-provisioner-deployment-7775bd5d9d-db79r               1/1     Running   0          35h
+    >   spark-ckhcto                                                 1/1     Running   0          17h
+    >   valeria-20200814-kubernetes-dashboard-5f5644bc46-tbqp9       2/2     Running   0          8d
+    >   zeppelin-96178f74127f514e-exec-1                             1/1     Running   0          17h
+    >   zeppelin-96178f74127f514e-exec-2                             1/1     Running   0          17h
+    >   zeppelin-96178f74127f514e-exec-3                             1/1     Running   0          17h
+    >   zeppelin-96178f74127f514e-exec-4                             1/1     Running   0          17h
+    >   zeppelin-server-d78dc55f9-sd6kk                              3/3     Running   0          2d2h
+
+# -----------------------------------------------------
+# Login to one of the executor Pods and check the mounted share.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-96178f74127f514e-exec-1 \
+        -- \
+            ls -al /gaia/gaia-dr2
+
+    >   total 0
+    >   drwxr-xr-x. 2 root root  0 Aug 21 19:26 .
+    >   drwxr-xr-x. 1 root root 55 Aug 21 19:29 ..
+
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-96178f74127f514e-exec-1 \
+        -- \
+            touch /gaia/gaia-dr2/test
+
+    >   touch: cannot touch '/gaia/gaia-dr2/test': Permission denied
+    >   command terminated with exit code 1
+
+
+# -----------------------------------------------------
+# Deploy a vanilla Fedora Pod.
+#[user@kubernator]
+
+    cat > /tmp/test-pod.yaml << EOF
+
+kind: Pod
+apiVersion: v1
+metadata:
+  name: test-pod-01
+  namespace: default
+spec:
+  volumes:
+    - name: gaia-dr2
+      persistentVolumeClaim:
+        claimName: gaia-dr2-volume-claim
+    - name: local-data
+      emptyDir: {}
+    - name: default-token-kwn72
+      secret:
+        secretName: default-token-kwn72
+        defaultMode: 420
+  containers:
+    - name: test-container-01
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: gaia-dr2
+          mountPath: /gaia/gaia-dr2
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /local-data/date-log.txt;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        create \
+            --filename /tmp/test-pod.yaml
+
+    >   pod/test-pod-01 created
+
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        test-pod-01 \
+        -- \
+            /bin/bash
+
+
+# -----------------------------------------------------
+# Check the temp and data directories are mounted.
+#[root@test-pod-01]
+
+    ls -al /gaia/gaia-dr2/
+
+    >   total 0
+    >   drwxr-xr-x. 2 root root  0 Aug 21 19:26 .
+    >   drwxr-xr-x. 3 root root 22 Aug 22 13:57 ..
+
+
+    ls -al /local-data/
+
+    >   total 4
+    >   drwxrwxrwx. 2 root root   26 Aug 22 13:57 .
+    >   drwxr-xr-x. 1 root root   47 Aug 22 13:57 ..
+    >   -rw-r--r--. 1 root root 2378 Aug 22 13:59 date-log.txt
+
+
+    tail -f /local-data/date-log.txt
+
+    >   Sat Aug 22 13:59:01 UTC 2020
+    >   Sat Aug 22 13:59:02 UTC 2020
+    >   Sat Aug 22 13:59:03 UTC 2020
+    >   Sat Aug 22 13:59:04 UTC 2020
+    >   Sat Aug 22 13:59:05 UTC 2020
+    >   Sat Aug 22 13:59:06 UTC 2020
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Get our EC2 credentials from Openstack.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        ec2 credentials \
+            list
+
+    >   +--------------+--------------+--------------+--------------+
+    >   | Access       | Secret       | Project ID   | User ID      |
+    >   +--------------+--------------+--------------+--------------+
+    >   | 3367....0df9 | 4034....aea0 | 21b4....63af | 9816....6488 |
+    >   | 93d0....f83c | 0e28....25b1 | 08e2....d927 | 9816....6488 |
+    >   | 2a35....a9c2 | 52e4....ec51 | 21b4....63af | 9816....6488 |
+    >   +--------------+--------------+--------------+--------------+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Install and configure the S3 client.
+#[root@test-pod-01]
+
+    dnf install -y s3cmd
+
+    >   ....
+    >   ....
+    >   Installed:
+    >       file-5.38-2.fc32.x86_64
+    >       python3-dateutil-1:2.8.0-8.fc32.noarch
+    >       python3-magic-5.38-2.fc32.noarch
+    >       python3-six-1.14.0-2.fc32.noarch
+    >       s3cmd-2.1.0-1.fc32.noarch
+
+
+    s3cmd \
+        --configure \
+        --config ${HOME}/s3cfg
+
+    >   ....
+    >   ....
+    >   New settings:
+    >     Access Key: 2a35a....a9c2
+    >     Secret Key: 52e47....ec51
+    >     Default Region: US
+    >     S3 Endpoint: cumulus.openstack.hpc.cam.ac.uk:6780
+    >     DNS-style bucket+hostname:port template for accessing a bucket: cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4....63af/%(bucket)
+    >     Encryption password:
+    >     Path to GPG program: /usr/bin/gpg
+    >     Use HTTPS protocol: True
+    >     HTTP Proxy server name:
+    >     HTTP Proxy server port: 0
+
+
+# -----------------------------------------------------
+# List the contents of our main bucket.
+#[root@test-pod-01]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        ls \
+            's3://gaia-dr2-parquet'
+
+    >   2020-04-21 02:04            0  s3://gaia-dr2-parquet/_SUCCESS
+    >   2020-04-21 02:04     74114220  s3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:04    104411815  s3://gaia-dr2-parquet/part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+    >   2020-04-21 12:54     28448646  s3://gaia-dr2-parquet/part-06512-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 12:54      6317774  s3://gaia-dr2-parquet/part-06513-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+
+
+# -----------------------------------------------------
+# List all the filenames.
+#[root@test-pod-01]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        ls \
+            's3://gaia-dr2-parquet' \
+    | tee /tmp/all-full.txt
+
+
+    >   2020-04-21 02:04            0  s3://gaia-dr2-parquet/_SUCCESS
+    >   2020-04-21 02:04     74114220  s3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:04    104411815  s3://gaia-dr2-parquet/part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:04     99035704  s3://gaia-dr2-parquet/part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:05     96996784  s3://gaia-dr2-parquet/part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/all-full.txt
+
+    >   6515 /tmp/all-full.txt
+
+
+    sed -n '
+        s|.*s3://gaia-dr2-parquet/\(.*.snappy.parquet\)|\1|p
+        ' \
+    /tmp/all-full.txt \
+    | tee /tmp/all-names.txt
+
+    >   part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/all-names.txt
+
+    >   6514 /tmp/all-names.txt
+
+
+
+
+# -----------------------------------------------------
+# Select 1/2 of the files.
+# https://stackoverflow.com/questions/21309020/remove-odd-or-even-lines-from-a-text-file
+# https://stackoverflow.com/a/21309169
+#[root@test-pod-01]
+
+    sed -n '
+        0~2p
+        ' \
+    /tmp/all-names.txt \
+    | tee /tmp/names-2-0.txt
+
+    >   part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00005-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/names-2-0.txt
+
+    >   3257 /tmp/names-2-0.txt
+
+
+# -----------------------------------------------------
+# Select 1/4 of the files.
+# https://stackoverflow.com/questions/21309020/remove-odd-or-even-lines-from-a-text-file
+# https://stackoverflow.com/a/21309169
+#[root@test-pod-01]
+
+    sed -n '
+        0~4p
+        ' \
+    /tmp/all-names.txt \
+    | tee /tmp/names-4-0.txt
+
+    >   part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00011-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/names-4-0.txt
+
+    >   1628 /tmp/names-4-0.txt
+
+
+# -----------------------------------------------------
+# Select 1/8 of the files.
+#[root@test-pod-01]
+
+    sed -n '
+        0~8p
+        ' \
+    /tmp/all-names.txt \
+    | tee /tmp/names-8-0.txt
+
+    >   part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00023-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/names-8-0.txt
+
+    >   814 /tmp/names-8-0.txt
+
+
+# -----------------------------------------------------
+# Select 1/16 of the files.
+#[root@test-pod-01]
+
+    sed -n '
+        0~16p
+        ' \
+    /tmp/all-names.txt \
+    | tee /tmp/names-16-0.txt
+
+    >   part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00047-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/names-16-0.txt
+
+    >   407 /tmp/names-16-0.txt
+
+
+# -----------------------------------------------------
+# Select 1/32 of the files.
+#[root@test-pod-01]
+
+    sed -n '
+        0~32p
+        ' \
+    /tmp/all-names.txt \
+    | tee /tmp/names-32-0.txt
+
+    >   part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00095-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   part-00127-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    wc -l /tmp/names-32-0.txt
+
+    >   203 /tmp/names-32-0.txt
+
+
+# -----------------------------------------------------
+# Transfer 1/32 of the files.
+#[root@test-pod-01]
+
+    mkdir -p /gaia/gaia-dr2/gaia-dr2-32-0
+    pushd    /gaia/gaia-dr2/gaia-dr2-32-0
+
+    for filename in $(cat /tmp/names-32-0.txt)
+        do
+            echo "File [${filename:?}]"
+
+            s3cmd \
+                --config ${HOME}/s3cfg \
+                get \
+                    "s3://gaia-dr2-parquet/${filename:?}" "${filename:?}"
+
+        done
+
+    >   File [part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    87055225 of 87055225   100% in    0s   131.40 MB/s  done
+    >   File [part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    83140178 of 83140178   100% in    0s   179.09 MB/s  done
+    >   File [part-00095-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00095-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00095-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    80828913 of 80828913   100% in    0s   154.05 MB/s  done
+    >   File [part-00127-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00127-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00127-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    78853929 of 78853929   100% in    0s   117.06 MB/s  done
+    >   ....
+    >   ....
+
+
+    ls -1 /gaia/gaia-dr2/gaia-dr2-32-0/ | wc -l
+
+    >   203
+
+
+# -----------------------------------------------------
+# Transfer 1/16 of the files.
+#[root@test-pod-01]
+
+    mkdir -p /gaia/gaia-dr2/gaia-dr2-16-0
+    pushd    /gaia/gaia-dr2/gaia-dr2-16-0
+
+    for filename in $(cat /tmp/names-16-0.txt)
+        do
+            echo "File [${filename:?}]"
+
+            s3cmd \
+                --config ${HOME}/s3cfg \
+                get \
+                    "s3://gaia-dr2-parquet/${filename:?}" "${filename:?}"
+
+        done
+
+    >   File [part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    90162982 of 90162982   100% in    0s    94.46 MB/s  done
+    >   File [part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    87055225 of 87055225   100% in    0s    95.41 MB/s  done
+    >   File [part-00047-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00047-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00047-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    84673722 of 84673722   100% in    1s    67.66 MB/s  done
+    >   File [part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    83140178 of 83140178   100% in    1s    78.35 MB/s  done
+    >   ....
+    >   ....
+
+
+    ls -1 /gaia/gaia-dr2/gaia-dr2-16-0/ | wc -l
+
+    >   407
+
+
+# -----------------------------------------------------
+# Transfer 1/8 of the files.
+#[root@test-pod-01]
+
+    mkdir -p /gaia/gaia-dr2/gaia-dr2-8-0
+    pushd    /gaia/gaia-dr2/gaia-dr2-8-0
+
+    for filename in $(cat /tmp/names-8-0.txt)
+        do
+            echo "File [${filename:?}]"
+
+            s3cmd \
+                --config ${HOME}/s3cfg \
+                get \
+                    "s3://gaia-dr2-parquet/${filename:?}" "${filename:?}"
+
+        done
+
+    >   File [part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    94347758 of 94347758   100% in    1s    86.28 MB/s  done
+    >   File [part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    90162982 of 90162982   100% in    0s    93.18 MB/s  done
+    >   File [part-00023-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00023-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00023-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    88134032 of 88134032   100% in    0s    92.28 MB/s  done
+    >   File [part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    87055225 of 87055225   100% in    0s   106.67 MB/s  done
+    >   ....
+    >   ....
+
+
+    ls -1 /gaia/gaia-dr2/gaia-dr2-8-0/ | wc -l
+
+    >   814
+
+
+# -----------------------------------------------------
+# Transfer 1/4 of the files.
+#[root@test-pod-01]
+
+    mkdir -p /gaia/gaia-dr2/gaia-dr2-4-0
+    pushd    /gaia/gaia-dr2/gaia-dr2-4-0
+
+    for filename in $(cat /tmp/names-4-0.txt)
+        do
+            echo "File [${filename:?}]"
+
+            s3cmd \
+                --config ${HOME}/s3cfg \
+                get \
+                    "s3://gaia-dr2-parquet/${filename:?}" "${filename:?}"
+
+        done
+
+    >   File [part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    96996784 of 96996784   100% in    1s    87.50 MB/s  done
+    >   File [part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    94347758 of 94347758   100% in    0s   106.60 MB/s  done
+    >   File [part-00011-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00011-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00011-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    91212632 of 91212632   100% in    1s    66.92 MB/s  done
+    >   File [part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    90162982 of 90162982   100% in    1s    84.21 MB/s  done
+    >   ....
+    >   ....
+
+
+    ls -1 /gaia/gaia-dr2/gaia-dr2-4-0/ | wc -l
+
+    >   1628
+
+
+# -----------------------------------------------------
+# Transfer 1/2 of the files.
+#[root@test-pod-01]
+
+    mkdir -p /gaia/gaia-dr2/gaia-dr2-2-0
+    pushd    /gaia/gaia-dr2/gaia-dr2-2-0
+
+    for filename in $(cat /tmp/names-2-0.txt)
+        do
+            echo "File [${filename:?}]"
+
+            s3cmd \
+                --config ${HOME}/s3cfg \
+                get \
+                    "s3://gaia-dr2-parquet/${filename:?}" "${filename:?}"
+
+        done
+
+    >   File [part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    104411815 of 104411815   100% in    1s    99.57 MB/s  done
+    >   File [part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    96996784 of 96996784   100% in    1s    77.95 MB/s  done
+    >   File [part-00005-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00005-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00005-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    95255378 of 95255378   100% in    0s    92.64 MB/s  done
+    >   File [part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    94347758 of 94347758   100% in    0s   102.22 MB/s  done
+    >   ....
+    >   ....
+
+
+    ls -1 /gaia/gaia-dr2/gaia-dr2-2-0/ | wc -l
+
+    >   3257
+
+
+# -----------------------------------------------------
+# Transfer all of the files.
+#[root@test-pod-01]
+
+    mkdir -p /gaia/gaia-dr2/gaia-dr2-full
+    pushd    /gaia/gaia-dr2/gaia-dr2-full
+
+    for filename in $(cat /tmp/all-names.txt)
+        do
+            echo "File [${filename:?}]"
+
+            s3cmd \
+                --config ${HOME}/s3cfg \
+                get \
+                    "s3://gaia-dr2-parquet/${filename:?}" "${filename:?}"
+
+        done
+
+    >   File [part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    74114220 of 74114220   100% in    0s    94.17 MB/s  done
+    >   File [part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    104411815 of 104411815   100% in    1s    99.38 MB/s  done
+    >   File [part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    99035704 of 99035704   100% in    1s    83.90 MB/s  done
+    >   File [part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet]
+    >   download: 's3://gaia-dr2-parquet/part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet' -> 'part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet'  [1 of 1]
+    >    96996784 of 96996784   100% in    1s    90.45 MB/s  done
+    >   ....
+    >   ....
+
+
+    ls -1 /gaia/gaia-dr2/gaia-dr2-full/ | wc -l
+
+    >   6514
+
+
+# -----------------------------------------------------
+# Login to one of the executor Pods and check the mounted shares.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-d4ac047416ae5fe0-exec-1 \
+        -- \
+            ls -al /gaia/gaia-dr2
+
+    >   total 0
+    >   drwxr-xr-x. 8 root root    6 Aug 23 05:16 .
+    >   drwxr-xr-x. 3 root root   22 Aug 22 14:59 ..
+    >   drwxr-xr-x. 2 root root  407 Aug 22 14:48 gaia-dr2-16-0
+    >   drwxr-xr-x. 2 root root 3257 Aug 22 16:46 gaia-dr2-2-0
+    >   drwxr-xr-x. 2 root root  203 Aug 22 14:35 gaia-dr2-32-0
+    >   drwxr-xr-x. 2 root root 1628 Aug 22 15:43 gaia-dr2-4-0
+    >   drwxr-xr-x. 2 root root  814 Aug 22 15:06 gaia-dr2-8-0
+    >   drwxr-xr-x. 2 root root 6514 Aug 23 06:57 gaia-dr2-full
+
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-d4ac047416ae5fe0-exec-1 \
+        -- \
+            ls -al /gaia/gaia-dr2/gaia-dr2-32-0 | head
+
+    >   total 15421999
+    >   drwxr-xr-x. 2 root root       203 Aug 22 14:35 .
+    >   drwxr-xr-x. 5 root root         3 Aug 22 14:51 ..
+    >   -rw-r--r--. 1 root root  87055225 Apr 21 02:08 part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  83140178 Apr 21 02:11 part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  80828913 Apr 21 02:14 part-00095-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  78853929 Apr 21 02:17 part-00127-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-d4ac047416ae5fe0-exec-1 \
+        -- \
+            ls -al /gaia/gaia-dr2/gaia-dr2-16-0 | head
+
+    >   total 30939366
+    >   drwxr-xr-x. 2 root root       407 Aug 22 14:48 .
+    >   drwxr-xr-x. 5 root root         3 Aug 22 14:51 ..
+    >   -rw-r--r--. 1 root root  90162982 Apr 21 02:06 part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  87055225 Apr 21 02:08 part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  84673722 Apr 21 02:09 part-00047-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  83140178 Apr 21 02:11 part-00063-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-d4ac047416ae5fe0-exec-1 \
+        -- \
+            ls -al /gaia/gaia-dr2/gaia-dr2-8-0 | head
+
+    >   total 61917807
+    >   drwxr-xr-x. 2 root root       814 Aug 22 15:06 .
+    >   drwxr-xr-x. 5 root root         3 Aug 22 14:51 ..
+    >   -rw-r--r--. 1 root root  94347758 Apr 21 02:05 part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  90162982 Apr 21 02:06 part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  88134032 Apr 21 02:07 part-00023-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  87055225 Apr 21 02:08 part-00031-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-d4ac047416ae5fe0-exec-1 \
+        -- \
+            ls -al /gaia/gaia-dr2/gaia-dr2-4-0 | head
+
+    >   total 123864125
+    >   drwxr-xr-x. 2 root root      1628 Aug 22 15:43 .
+    >   drwxr-xr-x. 8 root root         6 Aug 23 05:16 ..
+    >   -rw-r--r--. 1 root root  96996784 Apr 21 02:05 part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  94347758 Apr 21 02:05 part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  91212632 Apr 21 02:05 part-00011-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  90162982 Apr 21 02:06 part-00015-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-d4ac047416ae5fe0-exec-1 \
+        -- \
+            ls -al /gaia/gaia-dr2/gaia-dr2-2-0 | head
+
+    >   total 247809670
+    >   drwxr-xr-x. 2 root root      3257 Aug 22 16:46 .
+    >   drwxr-xr-x. 8 root root         6 Aug 23 05:16 ..
+    >   -rw-r--r--. 1 root root 104411815 Apr 21 02:04 part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  96996784 Apr 21 02:05 part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  95255378 Apr 21 02:05 part-00005-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  94347758 Apr 21 02:05 part-00007-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-d4ac047416ae5fe0-exec-1 \
+        -- \
+            ls -al /gaia/gaia-dr2/gaia-dr2-full | head
+
+    >   total 495684386
+    >   drwxr-xr-x. 2 root root      6514 Aug 23 06:57 .
+    >   drwxr-xr-x. 8 root root         6 Aug 23 05:16 ..
+    >   -rw-r--r--. 1 root root  74114220 Apr 21 02:04 part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 104411815 Apr 21 02:04 part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  99035704 Apr 21 02:04 part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  96996784 Apr 21 02:05 part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Try accessing the files from Spark.
+#[user@zeppelin]
+
+    %spark.conf
+
+    ....
+
+    spark.kubernetes.driver.volumes.persistentVolumeClaim.gaia-dr2.mount.path          /gaia/gaia-dr2
+    spark.kubernetes.driver.volumes.persistentVolumeClaim.gaia-dr2.mount.readOnly      false
+    spark.kubernetes.driver.volumes.persistentVolumeClaim.gaia-dr2.options.claimName   gaia-dr2-volume-claim
+
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.gaia-dr2.mount.path        /gaia/gaia-dr2
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.gaia-dr2.mount.readOnly    false
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.gaia-dr2.options.claimName gaia-dr2-volume-claim
+
+
+# -----------------------------------------------------
+
+    %spark.pyspark
+
+    df = sqlContext.read.parquet(
+        "/gaia/gaia-dr2/gaia-dr2-16-0/"
+        )
+
+    print "DF count: ", df.count()
+    print "DF partitions: ", df.rdd.getNumPartitions()
+
+    >   Fail to execute line 2:     "/gaia/gaia-dr2/gaia-dr2-16-0/"
+    >   Traceback (most recent call last):
+    >     File "/tmp/1598108372847-0/zeppelin_python.py", line 153, in <module>
+    >       exec(code, _zcUserQueryNameSpace)
+    >     File "<stdin>", line 2, in <module>
+    >     File "/spark/python/pyspark/sql/readwriter.py", line 353, in parquet
+    >       return self._df(self._jreader.parquet(_to_seq(self._spark._sc, paths)))
+    >     File "/spark/python/lib/py4j-0.10.9-src.zip/py4j/java_gateway.py", line 1305, in __call__
+    >       answer, self.gateway_client, self.target_id, self.name)
+    >     File "/spark/python/pyspark/sql/utils.py", line 137, in deco
+    >       raise_from(converted)
+    >     File "/spark/python/pyspark/sql/utils.py", line 33, in raise_from
+    >       raise e
+    >   AnalysisException: Path does not exist: file:/gaia/gaia-dr2/gaia-dr2-16-0;
+
+    #
+    # OK - that suggests that the files need to be visible from the interpreter
+    # So we need to update the interpreter template
+    #   k8s/interpreter/100-interpreter-spec.yaml
+    #
+
+    #
+    # Quick test - can we patch the interpreter Pod to add the claim ?
+    # DONE - no, we can't use patch
+    #
+
+    #
+    # Need to edit the template embedded in the Zeppelin container image.
+    # ... unless we login to the Zeppelin container ?
+    #
+
+# -----------------------------------------------------
+# Login to the main Zeppelin container.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        zeppelin-server-d78dc55f9-sd6kk \
+        -- \
+            /bin/bash
+
+
+# -----------------------------------------------------
+# Try editing the interpreter spec.
+#[zeppelin@zeppelin-server]
+
+    ls -al k8s/interpreter/
+
+    >   total 8
+    >   drwxrwxrwx. 2 root root   39 Jul 27 05:32 .
+    >   drwxrwxrwx. 3 root root   53 Jul 27 05:32 ..
+    >   -rw-rw-rw-. 1 root root 5216 Jul 27 05:32 100-interpreter-spec.yaml
+
+
+    uid
+
+    >   uid=1000(zeppelin) gid=0(root) groups=0(root)
+
+    #
+    # The file is owned by root .. and we are not root.
+    #
+
+
+    vi  k8s/interpreter/100-interpreter-spec.yaml
+
+    >   bash: vi: command not found
+
+    #
+    # We don't have an editor ..
+    #
+
+
+

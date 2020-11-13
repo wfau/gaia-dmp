@@ -1,0 +1,585 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+# -----------------------------------------------------
+
+Experiments:
+
+    Manila CSI modified version
+    20200905-02-modified-csi.txt
+
+    Test name : Collinotter
+
+    Connecting to a dynamic share using application credentials
+    FAIL - the test didn't use the credentials !!
+
+    Connecting to a dynamic share using username/password
+    FAIL - the test didn't use the credentials !!
+
+    Update :
+        It took several iterations to get these tests to work.
+        By the end of the process I was thoroughly confused, but didn't know it.
+        I thought the tests demonstrated the use of application credentials and username/password.
+        In the end, I ended up using the kube-system/os-trustee Secret for both tests.
+        It wasn't until I re-visited these tests several days later that I realised that as a result
+        of the debugging process I had ended up using the kube-system/os-trustee Secret for both tests.
+
+        The application credentials and username/password secrets are not used.
+
+        One day, when I have time, I may re-visit these tests again.
+        Right now, we need to get the Spark in Gaia deployemtn working
+
+    Connecting to a dynamic share using kube-system/os-trustee Secret
+    PASS - both tests use the same Secret.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Install YQ.
+# TODO - add this to the kubernator image
+#[user@kubernator]
+
+    mkdir   "${HOME:?}/bin"
+    wget -O "${HOME:?}/bin/yq" https://github.com/mikefarah/yq/releases/download/3.3.2/yq_linux_amd64
+    chmod a+x "${HOME:?}/bin/yq"
+
+
+# -----------------------------------------------------
+# Create our Secret set using application credentials.
+#[user@kubernator]
+
+    osauthurl=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.auth_url'
+        )
+
+    osregion=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.region_name'
+        )
+
+    oscredentialID=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.application_credential_id'
+        )
+
+    oscredentialsecret=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod.auth.application_credential_secret'
+        )
+
+    cat > "/tmp/collinotter-secrets.yaml" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: collinotter-secrets
+  namespace: default
+stringData:
+  os-authURL: "${osauthurl:?}"
+  os-region: "${osregion:?}"
+  os-applicationCredentialID: "${oscredentialID:?}"
+  os-applicationCredentialSecret: "${oscredentialsecret:?}"
+EOF
+
+    kubectl create \
+        --filename "/tmp/collinotter-secrets.yaml"
+
+    kubectl describe \
+        secret \
+            collinotter-secrets
+
+    >   ....
+    >   ....
+    >   Data
+    >   ====
+    >   os-applicationCredentialID:      32 bytes
+    >   os-applicationCredentialSecret:  35 bytes
+    >   os-authURL:                      47 bytes
+    >   os-region:                       9 bytes
+
+
+# -----------------------------------------------------
+# Create our StorageClass with os-trustee secrets.
+#[user@kubernator]
+
+    cat > "/tmp/collinotter-class.yaml" << EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: collinotter-class
+provisioner: cephfs.manila.csi.openstack.org
+parameters:
+  type: cephfsnativetype
+
+  csi.storage.k8s.io/provisioner-secret-name: os-trustee
+  csi.storage.k8s.io/provisioner-secret-namespace: kube-system
+  csi.storage.k8s.io/node-stage-secret-name: os-trustee
+  csi.storage.k8s.io/node-stage-secret-namespace: kube-system
+  csi.storage.k8s.io/node-publish-secret-name: os-trustee
+  csi.storage.k8s.io/node-publish-secret-namespace: kube-system
+EOF
+
+    kubectl create \
+        --filename "/tmp/collinotter-class.yaml"
+
+    kubectl describe \
+        storageclass \
+            collinotter-class
+
+    >   Name:                  collinotter-class
+    >   IsDefaultClass:        No
+    >   Annotations:           <none>
+    >   Provisioner:           cephfs.manila.csi.openstack.org
+    >   Parameters:            csi.storage.k8s.io/node-publish-secret-name=os-trustee,csi.storage.k8s.io/node-publish-secret-namespace=kube-system,csi.storage.k8s.io/node-stage-secret-name=os-trustee,csi.storage.k8s.io/node-stage-secret-namespace=kube-system,csi.storage.k8s.io/provisioner-secret-name=os-trustee,csi.storage.k8s.io/provisioner-secret-namespace=kube-system,type=cephfsnativetype
+    >   AllowVolumeExpansion:  <unset>
+    >   MountOptions:          <none>
+    >   ReclaimPolicy:         Delete
+    >   VolumeBindingMode:     Immediate
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Create a PersistentVolumeClaim that refers to our StorageClass.
+#[user@kubernator]
+
+    cat > "/tmp/collinotter-claim.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: collinotter-claim
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 2Gi
+  storageClassName: collinotter-class
+EOF
+
+    kubectl apply \
+        --filename "/tmp/collinotter-claim.yaml"
+
+    kubectl describe \
+        PersistentVolumeClaim \
+            collinotter-claim
+
+    >   Name:          collinotter-claim
+    >   Namespace:     default
+    >   StorageClass:  collinotter-class
+    >   Status:        Pending
+    >   Volume:
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"collinotter-claim","namespace":"default"},"spec":{"...
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:
+    >   Access Modes:
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Create a Pod that mounts the volume.
+#[user@kubernator]
+
+    cat > /tmp/collinotter-pod.yaml << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: collinotter-pod
+  namespace: default
+spec:
+  volumes:
+    - name: share-data
+      persistentVolumeClaim:
+        claimName: collinotter-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: collinotter-container
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: share-data
+          mountPath: /share-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /share-data/\${HOSTNAME}.log;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename /tmp/collinotter-pod.yaml
+
+    kubectl \
+        describe pod \
+            collinotter-pod
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/collinotter-pod to tiberius-20200906-ys543ic7ytad-node-1
+    >     Normal  Pulling    9s         kubelet, tiberius-20200906-ys543ic7ytad-node-1  Pulling image "fedora:latest"
+    >     Normal  Pulled     2s         kubelet, tiberius-20200906-ys543ic7ytad-node-1  Successfully pulled image "fedora:latest"
+    >     Normal  Created    1s         kubelet, tiberius-20200906-ys543ic7ytad-node-1  Created container collinotter-container
+    >     Normal  Started    1s         kubelet, tiberius-20200906-ys543ic7ytad-node-1  Started container collinotter-container
+
+
+# -----------------------------------------------------
+# Login to our Pod to check.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        collinotter-pod \
+        -- \
+            /bin/bash
+
+            tail -f /share-data/${HOSTNAME}.log
+
+    >   ....
+    >   ....
+    >   Sun Sep  6 03:26:59 UTC 2020
+    >   Sun Sep  6 03:27:00 UTC 2020
+    >   Sun Sep  6 03:27:01 UTC 2020
+    >   Sun Sep  6 03:27:02 UTC 2020
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Describe all the components
+#[user@kubernator]
+
+    kubectl describe \
+        secret \
+            collinotter-secrets
+
+    >   Name:         collinotter-secrets
+    >   Namespace:    default
+    >   Labels:       <none>
+    >   Annotations:  <none>
+    >
+    >   Type:  Opaque
+    >
+    >   Data
+    >   ====
+    >   os-applicationCredentialID:      32 bytes
+    >   os-applicationCredentialSecret:  35 bytes
+    >   os-authURL:                      47 bytes
+    >   os-region:                       9 bytes
+
+
+    kubectl describe \
+        storageclass \
+            collinotter-class
+
+    >   Name:                  collinotter-class
+    >   IsDefaultClass:        No
+    >   Annotations:           <none>
+    >   Provisioner:           cephfs.manila.csi.openstack.org
+    >   Parameters:            csi.storage.k8s.io/node-publish-secret-name=os-trustee,csi.storage.k8s.io/node-publish-secret-namespace=kube-system,csi.storage.k8s.io/node-stage-secret-name=os-trustee,csi.storage.k8s.io/node-stage-secret-namespace=kube-system,csi.storage.k8s.io/provisioner-secret-name=os-trustee,csi.storage.k8s.io/provisioner-secret-namespace=kube-system,type=cephfsnativetype
+    >   AllowVolumeExpansion:  <unset>
+    >   MountOptions:          <none>
+    >   ReclaimPolicy:         Delete
+    >   VolumeBindingMode:     Immediate
+    >   Events:                <none>
+
+
+    kubectl describe \
+        persistentvolumeclaim \
+            collinotter-claim
+
+    >   Name:          collinotter-claim
+    >   Namespace:     default
+    >   StorageClass:  collinotter-class
+    >   Status:        Bound
+    >   Volume:        pvc-eaf0f849-ad80-4b84-b56b-8673ddac23cc
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"collinotter-claim","namespace":"default"},"spec":{"...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >                  volume.beta.kubernetes.io/storage-provisioner: cephfs.manila.csi.openstack.org
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      2Gi
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    collinotter-pod
+    >   Events:
+    >     Type    Reason                 Age   From                                                                                                       Message
+    >     ----    ------                 ----  ----                                                                                                       -------
+    >     Normal  ExternalProvisioning   92s   persistentvolume-controller                                                                                waiting for a volume to be created, either by external provisioner "cephfs.manila.csi.openstack.org" or manually created by system administrator
+    >     Normal  Provisioning           92s   cephfs.manila.csi.openstack.org_csi-manila-cephfs-controllerplugin-0_f95e5664-776e-4eca-82a1-4aa0ce5ce98f  External provisioner is provisioning volume for claim "default/collinotter-claim"
+    >     Normal  ProvisioningSucceeded  82s   cephfs.manila.csi.openstack.org_csi-manila-cephfs-controllerplugin-0_f95e5664-776e-4eca-82a1-4aa0ce5ce98f  Successfully provisioned volume pvc-eaf0f849-ad80-4b84-b56b-8673ddac23cc
+
+
+    kubectl describe \
+        pod \
+            collinotter-pod
+
+    >   Name:         collinotter-pod
+    >   Namespace:    default
+    >   Node:         tiberius-20200906-ys543ic7ytad-node-1/10.0.0.197
+    >   Start Time:   Sun, 06 Sep 2020 03:26:33 +0000
+    >   Labels:       <none>
+    >   Annotations:  kubectl.kubernetes.io/last-applied-configuration:
+    >                   {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"name":"collinotter-pod","namespace":"default"},"spec":{"containers":[{"args"...
+    >   Status:       Running
+    >   IP:           10.100.1.13
+    >   Containers:
+    >     collinotter-container:
+    >       Container ID:  docker://e21dbba04ac1cd70f86b30270826bd1c5d13d0685ffefb6f1d6e5abfa5e46d43
+    >       Image:         fedora:latest
+    >       Image ID:      docker-pullable://docker.io/fedora@sha256:d6a6d60fda1b22b6d5fe3c3b2abe2554b60432b7b215adc11a2b5fae16f50188
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Command:
+    >         /bin/sh
+    >       Args:
+    >         -c
+    >         while true; do date >> /share-data/${HOSTNAME}.log; sleep 1; done
+    >       State:          Running
+    >         Started:      Sun, 06 Sep 2020 03:26:44 +0000
+    >       Ready:          True
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /local-data from local-data (rw)
+    >         /share-data from share-data (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-bfn7m (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             True
+    >     ContainersReady   True
+    >     PodScheduled      True
+    >   Volumes:
+    >     share-data:
+    >       Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    >       ClaimName:  collinotter-claim
+    >       ReadOnly:   false
+    >     local-data:
+    >       Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    >       Medium:
+    >       SizeLimit:  <unset>
+    >     default-token-bfn7m:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-bfn7m
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type    Reason     Age        From                                            Message
+    >     ----    ------     ----       ----                                            -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                               Successfully assigned default/collinotter-pod to tiberius-20200906-ys543ic7ytad-node-1
+    >     Normal  Pulling    94s        kubelet, tiberius-20200906-ys543ic7ytad-node-1  Pulling image "fedora:latest"
+    >     Normal  Pulled     87s        kubelet, tiberius-20200906-ys543ic7ytad-node-1  Successfully pulled image "fedora:latest"
+    >     Normal  Created    86s        kubelet, tiberius-20200906-ys543ic7ytad-node-1  Created container collinotter-container
+    >     Normal  Started    86s        kubelet, tiberius-20200906-ys543ic7ytad-node-1  Started container collinotter-container
+
+
+# -----------------------------------------------------
+# Delete our Pod, Claim, Volume and Secret.
+#[user@kubernator]
+
+    kubectl \
+        delete pod \
+            collinotter-pod
+
+    kubectl \
+        delete persistentvolumeclaim \
+            collinotter-claim
+
+    kubectl \
+        delete persistentvolume \
+            collinotter-volume
+
+    kubectl \
+        delete secret \
+            collinotter-secrets
+
+
+# -----------------------------------------------------
+# Create our Secret set using username and password.
+#[user@kubernator]
+
+    osdomain=default
+    osproject=iris-gaia-prod
+
+    osauthurl=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.auth_url'
+        )
+
+    osregion=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.region_name'
+        )
+
+    osusername=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.username'
+        )
+
+    ospassword=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.password'
+        )
+
+    cat > "/tmp/collinotter-secrets.yaml" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: collinotter-secrets
+  namespace: default
+stringData:
+  os-authURL:     "${osauthurl:?}"
+  os-region:      "${osregion:?}"
+  os-domainID:    "${osdomain:?}"
+  os-projectName: "${osproject:?}"
+  os-userName:    "${osusername:?}"
+  os-password:    "${ospassword:?}"
+EOF
+
+    kubectl create \
+        --filename "/tmp/collinotter-secrets.yaml"
+
+    kubectl describe \
+        secret \
+            collinotter-secrets
+
+    >   ....
+    >   ....
+    >   Data
+    >   ====
+    >   os-projectName:  14 bytes
+    >   os-region:       9 bytes
+    >   os-userName:     17 bytes
+    >   os-authURL:      47 bytes
+    >   os-domainID:     7 bytes
+    >   os-password:     37 bytes
+
+
+# -----------------------------------------------------
+# Create our Volume, Claim and Pod.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename "/tmp/collinotter-volume.yaml"
+
+    kubectl apply \
+        --filename "/tmp/collinotter-claim.yaml"
+
+    kubectl apply \
+        --filename "/tmp/collinotter-pod.yaml"
+
+    kubectl describe \
+        pod \
+            collinotter-pod
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason             Age                From                                            Message
+    >     ----     ------             ----               ----                                            -------
+    >     Warning  FailedScheduling   <unknown>          default-scheduler                               error while running "VolumeBinding" filter plugin for pod "collinotter-pod": pod has unbound immediate PersistentVolumeClaims
+    >     Warning  FailedScheduling   <unknown>          default-scheduler                               error while running "VolumeBinding" filter plugin for pod "collinotter-pod": pod has unbound immediate PersistentVolumeClaims
+    >     Normal   Scheduled          <unknown>          default-scheduler                               Successfully assigned default/collinotter-pod to tiberius-20200906-ys543ic7ytad-node-0
+    >     Normal   NotTriggerScaleUp  25s (x2 over 35s)  cluster-autoscaler                              pod didn't trigger scale-up (it wouldn't fit if a new node is added): 1 max limit reached
+    >     Normal   Pulling            12s                kubelet, tiberius-20200906-ys543ic7ytad-node-0  Pulling image "fedora:latest"
+    >     Normal   Pulled             5s                 kubelet, tiberius-20200906-ys543ic7ytad-node-0  Successfully pulled image "fedora:latest"
+    >     Normal   Created            5s                 kubelet, tiberius-20200906-ys543ic7ytad-node-0  Created container collinotter-container
+    >     Normal   Started            5s                 kubelet, tiberius-20200906-ys543ic7ytad-node-0  Started container collinotter-container
+
+
+# -----------------------------------------------------
+# Login to our Pod to check.
+#[user@kubernator]
+
+    kubectl exec \
+        --tty \
+        --stdin \
+        collinotter-pod \
+        -- \
+            /bin/bash
+
+            tail -f /share-data/${HOSTNAME}.log
+
+    >   ....
+    >   ....
+    >   Sun Sep  6 03:32:48 UTC 2020
+    >   Sun Sep  6 03:32:49 UTC 2020
+    >   Sun Sep  6 03:32:50 UTC 2020
+    >   Sun Sep  6 03:32:51 UTC 2020
+
+
+

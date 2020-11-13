@@ -1,0 +1,878 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubenator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/zeppelin:/zeppelin:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/kubernetes:/kubernetes:ro,z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Install the Drupal Operator.
+# https://github.com/geerlingguy/drupal-operator
+#[user@kubernator]
+
+    kubectl apply \
+        --filename \
+            'https://raw.githubusercontent.com/geerlingguy/drupal-operator/master/deploy/drupal-operator.yaml'
+
+    >   clusterrole.rbac.authorization.k8s.io/drupal-operator created
+    >   clusterrolebinding.rbac.authorization.k8s.io/drupal-operator created
+    >   serviceaccount/drupal-operator created
+    >   deployment.apps/drupal-operator created
+    >   customresourcedefinition.apiextensions.k8s.io/drupals.drupal.drupal.org created
+
+
+# -----------------------------------------------------
+# Install our Drupal site.
+# https://github.com/geerlingguy/drupal-operator
+#[user@kubernator]
+
+
+    cat > "/tmp/drupal-site.yaml" << EOF
+---
+apiVersion: drupal.drupal.org/v1alpha1
+kind: Drupal
+metadata:
+  name: drupal-site
+  namespace: default
+spec:
+  # The container image to use for the Drupal deployment.
+  drupal_image: 'drupal:8.8-apache'
+
+  # Set this to 'true' to use a single-pod database managed by this operator.
+  manage_database: true
+  database_image: mariadb:10
+  database_pvc_size: 1Gi
+  database_password: change-me
+
+  # Set this to 'true' to have this operator manage Ingress for the site.
+  manage_ingress: true
+  drupal_hostname: drupal.metagrid.xyz
+EOF
+
+    kubectl apply \
+        --filename \
+            "/tmp/drupal-site.yaml"
+
+    >   drupal.drupal.drupal.org/drupal-site created
+
+
+# -----------------------------------------------------
+# List the installed components.
+#[user@kubernator]
+
+    kubectl get all
+
+    >   NAME                                             READY   STATUS        RESTARTS   AGE
+    >   ....
+    >   pod/drupal-operator-7f4b5dcdcb-zsqrz             2/2     Running       0          76s
+    >   pod/drupal-site-drupal-5bdb456f5-ks6vv           0/1     Pending       0          10s
+    >   ....
+    >
+    >   NAME                                             TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)                      AGE
+    >   ....
+    >   service/drupal-operator-metrics                  ClusterIP      10.254.29.179    <none>            8383/TCP,8686/TCP            48s
+    >   service/drupal-site                              NodePort       10.254.174.100   <none>            80:30392/TCP                 0s
+    >   ....
+    >
+    >   NAME                                             READY   UP-TO-DATE   AVAILABLE   AGE
+    >   ....
+    >   deployment.apps/drupal-operator                  1/1     1            1           76s
+    >   deployment.apps/drupal-site-drupal               0/1     1            0           10s
+    >   ....
+    >
+    >   NAME                                             DESIRED   CURRENT   READY   AGE
+    >   ....
+    >   replicaset.apps/drupal-operator-7f4b5dcdcb       1         1         1       76s
+    >   replicaset.apps/drupal-site-drupal-5bdb456f5     1         1         0       10s
+    >   ....
+
+
+    kubectl get Ingress
+
+    >   NAME                   HOSTS                     ADDRESS           PORTS   AGE
+    >   drupal-site            drupal.metagrid.xyz       128.232.227.180   80      2m43s
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the details of the Drupal Pods.
+#[user@kubernator]
+
+    kubectl get Pods
+
+    >   NAME                                             READY   STATUS        RESTARTS   AGE
+    >   ....
+    >   drupal-operator-7f4b5dcdcb-zsqrz                 2/2     Running       0          4m46s
+    >   drupal-site-drupal-5bdb456f5-ks6vv               0/1     Pending       0          3m40s
+    >   drupal-site-mariadb-855766cdbf-8v4jv             0/1     Pending       0          3m1s
+    >   ....
+
+
+    kubectl get \
+        --output json \
+        Pod \
+            drupal-site-drupal-5bdb456f5-ks6vv
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Pod",
+    >       "metadata": {
+    >           "creationTimestamp": "2020-09-18T03:40:33Z",
+    >           "generateName": "drupal-site-drupal-5bdb456f5-",
+    >           "labels": {
+    >               "app": "drupal",
+    >               "pod-template-hash": "5bdb456f5"
+    >           },
+    >           "name": "drupal-site-drupal-5bdb456f5-ks6vv",
+    >           "namespace": "default",
+    >           "ownerReferences": [
+    >               {
+    >                   "apiVersion": "apps/v1",
+    >                   "blockOwnerDeletion": true,
+    >                   "controller": true,
+    >                   "kind": "ReplicaSet",
+    >                   "name": "drupal-site-drupal-5bdb456f5",
+    >                   "uid": "4a96d924-6edb-4abf-9774-43db8c9acc7a"
+    >               }
+    >           ],
+    >           "resourceVersion": "2354810",
+    >           "selfLink": "/api/v1/namespaces/default/pods/drupal-site-drupal-5bdb456f5-ks6vv",
+    >           "uid": "025b9e09-d6d7-4f75-9d17-13e3a07f4fa4"
+    >       },
+    >       "spec": {
+    >           "containers": [
+    >               {
+    >                   "image": "drupal:8.8-apache",
+    >                   "imagePullPolicy": "IfNotPresent",
+    >                   "livenessProbe": {
+    >                       "failureThreshold": 3,
+    >                       "initialDelaySeconds": 60,
+    >                       "periodSeconds": 10,
+    >                       "successThreshold": 1,
+    >                       "tcpSocket": {
+    >                           "port": 80
+    >                       },
+    >                       "timeoutSeconds": 1
+    >                   },
+    >                   "name": "drupal",
+    >                   "ports": [
+    >                       {
+    >                           "containerPort": 80,
+    >                           "protocol": "TCP"
+    >                       }
+    >                   ],
+    >                   "readinessProbe": {
+    >                       "failureThreshold": 3,
+    >                       "initialDelaySeconds": 30,
+    >                       "periodSeconds": 10,
+    >                       "successThreshold": 1,
+    >                       "tcpSocket": {
+    >                           "port": 80
+    >                       },
+    >                       "timeoutSeconds": 1
+    >                   },
+    >                   "resources": {},
+    >                   "terminationMessagePath": "/dev/termination-log",
+    >                   "terminationMessagePolicy": "File",
+    >                   "volumeMounts": [
+    >                       {
+    >                           "mountPath": "/var/www/html/sites/default/",
+    >                           "name": "drupal-settings"
+    >                       },
+    >                       {
+    >                           "mountPath": "/var/www/html/sites/default/files/",
+    >                           "name": "drupal-files"
+    >                       },
+    >                       {
+    >                           "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+    >                           "name": "default-token-cvzl8",
+    >                           "readOnly": true
+    >                       }
+    >                   ]
+    >               }
+    >           ],
+    >           "dnsPolicy": "ClusterFirst",
+    >           "enableServiceLinks": true,
+    >           "restartPolicy": "Always",
+    >           "schedulerName": "default-scheduler",
+    >           "securityContext": {},
+    >           "serviceAccount": "default",
+    >           "serviceAccountName": "default",
+    >           "terminationGracePeriodSeconds": 30,
+    >           "tolerations": [
+    >               {
+    >                   "effect": "NoExecute",
+    >                   "key": "node.kubernetes.io/not-ready",
+    >                   "operator": "Exists",
+    >                   "tolerationSeconds": 300
+    >               },
+    >               {
+    >                   "effect": "NoExecute",
+    >                   "key": "node.kubernetes.io/unreachable",
+    >                   "operator": "Exists",
+    >                   "tolerationSeconds": 300
+    >               }
+    >           ],
+    >           "volumes": [
+    >               {
+    >                   "configMap": {
+    >                       "defaultMode": 420,
+    >                       "name": "drupal-site-drupal-config"
+    >                   },
+    >                   "name": "drupal-settings"
+    >               },
+    >               {
+    >                   "name": "drupal-files",
+    >                   "persistentVolumeClaim": {
+    >                       "claimName": "drupal-site-files-pvc"
+    >                   }
+    >               },
+    >               {
+    >                   "name": "default-token-cvzl8",
+    >                   "secret": {
+    >                       "defaultMode": 420,
+    >                       "secretName": "default-token-cvzl8"
+    >                   }
+    >               }
+    >           ]
+    >       },
+    >       "status": {
+    >           "conditions": [
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-09-18T03:40:33Z",
+    >                   "message": "error while running \"VolumeBinding\" filter plugin for pod \"drupal-site-drupal-5bdb456f5-ks6vv\": pod has unbound immediate PersistentVolumeClaims",
+    >                   "reason": "Unschedulable",
+    >                   "status": "False",
+    >                   "type": "PodScheduled"
+    >               }
+    >           ],
+    >           "phase": "Pending",
+    >           "qosClass": "BestEffort"
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        Pod \
+            drupal-site-mariadb-855766cdbf-8v4jv
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Pod",
+    >       "metadata": {
+    >           "creationTimestamp": "2020-09-18T03:41:12Z",
+    >           "generateName": "drupal-site-mariadb-855766cdbf-",
+    >           "labels": {
+    >               "app": "mariadb",
+    >               "pod-template-hash": "855766cdbf"
+    >           },
+    >           "name": "drupal-site-mariadb-855766cdbf-8v4jv",
+    >           "namespace": "default",
+    >           "ownerReferences": [
+    >               {
+    >                   "apiVersion": "apps/v1",
+    >                   "blockOwnerDeletion": true,
+    >                   "controller": true,
+    >                   "kind": "ReplicaSet",
+    >                   "name": "drupal-site-mariadb-855766cdbf",
+    >                   "uid": "5437ecbe-5266-4b76-8aff-b56ffdbe4a0d"
+    >               }
+    >           ],
+    >           "resourceVersion": "2355049",
+    >           "selfLink": "/api/v1/namespaces/default/pods/drupal-site-mariadb-855766cdbf-8v4jv",
+    >           "uid": "2d32f5b4-77f2-4790-8eb1-05af8a728eca"
+    >       },
+    >       "spec": {
+    >           "containers": [
+    >               {
+    >                   "env": [
+    >                       {
+    >                           "name": "MYSQL_DATABASE",
+    >                           "value": "drupal"
+    >                       },
+    >                       {
+    >                           "name": "MYSQL_USER",
+    >                           "value": "drupal"
+    >                       },
+    >                       {
+    >                           "name": "MYSQL_PASSWORD",
+    >                           "value": "change-me"
+    >                       },
+    >                       {
+    >                           "name": "MYSQL_RANDOM_ROOT_PASSWORD",
+    >                           "value": "yes"
+    >                       }
+    >                   ],
+    >                   "image": "mariadb:10",
+    >                   "imagePullPolicy": "IfNotPresent",
+    >                   "name": "mariadb",
+    >                   "ports": [
+    >                       {
+    >                           "containerPort": 3306,
+    >                           "protocol": "TCP"
+    >                       }
+    >                   ],
+    >                   "resources": {},
+    >                   "terminationMessagePath": "/dev/termination-log",
+    >                   "terminationMessagePolicy": "File",
+    >                   "volumeMounts": [
+    >                       {
+    >                           "mountPath": "/var/lib/mysql/",
+    >                           "name": "drupal-db"
+    >                       },
+    >                       {
+    >                           "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+    >                           "name": "default-token-cvzl8",
+    >                           "readOnly": true
+    >                       }
+    >                   ]
+    >               }
+    >           ],
+    >           "dnsPolicy": "ClusterFirst",
+    >           "enableServiceLinks": true,
+    >           "restartPolicy": "Always",
+    >           "schedulerName": "default-scheduler",
+    >           "securityContext": {},
+    >           "serviceAccount": "default",
+    >           "serviceAccountName": "default",
+    >           "terminationGracePeriodSeconds": 30,
+    >           "tolerations": [
+    >               {
+    >                   "effect": "NoExecute",
+    >                   "key": "node.kubernetes.io/not-ready",
+    >                   "operator": "Exists",
+    >                   "tolerationSeconds": 300
+    >               },
+    >               {
+    >                   "effect": "NoExecute",
+    >                   "key": "node.kubernetes.io/unreachable",
+    >                   "operator": "Exists",
+    >                   "tolerationSeconds": 300
+    >               }
+    >           ],
+    >           "volumes": [
+    >               {
+    >                   "name": "drupal-db",
+    >                   "persistentVolumeClaim": {
+    >                       "claimName": "drupal-site-db-pvc"
+    >                   }
+    >               },
+    >               {
+    >                   "name": "default-token-cvzl8",
+    >                   "secret": {
+    >                       "defaultMode": 420,
+    >                       "secretName": "default-token-cvzl8"
+    >                   }
+    >               }
+    >           ]
+    >       },
+    >       "status": {
+    >           "conditions": [
+    >               {
+    >                   "lastProbeTime": null,
+    >                   "lastTransitionTime": "2020-09-18T03:41:12Z",
+    >                   "message": "error while running \"VolumeBinding\" filter plugin for pod \"drupal-site-mariadb-855766cdbf-8v4jv\": pod has unbound immediate PersistentVolumeClaims",
+    >                   "reason": "Unschedulable",
+    >                   "status": "False",
+    >                   "type": "PodScheduled"
+    >               }
+    >           ],
+    >           "phase": "Pending",
+    >           "qosClass": "BestEffort"
+    >       }
+    >   }
+
+
+# -----------------------------------------------------
+# Get the details of the Drupal ConfigMaps.
+#[user@kubernator]
+
+    kubectl get ConfigMaps
+
+    >   NAME                                             DATA   AGE
+    >   ....
+    >   drupal-operator-lock                             0      27m
+    >   drupal-site-drupal-config                        1      27m
+    >   ....
+
+
+    kubectl get \
+        --output json \
+            ConfigMap \
+                drupal-operator-lock
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "ConfigMap",
+    >       "metadata": {
+    >           "creationTimestamp": "2020-09-18T03:39:48Z",
+    >           "name": "drupal-operator-lock",
+    >           "namespace": "default",
+    >           "ownerReferences": [
+    >               {
+    >                   "apiVersion": "v1",
+    >                   "kind": "Pod",
+    >                   "name": "drupal-operator-7f4b5dcdcb-zsqrz",
+    >                   "uid": "18e24166-a8e9-4c1c-9006-8b97e1f5ec33"
+    >               }
+    >           ],
+    >           "resourceVersion": "2354561",
+    >           "selfLink": "/api/v1/namespaces/default/configmaps/drupal-operator-lock",
+    >           "uid": "471860be-25cb-4e64-970b-9a51bc5069fc"
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+            ConfigMap \
+                drupal-site-drupal-config
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "data": {
+    >           "settings.php": "\u003c?php\n\n$databases['default']['default'] = array(\n  'database' =\u003e 'drupal',\n  'username' =\u003e 'drupal',\n  'password' =\u003e 'change-me',\n  'prefix' =\u003e '',\n  'host' =\u003e 'example-drupal-mariadb',\n  'port' =\u003e '3306',\n  'namespace' =\u003e 'Drupal\\\\Core\\\\Database\\\\Driver\\\\mysql',\n  'driver' =\u003e 'mysql',\n);\n\n$settings['hash_salt'] = 'eTSJWkQzJAoacWlftYXp';\n$settings['trusted_host_patterns'] = ['^.+$'];"
+    >       },
+    >       "kind": "ConfigMap",
+    >       "metadata": {
+    >           "creationTimestamp": "2020-09-18T03:40:13Z",
+    >           "name": "drupal-site-drupal-config",
+    >           "namespace": "default",
+    >           "resourceVersion": "2354696",
+    >           "selfLink": "/api/v1/namespaces/default/configmaps/drupal-site-drupal-config",
+    >           "uid": "f0f859c6-ee0e-4384-a28f-0b09cdce21ff"
+    >       }
+    >   }
+
+
+# -----------------------------------------------------
+# Decode the unicode characters.
+# https://stackoverflow.com/questions/4858494/what-does-u003c-mean
+#[user@kubernator]
+
+    >   <?php
+    >   $databases['default']['default'] = array(
+    >     'database' => 'drupal',
+    >     'username' => 'drupal',
+    >     'password' => 'change-me',
+    >     'prefix' => '',
+    >     'host' => 'example-drupal-mariadb',
+    >     'port' => '3306',
+    >     'namespace' => 'Drupal\\\\Core\\\\Database\\\\Driver\\\\mysql',
+    >     'driver' => 'mysql',
+    >     );
+    >   $settings['hash_salt'] = 'eTSJWkQzJAoacWlftYXp';
+    >   $settings['trusted_host_patterns'] = ['^.+$'];"
+
+
+# -----------------------------------------------------
+# Get the details of the Drupal PersistentVolumeClaims.
+#[user@kubernator]
+
+    kubectl get PersistentVolumeClaims
+
+    >   NAME                    STATUS    VOLUME         CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+    >   drupal-site-db-pvc      Pending                                                           5m48s
+    >   drupal-site-files-pvc   Pending                                                           6m27s
+    >   ....
+
+
+    kubectl get \
+        --output json \
+        PersistentVolumeClaim \
+            drupal-site-db-pvc
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolumeClaim",
+    >       "metadata": {
+    >           "creationTimestamp": "2020-09-18T03:41:02Z",
+    >           "finalizers": [
+    >               "kubernetes.io/pvc-protection"
+    >           ],
+    >           "name": "drupal-site-db-pvc",
+    >           "namespace": "default",
+    >           "resourceVersion": "2354987",
+    >           "selfLink": "/api/v1/namespaces/default/persistentvolumeclaims/drupal-site-db-pvc",
+    >           "uid": "2975f3b3-36f2-4a45-9bb1-cc5d06ab7eed"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteOnce"
+    >           ],
+    >           "resources": {
+    >               "requests": {
+    >                   "storage": "1Gi"
+    >               }
+    >           },
+    >           "volumeMode": "Filesystem"
+    >       },
+    >       "status": {
+    >           "phase": "Pending"
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolumeClaim",
+    >       "metadata": {
+    >           "creationTimestamp": "2020-09-18T03:40:23Z",
+    >           "finalizers": [
+    >               "kubernetes.io/pvc-protection"
+    >           ],
+    >           "name": "drupal-site-files-pvc",
+    >           "namespace": "default",
+    >           "resourceVersion": "2354747",
+    >           "selfLink": "/api/v1/namespaces/default/persistentvolumeclaims/drupal-site-files-pvc",
+    >           "uid": "934a742c-eccc-4351-8839-d29ba1b99865"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteOnce"
+    >           ],
+    >           "resources": {
+    >               "requests": {
+    >                   "storage": "1Gi"
+    >               }
+    >           },
+    >           "volumeMode": "Filesystem"
+    >       },
+    >       "status": {
+    >           "phase": "Pending"
+    >       }
+    >   }
+
+
+# -----------------------------------------------------
+# Install the Cinder CSI plugin.
+# https://github.com/kubernetes/cloud-provider-openstack/tree/master/charts/cinder-csi-plugin
+#[user@kubernator]
+
+    helm repo add cpo https://kubernetes.github.io/cloud-provider-openstack
+
+    >   Error: looks like "https://kubernetes.github.io/cloud-provider-openstack" is not a valid chart repository or cannot be reached:
+    >       failed to fetch https://kubernetes.github.io/cloud-provider-openstack/index.yaml :
+    >           404 Not Found
+
+    #
+    # The repo URL in the documenttation is wrong.
+    #
+
+
+# -----------------------------------------------------
+# Install the git client.
+#[user@kubernator]
+
+    dnf install -y git
+
+    >   Installed:
+    >       git-2.26.2-1.fc32.x86_64
+    >       ....
+    >       ....
+
+# -----------------------------------------------------
+# Checkout a copy of the Cloud Provider OpenStack repo.
+#[user@kubernator]
+
+    pushd "${HOME}"
+
+        git clone 'https://github.com/kubernetes/cloud-provider-openstack.git'
+
+        pushd cloud-provider-openstack
+
+            git fetch --all --tags
+
+            git checkout tags/openstack-cinder-csi-1.2.1
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Install the Cinder CSI plugin.
+#[user@kubernator]
+
+    helm install \
+        csi-cinder \
+        "${HOME}/cloud-provider-openstack/charts/cinder-csi-plugin"
+
+    >   Error: unable to build kubernetes objects from release manifest: unable to recognize "": no matches for kind "CSIDriver" in version "storage.k8s.io/v1"
+
+
+# -----------------------------------------------------
+# Try comment out the blank name overrides ?
+#[user@kubernator]
+
+    sed -i '
+        s/^\(nameOverride\)/#\1/
+        s/^\(fullnameOverride\)/#\1/
+        ' "${HOME}/cloud-provider-openstack/charts/cinder-csi-plugin/values.yaml"
+
+# -----------------------------------------------------
+# Try copy the API URI from the Manila driver ?
+#[user@kubernator]
+
+    sed -i '
+        s/^\(apiVersion:\).*$/\1 storage.k8s.io\/v1beta1/
+        ' "${HOME}/cloud-provider-openstack/charts/cinder-csi-plugin/templates/cinder-csi-driver.yaml"
+
+
+# -----------------------------------------------------
+# Install the Cinder CSI plugin.
+#[user@kubernator]
+
+    helm install \
+        csi-cinder \
+        "${HOME}/cloud-provider-openstack/charts/cinder-csi-plugin"
+
+    >   NAME: csi-cinder
+    >   LAST DEPLOYED: Fri Sep 18 12:31:41 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the following storageClass csi-cinder-sc-retain and csi-cinder-sc-delete only for RWO volumes.
+
+
+# -----------------------------------------------------
+# Update a PersistentVolumeClaim to use the Cinder CSI storage class.
+#[user@kubernator]
+
+    kubectl patch \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc \
+                --patch \
+                    '{
+                    "spec": {
+                        "storageClassName": "csi-cinder-sc-retain"
+                        }
+                    }'
+
+    >   The PersistentVolumeClaim "drupal-site-files-pvc" is invalid: spec: Forbidden: is immutable after creation except resources.requests for bound claims
+
+
+# -----------------------------------------------------
+# Delete and replace a PersistentVolumeClaim.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc \
+    | jq '.spec.storageClassName = "csi-cinder-sc-retain"' \
+    | tee "/tmp/drupal-site-files-pvc.yaml"
+
+    >   ....
+    >   ....
+
+
+    kubectl delete \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc
+    >   persistentvolumeclaim "drupal-site-files-pvc" deleted
+
+
+    kubectl apply \
+        --filename \
+            "/tmp/drupal-site-files-pvc.yaml"
+
+    >   persistentvolumeclaim/drupal-site-files-pvc created
+
+
+    kubectl get \
+        --output json \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc \
+    | jq '.'
+
+    >   {
+    >     "apiVersion": "v1",
+    >     "kind": "PersistentVolumeClaim",
+    >     "metadata": {
+    >       "annotations": {
+    >         "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"PersistentVolumeClaim\",\"metadata\":{\"annotations\":{},\"creationTimestamp\":\"2020-09-18T03:40:23Z\",\"finalizers\":[\"kubernetes.io/pvc-protection\"],\"name\":\"drupal-site-files-pvc\",\"namespace\":\"default\",\"resourceVersion\":\"2354747\",\"selfLink\":\"/api/v1/namespaces/default/persistentvolumeclaims/drupal-site-files-pvc\",\"uid\":\"934a742c-eccc-4351-8839-d29ba1b99865\"},\"spec\":{\"accessModes\":[\"ReadWriteOnce\"],\"resources\":{\"requests\":{\"storage\":\"1Gi\"}},\"storageClassName\":\"csi-cinder-sc-retain\",\"volumeMode\":\"Filesystem\"},\"status\":{\"phase\":\"Pending\"}}\n",
+    >         "volume.beta.kubernetes.io/storage-provisioner": "cinder.csi.openstack.org"
+    >       },
+    >       "creationTimestamp": "2020-09-18T12:56:54Z",
+    >       "finalizers": [
+    >         "kubernetes.io/pvc-protection"
+    >       ],
+    >       "name": "drupal-site-files-pvc",
+    >       "namespace": "default",
+    >       "resourceVersion": "2533844",
+    >       "selfLink": "/api/v1/namespaces/default/persistentvolumeclaims/drupal-site-files-pvc",
+    >       "uid": "240a5ba2-9253-4617-99b2-932f2d61d385"
+    >     },
+    >     "spec": {
+    >       "accessModes": [
+    >         "ReadWriteOnce"
+    >       ],
+    >       "resources": {
+    >         "requests": {
+    >           "storage": "1Gi"
+    >         }
+    >       },
+    >       "storageClassName": "csi-cinder-sc-retain",
+    >       "volumeMode": "Filesystem"
+    >     },
+    >     "status": {
+    >       "phase": "Pending"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Check the details of our StorageClass.
+#[user@kubernator]
+
+    kubectl get \
+        StorageClass
+
+    >   NAME                   PROVISIONER                RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+    >   csi-cinder-sc-delete   cinder.csi.openstack.org   Delete          Immediate           true                   26m
+    >   csi-cinder-sc-retain   cinder.csi.openstack.org   Retain          Immediate           true                   26m
+
+
+    kubectl get \
+        --output json \
+        StorageClass \
+            csi-cinder-sc-retain
+
+    >   {
+    >       "allowVolumeExpansion": true,
+    >       "apiVersion": "storage.k8s.io/v1",
+    >       "kind": "StorageClass",
+    >       "metadata": {
+    >           "annotations": {
+    >               "meta.helm.sh/release-name": "csi-cinder",
+    >               "meta.helm.sh/release-namespace": "default"
+    >           },
+    >           "creationTimestamp": "2020-09-18T12:31:42Z",
+    >           "labels": {
+    >               "app.kubernetes.io/managed-by": "Helm"
+    >           },
+    >           "name": "csi-cinder-sc-retain",
+    >           "resourceVersion": "2525590",
+    >           "selfLink": "/apis/storage.k8s.io/v1/storageclasses/csi-cinder-sc-retain",
+    >           "uid": "9720c854-9db2-494e-8886-db77452b05ef"
+    >       },
+    >       "provisioner": "cinder.csi.openstack.org",
+    >       "reclaimPolicy": "Retain",
+    >       "volumeBindingMode": "Immediate"
+    >   }
+
+
+# -----------------------------------------------------
+# Get the dashboard token.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        Secret \
+    | jq -r '.items[] | select(.metadata.name | startswith("valeria-account")) | .data.token  | @base64d'
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the dashboard and take a look around.
+#[user@desktop]
+
+    firefox --new-window "https://valeria.metagrid.xyz/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Found a problem with the Cinder CSI Pods.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        Event \
+            --field-selector 'involvedObject.name=openstack-cinder-csi-controllerplugin-0' \
+    | jq '.items[].message'
+
+    >   "MountVolume.SetUp failed for volume \"cacert\" : hostPath type check failed: /etc/cacert is not a directory"
+    >   "Unable to attach or mount volumes: unmounted volumes=[cacert], unattached volumes=[csi-cinder-controller-sa-token-tj6r8 cacert socket-dir]: timed out waiting for the condition"
+    >   "Unable to attach or mount volumes: unmounted volumes=[cacert], unattached volumes=[cacert socket-dir csi-cinder-controller-sa-token-tj6r8]: timed out waiting for the condition"
+
+
+    From the Cinder CSI documentation:
+    https://github.com/kubernetes/cloud-provider-openstack/blob/master/docs/using-cinder-csi-plugin.md#using-the-helm-chart
+
+        "NOTE: This chart assumes that the cloud-config is found on the host under /etc/kubernetes/ and that your OpenStack cloud has cert under /etc/cacert."
+        - OK, but it doesn't say how to fix it if it isn't there
+        - lots of assumptions in the documentation
+
+
+    #
+    # Forget Cinder - try using a Manila share instead.
+    #
+
+
+

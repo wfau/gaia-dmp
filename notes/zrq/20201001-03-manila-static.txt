@@ -1,0 +1,464 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Continue from previous notes
+        20201001-02-manila-static.txt
+
+    Adapt the Helm chart to create both rw and ro volumes on the same share.
+    Admin account gets the rw volume, normal users get the ro volume.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/helm:/helm:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/kubernetes:/kubernetes:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the deployment params.
+#[user@kubernator]
+
+    sharename=hilka-dr2
+    sharesize=5000
+    sharepublic=true
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# Create a new static share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name   "${sharename:?}" \
+            --public "${sharepublic:?}" \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            "${sharesize:?}" \
+    > "/tmp/${sharename:?}-share.json"
+
+    shareid=$(
+        jq -r '.id' "/tmp/${sharename:?}-share.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                --format json \
+                "${shareid:?}"
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2020-10-01T15:33:30.000000",
+    >     "description": null,
+    >     "export_locations": "\npath = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/3aeb3e61-04af-4cd9-8948-5a00760447c7\nid = 75bd64cb-2cf9-4939-b060-3a6ca2dbc64a\npreferred = False",
+    >     "has_replicas": false,
+    >     "id": "63d2e499-4739-4d61-ad26-3acfa8eccde0",
+    >     "is_public": true,
+    >     "mount_snapshot_support": false,
+    >     "name": "hilka-dr2",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "properties": {},
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8",
+    >     "share_type_name": "cephfsnativetype",
+    >     "size": 5000,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "available",
+    >     "task_state": null,
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "volume_type": "cephfsnativetype"
+    >   }
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw" \
+    > "/tmp/${sharename:?}-rwo-access.json"
+
+    rwoaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-rwo-access.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                --format json \
+                "${rwoaccess:?}"
+
+    >   {
+    >     "id": "92339781-cf1e-4307-a260-3611f7777349",
+    >     "share_id": "63d2e499-4739-4d61-ad26-3acfa8eccde0",
+    >     "access_level": "rw",
+    >     "access_to": "hilka-dr2-rw",
+    >     "access_type": "cephx",
+    >     "state": "active",
+    >     "access_key": "AQDe9nVfv1P+KxAAbecxYa5sS4GcC04MnauW6g==",
+    >     "created_at": "2020-10-01T15:33:50.000000",
+    >     "updated_at": "2020-10-01T15:33:50.000000",
+    >     "properties": ""
+    >   }
+
+
+# -----------------------------------------------------
+# Create a RO access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-r0" \
+    > "/tmp/${sharename:?}-rox-access.json"
+
+    roxaccess=$(
+        jq -r '.id' "/tmp/${sharename:?}-rox-access.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                --format json \
+                "${roxaccess:?}"
+
+    >   {
+    >     "id": "f66e90af-f62a-4886-85bd-a17aa6ca96ae",
+    >     "share_id": "63d2e499-4739-4d61-ad26-3acfa8eccde0",
+    >     "access_level": "ro",
+    >     "access_to": "hilka-dr2-r0",
+    >     "access_type": "cephx",
+    >     "state": "active",
+    >     "access_key": "AQDy9nVfeEsmIBAA0Ldn+WU7vBYGI8s4B1IoSw==",
+    >     "created_at": "2020-10-01T15:34:10.000000",
+    >     "updated_at": "2020-10-01T15:34:10.000000",
+    >     "properties": ""
+    >   }
+
+
+# -----------------------------------------------------
+# Create our Chart values.
+#[user@kubernator]
+
+    source "${HOME}/aglais.env"
+
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
+
+aglais:
+  dataset: "test-data"
+
+share:
+  name:   "${sharename:?}"
+  size:   "${sharesize:?}"
+
+openstack:
+  shareid:   "${shareid:?}"
+  access:
+    rwo: "${rwoaccess:?}"
+    rox: "${roxaccess:?}"
+
+EOF
+
+
+# -----------------------------------------------------
+# Install our Chart.
+#[user@kubernator]
+
+    helm install \
+        "${sharename:?}" \
+        "/helm/manila-static-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
+    >   NAME: hilka-dr2
+    >   LAST DEPLOYED: Thu Oct  1 15:34:37 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Check all the components are there.
+#[user@kubernator]
+
+    kubectl describe \
+        PersistentVolume \
+            "${sharename:?}-rwo-volume"
+
+    >   Name:            hilka-dr2-rwo-volume
+    >   Labels:          aglais.dataset=test-data
+    >                    aglais.name=hilka-dr2-rwo-volume
+    >                    app.kubernetes.io/component=test-data
+    >                    app.kubernetes.io/instance=hilka-dr2
+    >                    app.kubernetes.io/managed-by=Helm
+    >                    app.kubernetes.io/name=manila-static-share
+    >                    app.kubernetes.io/version=0.0.1
+    >                    helm.sh/chart=manila-static-share-0.0.1
+    >   Annotations:     meta.helm.sh/release-name: hilka-dr2
+    >                    meta.helm.sh/release-namespace: default
+    >                    pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Bound
+    >   Claim:           default/hilka-dr2-rwo-claim
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWO
+    >   VolumeMode:      Filesystem
+    >   Capacity:        5T
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      hilka-dr2-rwo-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=92339781-cf1e-4307-a260-3611f7777349
+    >                              shareID=63d2e499-4739-4d61-ad26-3acfa8eccde0
+    >   Events:                <none>
+
+
+    kubectl describe \
+        PersistentVolume \
+            "${sharename:?}-rox-volume"
+
+    >   Name:            hilka-dr2-rox-volume
+    >   Labels:          aglais.dataset=test-data
+    >                    aglais.name=hilka-dr2-rox-volume
+    >                    app.kubernetes.io/component=test-data
+    >                    app.kubernetes.io/instance=hilka-dr2
+    >                    app.kubernetes.io/managed-by=Helm
+    >                    app.kubernetes.io/name=manila-static-share
+    >                    app.kubernetes.io/version=0.0.1
+    >                    helm.sh/chart=manila-static-share-0.0.1
+    >   Annotations:     meta.helm.sh/release-name: hilka-dr2
+    >                    meta.helm.sh/release-namespace: default
+    >                    pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Bound
+    >   Claim:           default/hilka-dr2-rox-claim
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    ROX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        5T
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      hilka-dr2-rox-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=f66e90af-f62a-4886-85bd-a17aa6ca96ae
+    >                              shareID=63d2e499-4739-4d61-ad26-3acfa8eccde0
+    >   Events:                <none>
+
+
+    kubectl describe \
+        PersistentVolumeClaim \
+            "${sharename:?}-rwo-claim"
+
+    >   Name:          hilka-dr2-rwo-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        hilka-dr2-rwo-volume
+    >   Labels:        aglais.dataset=test-data
+    >                  aglais.name=hilka-dr2-rwo-claim
+    >                  app.kubernetes.io/component=test-data
+    >                  app.kubernetes.io/instance=hilka-dr2
+    >                  app.kubernetes.io/managed-by=Helm
+    >                  app.kubernetes.io/name=manila-static-share
+    >                  app.kubernetes.io/version=0.0.1
+    >                  helm.sh/chart=manila-static-share-0.0.1
+    >   Annotations:   meta.helm.sh/release-name: hilka-dr2
+    >                  meta.helm.sh/release-namespace: default
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      5T
+    >   Access Modes:  RWO
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    hilka-dr2-testpod
+    >   Events:        <none>
+
+
+    kubectl describe \
+        PersistentVolumeClaim \
+            "${sharename:?}-rox-claim"
+
+    >   Name:          hilka-dr2-rox-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        hilka-dr2-rox-volume
+    >   Labels:        aglais.dataset=test-data
+    >                  aglais.name=hilka-dr2-rox-claim
+    >                  app.kubernetes.io/component=test-data
+    >                  app.kubernetes.io/instance=hilka-dr2
+    >                  app.kubernetes.io/managed-by=Helm
+    >                  app.kubernetes.io/name=manila-static-share
+    >                  app.kubernetes.io/version=0.0.1
+    >                  helm.sh/chart=manila-static-share-0.0.1
+    >   Annotations:   meta.helm.sh/release-name: hilka-dr2
+    >                  meta.helm.sh/release-namespace: default
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      5T
+    >   Access Modes:  ROX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    hilka-dr2-testpod
+    >   Events:        <none>
+
+
+    kubectl describe \
+        Pod \
+            "${sharename:?}-testpod"
+
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                            Message
+    >     ----     ------       ----              ----                                            -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                               Successfully assigned default/hilka-dr2-testpod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  2s (x8 over 66s)  kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "hilka-dr2-rox-volume" : rpc error: code = Internal desc = an error (exit status 22) occurred while running ceph-fuse args: [/var/lib/kubelet/plugins/kubernetes.io/csi/pv/hilka-dr2-rox-volume/globalmount -m 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789 -c /etc/ceph/ceph.conf -n client.hilka-dr2-r0 --keyfile=***stripped*** -r /volumes/_nogroup/3aeb3e61-04af-4cd9-8948-5a00760447c7 -o nonempty ,ro]
+
+    #
+    # Could be because we are trying to mount the same Manila/CephFS share twice in the same Pod.
+    # CephFS/CSI getting the client params mixed up ?
+    #
+    # Try again using two separate Pods ...
+    #
+
+
+
+# -----------------------------------------------------
+# Delete our Chart deployment (release).
+#[user@kubernator]
+
+    helm list
+
+    >   NAME             	NAMESPACE	REVISION	UPDATED                                	STATUS  	CHART                     	APP VERSION
+    >   ....
+    >   hilka-dr2        	default  	1       	2020-10-01 15:34:37.458627353 +0000 UTC	deployed	manila-static-share-0.0.1 	0.0.1
+    >   ....
+
+
+    helm delete \
+        "${sharename:?}"
+
+    >   release "hilka-dr2" uninstalled
+
+
+# -----------------------------------------------------
+# Delete our Manila share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
+
+    >   +--------------------------------------+------------------------------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name                                     | Size | Share Proto | Status    | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+------------------------------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ad1d9ca2-5b1c-4064-8c74-695286de6098 | gaia-dr2-share                           | 4399 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 63d2e499-4739-4d61-ad26-3acfa8eccde0 | hilka-dr2                                | 5000 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 0e1e1421-bb29-4e35-b21b-4e32b397f52f | pvc-2b42b52e-b0b3-4708-b85f-e8e36697a668 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | b9c3d40d-81db-460e-8779-60e7e2221c26 | pvc-67919d92-b56e-4306-b241-00a812676ea3 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   +--------------------------------------+------------------------------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share delete \
+            "${shareid:?}"
+
+    >   -
+
+
+

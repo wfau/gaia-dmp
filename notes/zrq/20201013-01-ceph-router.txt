@@ -1,0 +1,478 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+    Target:
+
+        Create a router to reach the Ceph network using Openstack commands.
+        Comparing the result with the objects created by the Terraform template.
+
+        Based on notes for CephFS-router
+        20200820-05-cephfs-router.txt
+
+        Setup Kubernetes cluster using clouds.yaml configured with application credentials
+
+            Delete Kubernetes cluster
+            20200904-01-cluster-delete.txt
+
+            Magnum cluster
+            20200828-01-magnum-cluster.txt
+
+            Nginx-controller
+            20200807-06-nginx-ingress.txt
+
+        Get the details of the cluster router.
+        Add the new router.
+        Get the details of the new router.
+
+    Result:
+
+        oldrouter is the existing router created by the Ansible deploy
+        newrouter is the new router created to reach the Ceph network
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@terraformer]
+
+    export OS_SHARE_API_VERSION=2.51
+
+# -----------------------------------------------------
+# Find the subnet and network ID for our cluster.
+#[user@terraformer]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+------------------+----------------------------------------------------------------------------+
+    >   | ID                                   | Name             | Subnets                                                                    |
+    >   +--------------------------------------+------------------+----------------------------------------------------------------------------+
+    >   | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | internet         | 180dc961-c52f-461a-b241-8f7a30d022a5, 273123bb-70f6-4f51-a406-7fc4b446532d |
+    >   | e5cf2a3c-c955-4c88-cluster-network   | private          | 8b66f3eb-70fc-4188-cluster-subnet                                          |
+    >   | ecb791d5-1022-447a-cumulus-network   | cumulus-internal | 01b76c7c-3c1a-4c5c-cumulus-subnet                                          |
+    >   +--------------------------------------+------------------+----------------------------------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+---------------------------------------------------------------------------------+--------------------------------------+---------------+
+    >   | ID                                   | Name                                                                            | Network                              | Subnet        |
+    >   +--------------------------------------+---------------------------------------------------------------------------------+--------------------------------------+---------------+
+    >   | 01b76c7c-3c1a-4c5c-cumulus-subnet    | cumulus-internal                                                                | ecb791d5-1022-447a-cumulus-network   | 10.218.0.0/16 |
+    >   | 8b66f3eb-70fc-4188-cluster-subnet    | tiberius-20201013-vcv4epou3xba-network-5ec3lalv44s2-private_subnet-4qlgajlqdicz | e5cf2a3c-c955-4c88-cluster-network   | 10.0.0.0/24   |
+    >   +--------------------------------------+---------------------------------------------------------------------------------+--------------------------------------+---------------+
+
+
+    subnetid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("^'${clustername~}'")) | .ID'
+        )
+
+    # Note - the subnet name includes a lowercase version of the clustername.
+    # So the 'jq' select needs to convert ${clustername} to lowercase.
+
+    networkid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet show \
+                --format json \
+                "${subnetid:?}" \
+        | jq -r '.network_id'
+        )
+
+cat << EOF
+Cluster subnet  [${subnetid:?}]
+Cluster network [${networkid:?}]
+EOF
+
+    >   Cluster subnet  [8b66f3eb-70fc-4188-cluster-subnet   ]
+    >   Cluster network [e5cf2a3c-c955-4c88-cluster-network  ]
+
+
+# -----------------------------------------------------
+# Find the router ID for our cluster.
+#[user@terraformer]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                                                       | Status | State | Project                          |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | 12bbd60c-5094-4198-84d7-a87be37b2f0f | tiberius-20201013-vcv4epou3xba-network-5ec3lalv44s2-extrouter-ca5ze6js7r4n | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+
+
+    routername=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("^'${clustername~}'")) | .Name'
+        )
+
+    # Again, the 'jq' select needs to convert ${clustername} to lowercase.
+
+cat << EOF
+Cluster subnet  [${subnetid:?}]
+Cluster router  [${routername:?}]
+Cluster network [${networkid:?}]
+EOF
+
+    >   Cluster subnet  [8b66f3eb-70fc-4188-cluster-subnet   ]
+    >   Cluster router  [tiberius-20201013-vcv4epou3xba-network-5ec3lalv44s2-extrouter-ca5ze6js7r4n]
+    >   Cluster network [e5cf2a3c-c955-4c88-cluster-network  ]
+
+
+# -----------------------------------------------------
+# Get details of the router.
+#[user@terraformer]
+
+    oldrouterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("^'${clustername~}'")) | .ID'
+        )
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${oldrouterid:?}"
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2020-10-13T02:46:07Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "273123bb-70f6-4f51-a406-7fc4b446532d",
+    >           "ip_address": "128.232.227.132"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "12bbd60c-5094-4198-84d7-a87be37b2f0f",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "2a9cf705-1ec1-4f26-8c73-e441d06dbd98",
+    >         "ip_address": "10.0.0.1",
+    >         "subnet_id": "8b66f3eb-70fc-4188-cluster-subnet"
+    >       }
+    >     ],
+    >     "location": {
+    >       "cloud": "gaia-prod",
+    >       "region_name": "RegionOne",
+    >       "zone": null,
+    >       "project": {
+    >         "id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >         "name": null,
+    >         "domain_id": null,
+    >         "domain_name": null
+    >       }
+    >     },
+    >     "name": "tiberius-20201013-vcv4epou3xba-network-5ec3lalv44s2-extrouter-ca5ze6js7r4n",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "revision_number": 9,
+    >     "routes": [],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2020-10-13T02:46:16Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Delete any old state.
+#[user@terraformer]
+
+    pushd /terraform/modules/manila/cephfs-router
+
+        rm -rf ./.terraform
+        rm -f  ./tfvars
+
+        rm -f  ./terraform.tfstate
+        rm -f  ./terraform.tfstate.backup
+
+    popd
+
+# -----------------------------------------------------
+# Create our tfvars file.
+#[user@terraformer]
+
+        cat > "${HOME}/cephfs-router.tfvars" << EOF
+zrq_cloud_name   = "${cloudname:?}"
+zrq_cluster_name = "${clustername:?}"
+zrq_magnum_router_name = "${routername:?}"
+zrq_magnum_network_id  = "${networkid:?}"
+EOF
+
+    cat "${HOME}/cephfs-router.tfvars"
+
+    >   zrq_cloud_name   = "gaia-prod"
+    >   zrq_cluster_name = "Tiberius-20201013"
+    >   zrq_magnum_router_name = "tiberius-20201013-vcv4epou3xba-network-5ec3lalv44s2-extrouter-ca5ze6js7r4n"
+    >   zrq_magnum_network_id  = "e5cf2a3c-c955-4c88-cluster-network  "
+
+
+# -----------------------------------------------------
+# Use Terraform to create our router.
+#[user@terraformer]
+
+    pushd /terraform/modules/manila/cephfs-router
+
+            terraform init
+
+            terraform apply \
+                -var-file "${HOME}/cephfs-router.tfvars"
+
+    popd
+
+    >   ....
+    >   ....
+    >   # openstack_networking_port_v2.zrq_ceph_router_port will be created
+    >   + resource "openstack_networking_port_v2" "zrq_ceph_router_port" {
+    >     + admin_state_up         = (known after apply)
+    >     + all_fixed_ips          = (known after apply)
+    >     + all_security_group_ids = (known after apply)
+    >     + all_tags               = (known after apply)
+    >     + device_id              = (known after apply)
+    >     + device_owner           = (known after apply)
+    >     + dns_assignment         = (known after apply)
+    >     + dns_name               = (known after apply)
+    >     + id                     = (known after apply)
+    >     + mac_address            = (known after apply)
+    >     + network_id             = "e5cf2a3c-c955-4c88-cluster-network  "
+    >     + port_security_enabled  = (known after apply)
+    >     + qos_policy_id          = (known after apply)
+    >     + region                 = (known after apply)
+    >     + tenant_id              = (known after apply)
+    >
+    >     + binding {
+    >         + host_id     = (known after apply)
+    >         + profile     = (known after apply)
+    >         + vif_details = (known after apply)
+    >         + vif_type    = (known after apply)
+    >         + vnic_type   = (known after apply)
+    >       }
+    >   }
+    >
+    >   # openstack_networking_router_interface_v2.zrq_ceph_router_interface will be created
+    >   + resource "openstack_networking_router_interface_v2" "zrq_ceph_router_interface" {
+    >     + id        = (known after apply)
+    >     + port_id   = (known after apply)
+    >     + region    = (known after apply)
+    >     + router_id = (known after apply)
+    >     + subnet_id = (known after apply)
+    >   }
+    >
+    >   # openstack_networking_router_route_v2.zrq_ceph_router_route will be created
+    >   + resource "openstack_networking_router_route_v2" "zrq_ceph_router_route" {
+    >     + destination_cidr = "10.206.0.0/16"
+    >     + id               = (known after apply)
+    >     + next_hop         = (known after apply)
+    >     + region           = (known after apply)
+    >     + router_id        = "12bbd60c-5094-4198-84d7-a87be37b2f0f"
+    >   }
+    >
+    >   # openstack_networking_router_v2.zrq_ceph_router will be created
+    >   + resource "openstack_networking_router_v2" "zrq_ceph_router" {
+    >     + admin_state_up          = true
+    >     + all_tags                = (known after apply)
+    >     + availability_zone_hints = (known after apply)
+    >     + distributed             = (known after apply)
+    >     + enable_snat             = (known after apply)
+    >     + external_gateway        = (known after apply)
+    >     + external_network_id     = "ecb791d5-1022-447a-cumulus-network  "
+    >     + id                      = (known after apply)
+    >     + name                    = "tiberius-20201013-cluster-ceph-router"
+    >     + region                  = (known after apply)
+    >     + tenant_id               = (known after apply)
+    >
+    >     + external_fixed_ip {
+    >         + ip_address = (known after apply)
+    >         + subnet_id  = (known after apply)
+    >       }
+    >   }
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the details of the new router.
+#[user@terraformer]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                                                       | Status | State | Project                          |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | 12bbd60c-5094-4198-84d7-a87be37b2f0f | tiberius-20201013-vcv4epou3xba-network-5ec3lalv44s2-extrouter-ca5ze6js7r4n | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   | 71a90cb3-9413-48c6-8fae-c26c5bcb7781 | tiberius-20201013-cluster-ceph-router                                      | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+
+
+    newrouterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${clustername~}'-cluster-ceph-router") | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${newrouterid:?}"
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2020-10-13T03:26:26Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "ecb791d5-1022-447a-cumulus-network",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "01b76c7c-3c1a-4c5c-cumulus-subnet",
+    >           "ip_address": "10.218.1.144"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "71a90cb3-9413-48c6-8fae-c26c5bcb7781",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "6334ab80-711f-44c1-ac95-4c3e8e2b042c",
+    >         "ip_address": "10.0.0.43",
+    >         "subnet_id": "8b66f3eb-70fc-4188-cluster-subnet"
+    >       }
+    >     ],
+    >     "location": {
+    >       "cloud": "gaia-prod",
+    >       "region_name": "RegionOne",
+    >       "zone": null,
+    >       "project": {
+    >         "id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >         "name": null,
+    >         "domain_id": null,
+    >         "domain_name": null
+    >       }
+    >     },
+    >     "name": "tiberius-20201013-cluster-ceph-router",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "revision_number": 9,
+    >     "routes": [],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2020-10-13T03:26:40Z"
+    >   }
+
+cluster subnet  [8b66f3eb-70fc-4188-cluster-subnet]
+cluster network [e5cf2a3c-c955-4c88-cluster-network]
+
+
+
+# -----------------------------------------------------
+# Check the details of the original router.
+#[user@terraformer]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${oldrouterid:?}"
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2020-10-13T02:46:07Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "273123bb-70f6-4f51-a406-7fc4b446532d",
+    >           "ip_address": "128.232.227.132"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "12bbd60c-5094-4198-84d7-a87be37b2f0f",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "2a9cf705-1ec1-4f26-8c73-e441d06dbd98",
+    >         "ip_address": "10.0.0.1",
+    >         "subnet_id": "8b66f3eb-70fc-4188-cluster-subnet"
+    >       }
+    >     ],
+    >     "location": {
+    >       "cloud": "gaia-prod",
+    >       "region_name": "RegionOne",
+    >       "zone": null,
+    >       "project": {
+    >         "id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >         "name": null,
+    >         "domain_id": null,
+    >         "domain_name": null
+    >       }
+    >     },
+    >     "name": "tiberius-20201013-vcv4epou3xba-network-5ec3lalv44s2-extrouter-ca5ze6js7r4n",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "revision_number": 10,
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.0.0.43",
+    >         "destination": "10.206.0.0/16"
+    >       }
+    >     ],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2020-10-13T03:26:49Z"
+    >   }
+

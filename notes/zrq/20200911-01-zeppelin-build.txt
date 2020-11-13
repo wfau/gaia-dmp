@@ -1,0 +1,809 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+    #
+    # Building a new version of the Zeppelin images.
+    # Pushing the images upstream from desktop takes > 12hrs and fails.
+    # Building the base and main images on trop machines.
+    # Using previous notes:
+    # 20200722-01-trop-build.txt
+
+# -----------------------------------------------------
+# Create a virtual machine.
+#[user@trop]
+
+    createvm
+
+    >   INFO : Node name [Wumar]
+    >   INFO : Base name [fedora-31-docker-base-20200722.qcow]
+    >   INFO : Base path [/var/lib/libvirt/images/base/fedora-31-docker-base-20200722.qcow]
+    >   INFO : Disc name [Wumar.qcow]
+    >   INFO : Disc size [32GiB]
+
+    ssh Wumar
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our target directories.
+#[user@wumar]
+
+    sudo mkdir /var/local/build
+    sudo mkdir /var/local/cache
+
+    sudo chmod a+rwx /var/local/build
+    sudo chmod a+rwx /var/local/cache
+
+
+# -----------------------------------------------------
+# Run a Java build container.
+#[user@wumar]
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname builder \
+        --env "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock:z" \
+        --volume '/var/local/cache:/var/local/cache:rw' \
+        --volume '/var/local/build:/var/local/build:rw' \
+        "firethorn/builder:latest" \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install bzip2.
+# TODO Add this to our builder image.
+#[root@builder]
+
+    dnf install -y bzip2
+
+
+# -----------------------------------------------------
+# Add a user account to run the build.
+#[root@builder]
+
+    adduser Tinselpear
+    su - Tinselpear
+
+
+# -----------------------------------------------------
+# Configure the source code paths.
+#[user@builder]
+
+    cat > "${HOME}/aglais.env" << 'EOF'
+AGLAIS_REPO='https://github.com/Zarquan/aglais.git'
+AGLAIS_HOME='/var/local/build/aglais'
+AGLAIS_CODE="${AGLAIS_HOME:?}/github-zrq"
+AGLAIS_CLOUD=gaia-prod
+AGLAIS_USER=albert
+
+ZEPPELIN_REPO='https://github.com/Zarquan/aglais-zeppelin.git'
+ZEPPELIN_HOME='/var/local/build/aglais-zeppelin'
+ZEPPELIN_CODE="${ZEPPELIN_HOME:?}/github-zrq"
+EOF
+
+
+# -----------------------------------------------------
+# Create our getsource function.
+#[user@builder]
+
+    getsource()
+        {
+        local coderepo=${1:?}
+        local codepath=${2:?}
+
+        echo "Checking [$(dirname ${codepath:?})]"
+        if [ ! -e "$(dirname ${codepath:?})" ]
+        then
+            echo "Creating [$(dirname ${codepath:?})]"
+            mkdir --parents "$(dirname ${codepath:?})"
+        fi
+
+        echo "Checking [${codepath:?}]"
+        if [ ! -e "${codepath:?}" ]
+        then
+            echo "Creating [${codepath:?}]"
+            pushd "$(dirname ${codepath:?})"
+                git clone "${coderepo:?}" "$(basename ${codepath:?})"
+            popd
+        else
+            echo "Updating [${codepath:?}]"
+            pushd "${codepath:?}"
+                git pull
+            popd
+        fi
+
+        }
+
+
+# -----------------------------------------------------
+# Clone our Aglais source code.
+#[user@builder]
+
+    source "${HOME}/aglais.env"
+
+    getsource "${AGLAIS_REPO:?}" "${AGLAIS_CODE:?}"
+
+# -----------------------------------------------------
+# Checkout our working branch.
+#[user@builder]
+
+    devbranch=20200908-zrq-integration
+
+    source "${HOME}/aglais.env"
+    pushd "${AGLAIS_CODE:?}"
+        git checkout "${devbranch:?}"
+    popd
+
+    >   Branch '20200908-zrq-integration' set up to track remote branch '20200908-zrq-integration' from 'origin'.
+    >   Switched to a new branch '20200908-zrq-integration'
+
+
+# -----------------------------------------------------
+# Clone our Zeppelin source code.
+#[user@builder]
+
+    source "${HOME}/aglais.env"
+
+    getsource "${ZEPPELIN_REPO:?}" "${ZEPPELIN_CODE:?}"
+
+
+# -----------------------------------------------------
+# Checkout our working branch.
+#[user@builder]
+
+    devbranch=20200911-zrq-devel
+
+    source "${HOME}/aglais.env"
+    pushd "${ZEPPELIN_CODE:?}"
+        git checkout "${devbranch:?}"
+    popd
+
+    >   Branch '20200911-zrq-devel' set up to track remote branch '20200911-zrq-devel' from 'origin'.
+    >   Switched to a new branch '20200911-zrq-devel'
+
+
+# -----------------------------------------------------
+# Delete the interpreter directory.
+#[user@builder]
+
+    source "${HOME}/aglais.env"
+
+    rm -rf "${ZEPPELIN_CODE:?}/interpreter"
+
+
+# -----------------------------------------------------
+# Build our Zeppelin code.
+#[user@builder]
+
+    source "${HOME}/aglais.env"
+    pushd  "${ZEPPELIN_CODE:?}"
+
+        mvn clean package -D skipTests -P build-distr -P hadoop3
+
+    popd
+
+    >   ....
+    >   ....
+    >   [INFO] ------------------------------------------------------------------------
+    >   [INFO] BUILD SUCCESS
+    >   [INFO] ------------------------------------------------------------------------
+    >   [INFO] Total time: 16:56 min
+    >   [INFO] Finished at: 2020-09-11T19:20:04Z
+    >   [INFO] Final Memory: 455M/875M
+    >   [INFO] ------------------------------------------------------------------------
+
+
+# -----------------------------------------------------
+# Identify the build result.
+#[user@builder]
+
+    source "${HOME}/aglais.env"
+
+    zepversion=$(
+        sed -n '
+            s/^.*<version project="zeppelin">\(.*\)<\/version>.*$/\1/ p
+            ' "${ZEPPELIN_CODE:?}/pom.xml"
+        )
+
+    zepresult=zeppelin-distribution/target/zeppelin-${zepversion:?}/zeppelin-${zepversion:?}
+
+
+# -----------------------------------------------------
+# Check how much the distribution contains.
+#[user@builder]
+
+    source "${HOME}/aglais.env"
+
+    du -d 1 -h "${ZEPPELIN_CODE:?}/${zepresult:?}"
+
+    >   ....
+    >   2.0G	/var/local/build/aglais-zeppelin/github-zrq/zeppelin-distribution/target/zeppelin-0.9.0-aglais-0.0.1/zeppelin-0.9.0-aglais-0.0.1
+
+# -----------------------------------------------------
+# Copy Zeppelin config files into our target.
+#[user@builder]
+
+    cp -f "${AGLAIS_CODE}/experiments/zrq/zeppelin/docker/log4j.properties" \
+       "${ZEPPELIN_CODE}/${zepresult:?}"
+
+
+# -----------------------------------------------------
+# Drop back to root to build our images.
+#[user@builder]
+
+    exit
+
+    #
+    # Ideally we would do this as Tinselpear,
+    # but we need access to our SSH_AUTH_SOCK
+    # to be able to access our secrets.
+    #
+
+# -----------------------------------------------------
+# Configure the source code paths.
+#[root@builder]
+
+    cat > "${HOME}/aglais.env" << 'EOF'
+AGLAIS_REPO='https://github.com/Zarquan/aglais.git'
+AGLAIS_HOME='/var/local/build/aglais'
+AGLAIS_CODE="${AGLAIS_HOME:?}/github-zrq"
+AGLAIS_CLOUD=gaia-prod
+AGLAIS_USER=albert
+
+ZEPPELIN_REPO='https://github.com/Zarquan/aglais-zeppelin.git'
+ZEPPELIN_HOME='/var/local/build/aglais-zeppelin'
+ZEPPELIN_CODE="${ZEPPELIN_HOME:?}/github-zrq"
+EOF
+
+
+# -----------------------------------------------------
+# Install buildah.
+#[root@builder]
+
+    dnf install -y buildah
+
+
+# -----------------------------------------------------
+# Build our base image.
+#[root@builder]
+
+    source "/etc/aglais.env"
+
+    buildtag=$(date '+%Y.%m.%d')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    emptydir=$(mktemp -d)
+
+    buildah bud \
+        --format docker \
+        ....
+        ....
+
+    >   ERRO[0000] 'overlay' is not supported over <unknown> at "/var/lib/containers/storage/overlay"
+    >   kernel does not support overlay fs: 'overlay' is not supported over <unknown> at "/var/lib/containers/storage/overlay": backing file system is unsupported for this graph driver
+    >   ERRO[0000] exit status 1
+
+
+# -----------------------------------------------------
+# Drop back to the virtual machine to build our images.
+#[root@builder]
+
+    exit
+
+    #
+    # Ideally we would do this inside the builder
+    # but we run into problems with the filesystem.
+    #
+
+
+# -----------------------------------------------------
+# Install buildah.
+# TODO Add this to the builder image.
+#[user@wumar]
+
+    sudo dnf install -y buildah
+
+
+# -----------------------------------------------------
+# Create our secret method.
+#[user@wumar]
+
+    mkdir ${HOME}/bin
+    cat > ${HOME}/bin/secret << 'EOF'
+ssh -n \
+    'Zarquan@data.metagrid.co.uk' \
+    "bin/secret '${1}'"
+EOF
+    chmod a+x ${HOME}/bin/secret
+
+    secret frog
+
+    >   Green Frog
+
+
+# -----------------------------------------------------
+# Configure the source code paths.
+#[user@wumar]
+
+    cat > "${HOME}/aglais.env" << 'EOF'
+AGLAIS_REPO='https://github.com/Zarquan/aglais.git'
+AGLAIS_HOME='/var/local/build/aglais'
+AGLAIS_CODE="${AGLAIS_HOME:?}/github-zrq"
+AGLAIS_CLOUD=gaia-prod
+AGLAIS_USER=albert
+
+ZEPPELIN_REPO='https://github.com/Zarquan/aglais-zeppelin.git'
+ZEPPELIN_HOME='/var/local/build/aglais-zeppelin'
+ZEPPELIN_CODE="${ZEPPELIN_HOME:?}/github-zrq"
+EOF
+
+# -----------------------------------------------------
+# Identify the build result.
+#[user@wumar]
+
+    source "${HOME}/aglais.env"
+
+    zepversion=$(
+        sed -n '
+            s/^.*<version project="zeppelin">\(.*\)<\/version>.*$/\1/ p
+            ' "${ZEPPELIN_CODE:?}/pom.xml"
+        )
+
+    zepresult=zeppelin-distribution/target/zeppelin-${zepversion:?}/zeppelin-${zepversion:?}
+
+
+# -----------------------------------------------------
+# Cleare ht elocal image cache.
+#[user@wumar]
+
+    podman rmi $(
+        podman images -q
+        )
+
+
+# -----------------------------------------------------
+# Login to Docker hub.
+#[user@wumar]
+
+    podman login \
+        --username $(secret docker.io.user) \
+        --password $(secret docker.io.pass) \
+        registry-1.docker.io
+
+    >   Login Succeeded!
+
+
+# -----------------------------------------------------
+# Build our base image.
+#[user@wumar]
+
+    source "${HOME}/aglais.env"
+
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    emptydir=$(mktemp -d)
+
+    buildah bud \
+        --format docker \
+        --tag aglais/zeppelin-base:latest \
+        --tag aglais/zeppelin-base:${buildtag:?} \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/docker/Dockerbase" \
+        "${emptydir:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Push our base image to Docker hub.
+#[user@wumar]
+
+    podman push "aglais/zeppelin-base:${buildtag:?}"
+    podman push "aglais/zeppelin-base:latest"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Build our main Zeppelin image.
+#[user@wumar]
+
+    source "${HOME}/aglais.env"
+
+    buildsrc=${buildtag:?}
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    buildah bud \
+        --format docker \
+        --tag aglais/zeppelin-main:latest \
+        --tag aglais/zeppelin-main:${buildtag:?} \
+        --build-arg "buildsrc=${buildsrc:?}" \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/docker/Dockerfile" \
+        "${ZEPPELIN_CODE:?}/${zepresult:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Push our main image to Docker hub.
+#[user@wumar]
+
+    podman push "aglais/zeppelin-main:${buildtag:?}"
+    podman push "aglais/zeppelin-main:latest"
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Build our modified Zeppelin image.
+#[user@wumar]
+
+    # This includes shiro.ini with hard test users.
+    # This includes an interpreter-spec with hard coded PVC.
+
+    buildsrc=${buildtag:?}
+
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    buildah bud \
+        --format docker \
+        --tag aglais/zeppelin-mod:latest \
+        --tag aglais/zeppelin-mod:${buildtag:?} \
+        --build-arg "buildsrc=${buildsrc:?}" \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE}/experiments/zrq/zeppelin/docker/Dockermod" \
+        "${AGLAIS_CODE:?}/experiments/zrq/zeppelin"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Push our modified image to Docker hub.
+#[user@wumar]
+
+    podman push "aglais/zeppelin-mod:${buildtag:?}"
+    podman push "aglais/zeppelin-mod:latest"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Build our Spark image.
+#[user@wumar]
+
+    #
+    # Use the image created on 2020-07-22
+    # See 20200722-03-spark-k8s.txt
+    #
+
+# -----------------------------------------------------
+# Build our PySpark image.
+#[user@wumar]
+
+    #
+    # Use the image created on 2020-07-22
+    # See 20200722-03-spark-k8s.txt
+    #
+
+# -----------------------------------------------------
+# Build our Spark mod.
+#[user@wumar]
+
+    #
+    # Adds our modified AWS jar.
+    # TODO Push the modified AWS jar to our Maven cache.
+    # Use the image created on 2020-08-11
+    # See 20200811-02-aws-debug.txt
+    #
+
+# -----------------------------------------------------
+# Build our PySpark mod.
+#[user@wumar]
+
+    #
+    # Adds our modified AWS jar.
+    # TODO Push the modified AWS jar to our Maven cache.
+    # Use the image created on 2020-08-11
+    # See 20200811-02-aws-debug.txt
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Install a new Magnum cluster with Manila Ceph CSI.
+
+        20200904-01-test-base.txt
+        20200905-02-modified-csi.txt
+        20200914-01-gaia-csi-share.txt
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Edit our copy of the Zeppelin deployment template.
+#[user@desktop]
+
+    # TODO Replace Gedit with Sed.
+
+    source "${HOME}/aglais.env"
+    gedit "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/k8s/zeppelin-server.yaml"
+
+        ....
+        ....
+
+    diff "${ZEPPELIN_CODE:?}/k8s/zeppelin-server.yaml" \
+         "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/k8s/zeppelin-server.yaml"
+
+        31,33c31,33
+        <   ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE: spark:2.4.5
+        <   ZEPPELIN_K8S_CONTAINER_IMAGE: apache/zeppelin-interpreter:0.9.0-aglais-0.0.1
+        <   ZEPPELIN_HOME: /opt/zeppelin
+        ---
+        >   ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE: aglais/pyspark-mod:2020.08.11
+        >   ZEPPELIN_K8S_CONTAINER_IMAGE: aglais/zeppelin-mod:20200914-040941
+        >   ZEPPELIN_HOME: /zeppelin
+        118c118
+        <         image: apache/zeppelin-server:0.9.0-aglais-0.0.1
+        ---
+        >         image: aglais/zeppelin-mod:20200914-040941
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubenator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/zeppelin:/zeppelin:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/kubernetes:/kubernetes:ro,z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@zepplinator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Deploy Zeppelin.
+#[root@kubenator]
+
+    kubectl apply \
+        --filename \
+            "/zeppelin/k8s/zeppelin-server.yaml"
+
+    >   configmap/zeppelin-server-conf-map created
+    >   configmap/zeppelin-server-conf created
+    >   deployment.apps/zeppelin-server created
+    >   service/zeppelin-server created
+    >   serviceaccount/zeppelin-server created
+    >   role.rbac.authorization.k8s.io/zeppelin-server-role created
+    >   rolebinding.rbac.authorization.k8s.io/zeppelin-server-role-binding created
+
+
+# -----------------------------------------------------
+# Expose Zeppelin with a LoadBalancer.
+#[root@kubenator]
+
+    cat > "/tmp/zeppelin-loadbalancer.yaml" << EOF
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: zeppelin-loadbalancer
+spec:
+  ports:
+    - name: http
+      port: 80
+  selector:
+    app.kubernetes.io/name: zeppelin-server
+  type: LoadBalancer
+EOF
+
+    kubectl apply \
+        --filename \
+            "/tmp/zeppelin-loadbalancer.yaml"
+
+    >   service/zeppelin-loadbalancer created
+
+
+# -----------------------------------------------------
+# Watch the LoadBalancer to get the external address.
+#[root@kubenator]
+
+    watch \
+        kubectl \
+            get service \
+                "zeppelin-loadbalancer"
+
+    >   NAME                    TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)        AGE
+    >   zeppelin-loadbalancer   LoadBalancer   10.254.164.153   128.232.227.168   80:30774/TCP   90s
+
+# -----------------------------------------------------
+# Update our external DNS service.
+
+    ....
+    ....
+    aglais-002.metagrid.xyz. A      128.232.227.168
+    zeppelin.metagrid.xyz.   CNAME  aglais-002.metagrid.xyz.
+
+
+    # TODO Replace the LoadBalancer with an Nginx Ingress with SSL
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Try using Zeppelin ...
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.metagrid.xyz/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Error launching an MD cell.
+
+    >   Interpreter launch command:  /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Dfile.encoding=UTF-8 -Dlog4j.configuration='file:///zeppelin/conf/log4j.properties' -Dlog4j.configurationFile='file:///zeppelin/conf/log4j2.properties' -Dzeppelin.log.file='/zeppelin/logs/zeppelin-interpreter-md-shared_process--md-obhnyn.log' -Xms1024m -Xmx2048m -cp ":/zeppelin/interpreter/md/*::/zeppelin/interpreter/zeppelin-interpreter-shaded-0.9.0-SNAPSHOT.jar /zeppelin/interpreter/zeppelin-interpreter-shaded-0.9.0-aglais-0.0.1.jar" org.apache.zeppelin.interpreter.remote.RemoteInterpreterServer zeppelin-server.default.svc 12320 "md-shared_process" 12321:12321
+    >   Error: Could not find or load main class org.apache.zeppelin.interpreter.remote.RemoteInterpreterServer
+
+    Error launching an Python cell.
+
+    >   Interpreter launch command:  /usr/lib/jvm/java-8-openjdk-amd64/bin/java -Dfile.encoding=UTF-8 -Dlog4j.configuration='file:///zeppelin/conf/log4j.properties' -Dlog4j.configurationFile='file:///zeppelin/conf/log4j2.properties' -Dzeppelin.log.file='/zeppelin/logs/zeppelin-interpreter-python-shared_process--python-mlwxgp.log' -Xms1024m -Xmx2048m -cp ":/zeppelin/interpreter/python/*::/zeppelin/interpreter/zeppelin-interpreter-shaded-0.9.0-SNAPSHOT.jar /zeppelin/interpreter/zeppelin-interpreter-shaded-0.9.0-aglais-0.0.1.jar" org.apache.zeppelin.interpreter.remote.RemoteInterpreterServer zeppelin-server.default.svc 12320 "python-shared_process" 12321:12321
+    >   Error: Could not find or load main class org.apache.zeppelin.interpreter.remote.RemoteInterpreterServer
+
+
+    Command class path:
+
+        /zeppelin/interpreter/md/*
+        /zeppelin/interpreter/zeppelin-interpreter-shaded-0.9.0-SNAPSHOT.jar
+        /zeppelin/interpreter/zeppelin-interpreter-shaded-0.9.0-aglais-0.0.1.jar
+
+    Command class path:
+
+        /zeppelin/interpreter/python/*
+        /zeppelin/interpreter/zeppelin-interpreter-shaded-0.9.0-SNAPSHOT.jar
+        /zeppelin/interpreter/zeppelin-interpreter-shaded-0.9.0-aglais-0.0.1.jar
+
+    The 'interpreter' directory is part of the build, but is not delete by a 'mvn clean' command.
+    Old jars from previous builds get left behind and included in the distribution.
+    Explains the extra jar, but not the missing class.
+
+    Fix:
+        Delete the 'interpreter' directory.
+        Re-build the Zeppelin code
+        Re-build the Zeppelin images
+        Re-deploy the Zeppelin server
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Error mounting Gaia data.
+
+        io.fabric8.kubernetes.client.KubernetesClientException:
+            Failure executing:
+                POST at:
+                    https://10.254.0.1/api/v1/namespaces/default/pods.
+                Message:
+                    Pod "md-gwiwdd" is invalid:
+                        [spec.containers[0].volumeMounts[0].name:
+                            Not found:
+                                "spark-home", spec.containers[0].volumeMounts[1].name:
+                                    Not found: "gaia-dr2"].
+                                        ....
+                                        ....
+
+    Fix:
+        Added the PersistentVolume and PersistentVolumeClaim
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    MountVolume.MountDevice failed for volume "gaiadr2-volume" :
+        rpc error:
+            code = Internal
+            desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/gaiadr2-volume/globalmount: permission denied
+
+    Fix:
+        Change the Persistent Volume and Claim to ReadOnlyMany.
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    MountVolume.MountDevice failed for volume "gaiadr2-volume" :
+        rpc error:
+            code = Internal
+            desc = an error (exit status 22) occurred while running ceph-fuse args:
+                [
+                /var/lib/kubelet/plugins/kubernetes.io/csi/pv/gaiadr2-volume/globalmount
+                    -m 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789
+                    -c /etc/ceph/ceph.conf
+                    -n client.gaia-dr2-share
+                    --keyfile=***stripped***
+                    -r /volumes/_nogroup/0d4ce629-d290-4d7d-9d5e-9b94593196a0
+                    -o nonempty,
+                ro
+                ]
+
+
+     Sigh ...
+
+    Two different issues.
+    1) Trying to get the Zeppelin build process scripted so that we can experiment with limits and reservations.
+    2) Integrating the static Manila share of Gaia DR2 into our Zeppelin and Spark deployments.
+        2a) If we hard code the PV claim into our deployment, then everything fails if the share doesn't work.
+        2b) Rather than hard code the PV claim, we need to make it configurable.
+
+    Fix:
+        Concentrate on (1) for now - remove the hard coded PV claim.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+

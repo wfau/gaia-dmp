@@ -1,0 +1,345 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Target:
+
+        Install the Ceph router and mount the existing copy of Gaia.
+
+    Result:
+
+        Mostly works, error at the end setting permissions to 'rw'.
+
+
+# -----------------------------------------------------
+# Run the ceph-router deploy
+#[user@desktop]
+
+    notes/zrq/20201027-02-ceph-router.txt
+
+    ** TODO
+    clustername=aglais-20201116
+
+    ** TODO
+    Fix cluster names for Ansible and Magnum/Helm
+    Do we need to distinguish between dev, test and live - similar to Firethorn.
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --env "ANSIBLE_CODE=/mnt/ansible" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn/ansible:/mnt/ansible:ro,z" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Create our Ansible include vars file.
+#[root@ansibler]
+
+    cat > /tmp/ansible-vars.yml << EOF
+buildtag:  'aglais-$(date '+%Y%m%d')'
+cloudname: '${cloudname}'
+clouduser: '${clouduser}'
+EOF
+
+
+# -----------------------------------------------------
+# Run the scripts from the ansible directory.
+#[root@ansibler]
+
+    pushd "${ANSIBLE_CODE:?}"
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[root@ansibler]
+
+    export OS_SHARE_API_VERSION=2.51
+
+# -----------------------------------------------------
+# Get details of the Gaia DR2 share.
+#[root@ansibler]
+
+    sharename=aglais-gaia-dr2
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
+
+    >   +--------------------------------------+-----------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name            |  Size | Share Proto | Status    | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+-----------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | 2e46b5a5-c5d9-44c0-b11c-310c222f4818 | aglais-gaia-dr2 |   512 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | ad1d9ca2-5b1c-4064-8c74-695286de6098 | aglais-gaia-old |  4399 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 6852b819-7395-4786-80c0-06fa9cebcc65 | aglais-user-nch | 10240 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   +--------------------------------------+-----------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+
+    shareid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share list \
+                --format json \
+        | jq -r '.[] | select( .Name == "'${sharename:?}'") | .ID'
+        )
+
+
+    echo "Share [${shareid:?}]"
+
+    >   Share [2e46b5a5-c5d9-44c0-b11c-310c222f4818]
+
+
+# -----------------------------------------------------
+# Get details of the Ceph export location.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share show \
+            --format json \
+            "${shareid:?}" \
+    | jq '.' \
+    | tee /tmp/gaia-share.json
+
+    locations=$(
+        jq '.export_locations' /tmp/gaia-share.json
+        )
+
+    cephnodes=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\1/
+            s/,/ /g
+            '
+            )
+
+    cephpath=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\2/
+            '
+            )
+
+    cephsize=$(
+        jq '.size' /tmp/gaia-share.json
+        )
+
+    cat << EOF
+Ceph path [${cephpath}]
+Ceph size [${cephsize}]
+EOF
+
+    for cephnode in ${cephnodes}
+    do
+        echo "Ceph node [${cephnode}]"
+    done
+
+    >   Ceph path [/volumes/_nogroup/2cdefe41-6c04-4865-9144-c0a7a183b424]
+    >   Ceph size [512]
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+
+
+# -----------------------------------------------------
+# List the access rules for this share.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access list \
+            "${shareid:?}"
+
+    >   +--------------------------------------+-------------+--------------------+--------------+--------+----------------+----------------------------+----------------------------+
+    >   | id                                   | access_type | access_to          | access_level | state  | access_key     | created_at                 | updated_at                 |
+    >   +--------------------------------------+-------------+--------------------+--------------+--------+----------------+----------------------------+----------------------------+
+    >   | 50ad6086-491d-4056-9092-c57ac49d4d3d | cephx       | aglais-gaia-dr2-rw | rw           | active | AQD6....zJMQ== | 2020-10-24T15:06:34.000000 | 2020-10-24T15:06:34.000000 |
+    >   | 7a2163f8-f7de-4473-bc2b-15c48d405911 | cephx       | aglais-gaia-dr2-ro | ro           | active | AQDn....7sDQ== | 2020-10-24T15:06:14.000000 | 2020-10-24T15:06:15.000000 |
+    >   +--------------------------------------+-------------+--------------------+--------------+--------+----------------+----------------------------+----------------------------+
+
+
+# -----------------------------------------------------
+# Get details of the read only access rule.
+#[root@ansibler]
+
+    roaccess=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share access list \
+                --format json \
+                "${shareid:?}" \
+        | jq -r '.[] | select(.access_level == "ro") | .id'
+        )
+
+    echo "Access rule [${roaccess:?}]"
+
+    >   Access rule [7a2163f8-f7de-4473-bc2b-15c48d405911]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access show \
+            --format json \
+            "${roaccess:?}" \
+    | jq '.' \
+    | tee /tmp/gaia-access.json
+
+    >   {
+    >     "id": "7a2163f8-f7de-4473-bc2b-15c48d405911",
+    >     "share_id": "2e46b5a5-c5d9-44c0-b11c-310c222f4818",
+    >     "access_level": "ro",
+    >     "access_to": "aglais-gaia-dr2-ro",
+    >     "access_type": "cephx",
+    >     "state": "active",
+    >     "access_key": "AQDn....7sDQ==",
+    >     "created_at": "2020-10-24T15:06:14.000000",
+    >     "updated_at": "2020-10-24T15:06:15.000000",
+    >     "properties": ""
+    >   }
+
+
+    cephuser=$(
+        jq -r '.access_to' /tmp/gaia-access.json
+        )
+
+    cephkey=$(
+        jq -r '.access_key' /tmp/gaia-access.json
+        )
+
+    cat << EOF
+Ceph user [${cephuser:?}]
+Ceph key  [${cephkey:?}]
+EOF
+
+    >   Ceph user [aglais-gaia-dr2-ro]
+    >   Ceph key  [AQDn....7sDQ==]
+
+
+# -----------------------------------------------------
+# Add details of the share to our Ansible vars file.
+#[root@ansibler]
+
+    cat >> /tmp/ceph-vars.yml << EOF
+
+mntpath:  '/data/gaia/dr2'
+mntopts:  'async,auto,nodev,noexec,nosuid,ro,_netdev'
+
+cephuser:  '${cephuser:?}'
+cephkey:   '${cephkey:?}'
+cephpath:  '${cephpath:?}'
+cephnodes: '${cephnodes// /,}'
+
+EOF
+
+
+# -----------------------------------------------------
+# Create our client ssh config.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        '05-config-ssh.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP ..
+    >   localhost       : ok=5    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        '08-ping-test.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP ..
+    >   gateway         : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   master01        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   master02        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker01        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker02        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker03        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker04        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker05        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker06        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker07        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker08        : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Mount the share in our nodes.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        --extra-vars '@/tmp/ceph-vars.yml' \
+        '51-cephfs-mount.yml'
+
+    >   ....
+    >   ....
+    >   An exception occurred during task execution. To see the full traceback, use -vvv. The error was: OSError: [Errno 30] Read-only file system: b'/data/gaia/dr2'
+
+    Fails because the fstab options specify 'ro' and the last step of the Ansible script try to update the directory properties and make it 'rw'.
+    TODO - Make the mount configurable (ro/rw).
+
+# -----------------------------------------------------
+# Login to the worker node to test the mount.
+#[root@ansibler]
+
+    ssh worker01 \
+        '
+        date
+        hostname
+        echo "----"
+        df -h  /data/gaia/dr2
+        '
+
+    >   Mon Nov 16 16:19:59 UTC 2020
+    >   aglais-20201116-worker01.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       512G  473G   40G  93% /data/gaia/dr2
+
+

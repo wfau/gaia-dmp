@@ -33,74 +33,42 @@
     echo "File [${binfile:?}]"
     echo "Path [${binpath:?}]"
 
-    echo "---- ---- ----"
-    echo "Cloud name [${cloudname:?}]"
-    echo "Cloud user [${clouduser:?}]"
-
-    buildtag="aglais-$(date '+%Y%m%d')"
-
-    echo "---- ---- ----"
-    echo "Build tag [${buildtag:?}]"
-
 # -----------------------------------------------------
-# Create our Ansible include vars file.
-
-    cat > /tmp/ansible-vars.yml << EOF
-buildtag:  '${buildtag:?}'
-cloudname: '${cloudname:?}'
-clouduser: '${clouduser:?}'
-EOF
-
-# -----------------------------------------------------
-# Create the machines, deploy Hadoop and Spark.
+# Format the HDFS NameNode on master01.
 
     echo ""
     echo "---- ----"
-    echo "Ansible deploy"
+    echo "Formatting HDFS"
 
-    pushd "/hadoop-yarn/ansible"
-
-        ansible-playbook \
-            --inventory "hosts.yml" \
-            "create-all.yml"
-
-    popd
+    ssh master01 \
+        '
+        hdfs namenode -format
+        '
 
 
 # -----------------------------------------------------
-# Start the HDFS services.
+# Start the HDFS services on master01.
 
-    '/hadoop-yarn/bin/start-hdfs.sh'
+    echo ""
+    echo "---- ----"
+    echo "Starting HDFS"
 
-
-# -----------------------------------------------------
-# Start the Yarn services.
-
-    '/hadoop-yarn/bin/start-yarn.sh'
-
-
-# -----------------------------------------------------
-# Initialise the Spark services.
-
-    '/hadoop-yarn/bin/init-spark.sh'
+    ssh master01 \
+        '
+        start-dfs.sh
+        '
 
 
 # -----------------------------------------------------
-# Create the Manila router.
+# Check the HDFS status.
 
-    '/openstack/bin/cephfs-router.sh' \
-        "${cloudname:?}" \
-        "${buildtag:?}"
+    echo ""
+    echo "---- ----"
+    echo "HDFS status"
 
-
-# -----------------------------------------------------
-# Mount the Gaia DR2 data.
-
-    '/hadoop-yarn/bin/cephfs-mount.sh' \
-        "${cloudname:?}" \
-        'aglais-gaia-dr2' \
-        '/data/gaia/dr2'
-
-
+    ssh master01 \
+        '
+        hdfs dfsadmin -report
+        '
 
 

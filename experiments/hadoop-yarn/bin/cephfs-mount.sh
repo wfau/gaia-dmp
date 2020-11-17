@@ -24,20 +24,31 @@
 # -----------------------------------------------------
 # Settings ...
 
-    rwmode='ro'
+    binfile="$(basename ${0})"
+    binpath="$(dirname $(readlink -f ${0}))"
+    srcpath="$(dirname ${binpath})"
+
+    echo ""
+    echo "---- ---- ----"
+    echo "File [${binfile:?}]"
+    echo "Path [${binpath:?}]"
 
     cloudname=${1:?}
     sharename=${2:?}
     mountpath=${3:?}
+    sharemode='ro'
+
+    echo "---- ---- ----"
+    echo "Cloud name [${cloudname:?}]"
+    echo "Share name [${sharename:?}]"
+    echo "Mount path [${mountpath:?}]"
+    echo "Share mode [${sharemode:?}]"
+    echo "---- ---- ----"
+    echo ""
 
     sharefile="/tmp/${sharename:?}-share.json"
     accessfile="/tmp/${sharename:?}-access.json"
 
-# -----------------------------------------------------
-# Locate the project source directory.
-
-    binpath=$(dirname $(readlink -f ${0}))
-    srcpath=$(dirname ${binpath})
 
 # -----------------------------------------------------
 # Set the Manila API version.
@@ -116,7 +127,7 @@
             share access list \
                 --format json \
                 "${shareid:?}" \
-        | jq -r '.[] | select(.access_level == "'${rwmode:?}'") | .id'
+        | jq -r '.[] | select(.access_level == "'${sharemode:?}'") | .id'
         )
 
     openstack \
@@ -147,7 +158,7 @@
     cat >> /tmp/ceph-vars.yml << EOF
 
 mntpath:  '${mountpath:?}'
-mntopts:  'async,auto,nodev,noexec,nosuid,${rwmode:?},_netdev'
+mntopts:  'async,auto,nodev,noexec,nosuid,${sharemode:?},_netdev'
 
 cephuser:  '${cephuser:?}'
 cephkey:   '${cephkey:?}'

@@ -24,10 +24,24 @@
 # -----------------------------------------------------
 # Settings ...
 
+    binfile="$(basename ${0})"
+    binpath="$(dirname $(readlink -f ${0}))"
+    srcpath="$(dirname ${binpath})"
+
+    echo ""
+    echo "---- ---- ----"
+    echo "File  [${binfile:?}]"
+    echo "Path  [${binpath:?}]"
+
     cloudname=${1:?}
     matchname=${2:?}
 
-    projectname="iris-${cloudname:?}"
+    echo "---- ---- ----"
+    echo "Cloud name  [${cloudname:?}]"
+    echo "Match text  [${matchname:?}]"
+    echo "---- ---- ----"
+    echo ""
+
 
 # -----------------------------------------------------
 # Locate the project source directory.
@@ -37,6 +51,8 @@
 
 # -----------------------------------------------------
 # Get our project ID.
+
+    projectname="iris-${cloudname:?}"
 
     projectid=$(
         openstack \

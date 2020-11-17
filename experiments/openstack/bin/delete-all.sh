@@ -22,10 +22,22 @@
 #
 
 # -----------------------------------------------------
-# Cloud config.
+# Settings ...
 
-    echo "---- ----"
-    echo "Cloud config [${cloudname:?}]"
+    binfile="$(basename ${0})"
+    binpath="$(dirname $(readlink -f ${0}))"
+    srcpath="$(dirname ${binpath})"
+
+    echo ""
+    echo "---- ---- ----"
+    echo "File [${binfile:?}]"
+    echo "Path [${binpath:?}]"
+
+    cloudname=${1:?}
+
+    echo "---- ---- ----"
+    echo "Cloud name [${cloudname:?}]"
+
 
 # -----------------------------------------------------
 # Delete all the servers.

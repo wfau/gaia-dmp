@@ -125,10 +125,6 @@
             --node-count       "${workercount:?}" \
             --flavor           "${workerflavorid:?}" \
             --cluster-template "${templateuuid:?}" \
-            --merge-labels \
-            --label "foo=bar" \
-            --label "foo.aglais.uk=bar" \
-            --label "http://labels.aglais.uk/foo=bar" \
             "${clustername:?}" \
     > /tmp/cluster-create.txt
 

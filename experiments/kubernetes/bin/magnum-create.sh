@@ -216,3 +216,6 @@
     echo "Stack uuid [${stackuuid}]"
     echo "Stack name [${stackname}]"
 
+
+
+

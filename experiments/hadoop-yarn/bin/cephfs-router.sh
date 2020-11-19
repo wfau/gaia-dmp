@@ -33,81 +33,43 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
+    cloudname=${1:?}
+    buildname=${2:?}
+
     echo "---- ---- ----"
     echo "Cloud name [${cloudname}]"
-    echo "Cloud user [${clouduser}]"
-
-    buildname="aglais-$(date '+%Y%m%d')"
-
     echo "Build name [${buildname}]"
     echo "---- ---- ----"
 
 # -----------------------------------------------------
-# Create our Ansible include vars file.
+# Identify our cluster router.
 
-    cat > /tmp/ansible-vars.yml << EOF
-buildtag:  '${buildname:?}'
-cloudname: '${cloudname:?}'
-clouduser: '${clouduser:?}'
-EOF
-
-# -----------------------------------------------------
-# Create the machines, deploy Hadoop and Spark.
-
-    echo ""
-    echo "---- ----"
-    echo "Running Ansible deploy"
-
-    pushd "/hadoop-yarn/ansible"
-
-        ansible-playbook \
-            --inventory "hosts.yml" \
-            "create-all.yml"
-
-    popd
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list \
+            --format json \
+    | jq '.[] | select(.Name == "'${buildname}'-internal-network-router")' \
+    > '/tmp/cluster-router.json'
 
 
 # -----------------------------------------------------
-# Start the HDFS services.
+# Identify our cluster subnet.
 
-    '/hadoop-yarn/bin/start-hdfs.sh'
-
-
-# -----------------------------------------------------
-# Start the Yarn services.
-
-    '/hadoop-yarn/bin/start-yarn.sh'
-
-
-# -----------------------------------------------------
-# Initialise the Spark services.
-
-    '/hadoop-yarn/bin/init-spark.sh'
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list \
+            --format json \
+    | jq '.[] | select(.Name == "'${buildname}'-internal-network-subnet")' \
+    > '/tmp/cluster-subnet.json'
 
 
 # -----------------------------------------------------
-# Create our CephFS router.
+# Create the CephFS router.
 
-    echo ""
-    echo "---- ----"
-    echo "Creating CephFS router"
-
-    '/hadoop-yarn/bin/cephfs-router.sh' \
+    '/openstack/bin/cephfs-router.sh' \
         "${cloudname:?}" \
         "${buildname:?}"
 
-
-# -----------------------------------------------------
-# Mount the Gaia DR2 data.
-
-    echo ""
-    echo "---- ----"
-    echo "Mounting Gaia DR2 data"
-
-    '/hadoop-yarn/bin/cephfs-mount.sh' \
-        "${cloudname:?}" \
-        'aglais-gaia-dr2' \
-        '/data/gaia/dr2'
 
 
 

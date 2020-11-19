@@ -34,12 +34,15 @@
     echo "Path  [${binpath}]"
 
     cloudname=${1:?}
-    matchname=${2:?}
+    buildname=${2:?}
 
     echo "---- ---- ----"
-    echo "Cloud name  [${cloudname}]"
-    echo "Match text  [${matchname}]"
+    echo "Cloud name   [${cloudname}]"
+    echo "Build name   [${buildname}]"
     echo "---- ---- ----"
+
+    routername="${buildname:?}-cephfs-router"
+    gatewayname='cumulus-internal'
 
 
 # -----------------------------------------------------
@@ -70,45 +73,38 @@
             --format json \
             --enable \
             --project "${projectid:?}" \
-            "ceph-router" \
-    > "ceph-router.json"
+            "${routername:?}" \
+    > "/tmp/ceph-router.json"
 
     cephroutername=$(
-        jq -r '. | .name' "ceph-router.json"
+        jq -r '. | .name' "/tmp/ceph-router.json"
         )
 
     cephrouterid=$(
-        jq -r '. | .id' "ceph-router.json"
+        jq -r '. | .id' "/tmp/ceph-router.json"
         )
 
 
 # -----------------------------------------------------
 # Set the router's external gateway.
 
-    cumulusnetid=$(
+    gatewayid=$(
         openstack \
             --os-cloud "${cloudname:?}" \
             network list \
                 --format json \
-        | jq -r '.[] | select(.Name == "cumulus-internal") | .ID'
+        | jq -r '.[] | select(.Name == "'${gatewayname:?}'") | .ID'
         )
 
     openstack \
         --os-cloud "${cloudname:?}" \
         router set \
-            --external-gateway "${cumulusnetid:?}" \
+            --external-gateway "${gatewayid:?}" \
             "${cephrouterid:?}"
 
 
 # -----------------------------------------------------
-# Create a network port for our cluster subnet.
-
-    openstack \
-        --os-cloud "${cloudname:?}" \
-        subnet list \
-            --format json \
-    | jq '.[] | select(.Name | startswith("'${matchname:?}'"))' \
-    > '/tmp/cluster-subnet.json'
+# Identify our cluster subnet.
 
     clustersubid=$(
         jq -r '.ID' '/tmp/cluster-subnet.json'
@@ -122,13 +118,16 @@
         jq -r '.Network' '/tmp/cluster-subnet.json'
         )
 
+# -----------------------------------------------------
+# Create a network port for our cluster subnet.
+
     openstack \
         --os-cloud "${cloudname:?}" \
         port create \
             --format json \
             --network "${clusternetid:?}" \
             --fixed-ip "subnet=${clustersubid:?}" \
-        "cluster-subnet-port" \
+        "${cephroutername:?}-cluster-subnet-port" \
     > "/tmp/cluster-subnet-port.json"
 
     echo ""
@@ -170,13 +169,6 @@
 
 # -----------------------------------------------------
 # Identify our cluster router.
-
-    openstack \
-        --os-cloud "${cloudname:?}" \
-        router list \
-            --format json \
-    | jq '.[] | select(.Name | startswith("'${matchname}'"))' \
-    > '/tmp/cluster-router.json'
 
     clusterrouterid=$(
         jq -r '.ID' '/tmp/cluster-router.json'

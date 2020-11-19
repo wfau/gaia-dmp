@@ -40,14 +40,7 @@
     echo "Cloud name  [${cloudname:?}]"
     echo "Match text  [${matchname:?}]"
     echo "---- ---- ----"
-    echo ""
 
-
-# -----------------------------------------------------
-# Locate the project source directory.
-
-    binpath=$(dirname $(readlink -f ${0}))
-    srcpath=$(dirname ${binpath})
 
 # -----------------------------------------------------
 # Get our project ID.
@@ -64,8 +57,8 @@
 
     echo ""
     echo "---- ----"
-    echo "Project name [${projectname:?}]"
-    echo "Project ID   [${projectid:?}]"
+    echo "Project [${projectname:?}]"
+    echo "Project [${projectid:?}]"
 
 
 # -----------------------------------------------------
@@ -140,10 +133,9 @@
 
     echo ""
     echo "---- ----"
-    echo "Cluster subnet name [${clustersubname:?}]"
-    echo "Cluster subnet ID   [${clustersubid:?}]"
-    echo ""
-    echo "Cluster subnet port"
+    echo "Cluster subnet [${clustersubname:?}]"
+    echo "Cluster subnet [${clustersubid:?}]"
+    echo "Subnet port"
     jq '{network_id, fixed_ips}'  "/tmp/cluster-subnet-port.json"
 
 
@@ -165,10 +157,9 @@
 
     echo ""
     echo "---- ----"
-    echo "Ceph router name [${cephroutername:?}]"
-    echo "Ceph router ID   [${cephrouterid:?}]"
-    echo ""
-    echo "Ceph router info"
+    echo "Ceph router [${cephroutername:?}]"
+    echo "Ceph router [${cephrouterid:?}]"
+    echo "Ceph router"
     openstack \
         --os-cloud "${cloudname:?}" \
         router show \
@@ -213,10 +204,9 @@
 
     echo ""
     echo "---- ----"
-    echo "Cluster router name [${clusterroutername:?}]"
-    echo "Cluster router ID   [${clusterrouterid:?}]"
-    echo ""
-    echo "Cluster router info"
+    echo "Cluster router [${clusterroutername:?}]"
+    echo "Cluster router [${clusterrouterid:?}]"
+    echo "Cluster router"
     openstack \
         --os-cloud "${cloudname:?}" \
         router show \

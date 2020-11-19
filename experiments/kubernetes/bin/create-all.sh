@@ -37,52 +37,22 @@
     echo "Cloud name [${cloudname:?}]"
     echo "Cloud user [${clouduser:?}]"
 
-    buildtag="aglais-$(date '+%Y%m%d')"
+    buildtag="aglais-k8s-$(date '+%Y%m%d')"
 
     echo "Build tag  [${buildtag:?}]"
     echo "---- ---- ----"
 
-# -----------------------------------------------------
-# Create our Ansible include vars file.
-
-    cat > /tmp/ansible-vars.yml << EOF
-buildtag:  '${buildtag:?}'
-cloudname: '${cloudname:?}'
-clouduser: '${clouduser:?}'
-EOF
 
 # -----------------------------------------------------
-# Create the machines, deploy Hadoop and Spark.
+# Create our Magnum cluster.
 
     echo ""
     echo "---- ----"
-    echo "Running Ansible deploy"
+    echo "Creating Magnum cluster"
 
-    pushd "/hadoop-yarn/ansible"
-
-        ansible-playbook \
-            --inventory "hosts.yml" \
-            "create-all.yml"
-
-    popd
-
-
-# -----------------------------------------------------
-# Start the HDFS services.
-
-    '/hadoop-yarn/bin/start-hdfs.sh'
-
-
-# -----------------------------------------------------
-# Start the Yarn services.
-
-    '/hadoop-yarn/bin/start-yarn.sh'
-
-
-# -----------------------------------------------------
-# Initialise the Spark services.
-
-    '/hadoop-yarn/bin/init-spark.sh'
+    '/openstack/bin/create-cluster.sh' \
+        "${cloudname:?}" \
+        "${buildtag:?}"
 
 
 # -----------------------------------------------------
@@ -97,6 +67,7 @@ EOF
         "${buildtag:?}"
 
 
+
 # -----------------------------------------------------
 # Mount the Gaia DR2 data.
 
@@ -104,11 +75,11 @@ EOF
     echo "---- ----"
     echo "Mounting Gaia DR2 data"
 
-    '/hadoop-yarn/bin/cephfs-mount.sh' \
-        "${cloudname:?}" \
-        'aglais-gaia-dr2' \
-        '/data/gaia/dr2'
+# -----------------------------------------------------
+# Mount the user data.
 
 
-
+    echo ""
+    echo "---- ----"
+    echo "Mounting user data"
 

@@ -16,27 +16,37 @@
     echo "---- ---- ----"
     echo "Cloud name [${cloudname}]"
     echo "Build name [${buildname}]"
+
+
+# -----------------------------------------------------
+# Identify our stack name.
+
+    stackname=$(
+        jq -r '.stack_name' '/tmp/cluster-stack.json'
+        )
+
     echo "---- ---- ----"
+    echo "Stack name [${stackname}]"
 
 # -----------------------------------------------------
 # Identify our cluster router.
 
-    openstack \
+    openstack\
         --os-cloud "${cloudname:?}" \
         router list \
             --format json \
-    | jq '.[] | select(.Name == "'${buildname}'-internal-network-router")' \
+    | jq '.[] | select(.Name | startswith("'${stackname:?}'")) | select(.Name | test("extrouter"))' \
     > '/tmp/cluster-router.json'
 
 
 # -----------------------------------------------------
 # Identify our cluster subnet.
 
-    openstack \
+    openstack\
         --os-cloud "${cloudname:?}" \
         subnet list \
             --format json \
-    | jq '.[] | select(.Name == "'${buildname}'-internal-network-subnet")' \
+    | jq '.[] | select(.Name | startswith("'${stackname:?}'")) | select(.Name | test("private_subnet"))' \
     > '/tmp/cluster-subnet.json'
 
 

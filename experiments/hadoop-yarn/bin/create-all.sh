@@ -88,10 +88,6 @@ EOF
 # -----------------------------------------------------
 # Create our CephFS router.
 
-    echo ""
-    echo "---- ----"
-    echo "Creating CephFS router"
-
     '/hadoop-yarn/bin/cephfs-router.sh' \
         "${cloudname:?}" \
         "${buildname:?}"
@@ -99,10 +95,6 @@ EOF
 
 # -----------------------------------------------------
 # Mount the Gaia DR2 data.
-
-    echo ""
-    echo "---- ----"
-    echo "Mounting Gaia DR2 data"
 
     '/hadoop-yarn/bin/cephfs-mount.sh' \
         "${cloudname:?}" \

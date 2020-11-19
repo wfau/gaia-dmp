@@ -46,11 +46,7 @@
 # -----------------------------------------------------
 # Create our Magnum cluster.
 
-    echo ""
-    echo "---- ----"
-    echo "Creating Magnum cluster"
-
-    '/openstack/bin/magnum-create.sh' \
+    '/kubernetes/bin/magnum-create.sh' \
         "${cloudname:?}" \
         "${buildtag:?}"
 
@@ -58,14 +54,9 @@
 # -----------------------------------------------------
 # Create our CephFS router.
 
-    echo ""
-    echo "---- ----"
-    echo "Creating CephFS router"
-
-    '/openstack/bin/cephfs-router.sh' \
+    '/kubernetes/bin/cephfs-router.sh' \
         "${cloudname:?}" \
         "${buildtag:?}"
-
 
 
 # -----------------------------------------------------
@@ -82,4 +73,5 @@
     echo ""
     echo "---- ----"
     echo "Mounting user data"
+
 

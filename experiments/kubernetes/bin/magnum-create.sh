@@ -201,14 +201,8 @@
             "${stackuuid:?}" \
         > '/tmp/cluster-stack.json'
 
-
     stackname=$(
-        openstack\
-            --os-cloud "${cloudname:?}" \
-            stack show \
-                --format json \
-                "${stackuuid:?}" \
-            | jq -r '.stack_name'
+        jq -r '.stack_name' '/tmp/cluster-stack.json'
         )
 
     echo ""

@@ -30,16 +30,16 @@
 
     echo ""
     echo "---- ---- ----"
-    echo "File [${binfile:?}]"
-    echo "Path [${binpath:?}]"
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname:?}]"
-    echo "Cloud user [${clouduser:?}]"
+    echo "Cloud name [${cloudname}]"
+    echo "Cloud user [${clouduser}]"
 
     buildtag="aglais-k8s-$(date '+%Y%m%d')"
 
-    echo "Build tag  [${buildtag:?}]"
+    echo "Build tag  [${buildtag}]"
     echo "---- ---- ----"
 
 
@@ -50,7 +50,7 @@
     echo "---- ----"
     echo "Creating Magnum cluster"
 
-    '/openstack/bin/create-cluster.sh' \
+    '/openstack/bin/magnum-create.sh' \
         "${cloudname:?}" \
         "${buildtag:?}"
 

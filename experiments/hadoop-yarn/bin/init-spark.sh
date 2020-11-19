@@ -30,8 +30,8 @@
 
     echo ""
     echo "---- ---- ----"
-    echo "File [${binfile:?}]"
-    echo "Path [${binpath:?}]"
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
 
 # -----------------------------------------------------
 # Create our Spark log directory.

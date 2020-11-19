@@ -30,16 +30,16 @@
 
     echo ""
     echo "---- ---- ----"
-    echo "File [${binfile:?}]"
-    echo "Path [${binpath:?}]"
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname:?}]"
-    echo "Cloud user [${clouduser:?}]"
+    echo "Cloud name [${cloudname}]"
+    echo "Cloud user [${clouduser}]"
 
     buildtag="aglais-$(date '+%Y%m%d')"
 
-    echo "Build tag  [${buildtag:?}]"
+    echo "Build tag  [${buildtag}]"
     echo "---- ---- ----"
 
 # -----------------------------------------------------

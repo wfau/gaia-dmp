@@ -30,13 +30,13 @@
 
     echo ""
     echo "---- ---- ----"
-    echo "File [${binfile:?}]"
-    echo "Path [${binpath:?}]"
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
 
     cloudname=${1:?}
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname:?}]"
+    echo "Cloud name [${cloudname}]"
     echo "---- ---- ----"
 
 
@@ -55,7 +55,7 @@
         | jq -r '.[] | .ID'
         )
     do
-        echo "- Deleting server [${serverid:?}]"
+        echo "- Deleting server [${serverid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             server delete \
@@ -78,7 +78,7 @@
         | jq -r '.[] | .ID'
         )
     do
-        echo "- Deleting volume [${volumeid:?}]"
+        echo "- Deleting volume [${volumeid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             volume delete \
@@ -100,7 +100,7 @@
         | jq -r '.[] | .ID'
         )
         do
-            echo "- Releasing address [${floatingid:?}]"
+            echo "- Releasing address [${floatingid}]"
             openstack \
                 --os-cloud "${cloudname:?}" \
                 floating ip unset \
@@ -129,7 +129,7 @@
         )
     do
 
-        echo "- Router [${routerid:?}]"
+        echo "- Router [${routerid}]"
 
         echo "-- Deleting routes"
         for routedesc in $(
@@ -141,7 +141,7 @@
             | jq -r '.routes[] | "gateway=" + .nexthop + ",destination=" + .destination'
             )
         do
-            echo "--- Deleting route [${routedesc:?}]"
+            echo "--- Deleting route [${routedesc}]"
             openstack \
                 --os-cloud "${cloudname:?}" \
                 router unset \
@@ -167,7 +167,7 @@
                             "${portid:?}"
                 done
 
-        echo "- Deleting router [${routerid:?}]"
+        echo "- Deleting router [${routerid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             router delete \
@@ -195,7 +195,7 @@
             ) | .ID'
         )
     do
-        echo "- Subnet [${subnetid:?}]"
+        echo "- Subnet [${subnetid}]"
 
         echo "-- Deleting subnet ports"
         for subportid in $(
@@ -208,7 +208,7 @@
                 )
 
         do
-            echo "--- Deleting subnet port [${subportid:?}]"
+            echo "--- Deleting subnet port [${subportid}]"
             openstack \
                 --os-cloud "${cloudname:?}" \
                 port delete \
@@ -216,7 +216,7 @@
 
         done
 
-        echo "- Deleting subnet [${subnetid:?}]"
+        echo "- Deleting subnet [${subnetid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             subnet delete \
@@ -244,7 +244,7 @@
             ) | .ID'
         )
     do
-        echo "- Deleting network [${networkid:?}]"
+        echo "- Deleting network [${networkid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             network delete \
@@ -268,7 +268,7 @@
         | jq -r '.[] | select(.Name != "default") | .ID'
         )
     do
-        echo "- Deleting security group [${groupid:?}]"
+        echo "- Deleting security group [${groupid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             security group delete \
@@ -319,7 +319,7 @@
         | jq -r '.[] | .uuid'
         )
     do
-        echo "- Deleting cluster [${clusterid:?}]"
+        echo "- Deleting cluster [${clusterid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             coe cluster \

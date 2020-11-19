@@ -30,15 +30,15 @@
 
     echo ""
     echo "---- ---- ----"
-    echo "File  [${binfile:?}]"
-    echo "Path  [${binpath:?}]"
+    echo "File  [${binfile}]"
+    echo "Path  [${binpath}]"
 
     cloudname=${1:?}
     buildname=${2:?}
 
     echo "---- ---- ----"
-    echo "Cloud name  [${cloudname:?}]"
-    echo "Build name  [${buildname:?}]"
+    echo "Cloud name  [${cloudname}]"
+    echo "Build name  [${buildname}]"
     echo "---- ---- ----"
 
 
@@ -55,7 +55,7 @@
 
     echo ""
     echo "---- ----"
-    echo "SSH key name  [${keyname:?}]"
+    echo "SSH key name  [${keyname}]"
 
 # -----------------------------------------------------
 # Get the virtual machine flavors.
@@ -84,10 +84,10 @@
 
     echo ""
     echo "---- ----"
-    echo "Master count  [${mastercount:?}]"
-    echo "Master flavor [${masterflavorname:?}][${masterflavorid}]"
-    echo "Worker count  [${workercount:?}]"
-    echo "Worker flavor [${workerflavorname:?}][${workerflavorid}]"
+    echo "Master count  [${mastercount}]"
+    echo "Master flavor [${masterflavorname}][${masterflavorid}]"
+    echo "Worker count  [${workercount}]"
+    echo "Worker flavor [${workerflavorname}][${workerflavorid}]"
 
 # -----------------------------------------------------
 # Get the uuid for the '1.17' template.
@@ -103,8 +103,8 @@
 
     echo ""
     echo "---- ----"
-    echo "Template name [${templatename:?}]"
-    echo "Template uuid [${templateuuid:?}]"
+    echo "Template name [${templatename}]"
+    echo "Template uuid [${templateuuid}]"
 
 
 # -----------------------------------------------------
@@ -132,13 +132,13 @@
             "${clustername:?}" \
     > /tmp/cluster-create.txt
 
-    clusterid=$(
+    clusteruuid=$(
         sed -n '
             s/Request to create cluster \([-0-9a-f]*\) accepted/\1/p
             ' '/tmp/cluster-create.txt'
         )
 
-    echo "Cluster ID [${clusterid:?}]"
+    echo "Cluster ID [${clusteruuid}]"
 
 
     echo ""
@@ -171,7 +171,7 @@
         jsonstatus
         }
 
-     while [ $(bothstatus ${clusterid:?}) == 'CREATE_IN_PROGRESS' ]
+     while [ $(bothstatus ${clusteruuid:?}) == 'CREATE_IN_PROGRESS' ]
         do
             echo "IN PROGRESS"
             sleep 10
@@ -186,4 +186,37 @@
     fi
 
 
+# -----------------------------------------------------
+# Get the stack details.
+
+    stackuuid=$(
+        openstack\
+            --os-cloud "${cloudname:?}" \
+            coe cluster show \
+                --format json \
+                "${clusteruuid:?}" \
+        | jq -r '.stack_id'
+        )
+
+    openstack\
+        --os-cloud "${cloudname:?}" \
+        stack show \
+            --format json \
+            "${stackuuid:?}" \
+        > '/tmp/cluster-stack.json'
+
+
+    stackname=$(
+        openstack\
+            --os-cloud "${cloudname:?}" \
+            stack show \
+                --format json \
+                "${stackuuid:?}" \
+            | jq -r '.stack_name'
+        )
+
+    echo ""
+    echo "---- ----"
+    echo "Stack uuid [${stackuuid}]"
+    echo "Stack name [${stackname}]"
 

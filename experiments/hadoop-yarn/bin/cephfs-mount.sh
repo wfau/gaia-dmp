@@ -36,7 +36,7 @@
     cloudname=${1:?}
     sharename=${2:?}
     mountpath=${3:?}
-    sharemode='ro'
+    sharemode=${4:-'ro'}
 
     echo "---- ---- ----"
     echo "Cloud name [${cloudname}]"
@@ -155,7 +155,7 @@
 # -----------------------------------------------------
 # Add details of the share to our Ansible vars file.
 
-    cat >> /tmp/ceph-vars.yml << EOF
+    cat > /tmp/ceph-vars.yml << EOF
 
 mntpath:  '${mountpath:?}'
 mntopts:  'async,auto,nodev,noexec,nosuid,${sharemode:?},_netdev'

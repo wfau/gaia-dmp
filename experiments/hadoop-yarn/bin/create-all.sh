@@ -95,12 +95,22 @@ EOF
 
 # -----------------------------------------------------
 # Mount the Gaia DR2 data.
+# Note the hard coded cloud name to get details of the static share.
 
     '/hadoop-yarn/bin/cephfs-mount.sh' \
-        "${cloudname:?}" \
+        'gaia-prod' \
         'aglais-gaia-dr2' \
         '/data/gaia/dr2'
 
 
+# -----------------------------------------------------
+# Mount the user data volume.
+# Note the hard coded cloud name to get details of the static share.
+
+    '/hadoop-yarn/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        'aglais-user-nch' \
+        '/user/nch' \
+        'rw'
 
 

@@ -41,7 +41,72 @@
 
 
 # -----------------------------------------------------
-# Delete all the servers.
+# Delete any Mangum clusters.
+# First attempt to shutdown the autoscaling response.
+
+    echo ""
+    echo "---- ----"
+    echo "Deleting clusters"
+
+    # TODO Move to common tools
+    pullstatus()
+        {
+        local clid=${1:?}
+        openstack \
+            --os-cloud "${cloudname:?}"-super \
+            coe cluster show \
+                --format json \
+                "${clid:?}" \
+        > '/tmp/cluster-status.json'
+        # TODO Catch HTTP 404 error
+        # TODO re-direct stderr
+        }
+
+    jsonstatus()
+        {
+        jq -r '.status' '/tmp/cluster-status.json'
+        # TODO Catch blank file
+        }
+
+    bothstatus()
+        {
+        local clid=${1:?}
+        pullstatus "${clid:?}"
+        jsonstatus
+        }
+
+    for clusterid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[] | .uuid'
+        )
+    do
+        echo "- Deleting cluster [${clusterid}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster \
+                delete \
+                "${clusterid:?}"
+
+        # TODO Handle empty response
+         while [ $(bothstatus ${clusterid:?}) == 'DELETE_IN_PROGRESS' ]
+            do
+                echo "IN PROGRESS"
+                sleep 10
+            done
+
+        if [ $(jsonstatus) == 'DELETE_FAILED' ]
+        then
+            echo "DELETE FAILED"
+            cat '/tmp/cluster-status.json'
+        fi
+    done
+
+
+# -----------------------------------------------------
+# Delete any remaining servers.
 
     echo ""
     echo "---- ----"
@@ -62,8 +127,9 @@
                 "${serverid:?}"
     done
 
+
 # -----------------------------------------------------
-# Delete all the volumes.
+# Delete any remaining volumes.
 
 
     echo ""
@@ -85,8 +151,9 @@
                 "${volumeid:?}"
     done
 
+
 # -----------------------------------------------------
-# Release all the floating IP addresses.
+# Release any remaining floating IP addresses.
 
     echo ""
     echo "---- ----"
@@ -114,7 +181,7 @@
 
 
 # -----------------------------------------------------
-# Delete all the routers.
+# Delete any remaining routers.
 
     echo ""
     echo "---- ----"
@@ -177,7 +244,6 @@
 
 # -----------------------------------------------------
 # Delete any extra subnets.
-#[user@openstacker]
 
     echo ""
     echo "---- ----"
@@ -226,7 +292,6 @@
 
 # -----------------------------------------------------
 # Delete any extra networks.
-#[user@openstacker]
 
     echo ""
     echo "---- ----"
@@ -253,8 +318,7 @@
 
 
 # -----------------------------------------------------
-# Delete all the security groups.
-#[user@openstacker]
+# Delete any extra security groups.
 
     echo ""
     echo "---- ----"
@@ -277,8 +341,8 @@
 
 
 # -----------------------------------------------------
-# Delete any Mangum clusters.
-#[user@openstacker]
+# Delete any remaining Mangum clusters.
+# Second attempt after deleting the extra routers and subnets.
 
     echo ""
     echo "---- ----"
@@ -342,10 +406,8 @@
 
 
 
-
 # -----------------------------------------------------
 # List the remaining resources.
-#[user@openstacker]
 
     echo ""
     echo "---- ----"

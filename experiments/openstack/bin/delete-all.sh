@@ -416,36 +416,49 @@
         --os-cloud "${cloudname:?}" \
         server list
 
+    echo ""
+    echo "---- ----"
+    echo "List volumes"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        volume list
+
+    echo ""
     echo "---- ----"
     echo "List addresses"
     openstack \
         --os-cloud "${cloudname:?}" \
         floating ip list
 
+    echo ""
     echo "---- ----"
     echo "List routers"
     openstack \
         --os-cloud "${cloudname:?}" \
         router list
 
+    echo ""
     echo "---- ----"
     echo "List networks"
     openstack \
         --os-cloud "${cloudname:?}" \
         network list
 
+    echo ""
     echo "---- ----"
     echo "List subnets"
     openstack \
         --os-cloud "${cloudname:?}" \
         subnet list
 
+    echo ""
     echo "---- ----"
     echo "List security groups"
     openstack \
         --os-cloud "${cloudname:?}" \
         security group list
 
+    echo ""
     echo "---- ----"
     echo "List clusters"
     openstack \

@@ -53,7 +53,6 @@
 # -----------------------------------------------------
 # Set the Manila API version.
 # https://stackoverflow.com/a/58806536
-# TODO Move this to an openstack script.
 
     export OS_SHARE_API_VERSION=2.51
 
@@ -170,19 +169,5 @@ cephpath:  '${cephpath:?}'
 cephnodes: '${cephnodes// /,}'
 
 EOF
-
-# -----------------------------------------------------
-# Run the Ansible deplyment.
-
-    pushd "${srcpath:?}/ansible"
-
-        ansible-playbook \
-            --inventory 'hosts.yml' \
-            --extra-vars '@/tmp/ceph-vars.yml' \
-            '51-cephfs-mount.yml'
-
-    popd
-
-
 
 

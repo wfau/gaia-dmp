@@ -37,9 +37,9 @@
     echo "Cloud name [${cloudname}]"
     echo "Cloud user [${clouduser}]"
 
-    buildtag="aglais-k8s-$(date '+%Y%m%d')"
+    buildname="aglais-k8s-$(date '+%Y%m%d')"
 
-    echo "Build tag  [${buildtag}]"
+    echo "Build name [${buildname}]"
     echo "---- ---- ----"
 
 
@@ -48,7 +48,7 @@
 
     '/kubernetes/bin/magnum-create.sh' \
         "${cloudname:?}" \
-        "${buildtag:?}"
+        "${buildname:?}"
 
 
 # -----------------------------------------------------
@@ -56,22 +56,54 @@
 
     '/kubernetes/bin/cephfs-router.sh' \
         "${cloudname:?}" \
-        "${buildtag:?}"
+        "${buildname:?}"
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+
+    clusteruuid=$(
+        jq -r '.uuid' '/tmp/cluster-status.json'
+        )
+
+    echo "----"
+    echo "Cluster uuid [${clusteruuid}]"
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clusteruuid:?}" \
+                --force \
+                --dir "${HOME}/.kube" \
+    > '/dev/null' 2>&1
+
+    kubectl \
+        cluster-info
+
+
+# -----------------------------------------------------
+# Install our main Helm chart.
 
 
 # -----------------------------------------------------
 # Mount the Gaia DR2 data.
+# Note the hard coded cloud name to get details of the static share.
 
-    echo ""
-    echo "---- ----"
-    echo "Mounting Gaia DR2 data"
+#   '/kubernetes/bin/cephfs-mount.sh' \
+#       'gaia-prod' \
+#       'aglais-gaia-dr2' \
+#       '/data/gaia/dr2'
+
 
 # -----------------------------------------------------
-# Mount the user data.
+# Mount the user data volume.
+# Note the hard coded cloud name to get details of the static share.
 
-
-    echo ""
-    echo "---- ----"
-    echo "Mounting user data"
+#   '/kubernetes/bin/cephfs-mount.sh' \
+#       'gaia-prod' \
+#       'aglais-user-nch' \
+#       '/user/nch' \
+#       'rw'
 
 

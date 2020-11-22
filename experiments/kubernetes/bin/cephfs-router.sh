@@ -20,6 +20,7 @@
 
 # -----------------------------------------------------
 # Identify our stack name.
+# TODO check /tmp/cluster-stack.json
 
     stackname=$(
         jq -r '.stack_name' '/tmp/cluster-stack.json'

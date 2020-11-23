@@ -183,7 +183,7 @@ EOF
         "${namespace:?}" \
         'aglais-gaia-dr2' \
         '/data/gaia/dr2' \
-        'ro'
+        'rw'
 
 
 # -----------------------------------------------------
@@ -196,5 +196,9 @@ EOF
         'aglais-user-nch' \
         '/user/nch' \
         'rw'
+
+
+
+
 
 

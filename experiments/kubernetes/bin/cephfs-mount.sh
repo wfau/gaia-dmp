@@ -21,6 +21,8 @@
 #
 #
 
+#TODO Make the read/write status configurable.
+
 # -----------------------------------------------------
 # Settings ...
 
@@ -113,7 +115,7 @@ aglais:
 
 mount:
   path: "${mountpath:?}"
-  readonly: false
+  readonly: true
 
 csi:
   size:    ${sharesize:?}

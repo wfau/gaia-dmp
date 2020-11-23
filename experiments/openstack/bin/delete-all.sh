@@ -101,7 +101,7 @@
         then
             echo "DELETE FAILED"
             jq '
-                {.status, .faults}
+                {status, faults}
                 ' '/tmp/cluster-status.json'
         fi
     done

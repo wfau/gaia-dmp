@@ -78,32 +78,123 @@
                 --dir "${HOME}/.kube" \
     > '/dev/null' 2>&1
 
+    echo "----"
+    echo "Cluster info"
+
     kubectl \
         cluster-info
 
 
 # -----------------------------------------------------
 # Install our main Helm chart.
+# Using 'upgrade --install' to make the command idempotent
+# https://github.com/helm/helm/issues/3134
+
+    namespace=${buildname,,}
+
+    echo ""
+    echo "----"
+    echo "Installing Aglais Helm chart"
+    echo "Namespace [${namespace}]"
+
+    helm dependency update \
+        "/kubernetes/helm"
+
+    helm install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        'aglais' \
+        "/kubernetes/helm"
+
+
+# -----------------------------------------------------
+# Install our dashboard chart.
+# Using 'upgrade --install' to make the command idempotent
+# https://github.com/helm/helm/issues/3134
+
+    dashhost=valeria.metagrid.xyz
+
+    echo ""
+    echo "----"
+    echo "Installing dashboard Helm chart"
+    echo "Namespace [${namespace}]"
+    echo "Dash host [${dashhost}]"
+
+    helm dependency update \
+        "/kubernetes/helm/tools/dashboard"
+
+    cat > "/tmp/dashboard-values.yaml" << EOF
+kubernetes-dashboard:
+  ingress:
+    enabled: true
+    paths:
+      - /
+    hosts:
+      - ${dashhost:?}
+EOF
+
+    helm upgrade \
+        --install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        'aglais-dashboard' \
+        "/kubernetes/helm/tools/dashboard" \
+        --values "/tmp/dashboard-values.yaml"
+
+#TODO Patch the k8s metrics
+
+
+# -----------------------------------------------------
+# Install our Zeppelin chart.
+# Using 'upgrade --install' to make the command idempotent
+# https://github.com/helm/helm/issues/3134
+
+    zepphost=zeppelin.metagrid.xyz
+
+    echo ""
+    echo "----"
+    echo "Installing Zeppelin Helm chart"
+    echo "Namespace [${namespace}]"
+    echo "Zepp host [${zepphost}]"
+
+
+    helm dependency update \
+        "/kubernetes/helm/tools/zeppelin"
+
+    cat > "/tmp/zeppelin-values.yaml" << EOF
+zeppelin_server_hostname: "${zepphost:?}"
+EOF
+
+    helm upgrade \
+        --install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        'aglais-zeppelin' \
+        "/kubernetes/helm/tools/zeppelin" \
+        --values "/tmp/zeppelin-values.yaml"
 
 
 # -----------------------------------------------------
 # Mount the Gaia DR2 data.
 # Note the hard coded cloud name to get details of the static share.
 
-#   '/kubernetes/bin/cephfs-mount.sh' \
-#       'gaia-prod' \
-#       'aglais-gaia-dr2' \
-#       '/data/gaia/dr2'
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        'aglais-gaia-dr2' \
+        '/data/gaia/dr2' \
+        'ro'
 
 
 # -----------------------------------------------------
 # Mount the user data volume.
 # Note the hard coded cloud name to get details of the static share.
 
-#   '/kubernetes/bin/cephfs-mount.sh' \
-#       'gaia-prod' \
-#       'aglais-user-nch' \
-#       '/user/nch' \
-#       'rw'
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        'aglais-user-nch' \
+        '/user/nch' \
+        'rw'
 
 

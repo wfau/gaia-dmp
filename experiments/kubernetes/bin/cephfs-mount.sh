@@ -34,21 +34,19 @@
     echo "Path [${binpath}]"
 
     cloudname=${1:?}
-    sharename=${2:?}
-    mountpath=${3:?}
-    sharemode=${4:-'ro'}
+    namespace=${2:?}
+    sharename=${3:?}
+    mountpath=${4:?}
+    sharemode=${5:-'ro'}
 
     echo "---- ---- ----"
     echo "Cloud name [${cloudname}]"
+    echo "Namespace  [${namespace}]"
     echo "Share name [${sharename}]"
     echo "Mount path [${mountpath}]"
     echo "Share mode [${sharemode}]"
     echo "---- ---- ----"
     echo ""
-
-    sharefile="/tmp/${sharename:?}-share.json"
-    accessfile="/tmp/${sharename:?}-access.json"
-
 
 # -----------------------------------------------------
 # Set the Manila API version.
@@ -58,9 +56,6 @@
 
 # -----------------------------------------------------
 # Identify the Manila share.
-# TODO Move this to an openstack script.
-
-    echo "Target [${cloudname}][${sharename}]"
 
     shareid=$(
         openstack \
@@ -70,61 +65,32 @@
         | jq -r '.[] | select( .Name == "'${sharename:?}'") | .ID'
         )
 
-    echo "Found  [${shareid}]"
-
-# -----------------------------------------------------
-# Get details of the Ceph export location.
-# TODO Move this to an openstack script.
-
     openstack \
         --os-cloud "${cloudname:?}" \
         share show \
             --format json \
             "${shareid:?}" \
-    | jq '.' \
-    > "${sharefile:?}"
-
-    locations=$(
-        jq '.export_locations' "${sharefile:?}"
-        )
-
-    cephnodes=$(
-        echo "${locations:?}" |
-        sed '
-            s/^.*path = \([^\\]*\).*$/\1/
-            s/^\(.*\):\(\/.*\)$/\1/
-            s/,/ /g
-            '
-            )
-
-    cephpath=$(
-        echo "${locations:?}" |
-        sed '
-            s/^.*path = \([^\\]*\).*$/\1/
-            s/^\(.*\):\(\/.*\)$/\2/
-            '
-            )
-
-    cephsize=$(
-        jq '.size' "${sharefile:?}"
-        )
+    > "/tmp/${sharename:?}-share.json"
 
     echo "----"
-    echo "Ceph path [${cephpath}]"
-    echo "Ceph size [${cephsize}]"
-
-    echo "----"
-    for cephnode in ${cephnodes}
-    do
-        echo "Ceph node [${cephnode}]"
-    done
+    echo "Share uuid [${shareid}]"
 
 
 # -----------------------------------------------------
-# Get details of the access rule.
-# TODO Move this to an openstack script.
+# Get size of the share (in Gbytes).
 
-    accessrule=$(
+    sharesize=$(
+        jq -r '.size' "/tmp/${sharename:?}-share.json"
+        )
+
+    echo "----"
+    echo "Share size [${sharesize}]"
+
+
+# -----------------------------------------------------
+# Get the access rule.
+
+    accessid=$(
         openstack \
             --os-cloud "${cloudname:?}" \
             share access list \
@@ -133,41 +99,45 @@
         | jq -r '.[] | select(.access_level == "'${sharemode:?}'") | .id'
         )
 
-    openstack \
-        --os-cloud "${cloudname:?}" \
-        share access show \
-            --format json \
-            "${accessrule:?}" \
-    | jq '.' \
-    > "${accessfile:?}"
-
-    cephuser=$(
-        jq -r '.access_to' "${accessfile:?}"
-        )
-
-    cephkey=$(
-        jq -r '.access_key' "${accessfile:?}"
-        )
-
     echo "----"
-    echo "Ceph user [${cephuser}]"
-    echo "Ceph key  [${cephkey}]"
-    echo ""
+    echo "Access rule [${accessid}]"
 
 
 # -----------------------------------------------------
-# Add details of the share to our Ansible vars file.
+# Create the values file for our Helm chart.
 
-    cat > /tmp/ceph-vars.yml << EOF
+cat > "/tmp/${sharename:?}-values.yaml" << EOF
 
-mntpath:  '${mountpath:?}'
-mntopts:  'async,auto,nodev,noexec,nosuid,${sharemode:?},_netdev'
+aglais:
+  dataset: "${sharename:?}"
 
-cephuser:  '${cephuser:?}'
-cephkey:   '${cephkey:?}'
-cephpath:  '${cephpath:?}'
-cephnodes: '${cephnodes// /,}'
+mount:
+  path: "${mountpath:?}"
+  readonly: false
+
+csi:
+  size:    ${sharesize:?}
+  access: "ReadWriteMany"
+
+openstack:
+  shareid:  ${shareid:?}
+  accessid: ${accessid:?}
 
 EOF
+
+
+# -----------------------------------------------------
+# Install our Manila share.
+# Using 'upgrade --install' to make the command idempotent
+# https://github.com/helm/helm/issues/3134
+
+    helm upgrade \
+        --install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        "${sharename,,}" \
+        "/kubernetes/helm/tools/manila-share" \
+        --values "/tmp/${sharename:?}-values.yaml"
+
 
 

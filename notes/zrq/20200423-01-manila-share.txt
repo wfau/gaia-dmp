@@ -1,0 +1,245 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud name.
+#[user@openstacker]
+
+    cloudname=gaia-prod
+
+
+# -----------------------------------------------------
+# Install the OpenStack Manila client.
+#[user@openstacker]
+
+    dnf install -y python3-manilaclient
+
+    >   Installed:
+    >       python3-manilaclient-1.27.0-2.fc31.noarch
+    >       python3-docutils-0.15.2-1.fc31.noarch
+
+
+# -----------------------------------------------------
+# Create an access token.
+# https://docs.openstack.org/api-ref/identity/v3/index.html#authentication-and-token-management
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        --os-auth-type 'v3applicationcredential' \
+        token issue
+
+
+    >   +------------+-------------------------------+
+    >   | Field      | Value                         |
+    >   +------------+-------------------------------+
+    >   | expires    | 2020-04-23T01:49:25+0000      |
+    >   | id         | gAAA.... ....Q0dk             |
+    >   | project_id | 21b4.... ....63af             |
+    >   | user_id    | 9816.... ....6488             |
+    >   +------------+-------------------------------+
+
+
+# -----------------------------------------------------
+# Get the service endpoints.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        endpoint list \
+
+    >   You are not authorized to perform the requested action: identity:list_endpoints. (HTTP 403) (Request-ID: req-80fea3aa-adc4-4a36-86e3-abfde594f63c)
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        endpoint list \
+            --interface public
+
+    >   You are not authorized to perform the requested action: identity:list_endpoints. (HTTP 403) (Request-ID: req-80fea3aa-adc4-4a36-86e3-abfde594f63c)
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        service list
+
+    >   You are not authorized to perform the requested action: identity:list_services. (HTTP 403) (Request-ID: req-27862a88-28ec-4d5d-8848-8d15be3c9b47)
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        service show \
+            "Share"
+
+    >   You are not authorized to perform the requested action: identity:get_service. (HTTP 403) (Request-ID: req-ee479c70-8012-448b-b602-b9cbf358abf8)
+
+    #
+    # A pattern emerges ...
+    #
+
+
+# -----------------------------------------------------
+# Get the service endpoints from the Horizon GUI.
+#[user@openstacker]
+
+    Share 	    https://cumulus.openstack.hpc.cam.ac.uk:8786/v1/21b4........63af
+    Sharev2 	https://cumulus.openstack.hpc.cam.ac.uk:8786/v2/21b4........63af
+
+
+# -----------------------------------------------------
+# List our current shares.
+#[user@openstacker]
+
+    cat > manila.env << EOF
+mltoken=gAAA.... ....Q0dk
+mlendpoint=https://cumulus.openstack.hpc.cam.ac.uk:8786/v1/21b4........63af
+EOF
+
+    source manila.env
+
+    manila \
+        --os-token   "${mltoken:?}" \
+        --bypass-url "${mlendpoint:?}" \
+        list
+
+    >   +--------------------------------------+--------------+------+-------------+--------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name         | Size | Share Proto | Status | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+--------------+------+-------------+--------+-----------+------------------+------+-------------------+
+    >   | 0f147ce0-79a7-4094-9341-d7a183436f8b | albert-share | 256  | NFS         | error  | False     | cephfsnativetype |      | nova              |
+    >   +--------------------------------------+--------------+------+-------------+--------+-----------+------------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# Create a new share.
+#[user@openstacker]
+
+    manila \
+        --os-token   "${mltoken:?}" \
+        --bypass-url "${mlendpoint:?}" \
+        create \
+            --name 'testshare' \
+            --public \
+            'NFS' \
+            100
+
+    >   +---------------------------------------+--------------------------------------+
+    >   | Property                              | Value                                |
+    >   +---------------------------------------+--------------------------------------+
+    >   | status                                | creating                             |
+    >   | share_type_name                       | None                                 |
+    >   | description                           | None                                 |
+    >   | availability_zone                     | None                                 |
+    >   | share_network_id                      | None                                 |
+    >   | share_group_id                        | None                                 |
+    >   | revert_to_snapshot_support            | False                                |
+    >   | access_rules_status                   | active                               |
+    >   | snapshot_id                           | None                                 |
+    >   | create_share_from_snapshot_support    | False                                |
+    >   | is_public                             | True                                 |
+    >   | task_state                            | None                                 |
+    >   | snapshot_support                      | False                                |
+    >   | id                                    | 9299fa1a-71d9-4082-bf8f-5c2c6c92db18 |
+    >   | size                                  | 100                                  |
+    >   | source_share_group_snapshot_member_id | None                                 |
+    >   | user_id                               | 98169f87de174ad4ac98c32e59646488     |
+    >   | name                                  | testshare                            |
+    >   | share_type                            | None                                 |
+    >   | has_replicas                          | False                                |
+    >   | replication_type                      | None                                 |
+    >   | created_at                            | 2020-04-23T01:24:04.000000           |
+    >   | share_proto                           | NFS                                  |
+    >   | mount_snapshot_support                | False                                |
+    >   | project_id                            | 21b4ae3a2ea44bc5a9c14005ed2963af     |
+    >   | metadata                              | {}                                   |
+    >   +---------------------------------------+--------------------------------------+
+
+
+    manila \
+        --os-token   "${mltoken:?}" \
+        --bypass-url "${mlendpoint:?}" \
+        list
+
+    >   +--------------------------------------+--------------+------+-------------+--------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name         | Size | Share Proto | Status | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+--------------+------+-------------+--------+-----------+------------------+------+-------------------+
+    >   | 9299fa1a-71d9-4082-bf8f-5c2c6c92db18 | testshare    | 100  | NFS         | error  | True      | None             |      | None              |
+    >   | 0f147ce0-79a7-4094-9341-d7a183436f8b | albert-share | 256  | NFS         | error  | False     | cephfsnativetype |      | nova              |
+    >   +--------------------------------------+--------------+------+-------------+--------+-----------+------------------+------+-------------------+
+
+
+    manila \
+        --os-token   "${mltoken:?}" \
+        --bypass-url "${mlendpoint:?}" \
+        show \
+            "9299fa1a-71d9-4082-bf8f-5c2c6c92db18"
+
+    >   +---------------------------------------+--------------------------------------+
+    >   | Property                              | Value                                |
+    >   +---------------------------------------+--------------------------------------+
+    >   | status                                | error                                |
+    >   | share_type_name                       | None                                 |
+    >   | description                           | None                                 |
+    >   | availability_zone                     | None                                 |
+    >   | share_network_id                      | None                                 |
+    >   | share_group_id                        | None                                 |
+    >   | revert_to_snapshot_support            | False                                |
+    >   | access_rules_status                   | active                               |
+    >   | snapshot_id                           | None                                 |
+    >   | create_share_from_snapshot_support    | False                                |
+    >   | is_public                             | True                                 |
+    >   | task_state                            | None                                 |
+    >   | snapshot_support                      | False                                |
+    >   | id                                    | 9299fa1a-71d9-4082-bf8f-5c2c6c92db18 |
+    >   | size                                  | 100                                  |
+    >   | source_share_group_snapshot_member_id | None                                 |
+    >   | user_id                               | 98169f87de174ad4ac98c32e59646488     |
+    >   | name                                  | testshare                            |
+    >   | share_type                            | None                                 |
+    >   | has_replicas                          | False                                |
+    >   | replication_type                      | None                                 |
+    >   | created_at                            | 2020-04-23T01:24:04.000000           |
+    >   | share_proto                           | NFS                                  |
+    >   | mount_snapshot_support                | False                                |
+    >   | project_id                            | 21b4ae3a2ea44bc5a9c14005ed2963af     |
+    >   | metadata                              | {}                                   |
+    >   | export_locations                      | []                                   |
+    >   +---------------------------------------+--------------------------------------+
+
+
+
+
+

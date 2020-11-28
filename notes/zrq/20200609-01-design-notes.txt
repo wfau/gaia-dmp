@@ -1,0 +1,698 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+    AccountManager
+
+    ResourceManager
+
+    BookingManager
+
+        resourceitem
+            startdate
+            enddate
+            cores
+            memory
+            tempdisc
+            userdisc
+            datadisc
+
+        bookingitem
+            startdate
+            enddate
+            cores
+            memory
+            tempdisc
+            userdisc
+            datadisc
+
+
+# -----------------------------------------------------
+# Experiment with database.
+#[user@desktop]
+
+    podman run \
+        --detach \
+        --name 'albert' \
+       'cosmopterix/pgsql'
+
+
+    podman exec \
+        --tty \
+        --interactive \
+        'albert' \
+        'pgsql-client'
+
+
+# -----------------------------------------------------
+# Create our resource timeline table.
+#[user@desktop]
+
+
+    CREATE TABLE IF NOT EXISTS timeline
+        (
+        id     SERIAL PRIMARY KEY,
+        startdate TIMESTAMP NOT NULL,
+        enddate   TIMESTAMP NOT NULL,
+        cores  INTEGER NOT NULL,
+        memory INTEGER NOT NULL
+        );
+
+
+    -- Available resources
+    INSERT INTO timeline (startdate, enddate, cores, memory) VALUES ('2020-01-01', '2020-02-01', '10', '10') ;
+
+    -- Resource bookings
+    INSERT INTO timeline (startdate, enddate, cores, memory) VALUES ('2020-01-01', '2020-01-11', '-1', '-1') ;
+    INSERT INTO timeline (startdate, enddate, cores, memory) VALUES ('2020-01-02', '2020-01-12', '-1', '-1') ;
+    INSERT INTO timeline (startdate, enddate, cores, memory) VALUES ('2020-01-03', '2020-01-13', '-1', '-1') ;
+    INSERT INTO timeline (startdate, enddate, cores, memory) VALUES ('2020-01-04', '2020-01-14', '-1', '-1') ;
+    INSERT INTO timeline (startdate, enddate, cores, memory) VALUES ('2020-01-05', '2020-01-15', '-1', '-1') ;
+    INSERT INTO timeline (startdate, enddate, cores, memory) VALUES ('2020-01-06', '2020-01-16', '-1', '-1') ;
+
+
+    -- Date span
+    SELECT * FROM timeline WHERE startdate <= '2020-01-03' AND enddate >= '2020-01-03' ;
+
+    >    id |      startdate      |       enddate       | cores | memory
+    >   ----+---------------------+---------------------+-------+--------
+    >     7 | 2020-01-01 00:00:00 | 2020-02-01 00:00:00 |    10 |     10
+    >     8 | 2020-01-01 00:00:00 | 2020-01-11 00:00:00 |    -1 |     -1
+    >     9 | 2020-01-02 00:00:00 | 2020-01-12 00:00:00 |    -1 |     -1
+    >    10 | 2020-01-03 00:00:00 | 2020-01-13 00:00:00 |    -1 |     -1
+    >   (4 rows)
+
+    -- Date span, available
+    SELECT SUM(cores), SUM(memory) FROM timeline WHERE startdate <= '2020-01-03' AND enddate >= '2020-01-03' ;
+
+    >    sum | sum
+    >   -----+-----
+    >      7 |   7
+    >   (1 row)
+
+    This means a separate query for every date.
+    In a week calendar, that means 7 queries.
+    In a month calendar, that means 31 queries.
+
+    We would always need to do something like this, because start and end dates might not cover all of the datse in between.
+
+    start 1st Jan, end 31st Jan corresponds to 31 days
+    we would need to expand that into 31 days to get a row per day
+
+
+    -- Google and StackOverflow to the rescue :-)
+    -- https://stackoverflow.com/a/46499873
+    -- https://stackoverflow.com/a/14113580
+
+    SELECT
+        day::date
+    FROM
+        generate_series(
+            timestamp
+            '2020-01-03',
+            '2020-01-06',
+            '1 day'
+            ) day ;
+
+    >       day
+    >   ------------
+    >    2020-01-03
+    >    2020-01-04
+    >    2020-01-05
+    >    2020-01-06
+    >   (4 rows)
+
+
+    -- Combine the two ..
+
+    SELECT
+        *
+    FROM
+        timeline,
+        (
+        SELECT
+            day::date
+        FROM
+            generate_series(
+                timestamp
+                '2020-01-03',
+                '2020-01-06',
+                '1 day'
+                ) day
+        ) AS dates
+    WHERE
+        timeline.startdate <= dates.day
+    AND
+        timeline.enddate >= dates.day ;
+
+
+    >    id |      startdate      |       enddate       | cores | memory |    day
+    >   ----+---------------------+---------------------+-------+--------+------------
+    >     7 | 2020-01-01 00:00:00 | 2020-02-01 00:00:00 |    10 |     10 | 2020-01-03
+    >     8 | 2020-01-01 00:00:00 | 2020-01-11 00:00:00 |    -1 |     -1 | 2020-01-03
+    >     9 | 2020-01-02 00:00:00 | 2020-01-12 00:00:00 |    -1 |     -1 | 2020-01-03
+    >    10 | 2020-01-03 00:00:00 | 2020-01-13 00:00:00 |    -1 |     -1 | 2020-01-03
+    >     7 | 2020-01-01 00:00:00 | 2020-02-01 00:00:00 |    10 |     10 | 2020-01-04
+    >     8 | 2020-01-01 00:00:00 | 2020-01-11 00:00:00 |    -1 |     -1 | 2020-01-04
+    >     9 | 2020-01-02 00:00:00 | 2020-01-12 00:00:00 |    -1 |     -1 | 2020-01-04
+    >    10 | 2020-01-03 00:00:00 | 2020-01-13 00:00:00 |    -1 |     -1 | 2020-01-04
+    >    11 | 2020-01-04 00:00:00 | 2020-01-14 00:00:00 |    -1 |     -1 | 2020-01-04
+    >     7 | 2020-01-01 00:00:00 | 2020-02-01 00:00:00 |    10 |     10 | 2020-01-05
+    >     8 | 2020-01-01 00:00:00 | 2020-01-11 00:00:00 |    -1 |     -1 | 2020-01-05
+    >     9 | 2020-01-02 00:00:00 | 2020-01-12 00:00:00 |    -1 |     -1 | 2020-01-05
+    >    10 | 2020-01-03 00:00:00 | 2020-01-13 00:00:00 |    -1 |     -1 | 2020-01-05
+    >    11 | 2020-01-04 00:00:00 | 2020-01-14 00:00:00 |    -1 |     -1 | 2020-01-05
+    >    12 | 2020-01-05 00:00:00 | 2020-01-15 00:00:00 |    -1 |     -1 | 2020-01-05
+    >     7 | 2020-01-01 00:00:00 | 2020-02-01 00:00:00 |    10 |     10 | 2020-01-06
+    >     8 | 2020-01-01 00:00:00 | 2020-01-11 00:00:00 |    -1 |     -1 | 2020-01-06
+    >     9 | 2020-01-02 00:00:00 | 2020-01-12 00:00:00 |    -1 |     -1 | 2020-01-06
+    >    10 | 2020-01-03 00:00:00 | 2020-01-13 00:00:00 |    -1 |     -1 | 2020-01-06
+    >    11 | 2020-01-04 00:00:00 | 2020-01-14 00:00:00 |    -1 |     -1 | 2020-01-06
+    >    12 | 2020-01-05 00:00:00 | 2020-01-15 00:00:00 |    -1 |     -1 | 2020-01-06
+    >    13 | 2020-01-06 00:00:00 | 2020-01-16 00:00:00 |    -1 |     -1 | 2020-01-06
+
+
+
+
+    SELECT
+        dates.day,
+        SUM(timeline.cores),
+        SUM(timeline.memory)
+    FROM
+        timeline,
+        (
+        SELECT
+            day::date
+        FROM
+            generate_series(
+                timestamp
+                '2020-01-03',
+                '2020-01-06',
+                '1 day'
+                ) day
+        ) AS dates
+    WHERE
+        timeline.startdate <= dates.day
+    AND
+        timeline.enddate >= dates.day
+    GROUP BY
+        dates.day
+    ORDER BY
+        dates.day
+        ;
+
+
+    >       day     | sum | sum
+    >   ------------+-----+-----
+    >    2020-01-03 |   7 |   7
+    >    2020-01-04 |   6 |   6
+    >    2020-01-05 |   5 |   5
+    >    2020-01-06 |   4 |   4
+    >   (4 rows)
+
+
+
+    SELECT
+        dates.day,
+        SUM(timeline.cores),
+        SUM(timeline.memory)
+    FROM
+        timeline,
+        (
+        SELECT
+            day::date
+        FROM
+            generate_series(
+                timestamp
+                '2020-01-01',
+                '2020-02-01',
+                '1 day'
+                ) day
+        ) AS dates
+    WHERE
+        timeline.startdate <= dates.day
+    AND
+        timeline.enddate >= dates.day
+    GROUP BY
+        dates.day
+    ORDER BY
+        dates.day
+        ;
+
+
+    >       day     | sum | sum
+    >   ------------+-----+-----
+    >    2020-01-01 |   9 |   9
+    >    2020-01-02 |   8 |   8
+    >    2020-01-03 |   7 |   7
+    >    2020-01-04 |   6 |   6
+    >    2020-01-05 |   5 |   5
+    >    2020-01-06 |   4 |   4
+    >    2020-01-07 |   4 |   4
+    >    2020-01-08 |   4 |   4
+    >    2020-01-09 |   4 |   4
+    >    2020-01-10 |   4 |   4
+    >    2020-01-11 |   4 |   4
+    >    2020-01-12 |   5 |   5
+    >    2020-01-13 |   6 |   6
+    >    2020-01-14 |   7 |   7
+    >    2020-01-15 |   8 |   8
+    >    2020-01-16 |   9 |   9
+    >    2020-01-17 |  10 |  10
+    >    2020-01-18 |  10 |  10
+    >    2020-01-19 |  10 |  10
+    >    2020-01-20 |  10 |  10
+    >    2020-01-21 |  10 |  10
+    >    2020-01-22 |  10 |  10
+    >    2020-01-23 |  10 |  10
+    >    2020-01-24 |  10 |  10
+    >    2020-01-25 |  10 |  10
+    >    2020-01-26 |  10 |  10
+    >    2020-01-27 |  10 |  10
+    >    2020-01-28 |  10 |  10
+    >    2020-01-29 |  10 |  10
+    >    2020-01-30 |  10 |  10
+    >    2020-01-31 |  10 |  10
+    >    2020-02-01 |  10 |  10
+    >   (32 rows)
+
+    -- Remove the extra row ...
+
+    SELECT
+        dates.day,
+        SUM(timeline.cores),
+        SUM(timeline.memory)
+    FROM
+        timeline,
+        (
+        SELECT
+            day::date
+        FROM
+            generate_series(
+                timestamp
+                '2020-01-01'::timestamp,
+                '2020-01-01'::timestamp + interval '1 month' - interval '1 day',
+                '1 day'
+                ) day
+        ) AS dates
+    WHERE
+        timeline.startdate <= dates.day
+    AND
+        timeline.enddate >= dates.day
+    GROUP BY
+        dates.day
+    ORDER BY
+        dates.day
+        ;
+
+
+    -- Try genertating dates for weeks
+
+        SELECT
+            day::date AS startdate,
+            (day::date + interval '1 week' - interval '1 day')::date AS enddate
+        FROM
+            generate_series(
+                timestamp
+                '2020-01-01',
+                '2020-02-01',
+                '1 week'
+                ) day
+            ;
+
+
+    >    startdate  |  enddate
+    >   ------------+------------
+    >    2020-01-01 | 2020-01-07
+    >    2020-01-08 | 2020-01-14
+    >    2020-01-15 | 2020-01-21
+    >    2020-01-22 | 2020-01-28
+    >    2020-01-29 | 2020-02-04
+    >   (5 rows)
+
+    -- Nice, but would that just sum resources over a week ?
+    -- Do we need to sum the resources for each day during the week ?
+
+    SELECT
+        dates.startdate,
+        SUM(timeline.cores) AS cores,
+        SUM(timeline.memory) AS memory
+    FROM
+        timeline,
+        (
+        SELECT
+            days::date AS startdate,
+            (days::date + interval '1 week' - interval '1 day')::date AS enddate
+        FROM
+            generate_series(
+                timestamp
+                '2020-01-01',
+                '2020-02-01',
+                '1 week'
+                ) days
+        ) AS dates
+    WHERE
+        timeline.startdate <= dates.startdate
+    AND
+        timeline.enddate >= dates.enddate
+    GROUP BY
+        dates.startdate
+    ORDER BY
+        dates.startdate
+        ;
+
+
+    >    startdate  | cores | memory
+    >   ------------+-------+--------
+    >    2020-01-01 |     9 |      9
+    >    2020-01-08 |     7 |      7
+    >    2020-01-15 |    10 |     10
+    >    2020-01-22 |    10 |     10
+    >   (4 rows)
+
+    -- Not totally sure if this tells us anything useful
+
+    -- sum of all the active bookings between the start and end of the week
+    -- but one booking might be for one day at the start of the week
+    -- another booking might be for one day at the end of the week
+    -- and this would appear to have two bookings for the entire period ?
+    -- not what we want
+
+# -----------------------------------------------------
+
+    -- we need to sum things at the granularity of the bookings
+    -- so if we go to hourly bookings later, we need to sum at that level of detail
+
+    -- we can then have another aggregate query that sums the sums ...
+
+    for each week {
+        for each day {
+            for each hour {
+                sum bookings WHERE start < start AND end > end
+                sum grants   WHERE start < start AND end > end
+                available = grants - bookings
+                }
+            max(cores)
+            max(memory)
+            }
+        max(cores)
+        max(memory)
+        }
+
+
+    grant   book    avail
+    4       0       4
+    4       1       3
+    4       2       2
+    4       1       3
+    4       0       4
+    4       2       2
+    4       0       4
+    4       0       4
+
+    only 2 resources are available for the entire period
+    however there are periods where 3 or 4 are available
+
+    set the time interval you are interested in observing (the size of the blocks in your calendar)
+
+    sum the at the booking granulatiry for blocks of that size
+    sum all the hours over each day|week|month
+
+
+
+    for each day|week|month {
+        for each hour {
+            sum bookings WHERE start < start AND end > end
+            sum grants   WHERE start < start AND end > end
+            available = grants - bookings
+            }
+        max(cores)
+        max(memory)
+        }
+
+    If we used Hibernate polymorphism, then bookings and grants go in the same table.
+    bookings _use_ resources, so have a -ve count
+    grants _grant_ resources, so have a +ve count
+    available is sum of the two
+
+    Could we use a multipler to make them all +ve ?
+    typemul is +1 for a grant
+    typemul is -1 for a booking
+
+        sum(cores  * typemul)
+        sum(memory * typemul)
+
+
+
+
+# -----------------------------------------------------
+
+
+    We can have everything in one table, using +ve and -ve counts,
+    or two separate tables, subtracting bookings from resources.
+
+    Resources available now (today)
+
+        cores  = 5
+        memory = 6
+
+        tiny = 1 core 1 memory
+             = 5
+
+        small = 2 core 2 memory
+              = 2
+
+            min(
+                (available.cores  / required.cores),
+                (available.memory / required.memory)
+                )
+
+
+    BookingService
+        manages bookings and grants
+
+
+        # Get a list of resources
+        GET /resources/select
+            range=2020-06-08,2020-06-14
+            grain=day
+
+        # Get a list of bookings
+        GET /bookings/select
+            range=2020-06-08,2020-06-14
+            grain=day
+
+        # Get a list of available resources
+        GET /available/select
+            range=2020-06-08,2020-06-14
+            grain=day
+
+
+        # Create a resource
+        POST /resources/create
+            startdate=
+            enddate=
+            servers=
+            memory=
+            cores=
+
+        # Create a booking
+        POST /bookings/create
+            startdate=
+            enddate=
+            servers=
+            memory=
+            cores=
+
+
+
+
+    OpenStack resources  = cores, memory, servers (flavors)
+
+    Kubernetes resources = cores, memory, nodes
+
+    Different users can book shares of clusters
+
+        exclusive booking = 100% share of a new cluster
+
+        shared booking = 20% share of a cluster
+
+        shared booking = 5% share of a cluster
+
+
+    select existing cluster, or create a new one
+
+        # Get a list of available resources
+        GET /available/select
+            clusterid=xxxx
+            range=2020-06-08,2020-06-14
+            grain=daily
+
+        # Create a booking
+        POST /bookings/create
+            clusterid=xxxx
+            startdate=
+            enddate=
+            servers=
+            memory=
+            cores=
+
+        POST /bookings/create
+            clusterid=xxxx
+            startdate=
+            enddate=
+            template=[small|medium|large]
+            (*) templates need to be immutable to preserve history
+                template converted into actual resource counts
+
+        POST /bookings/create
+            clusterid=xxxx
+            startdate=
+            enddate=
+            share=20%
+
+        # Create a cluster
+        POST /clusters/create
+            startdate=
+            enddate=
+            servers=
+            memory=
+            cores=
+
+
+# -----------------------------------------------------
+#
+
+    OpenStack project allocation.
+    Equivalent to a Blazar reservation.
+
+    GET /novaquota/allocated
+        range=2020-06-08,2020-06-14
+        grain=daily
+
+            date, servers, memory, cores
+            date, servers, memory, cores
+            date, servers, memory, cores
+            date, servers, memory, cores
+
+
+    GET /novaquota/available (allocated - used)
+        range=2020-06-08,2020-06-14
+        grain=daily
+
+            date, servers, memory, cores
+            date, servers, memory, cores
+            date, servers, memory, cores
+            date, servers, memory, cores
+
+
+    POST /novaquota/create
+        startdate=
+        enddate=
+        servers= // Matches a Blazar reservation
+        memory=
+        cores=
+
+    GET /novaquota/####
+        startdate=
+        enddate=
+        servers=
+        memory=
+        cores=
+
+
+    DEL /novaquota/####
+
+
+# -----------------------------------------------------
+
+    Create K8s clusters using the available physical.
+    (*) can over commit in the future, needs to be resolved before used
+
+    GET /magcluster/####
+
+    POST /magcluster/create
+        startdate=
+        enddate=
+        masterflavor=
+        mastercount=
+        workerflavor=
+        workercount=
+        ....
+
+    But ... a Magnum cluster can change size.
+    So, a Magnum cluster is logged as a series of clustersizes ?
+    Need to experiment with Magnum resize to get this right.
+    If the Magnum cluster scales based on Spark nodes, then where do we set the limits ?
+
+    GET /magcluster/sizes
+
+            date, servers, memory, cores
+            date, servers, memory, cores
+            date, servers, memory, cores
+
+
+
+# -----------------------------------------------------
+
+    Deploy Spark within a K8s cluster
+    Can we deploy more than one ?
+    Can we have more than one user per spark instance ?
+
+    More question than answers at this point ...
+
+
+    OpenStack project
+        servers, cores, memory, disc
+
+    Blazar reservations
+        servers, cores, memory, disc
+
+        Magnum cluster
+            mastercount
+            masterflavor
+            workercount
+            workerflavor
+
+            Aglais website
+
+            Aglais accounts
+            Aglais resources
+            Aglais bookings
+            Aglais ....
+
+        Magnum cluster
+            mastercount
+            masterflavor
+            workercount
+            workerflavor
+
+            Spark deploy
+                mastersize
+                mastercount
+                workersize
+                workercount
+
+            Zeppelin deploy
+                mastersize
+
+

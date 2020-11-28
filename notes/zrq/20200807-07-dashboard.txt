@@ -1,0 +1,225 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Deploy Dashboard with Ingress using the Helm chart.
+
+# -----------------------------------------------------
+
+    # Deleted old cluster.
+    # notes/zrq/20200807-04-openstack-delete.txt
+
+    # Created new cluster.
+    # notes/zrq/20200807-05-terraform-create.txt
+
+    # Installed NGINX ingress controller.
+    # notes/zrq/20200807-06-nginx-ingress.txt
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+# -----------------------------------------------------
+# Set the deployment names.
+#[user@kubernator]
+
+    dashname=valeria-$(date '+%Y%m%d')
+
+    dashuser=valeria-account-$(date '+%Y%m%d')
+
+    dashhost=valeria.metagrid.xyz
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}-super" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Install Dashboard using Helm.
+# https://github.com/kubernetes/dashboard/tree/master/aio/deploy/helm-chart/kubernetes-dashboard
+# https://github.com/kubernetes/dashboard/blob/master/aio/deploy/helm-chart/kubernetes-dashboard/values.yaml
+#[user@kubernator]
+
+    cat > "/tmp/${dashname:?}-helm-config.yaml" << EOF
+ingress:
+  enabled: true
+  paths:
+    - /
+  hosts:
+    - ${dashhost:?}
+
+rbac:
+  clusterReadOnlyRole: true
+
+metricsScraper:
+  enabled: true
+EOF
+
+    helm repo add \
+        'kubernetes-dashboard' \
+        'https://kubernetes.github.io/dashboard/'
+
+    helm install \
+        "${dashname:?}" \
+        'kubernetes-dashboard/kubernetes-dashboard' \
+        --values "/tmp/${dashname:?}-helm-config.yaml"
+
+    >   NAME: valeria-20200807
+    >   LAST DEPLOYED: Fri Aug  7 14:49:46 2020
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our ServiceAccount.
+# https://github.com/kubernetes/dashboard/blob/master/docs/user/access-control/creating-sample-user.md#creating-a-service-account
+#[user@kubernator]
+
+cat > "/tmp/${dashname:?}-serviceaccount.yaml" << EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${dashuser:?}
+  namespace: default
+EOF
+
+    kubectl create \
+        --filename \
+            "/tmp/${dashname:?}-serviceaccount.yaml"
+
+
+    kubectl describe \
+        ServiceAccount \
+            "${dashuser:?}"
+
+    >   Name:                dashuser-20200807
+    >   Namespace:           default
+    >   Labels:              <none>
+    >   Annotations:         <none>
+    >   Image pull secrets:  <none>
+    >   Mountable secrets:   dashuser-20200807-token-n6fjb
+    >   Tokens:              dashuser-20200807-token-n6fjb
+    >   Events:              <none>
+
+
+# -----------------------------------------------------
+# Create a ClusterRoleBinding linking kubernator with the cluster-admin role.
+# https://github.com/kubernetes/dashboard/blob/master/docs/user/access-control/creating-sample-user.md#creating-a-clusterrolebinding
+#[user@kubernator]
+
+cat > "/tmp/${dashname:?}-rolebinding.yaml" << EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ${dashuser:?}-cluster-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: ${dashuser:?}
+  namespace: default
+EOF
+
+    kubectl create \
+        --filename \
+            "/tmp/${dashname:?}-rolebinding.yaml"
+
+    >   clusterrolebinding.rbac.authorization.k8s.io/dashuser-20200807-cluster-admin created
+
+
+# -----------------------------------------------------
+# Get the ServiceAccount token.
+#[user@kubernator]
+
+    secretname=$(
+        kubectl \
+            --output json \
+            get \
+                ServiceAccount \
+                    "${dashuser:?}" \
+        | jq -r '.secrets[0].name'
+        )
+
+    dashtoken=$(
+        kubectl \
+            --output json \
+            get secret \
+                "${secretname:?}" \
+        | jq -r '.data.token | @base64d'
+        )
+
+    cat << EOF
+
+${dashtoken:?}
+
+EOF
+
+    >   yJhb....W7XA
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Try using the account token to login ...
+#[user@desktop]
+
+    firefox --new-window "https://valeria.metagrid.xyz/" &
+
+
+
+
+
+

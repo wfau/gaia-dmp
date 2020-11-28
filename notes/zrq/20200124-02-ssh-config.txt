@@ -1,0 +1,346 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    #
+    # At the moment it is easier to create the nodes from scratch than try to generate the ssh config separately.
+    # Although the only IP address is that of the gateway, so it should be possible
+    #
+
+    #
+    # We can get the external IP address of the gateway machine by trying to create it.
+    # We would need to avoid the duplicate securty group bug.
+    #
+
+# -----------------------------------------------------
+# Discover our gateway node IP address.
+#[root@ansibler]
+
+    cat > /tmp/discovery.yml << EOF
+
+- name:  "Discovery experiment"
+  hosts: localhost
+  vars_files:
+    - /tmp/ansible-vars.yml
+  tasks:
+
+    - name: "Discover our gateway node."
+      os_server_info:
+        cloud:  "{{ cloudname }}"
+        server: "{{ buildtag }}-gateway"
+      register:
+        gatewaylist
+
+    - debug:
+        msg: "Gateway [{{ gatewaylist.openstack_servers[0] }}]"
+
+    - debug:
+        msg: "Gateway [{{ gatewaylist.openstack_servers[0].accessIPv4}}]"
+
+EOF
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        '/tmp/discovery.yml'
+
+    >   ....
+    >   TASK [debug] ..
+    >   ok: [localhost] => {
+    >       "msg": "Gateway [{'id': 'a9810f22-44d6-4f84-b6c3-b8b757484e53', 'name': 'aglais-20200124-gateway' ....}]"
+    >   }
+    >   
+    >   TASK [debug] ..
+    >   ok: [localhost] => {
+    >       "msg": "Gateway [128.232.227.148]"
+    >   }
+    >   ....
+
+
+# -----------------------------------------------------
+# Try pretty printing the output.
+# https://stackoverflow.com/questions/29745534/how-do-i-pretty-print-an-object-in-ansible
+# https://docs.ansible.com/ansible/latest/user_guide/playbooks_filters.html#filters-for-formatting-data
+#[root@ansibler]
+
+    cat > /tmp/discovery.yml << EOF
+
+- name:  "Discovery experiment"
+  hosts: localhost
+  vars_files:
+    - /tmp/ansible-vars.yml
+  tasks:
+
+    - name: "Discover our gateway node."
+      os_server_info:
+        cloud:  "{{ cloudname }}"
+        server: "{{ buildtag }}-gateway"
+      register:
+        gatewaylist
+
+    - debug:
+        msg: "Gateway [{{ gatewaylist.openstack_servers[0] | to_nice_json }}]"
+
+    - debug:
+        msg: "Gateway [{{ gatewaylist.openstack_servers[0].accessIPv4  | to_nice_json}}]"
+
+EOF
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        '/tmp/discovery.yml'
+
+    >   ....
+    >   TASK [debug] ..
+    >   ok: [localhost] => {
+    >       "msg": "Gateway [{\n    \"OS-DCF:diskConfig\": \"MANUAL\",\n... \n}]"
+    >   }
+    >   
+    >   TASK [debug] ..
+    >   ok: [localhost] => {
+    >       "msg": "Gateway [\"128.232.227.148\"]"
+    >   }
+    >   ....
+
+
+
+# -----------------------------------------------------
+# Try output to a file, and use JQ to display it.
+# https://stackoverflow.com/questions/26638180/write-variable-to-a-file-in-ansible
+#[root@ansibler]
+
+    cat > /tmp/discovery.yml << EOF
+
+- name:  "Discovery experiment"
+  hosts: localhost
+  vars_files:
+    - /tmp/ansible-vars.yml
+  tasks:
+
+    - name: "Discover our gateway node."
+      os_server_info:
+        cloud:  "{{ cloudname }}"
+        server: "{{ buildtag }}-gateway"
+      register:
+        gatewaylist
+
+    - copy:
+        content: "{{ gatewaylist.openstack_servers[0] | to_nice_json }}"
+        dest: "/tmp/output"
+
+EOF
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        '/tmp/discovery.yml'
+
+
+    >   ....
+    >   TASK [Discover our gateway node.] ..
+    >   ok: [localhost]
+    >   
+    >   TASK [copy] ..
+    >   ok: [localhost]
+    >   ....
+
+
+    jq '.' /tmp/output
+
+    >   {
+    >     "OS-DCF:diskConfig": "MANUAL",
+    >     "OS-EXT-AZ:availability_zone": "nova",
+    >     "OS-EXT-SRV-ATTR:hypervisor_hostname": null,
+    >     "OS-EXT-SRV-ATTR:instance_name": null,
+    >       ....
+    >       ....
+    >     "user_data": null,
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "vm_state": "active",
+    >     "volumes": []
+    >   }
+
+
+    jq -r '.accessIPv4' /tmp/output
+
+    >   128.232.227.148
+
+
+# -----------------------------------------------------
+# Generate a full SSH config using the public IP address.
+#[root@ansibler]
+
+    cat > /tmp/ssh-config.j2 << 'EOF'
+
+# Global settings
+ForwardAgent yes
+ForwardX11   no
+PasswordAuthentication no
+ServerAliveInterval 60
+ServerAliveCountMax 5
+
+# Gateway node.
+Host gateway
+    User {{ hostvars['gateway'].login }}
+    HostName {{ gatewaylist.openstack_servers[0].accessIPv4 }}
+    ControlPath ~/.ssh/%r@%h:%p
+    ControlMaster auto
+    ControlPersist 5m
+
+# Master nodes.
+{% for hostname in groups['masters'] %}
+Host {{ hostname }}
+    User {{ hostvars['gateway'].login }}
+    ProxyCommand ssh -W %h:%p -l {{ hostvars['gateway'].login }} -F {{ lookup('env','HOME') }}/.ssh/ansible-config gateway
+    ControlPath ~/.ssh/%r@%h:%p
+    ControlMaster auto
+    ControlPersist 5m
+
+{% endfor %}
+
+# Worker nodes.
+{% for hostname in groups['workers'] %}
+Host {{ hostname }}
+    User {{ hostvars['gateway'].login }}
+    ProxyCommand ssh -W %h:%p -l {{ hostvars['gateway'].login }} -F {{ lookup('env','HOME') }}/.ssh/ansible-config gateway
+    ControlPath ~/.ssh/%r@%h:%p
+    ControlMaster auto
+    ControlPersist 5m
+
+{% endfor %}
+
+EOF
+
+    cat > /tmp/ssh-config.yml << EOF
+
+- name:  "Discovery experiment"
+  hosts: localhost
+  vars_files:
+    - /tmp/ansible-vars.yml
+  tasks:
+
+    - name: "Discover our gateway node."
+      os_server_info:
+        cloud:  "{{ cloudname }}"
+        server: "{{ buildtag }}-gateway"
+      register:
+        gatewaylist
+
+    - name: "Generate our SSH config."
+      template:
+        src:  "/tmp/ssh-config.j2"
+        dest: "/tmp/aglais-ssh-config"
+
+EOF
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        '/tmp/ssh-config.yml'
+
+
+    >   ....
+    >   TASK [Discover our gateway node.] ..
+    >   ok: [localhost]
+    >   
+    >   TASK [Generate our SSH config.] ..
+    >   changed: [localhost]
+    >   ....
+
+
+    cat /tmp/aglais-ssh-config
+
+    >   # Global settings
+    >   ForwardAgent yes
+    >   ForwardX11   no
+    >   PasswordAuthentication no
+    >   ServerAliveInterval 60
+    >   ServerAliveCountMax 5
+    >   
+    >   # Gateway node.
+    >   Host gateway
+    >       User fedora
+    >       HostName 128.232.227.148
+    >       ControlPath ~/.ssh/%r@%h:%p
+    >       ControlMaster auto
+    >       ControlPersist 5m
+    >   
+    >   # Master nodes.
+    >   Host master01
+    >       User fedora
+    >       ProxyCommand ssh -W %h:%p -l fedora -F /root/.ssh/ansible-config gateway
+    >       ControlPath ~/.ssh/%r@%h:%p
+    >       ControlMaster auto
+    >       ControlPersist 5m
+    >   .....
+    >   ....
+
+    #
+    # Yay - we can generate our SSH config from an existing set of instances.
+    #
+
+
+# -----------------------------------------------------
+# Transferred the code into 05-configure-ssh.yml.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        '05-configure-ssh.yml'
+
+    >   ....
+    >   PLAY RECAP ..
+    >   localhost                  : ok=4    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   ....
+
+
+    cat ~/.ssh/ansible-config
+
+    >   #
+    >   # <meta:header>
+    >   #   <meta:licence>
+    >   #     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+    >   ....
+    >   ....
+    >   
+    >   # Global settings
+    >   ForwardAgent yes
+    >   ForwardX11   no
+    >   PasswordAuthentication no
+    >   ServerAliveInterval 60
+    >   ServerAliveCountMax 5
+    >   
+    >   # Gateway node.
+    >   Host gateway
+    >       User fedora
+    >       HostName 128.232.227.148
+    >       ControlPath ~/.ssh/%r@%h:%p
+    >       ControlMaster auto
+    >       ControlPersist 5m
+    >   
+    >   # Master nodes.
+    >   Host master01
+    >       User fedora
+    >       ProxyCommand ssh -W %h:%p -l fedora -F /root/.ssh/ansible-config gateway
+    >       ControlPath ~/.ssh/%r@%h:%p
+    >       ControlMaster auto
+    >       ControlPersist 5m
+    >   ....
+    >   ....
+
+

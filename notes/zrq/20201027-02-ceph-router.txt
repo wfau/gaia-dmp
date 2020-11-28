@@ -1,0 +1,333 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Target:
+
+        Create a router to access the Ceph subnet using Openstack commands.
+        Clean up of previous script 20201020-01-ceph-router.txt
+
+    Result:
+
+        Almost identical to the original, not much needed changing.
+        Only needs one parameter - the cluster name.
+        Next step is wrap this as a shell script.
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name openstacker \
+        --hostname openstacker \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Set the name prefix to match our network components.
+# TODO This works for the Helm deploy, but not for the Ansible deploy.
+#[root@openstacker]
+
+    # Magnum deploy
+    prefix=${clustername,,}
+
+    # Ansible deploy
+    prefix=$(
+        sed -n "
+            s/^buildtag: *'\(.*\)'$/\1/p
+            " /tmp/ansible-vars.yml
+        )
+
+# -----------------------------------------------------
+# List the routers.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                                                       | Status | State | Project                          |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | 20a92871-51b3-4316-9a50-686ca718b72e | tiberius-20201027-gvp46uskppdd-network-x6dum7opxcdu-extrouter-35kpod3zrkfc | ACTIVE | UP    | 21b4ae3a2ea44bc5a9c14005ed2963af |
+    >   +--------------------------------------+----------------------------------------------------------------------------+--------+-------+----------------------------------+
+
+
+# -----------------------------------------------------
+# List the networks.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+------------------+----------------------------------------------------------------------------+
+    >   | ID                                   | Name             | Subnets                                                                    |
+    >   +--------------------------------------+------------------+----------------------------------------------------------------------------+
+    >   | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | internet         | 180dc961-c52f-461a-b241-8f7a30d022a5, 273123bb-70f6-4f51-a406-7fc4b446532d |
+    >   | ecb791d5-1022-447a-a79c-8f38a0f5c990 | cumulus-internal | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290                                       |
+    >   | f08f01e7-c4b5-44d4-998c-1e8d8be8db1a | private          | eb58d271-baa7-4a7d-96b9-e0b565c30fa3                                       |
+    >   +--------------------------------------+------------------+----------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# List the subnets.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+---------------------------------------------------------------------------------+--------------------------------------+---------------+
+    >   | ID                                   | Name                                                                            | Network                              | Subnet        |
+    >   +--------------------------------------+---------------------------------------------------------------------------------+--------------------------------------+---------------+
+    >   | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290 | cumulus-internal                                                                | ecb791d5-1022-447a-a79c-8f38a0f5c990 | 10.218.0.0/16 |
+    >   | eb58d271-baa7-4a7d-96b9-e0b565c30fa3 | tiberius-20201027-gvp46uskppdd-network-x6dum7opxcdu-private_subnet-hkgaelkpqmpa | f08f01e7-c4b5-44d4-998c-1e8d8be8db1a | 10.0.0.0/24   |
+    >   +--------------------------------------+---------------------------------------------------------------------------------+--------------------------------------+---------------+
+
+
+# -----------------------------------------------------
+# Get our project ID.
+#[root@openstacker]
+
+    projectid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            project list \
+                --format json \
+        | jq -r '.[] | select(.Name == "iris-'${cloudname}'") | .ID'
+        )
+
+    echo "Project [${projectid:?}]"
+
+    >   Project [21b4ae3a2ea44bc5a9c14005ed2963af]
+
+
+# -----------------------------------------------------
+# Create a new router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router create \
+            --format json \
+            --enable \
+            --project "${projectid:?}" \
+            'ceph-router' \
+    | tee '/tmp/ceph-router.json'
+
+    cephrouterid=$(
+        jq -r '. | select(.name == "ceph-router") | .id' '/tmp/ceph-router.json'
+        )
+
+    echo "Ceph router [${cephrouterid:?}]"
+
+    >   Ceph router [7351bf9e-9703-41c9-96cc-baf10e00e3da]
+
+
+# -----------------------------------------------------
+# Set the router's external gateway.
+#[root@openstacker]
+
+    cumulusnetid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+                --format json \
+        | jq -r '.[] | select(.Name == "cumulus-internal") | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --external-gateway "${cumulusnetid:?}" \
+            "${cephrouterid:?}"
+
+
+# -----------------------------------------------------
+# Create a network port for our cluster subnet.
+#[root@openstacker]
+
+    clustersubid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet list \
+                --format json \
+        | jq -r '.[] | select(.Name | startswith("'${prefix:?}'")) | .ID'
+        )
+
+    clusternetid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet show \
+                --format json \
+                "${clustersubid:?}" \
+        | jq -r '.network_id'
+        )
+
+cat << EOF
+Cluster subnet  [${clustersubid:?}]
+Cluster network [${clusternetid:?}]
+EOF
+
+    >   Cluster subnet  [eb58d271-baa7-4a7d-96b9-e0b565c30fa3]
+    >   Cluster network [f08f01e7-c4b5-44d4-998c-1e8d8be8db1a]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        port create \
+            --format json \
+            --network "${clusternetid:?}" \
+            --fixed-ip "subnet=${clustersubid:?}" \
+        "${prefix:?}-subnet-port" \
+    | tee '/tmp/cluster-subnet-port.json'
+
+    jq '{network_id, fixed_ips}'  '/tmp/cluster-subnet-port.json'
+
+    >   {
+    >     "network_id": "f08f01e7-c4b5-44d4-998c-1e8d8be8db1a",
+    >     "fixed_ips": [
+    >       {
+    >         "subnet_id": "eb58d271-baa7-4a7d-96b9-e0b565c30fa3",
+    >         "ip_address": "10.0.0.52"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Add the network port to our Ceph router.
+#[root@openstacker]
+
+    subnetportid=$(
+        jq -r '.id' /tmp/cluster-subnet-port.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router add port \
+            "${cephrouterid:?}" \
+            "${subnetportid:?}"
+
+# -----------------------------------------------------
+# Get details of the Ceph router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${cephrouterid:?}" \
+    | jq '{external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "external_gateway_info": {
+    >       "network_id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290",
+    >           "ip_address": "10.218.1.222"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "2285b220-bdb4-43b0-94dd-f7e970564b2e",
+    >         "ip_address": "10.0.0.52",
+    >         "subnet_id": "eb58d271-baa7-4a7d-96b9-e0b565c30fa3"
+    >       }
+    >     ],
+    >     "routes": []
+    >   }
+
+
+# -----------------------------------------------------
+# Add a route for the Ceph network to our cluster router.
+#[root@openstacker]
+
+    subnetportip=$(
+        jq -r '.fixed_ips[0].ip_address' '/tmp/cluster-subnet-port.json'
+        )
+
+    clusterrouterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name | startswith("'${prefix}'")) | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=10.206.0.0/16,gateway=${subnetportip:?}" \
+            "${clusterrouterid:?}"
+
+
+# -----------------------------------------------------
+# Get details of the cluster router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${clusterrouterid:?}" \
+    | jq '{external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "external_gateway_info": {
+    >       "network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "273123bb-70f6-4f51-a406-7fc4b446532d",
+    >           "ip_address": "128.232.227.125"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "2cf36c98-f2f6-41ae-b2ea-f25eab1705f1",
+    >         "ip_address": "10.0.0.1",
+    >         "subnet_id": "eb58d271-baa7-4a7d-96b9-e0b565c30fa3"
+    >       }
+    >     ],
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.0.0.52",
+    >         "destination": "10.206.0.0/16"
+    >       }
+    >     ]
+    >   }
+
+

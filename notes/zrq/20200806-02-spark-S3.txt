@@ -1,0 +1,259 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    # Update the Spark and Zeppelin images to include the S3 jars.
+    # In theory, we should be able to do this by setting properties on the Spark interpreter.
+    # In practice, it didn't work and I don't have time to chase it.
+    # notes/zrq/20200728-02-object-store.txt
+
+    # New approach ..
+    # Add the jar files to our Docker images seems simpler.
+    # Works, although we have to add the dependencies manually.
+
+    #
+    # Start with the Hadoop AWS jar, at the same version as the rest of the Hadoop jars.
+    #   https://mvnrepository.com/artifact/org.apache.hadoop/hadoop-aws/3.2.0
+    #
+    # Add the dependency version listed in Maven (94.2MB, 27 Jul 2018).
+    #   https://mvnrepository.com/artifact/com.amazonaws/aws-java-sdk-bundle/1.11.375
+    #
+    # DONE - evaluate the smaller S3 client jar instead (881KB, 27 Jul 2018).
+    #   https://mvnrepository.com/artifact/com.amazonaws/aws-java-sdk-s3/1.11.375
+    #
+    # TODO - evaluate more recent version (5 Aug 2020)
+    #   https://mvnrepository.com/artifact/com.amazonaws/aws-java-sdk-bundle/1.11.835
+    #   https://mvnrepository.com/artifact/com.amazonaws/aws-java-sdk-s3/1.11.835
+    #
+
+
+
+# -----------------------------------------------------
+# Run instance of our Zeppelin image and figure out where the Hadoop jars go.
+#[user@desktop]
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        aglais/zeppelin:2020.07.27 \
+            bash
+
+
+        pwd
+
+    >   /zeppelin
+
+
+find | grep 'hadoop'
+
+    >   -
+
+
+find | grep 'aws'
+
+    >   ./plugins/NotebookRepo/S3NotebookRepo/aws-s3-2.1.2.jar
+    >   ./plugins/NotebookRepo/S3NotebookRepo/aws-java-sdk-kms-1.11.736.jar
+    >   ./plugins/NotebookRepo/S3NotebookRepo/aws-java-sdk-core-1.11.736.jar
+    >   ./plugins/NotebookRepo/S3NotebookRepo/aws-java-sdk-s3-1.11.736.jar
+
+    #
+    # My guess is we don't need the Hadoop jars in the Zeppelin codebase ?
+    #
+
+
+# -----------------------------------------------------
+# Run instance of our Spark image and figure out where the Hadoop jars go.
+#[user@desktop]
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        aglais/spark:2020.07.22 \
+            bash
+
+
+    ls -1 /opt/spark/jars/hadoop*
+
+    >   /opt/spark/jars/hadoop-annotations-3.2.0.jar
+    >   /opt/spark/jars/hadoop-auth-3.2.0.jar
+    >   /opt/spark/jars/hadoop-client-3.2.0.jar
+    >   /opt/spark/jars/hadoop-common-3.2.0.jar
+    >   /opt/spark/jars/hadoop-hdfs-client-3.2.0.jar
+    >   /opt/spark/jars/hadoop-mapreduce-client-common-3.2.0.jar
+    >   /opt/spark/jars/hadoop-mapreduce-client-core-3.2.0.jar
+    >   /opt/spark/jars/hadoop-mapreduce-client-jobclient-3.2.0.jar
+    >   /opt/spark/jars/hadoop-yarn-api-3.2.0.jar
+    >   /opt/spark/jars/hadoop-yarn-client-3.2.0.jar
+    >   /opt/spark/jars/hadoop-yarn-common-3.2.0.jar
+    >   /opt/spark/jars/hadoop-yarn-registry-3.2.0.jar
+    >   /opt/spark/jars/hadoop-yarn-server-common-3.2.0.jar
+    >   /opt/spark/jars/hadoop-yarn-server-web-proxy-3.2.0.jar
+
+
+# -----------------------------------------------------
+# Update our Spark Dockerfile.
+#[user@desktop]
+
+    gedit "${AGLAIS_CODE}/experiments/zrq/spark/Dockermod"
+
+    +   # Needed for S3 filesystem access.
+    +   ADD https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.2.0/hadoop-aws-3.2.0.jar /opt/spark/jars/
+    +   RUN chmod a+r /opt/spark/jars/hadoop-aws-3.2.0.jar
+
+    +   ADD https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.11.835/aws-java-sdk-bundle-1.11.835.jar
+    +   RUN chmod a+r /opt/spark/jars/aws-java-sdk-bundle-1.11.835.jar
+
+    +   #ADD https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-s3/1.11.835/aws-java-sdk-s3-1.11.835.jar /opt/spark/jars/
+    +   #RUN chmod a+r /opt/spark/jars/aws-java-sdk-s3-1.11.835.jar
+
+
+# -----------------------------------------------------
+# Build our modified Spark image.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    buildsrc=2020.07.22
+    buildtag=$(date '+%Y.%m.%d')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    emptydir=$(mktemp -d)
+
+    buildah bud \
+        --format docker \
+        --tag aglais/spark-mod:latest \
+        --tag aglais/spark-mod:${buildtag:?} \
+        --build-arg "buildsrc=${buildsrc:?}" \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE}/experiments/zrq/spark/Dockermod" \
+        "${emptydir:?}"
+
+
+    >   STEP 1: FROM aglais/spark:2020.07.22
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   ....
+    >   ....
+    >   Writing manifest to image destination
+    >   Storing signatures
+    >   --> e9b387a329d
+    >   e9b387a329dbaeaa0230309f5c5273b0c0ccc0c0fba25a3c50478b7712c30151
+
+
+# -----------------------------------------------------
+# Update our PySpark Dockerfile.
+#[user@desktop]
+
+
+    gedit "${AGLAIS_CODE}/experiments/zrq/pyspark/Dockermod"
+
+    +   # Needed for S3 filesystem access.
+    +   ADD https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.2.0/hadoop-aws-3.2.0.jar /opt/spark/jars/
+    +   RUN chmod a+r /opt/spark/jars/hadoop-aws-3.2.0.jar
+
+    +   ADD https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.11.835/aws-java-sdk-bundle-1.11.835.jar
+    +   RUN chmod a+r /opt/spark/jars/aws-java-sdk-bundle-1.11.835.jar
+
+    +   #ADD https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-s3/1.11.835/aws-java-sdk-s3-1.11.835.jar /opt/spark/jars/
+    +   #RUN chmod a+r /opt/spark/jars/aws-java-sdk-s3-1.11.835.jar
+
+
+# -----------------------------------------------------
+# Build our modified PySpark image.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    buildsrc=2020.07.22
+    buildtag=$(date '+%Y.%m.%d')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    emptydir=$(mktemp -d)
+
+    buildah bud \
+        --format docker \
+        --tag aglais/pyspark-mod:latest \
+        --tag aglais/pyspark-mod:${buildtag:?} \
+        --build-arg "buildsrc=${buildsrc:?}" \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE}/experiments/zrq/pyspark/Dockermod" \
+        "${emptydir:?}"
+
+    >   STEP 1: FROM aglais/pyspark:2020.07.22
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   ....
+    >   ....
+    >   Writing manifest to image destination
+    >   Storing signatures
+    >   --> e5c320dab8b
+    >   e5c320dab8b6f7b44f11b4ee5ec7ff66f9e09090e85ecf669ebf132b2e7a240d
+
+
+# -----------------------------------------------------
+# Login to the Docker registry.
+#[user@desktop]
+
+    podman login \
+        --username $(secret docker.io.user) \
+        --password $(secret docker.io.pass) \
+        registry-1.docker.io
+
+    >   Login Succeeded!
+
+
+# -----------------------------------------------------
+# Push our images to Docker hub.
+#[user@desktop]
+
+    podman push "aglais/spark-mod:${buildtag:?}"
+
+    podman push "aglais/spark-mod:latest"
+
+    podman push "aglais/pyspark-mod:${buildtag:?}"
+
+    podman push "aglais/pyspark-mod:latest"
+
+    >   Getting image source signatures
+    >   Copying blob 6a4b5397838a skipped: already exists
+    >   ....
+    >   ....
+    >   Copying blob 39cd03bce55c [--------------------------------------] 0.0b / 0.0b
+    >   Copying config e5c320dab8 [--------------------------------------] 0.0b / 12.3KiB
+    >   Writing manifest to image destination
+    >   Storing signatures
+
+
+
+# -----------------------------------------------------
+# Tried the smaller S3 client jar, 'aws-java-sdk-s3'.
+
+    >   Py4JJavaError: An error occurred while calling o97.parquet.
+    >   : java.lang.NoClassDefFoundError: com/amazonaws/AmazonClientException
+
+
+

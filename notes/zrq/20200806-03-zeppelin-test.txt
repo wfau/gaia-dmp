@@ -1,0 +1,919 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    #
+    # Deploying modified Spark with AWS jar.
+    # notes/zrq/20200806-02-spark-S3.txt
+    #
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${MAGNUM_CLUSTER:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        --volume "${AGLAIS_CODE}/experiments/zrq/kubernetes:/kubernetes:z" \
+        --volume "${ZEPPELIN_CODE}:/zeppelin:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}-super" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+    >   'SHELL'
+
+
+# -----------------------------------------------------
+# Check kubectl can get the connection details for our cluster.
+#[user@kubernator]
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at ....
+    >   Heapster is running at ....
+    >   CoreDNS is running at ....
+
+
+# -----------------------------------------------------
+# Install config editing tools.
+# TODO - Add this to the openstack-client image.
+#[user@kubernator]
+
+    mkdir -p "${HOME:?}/bin"
+    wget  -O "${HOME:?}/bin/yq" https://github.com/mikefarah/yq/releases/download/3.3.2/yq_linux_amd64
+    chmod a+x "${HOME:?}/bin/yq"
+
+
+# -----------------------------------------------------
+# Copy our Zeppelin server configuration.
+#[user@kubernator]
+
+    zpimage='aglais/zeppelin:latest'
+    dkimage='aglais/zeppelin:latest'
+    spimage='aglais/pyspark-mod:latest'
+
+    source=/zeppelin/k8s/zeppelin-server.yaml
+    deploy=/tmp/zeppelin-server.yaml
+
+    cp "${source:?}" "${deploy:?}"
+
+    yq write \
+        --inplace \
+        --doc 0 \
+        "${deploy:?}" \
+        'data.ZEPPELIN_K8S_CONTAINER_IMAGE' \
+            "${zpimage:?}"
+
+    yq write \
+        --inplace \
+        --doc 0 \
+        "${deploy:?}" \
+        'data.ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE' \
+            "${spimage:?}"
+
+    yq write \
+        --inplace \
+        --doc 2 \
+        "${deploy:?}" \
+        'spec.template.spec.containers.[0].image' \
+            "${zpimage:?}"
+
+    diff \
+        --ignore-all-space \
+        "${source:?}" \
+        "${deploy:?}"
+
+    >   31,32c31,32
+    >   <   ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE: spark:2.4.5
+    >   <   ZEPPELIN_K8S_CONTAINER_IMAGE: apache/zeppelin:0.9.0-SNAPSHOT
+    >   ---
+    >   >   ZEPPELIN_K8S_SPARK_CONTAINER_IMAGE: aglais/pyspark-mod:latest
+    >   >   ZEPPELIN_K8S_CONTAINER_IMAGE: aglais/zeppelin:latest
+    >   118c118
+    >   <         image: apache/zeppelin:0.9.0-SNAPSHOT
+    >   ---
+    >   >           image: aglais/zeppelin:latest
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Deploy Zeppelin using our template.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename "${deploy:?}"
+
+    >   configmap/zeppelin-server-conf-map created
+    >   configmap/zeppelin-server-conf created
+    >   deployment.apps/zeppelin-server created
+    >   service/zeppelin-server created
+    >   serviceaccount/zeppelin-server created
+    >   role.rbac.authorization.k8s.io/zeppelin-server-role created
+    >   rolebinding.rbac.authorization.k8s.io/zeppelin-server-role-binding created
+
+
+# -----------------------------------------------------
+# Expose Zeppelin with a LoadBalancer.
+# The LoadBalancer provides access to HTTP on port 80.
+#[user@kubernator]
+
+    cat > /tmp/balancer.yaml << EOF
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: zeppelin-external
+spec:
+  ports:
+    - name: http
+      port: 80
+  selector:
+    app.kubernetes.io/name: zeppelin-server
+  type: LoadBalancer
+EOF
+
+    kubectl apply \
+        --filename /tmp/balancer.yaml
+
+    >   service/zeppelin-external created
+
+
+# -----------------------------------------------------
+# Get the external address.
+#[user@kubernator]
+
+    watch \
+        kubectl \
+            get service \
+                zeppelin-external
+
+    >   NAME                TYPE           CLUSTER-IP	   EXTERNAL-IP   PORT(S)        AGE
+    >   zeppelin-external   LoadBalancer   10.254.239.76   <pending>     80:32258/TCP   57s
+
+    >   NAME                TYPE           CLUSTER-IP      EXTERNAL-IP       PORT(S)        AGE
+    >   zeppelin-external   LoadBalancer   10.254.239.76   128.232.227.170   80:32258/TCP   2m35s
+
+
+    kubectl \
+        get service \
+            --output json \
+            zeppelin-external \
+    | jq -r '.status.loadBalancer.ingress[0].ip'
+
+
+    >   128.232.227.170
+
+
+# -----------------------------------------------------
+# Get the dashboard account token.
+#[user@kubernator]
+
+    admintoken=$(
+        kubectl \
+            --output json \
+            get secret \
+                kubernator-token-r4k7w \
+        | jq -r '.data.token | @base64d'
+        )
+
+    cat << EOF
+
+${admintoken:?}
+
+EOF
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Connect to the endpoint, logged in as anonymous.
+#[user@desktop]
+
+    firefox http://128.232.227.170/ &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a new MD note.
+#[anon-zeppelin]
+
+    %md
+    ## Welcome to my world
+
+    #
+    # Yay - works :-)
+    # (*) Takes 2 goes to download the container image.
+    #
+
+
+# -----------------------------------------------------
+# Create a new Python note.
+#[anon-zeppelin]
+
+    %python
+    print (1 + 1)
+
+    #
+    # Yay - works :-)
+    # (*) Takes 2 goes to download the container image.
+    #
+
+
+# -----------------------------------------------------
+# Set the PySpark Python version.
+# (*) this needs to be in the interpreter settings.
+#[anon-zeppelin]
+
+    %spark.conf
+
+    PYSPARK_PYTHON "python2"
+    spark.pyspark.python "python2"
+
+    PYSPARK_DRIVER_PYTHON  "python2"
+    spark.pyspark.driver.python "python2"
+
+    >   java.io.IOException: Can not change interpreter properties when interpreter process has already been launched
+    >   ....
+    >   ....
+
+    #
+    # Restart the interpreter, and apply this setting before it is run.
+    #
+
+
+# -----------------------------------------------------
+# Create a PySpark note.
+#[anon-zeppelin]
+
+    %spark.pyspark
+    import random
+    NUM_SAMPLES = 1000000
+
+    def inside(p):
+        x, y = random.random(), random.random()
+        return x*x + y*y < 1
+
+    count = sc.parallelize(
+        range(
+            0,
+            NUM_SAMPLES
+            )
+        ).filter(
+            inside
+            ).count()
+
+    guess = 4.0 * count / NUM_SAMPLES
+    print("Pi is roughly {}".format(guess))
+
+
+    >   ERROR [2020-08-06 05:04:10,218] ({FIFOScheduler-interpreter_1321654804-Worker-1} SparkInterpreter.java[open]:121) - Fail to open SparkInterpreter
+    >   scala.reflect.internal.FatalError: Error accessing /spark/jars/hadoop-aws-3.2.0.jar
+    >   ....
+    >   ....
+    >   Caused by: java.io.IOException: Error accessing /spark/jars/hadoop-aws-3.2.0.jar
+    >   ....
+    >   ....
+    >   Caused by: java.io.FileNotFoundException: /spark/jars/hadoop-aws-3.2.0.jar (Permission denied)
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Use dashboard to login to the Spark pod.
+#[zeppelin@spark-jflmpj]
+
+
+    ls -al /spark/jars/hadoop*
+
+    >   -rw-r--r--. 1 185 root   60244 Aug  6 05:04 /spark/jars/hadoop-annotations-3.2.0.jar
+    >   -rw-r--r--. 1 185 root  139058 Aug  6 05:04 /spark/jars/hadoop-auth-3.2.0.jar
+    >   -rw-------. 1 185 root  480674 Aug  6 05:04 /spark/jars/hadoop-aws-3.2.0.jar
+    >   -rw-r--r--. 1 185 root   44149 Aug  6 05:04 /spark/jars/hadoop-client-3.2.0.jar
+    >   ....
+    >   ....
+
+    #
+    # Back to previous notes, add the chmod command.
+    # notes/zrq/20200806-02-spark-S3.txt
+    #
+    # Rebuilt the Docker image and pushed it to DockerHub.
+    # Stopped the Spark interpreter and then run the notebook again.
+    # Spark creates a new Pod running the 'latest' image from DockerHub.
+    #
+
+# -----------------------------------------------------
+# Run the PySpark note again.
+#[anon-zeppelin]
+
+    %spark.pyspark
+    import random
+    NUM_SAMPLES = 1000000
+
+    def inside(p):
+        x, y = random.random(), random.random()
+        return x*x + y*y < 1
+
+    count = sc.parallelize(
+        range(
+            0,
+            NUM_SAMPLES
+            )
+        ).filter(
+            inside
+            ).count()
+
+    guess = 4.0 * count / NUM_SAMPLES
+    print("Pi is roughly {}".format(guess))
+
+    #
+    # Yay - works :-)
+    # With the default interpreter settings this only creates one Spark worker.
+    #
+
+
+# -----------------------------------------------------
+# Set the number of Spark workers.
+# (*) this needs to be in the interpreter settings.
+#[anon-zeppelin]
+
+    %spark.conf
+
+    spark.executor.instances 10
+
+
+    >   java.io.IOException: Can not change interpreter properties when interpreter process has already been launched
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Run the PySpark note again.
+#[anon-zeppelin]
+
+    %spark.pyspark
+    import random
+    NUM_SAMPLES = 1000000
+
+    def inside(p):
+        x, y = random.random(), random.random()
+        return x*x + y*y < 1
+
+    count = sc.parallelize(
+        range(
+            0,
+            NUM_SAMPLES
+            )
+        ).filter(
+            inside
+            ).count()
+
+    guess = 4.0 * count / NUM_SAMPLES
+    print("Pi is roughly {}".format(guess))
+
+    #
+    # Yay - works :-)
+    # We get 10 Pods running Spark executor.
+
+    #
+    # Stopping/restarting the interpreter deletes the interpreter Pod.
+    # (*) It also deletes all the Spark executor Pods created by that interpreter.
+
+    #
+    # TODO - set a useful default - possibly related to the size of booking ?
+    # https://zeppelin.apache.org/docs/latest/interpreter/spark.html#how-to-pass-property-to-sparkconf
+
+    #
+    # TODO - can we control who is allowed to edit their interpreter config ?
+    # Power users only ?
+
+
+# -----------------------------------------------------
+# Try accessing parquet files in our S3 service.
+#[anon-zeppelin]
+
+    %spark.pyspark
+
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.endpoint", "cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/"
+        )
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.path.style.access", "true"
+        )
+
+    %spark.pyspark
+
+    df = sqlContext.read.parquet(
+        "s3a://gaia-dr2-parquet"
+        )
+
+    print("DF count: ",     df.count())
+    print("DF partitions:", df.rdd.getNumPartitions())
+
+
+    >   Py4JJavaError: An error occurred while calling o133.parquet.
+    >   : java.lang.NoClassDefFoundError: com/amazonaws/services/s3/model/MultiObjectDeleteException
+    >   	at java.lang.Class.forName0(Native Method)
+    >   	at java.lang.Class.forName(Class.java:348)
+    >   	....
+    >       ....
+
+    #
+    # Need another jar
+    # aws-java-sdk-s3 or aws-java-sdk-bundle
+    #
+
+    #
+    # Back to previous notes, add the second jar.
+    # notes/zrq/20200806-02-spark-S3.txt
+    #
+
+    >   Py4JJavaError: An error occurred while calling o97.parquet.
+    >   : java.nio.file.AccessDeniedException:
+    >       gaia-dr2-csv: org.apache.hadoop.fs.s3a.auth.NoAuthWithAWSException:
+    >           No AWS Credentials provided by SimpleAWSCredentialsProvider EnvironmentVariableCredentialsProvider InstanceProfileCredentialsProvider :
+    >               com.amazonaws.SdkClientException:
+    >                   The requested metadata is not found at http://169.254.169.254/latest/meta-data/iam/security-credentials/....
+    >   ....
+
+    #
+    # Updated the Openstack Swift containers .
+    # Ticked the 'public' box in the GUI.
+    # https://cumulus.openstack.hpc.cam.ac.uk/project/containers/container/gaia-dr2-parquet
+    #
+
+    #
+    # Got a new http URL for the container with an auth token embedded in it.
+    # https://cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af/gaia-dr2-parquet
+    #
+
+    #
+    # Running the Zeppelin notebook again gets the same error.
+    # Try changing the service URL.
+    #
+
+    %spark.pyspark
+
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.endpoint", "https://cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af/"
+        )
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.path.style.access", "true"
+        )
+
+    #
+    # Nope, that didn't work.
+    # Trying GoogleFoo ..
+    #
+    # Complicated.
+    # Try using our AWS/EC2 credentials, make it public later ..
+    #
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# List our EC2 credentials.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            project \
+            list
+
+    >   +----------------------------------+----------------+
+    >   | ID                               | Name           |
+    >   +----------------------------------+----------------+
+    >   | 08e24c6d87f94740aa59c172462ed927 | iris-gaia-dev  |
+    >   | 190eb5f98d994fcca43e9abb0867d319 | iris           |
+    >   | 21b4ae3a2ea44bc5a9c14005ed2963af | iris-gaia-prod |
+    >   | bea28e83e6aa47a8962b59c3b24495fe | iris-gaia-test |
+    >   +----------------------------------+----------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            ec2 credentials \
+            list
+
+    >   +--------------+--------------+----------------------------------+----------------------------------+
+    >   | Access       | Secret       | Project ID                       | User ID                          |
+    >   +--------------+--------------+----------------------------------+----------------------------------+
+    >   | 3367....0df9 | 4034....aea0 | 21b4ae3a2ea44bc5a9c14005ed2963af | 98169f87de174ad4ac98c32e59646488 |
+    >   | 93d0....f83c | 0e28....25b1 | 08e24c6d87f94740aa59c172462ed927 | 98169f87de174ad4ac98c32e59646488 |
+    >   | 2a35....a9c2 | 52e4....ec51 | 21b4ae3a2ea44bc5a9c14005ed2963af | 98169f87de174ad4ac98c32e59646488 |
+    >   +--------------+--------------+----------------------------------+----------------------------------+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Try accessing parquet files in our S3 service.
+#[anon-zeppelin]
+
+    %spark.pyspark
+
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.endpoint", "cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/"
+        )
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.path.style.access", "true"
+        )
+
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.access.key", "3367....0df9"
+        )
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.secret.key", "4034....aea0"
+        )
+
+    df = sqlContext.read.parquet(
+        "s3a://gaia-dr2-parquet"
+        )
+
+    print("DF count: ",     df.count())
+    print("DF partitions:", df.rdd.getNumPartitions())
+
+
+    #
+    # Tried all the credentials - none work.
+    # Could be an issue with the ObjectStore, or it could be our client.
+    #
+
+    >   y4JJavaError: An error occurred while calling o316.parquet.
+    >   : java.nio.file.AccessDeniedException:
+    >       s3a://gaia-dr2-parquet:
+    >           getFileStatus on s3a://gaia-dr2-parquet:
+    >               com.amazonaws.services.s3.model.AmazonS3Exception:
+    >                   Forbidden (Service: Amazon S3; Status Code: 403; Error Code: 403 Forbidden; Request ID: null; S3 Extended Request ID: null),
+    >                       S3 Extended Request ID: null:403 Forbidden....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Configure our S3 client.
+# https://linux.die.net/man/1/s3cmd
+# https://s3tools.org/kb/item14.htm
+# https://www.digitalocean.com/docs/spaces/resources/s3cmd/
+# https://support.arcticcloud.com/portal/kb/articles/managing-object-storage-using-the-s3cmd-interface
+#[user@kubernator]
+
+    s3cmd \
+        --configure \
+        --config ${HOME}/s3cfg
+
+    >   ....
+    >   ....
+    >   New settings:
+    >     Access Key: 2a35....a9c2
+    >     Secret Key: 52e4....ec51
+    >     Default Region: US
+    >     S3 Endpoint: cumulus.openstack.hpc.cam.ac.uk:6780
+    >     DNS-style bucket+hostname:port template for accessing a bucket: cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/%(bucket)
+    >     Encryption password:
+    >     Path to GPG program: /usr/bin/gpg
+    >     Use HTTPS protocol: True
+    >     HTTP Proxy server name:
+    >     HTTP Proxy server port: 0
+
+    >   Test access with supplied credentials? [Y/n]
+    >   Please wait, attempting to list all buckets...
+    >   Success. Your access key and secret key worked fine :-)
+
+    >   Now verifying that encryption works...
+    >   Not configured. Never mind.
+
+    >   Save settings? [y/N] y
+    >   Configuration saved to '/root/s3cfg'
+
+
+# -----------------------------------------------------
+# List our buckets.
+#[user@kubernator]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        ls
+    >   2020-04-20 16:55  s3://gaia-dr2-csv
+    >   2020-04-21 01:57  s3://gaia-dr2-parquet
+
+# -----------------------------------------------------
+# List our objects.
+#[user@openstacker]
+
+    s3cmd \
+        --config ${HOME}/s3cfg \
+        ls \
+            's3://gaia-dr2-parquet'
+
+    >   2020-04-21 02:04            0  s3://gaia-dr2-parquet/_SUCCESS
+    >   2020-04-21 02:04     74114220  s3://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:04    104411815  s3://gaia-dr2-parquet/part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:04     99035704  s3://gaia-dr2-parquet/part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 02:05     96996784  s3://gaia-dr2-parquet/part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+    >   2020-04-21 12:54     29995058  s3://gaia-dr2-parquet/part-06510-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 12:54     29447614  s3://gaia-dr2-parquet/part-06511-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 12:54     28448646  s3://gaia-dr2-parquet/part-06512-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   2020-04-21 12:54      6317774  s3://gaia-dr2-parquet/part-06513-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Try using the same settings in Zeppelin.
+#[anon-zeppelin]
+
+    %spark.pyspark
+
+    sc.hadoopConfiguration().hadoopConfiguration().set(
+        "fs.s3a.endpoint", "cumulus.openstack.hpc.cam.ac.uk:6780"
+        )
+
+
+
+ # cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af
+ # cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af
+ # cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/
+
+
+    sc.hadoopConfiguration().hadoopConfiguration().set(
+        "fs.s3a.path.style.access", "true"
+        )
+
+    sc.hadoopConfiguration().hadoopConfiguration().set(
+        "fs.s3a.access.key", "3367....0df9"
+        )
+    sc.hadoopConfiguration().hadoopConfiguration().set(
+        "fs.s3a.secret.key", "4034....aea0"
+        )
+
+    df = sqlContext.read.parquet(
+        "s3a://gaia-dr2-parquet"
+        )
+
+    print "DF count: ", df.count()
+    print "DF partitions: ", df.rdd.getNumPartitions()
+
+
+# Alternative way of setting the properties.
+https://stackoverflow.com/a/62185901
+https://spark.apache.org/docs/latest/configuration.html#custom-hadoophive-configuration
+
+
+# -----------------------------------------------------
+
+fs.s3a.endpoint cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af/
+fs.s3a.path.style.access true
+fs.s3a.access.key 2a35....a9c2
+fs.s3a.secret.key 52e4....ec51
+fs.s3a.list.version 2
+
+df = sqlContext.read.parquet(
+    "s3a:///gaia-dr2-parquet/"
+    )
+
+    >   : java.lang.NullPointerException: null uri host.
+    >   	at java.util.Objects.requireNonNull(Objects.java:228)
+    >   	at org.apache.hadoop.fs.s3native.S3xLoginHelper.buildFSURI(S3xLoginHelper.java:73)
+    >   	at org.apache.hadoop.fs.s3a.S3AFileSystem.setUri(S3AFileSystem.java:470)
+    >   	at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:235)
+
+# -----------------------------------------------------
+
+fs.s3a.endpoint cumulus.openstack.hpc.cam.ac.uk:6780
+fs.s3a.path.style.access true
+fs.s3a.access.key 2a35adc1244d4dcea11e50bbe43ea9c2
+fs.s3a.secret.key 52e4745a8e0b4d279941eb5f9c2aec51
+fs.s3a.list.version 2
+
+df = sqlContext.read.parquet(
+    "s3a:///gaia-dr2-parquet/"
+    )
+
+    >   : java.lang.NullPointerException: null uri host.
+    >   	at java.util.Objects.requireNonNull(Objects.java:228)
+    >   	at org.apache.hadoop.fs.s3native.S3xLoginHelper.buildFSURI(S3xLoginHelper.java:73)
+    >   	at org.apache.hadoop.fs.s3a.S3AFileSystem.setUri(S3AFileSystem.java:470)
+    >   	at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:235)
+
+# -----------------------------------------------------
+
+fs.s3a.endpoint cumulus.openstack.hpc.cam.ac.uk:6780
+fs.s3a.path.style.access true
+fs.s3a.access.key 2a35adc1244d4dcea11e50bbe43ea9c2
+fs.s3a.secret.key 52e4745a8e0b4d279941eb5f9c2aec51
+fs.s3a.list.version 2
+
+df = sqlContext.read.parquet(
+    "s3a://gaia-dr2-parquet"
+    )
+
+    >   Fail to execute line 2:     "s3a://gaia-dr2-parquet"
+    >   Traceback (most recent call last):
+    >     File "/tmp/1596726218695-0/zeppelin_python.py", line 153, in <module>
+    >       exec(code, _zcUserQueryNameSpace)
+    >     File "<stdin>", line 2, in <module>
+    >     File "/spark/python/pyspark/sql/readwriter.py", line 353, in parquet
+    >       return self._df(self._jreader.parquet(_to_seq(self._spark._sc, paths)))
+    >     File "/spark/python/lib/py4j-0.10.9-src.zip/py4j/java_gateway.py", line 1305, in __call__
+    >       answer, self.gateway_client, self.target_id, self.name)
+    >     File "/spark/python/pyspark/sql/utils.py", line 137, in deco
+    >       raise_from(converted)
+    >     File "/spark/python/pyspark/sql/utils.py", line 33, in raise_from
+    >       raise e
+    >   IllegalArgumentException: path must be absolute
+
+# -----------------------------------------------------
+
+sc._jsc.hadoopConfiguration().set(
+    "fs.s3a.endpoint", "cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/"
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.s3a.path.style.access", "true"
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.s3a.access.key", "2a35adc1244d4dcea11e50bbe43ea9c2"
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.s3a.secret.key", "52e4745a8e0b4d279941eb5f9c2aec51"
+    )
+
+    >   Py4JJavaError: An error occurred while calling o93.parquet.
+    >   : java.lang.NullPointerException: null uri host.
+    >   	at java.util.Objects.requireNonNull(Objects.java:228)
+    >   	at org.apache.hadoop.fs.s3native.S3xLoginHelper.buildFSURI(S3xLoginHelper.java:73)
+    >   	at org.apache.hadoop.fs.s3a.S3AFileSystem.setUri(S3AFileSystem.java:470)
+    >   	at org.apache.hadoop.fs.s3a.S3AFileSystem.initialize(S3AFileSystem.java:235)
+    >       ....
+
+# -----------------------------------------------------
+
+sc._jsc.hadoopConfiguration().set(
+    "fs.swift.service.PROVIDER.auth.url", "https://cumulus.openstack.hpc.cam.ac.uk:5000"
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.swift.service.PROVIDER.tenant", ""
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.swift.service.PROVIDER.username", ""
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.swift.service.PROVIDER.password", ""
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.swift.service.PROVIDER.http.port", "6780"
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.swift.service.PROVIDER.region", "RegionOne"
+    )
+df = sqlContext.read.parquet(
+    "swift://gaia-dr2-parquet.PROVIDER/*"
+    )
+
+
+    >   Py4JJavaError: An error occurred while calling o276.parquet.
+    >   : java.lang.RuntimeException: java.lang.ClassNotFoundException: Class org.apache.hadoop.fs.swift.snative.SwiftNativeFileSystem not found
+    >   	at org.apache.hadoop.conf.Configuration.getClass(Configuration.java:2595)
+    >   	at org.apache.hadoop.fs.FileSystem.getFileSystemClass(FileSystem.java:3269)
+    >       ....
+
+# -----------------------------------------------------
+
+%spark.pyspark
+sc._jsc.hadoopConfiguration().set(
+    "fs.s3a.endpoint", "cumulus.openstack.hpc.cam.ac.uk:6780/swift/v1/AUTH_21b4ae3a2ea44bc5a9c14005ed2963af"
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.s3a.path.style.access", "true"
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.s3a.list.version", "2"
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.s3a.access.key", "none"
+    )
+sc._jsc.hadoopConfiguration().set(
+    "fs.s3a.secret.key", "none"
+    )
+df = sqlContext.read.parquet(
+    "s3a://gaia-dr2-parquet/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet"
+    )
+
+    >   DF count:  262492
+    >   DF partitions:  2
+
+    # WORKS :-)
+    # All the error messages are wrong.
+    # It returns a access denied errors for unreachable or broken URLs.
+
+# -----------------------------------------------------
+
+df = sqlContext.read.parquet(
+    "s3a://gaia-dr2-parquet/"
+    )
+
+    >   Py4JJavaError: An error occurred while calling o250.parquet.
+    >   : org.apache.hadoop.fs.s3a.AWSClientIOException:
+    >       getFileStatus on s3a://gaia-dr2-parquet/:
+    >           com.amazonaws.SdkClientException: Failed to parse XML document with handler class com.amazonaws.services.s3.model.transform.XmlResponsesSaxParser$ListObjectsV2Handler:
+    >               Failed to parse XML document with handler class com.amazonaws.services.s3.model.transform.XmlResponsesSaxParser$ListObjectsV2Handler
+    >               ....
+
+# -----------------------------------------------------
+
+    #
+    # Some resources suggested that it could be caused by '-' in the bucket name.
+    # Created a bucket with just [a-z] in the name.
+
+df = sqlContext.read.parquet(
+    "s3a://albert"
+    )
+
+    >   Py4JJavaError: An error occurred while calling o235.parquet.
+    >   : org.apache.hadoop.fs.s3a.AWSClientIOException:
+    >       getFileStatus on s3a://albert: com.amazonaws.SdkClientException:
+    >           Failed to parse XML document with handler class com.amazonaws.services.s3.model.transform.XmlResponsesSaxParser$ListObjectsV2Handler:
+    >               Failed to parse XML document with handler class com.amazonaws.services.s3.model.transform.XmlResponsesSaxParser$ListObjectsV2Handler
+    >               ....
+
+
+df = sqlContext.read.parquet(
+    "s3a://albert/"
+    )
+
+    >   Py4JJavaError: An error occurred while calling o235.parquet.
+    >   ....
+    >   ....
+
+
+df = sqlContext.read.parquet(
+    "s3a://albert/*"
+    )
+
+    >   Py4JJavaError: An error occurred while calling o235.parquet.
+    >   ....
+    >   ....
+
+
+df = sqlContext.read.parquet(
+    "s3a://albert/part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet"
+    )
+
+    >   DF count:  262492
+    >   DF partitions:  2
+
+    # Individual files works.
+    # Bucket listing fails.
+
+# -----------------------------------------------------
+
+    Experiment - use the smaller S3 client jar, aws-java-sdk-s3.
+    FAILED - immediately run into ClassNotFound errors.
+
+    Experiment - use a more recent version of the AWS jars.
+
+
+
+
+

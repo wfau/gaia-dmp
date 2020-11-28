@@ -1,0 +1,219 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    #
+    # Unable to create K8s cluster since Monday (5th Oct).
+    # Discussion with Paul Browne on Slack.
+    # Transitioning to the new hardware, new flavor templates etc.
+    # "I don't quite understand why instances are failing to schedule for you at the moment, but I'll keep looking at it and hope to have news for you later on today."
+    #
+
+
+# -----------------------------------------------------
+# Set our cloud and cluster name.
+#[user@desktop]
+
+    sed -i "
+        s/^AGLAIS_CLOUD=.*$/AGLAIS_CLOUD=gaia-prod/
+        " "${HOME:?}/aglais.env"
+
+    sed -i "
+        s/^CLUSTER_NAME=.*$/CLUSTER_NAME=Tiberius-$(date '+%Y%m%d')/
+        " "${HOME:?}/aglais.env"
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname openstacker \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+# -----------------------------------------------------
+# Get the name of our first keypair.
+#[user@openstacker]
+
+    keyname=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair list \
+                --format json \
+        | jq -r '.[0] | .Name'
+        )
+
+
+# -----------------------------------------------------
+# Get the ID of the tiny, small and medium flavors.
+#[user@openstacker]
+
+    tyflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.tiny") | .ID'
+        )
+
+    smflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.small") | .ID'
+        )
+
+    mdflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.medium") | .ID'
+        )
+
+    lgflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.large") | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Get the uuid for the latest template.
+#[user@openstacker]
+
+    templateid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster template list \
+                --format json \
+        | jq -r '.[] | select(.name | test("1.17.2")) | .uuid'
+        )
+
+
+# -----------------------------------------------------
+# Create a new cluster.
+#[user@openstacker]
+
+    mscount=1
+    msflavor=${tyflavor}
+    wkcount=4
+    wkflavor=${mdflavor}
+
+cat << EOF
+Key pair      [${keyname:?}]
+Master count  [${mscount}]
+Master flavor [${msflavor}]
+Worker count  [${wkcount}]
+Worker flavor [${wkflavor}]
+Template uuid [${templateid}]
+EOF
+
+    >   Key pair      [zrq-gaia-keypair]
+    >   Master count  [1]
+    >   Master flavor [406a17e0-afd0-47d3-a6ad-8b19198bdd97]
+    >   Worker count  [4]
+    >   Worker flavor [996c1c8c-c934-411c-9631-b74eb2829631]
+    >   Template uuid [40963ffb-4439-49f8-8e80-f511fc11c4a9]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}"-super \
+        coe cluster create \
+            --keypair       "${keyname:?}" \
+            --master-count  "${mscount:?}" \
+            --master-flavor "${msflavor:?}" \
+            --node-count    "${wkcount:?}" \
+            --flavor        "${wkflavor:?}" \
+            --cluster-template "${templateid:?}" \
+            "${clustername:?}"
+
+    >   Request to create cluster 9b24997c-71eb-4f10-b9f7-abd5b94771c8 accepted
+
+
+# -----------------------------------------------------
+# Watch the component lists.
+#[user@openstacker]
+
+    watch \
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer list
+
+    >   +--------------------------------------+-------------------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+    >   | id                                   | name                                                                          | project_id                       | vip_address | provisioning_status | provider |
+    >   +--------------------------------------+-------------------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+    >   | f9a5ef2c-8cf4-4d61-8a37-ab118c7e01d4 | tiberius-20201008-oj7wharosc5y-etcd_lb-upkry5qh7gg4-loadbalancer-olgp62yxlczf | 21b4ae3a2ea44bc5a9c14005ed2963af | 10.0.0.36   | PENDING_CREATE      | amphora  |
+    >   | 9f2f88a4-9e9e-4d9e-99aa-d59d293d34c4 | tiberius-20201008-oj7wharosc5y-api_lb-2w3q52cqfbid-loadbalancer-54wyxs44bakg  | 21b4ae3a2ea44bc5a9c14005ed2963af | 10.0.0.137  | PENDING_CREATE      | amphora  |
+    >   +--------------------------------------+-------------------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+
+    >   +--------------------------------------+-------------------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+    >   | id                                   | name                                                                          | project_id                       | vip_address | provisioning_status | provider |
+    >   +--------------------------------------+-------------------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+    >   | 9df9c654-d791-4f6a-8990-c954626e0207 | tiberius-20201008-oj7wharosc5y-etcd_lb-upkry5qh7gg4-loadbalancer-olgp62yxlczf | 21b4ae3a2ea44bc5a9c14005ed2963af | 10.0.0.126  | ACTIVE              | amphora  |
+    >   | 16678c49-a214-4fb3-ad7f-6013874b0c77 | tiberius-20201008-oj7wharosc5y-api_lb-2w3q52cqfbid-loadbalancer-54wyxs44bakg  | 21b4ae3a2ea44bc5a9c14005ed2963af | 10.0.0.157  | ERROR               | amphora  |
+    >   +--------------------------------------+-------------------------------------------------------------------------------+----------------------------------+-------------+---------------------+----------+
+
+
+# -----------------------------------------------------
+# Check details of the failed loadbalancer.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer show \
+            --format json \
+            '16678c49-a214-4fb3-ad7f-6013874b0c77'
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone": "",
+    >     "created_at": "2020-10-08T11:39:02",
+    >     "description": "",
+    >     "flavor_id": null,
+    >     "id": "16678c49-a214-4fb3-ad7f-6013874b0c77",
+    >     "listeners": "",
+    >     "name": "tiberius-20201008-oj7wharosc5y-api_lb-2w3q52cqfbid-loadbalancer-54wyxs44bakg",
+    >     "operating_status": "OFFLINE",
+    >     "pools": "",
+    >     "project_id": "21b4ae3a2ea44bc5a9c14005ed2963af",
+    >     "provider": "amphora",
+    >     "provisioning_status": "ERROR",
+    >     "updated_at": "2020-10-08T11:55:24",
+    >     "vip_address": "10.0.0.157",
+    >     "vip_network_id": "1edc503d-9169-494b-84d2-e52fef214324",
+    >     "vip_port_id": "2462a4ab-45c5-46ba-ad30-bc5c49bdaa90",
+    >     "vip_qos_policy_id": null,
+    >     "vip_subnet_id": "bc3c1fc3-c790-426b-8965-e0df41cd73c1"
+    >   }
+
+

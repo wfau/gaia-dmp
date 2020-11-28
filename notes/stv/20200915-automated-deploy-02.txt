@@ -1,0 +1,426 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+# -----------------------------------------------------
+# Create Clouds YAML file
+#[user@desktop]
+
+cat > "${HOME}/clouds.yaml" << EOF
+
+clouds:
+
+
+  gaia-test:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'stv-gaia-test.CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'stv-gaia-test.CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+  gaia-test-super:
+    auth:
+      auth_url: https://cumulus.openstack.hpc.cam.ac.uk:5000/v3
+      application_credential_id:     '$(secret 'stv-gaia-test.CREDENTIAL_ID')'
+      application_credential_secret: '$(secret 'stv-gaia-test.CREDENTIAL_SECRET')'
+    region_name: "RegionOne"
+    interface: "public"
+    identity_api_version: 3
+    auth_type: "v3applicationcredential"
+
+EOF
+
+
+
+# -----------------------------------------------------
+# Create our project config file.
+#[user@desktop]
+
+    cat > "${HOME:?}/aglais.env" << 'EOF'
+
+AGLAIS_REPO='git@github.com:stvoutsin/aglais.git'
+AGLAIS_HOME="${PROJECTS_ROOT:?}/aglais"
+AGLAIS_CODE="${AGLAIS_HOME:?}"
+AGLAIS_CLOUD=gaia-test
+AGLAIS_USER=stv
+
+EOF
+
+
+
+
+# -----------------------------------------------------
+# Edit hosts.yml file 
+#[user@desktop]
+
+  source "${HOME}/aglais.settings"
+  nano ${AGLAIS_CODE:?}/experiments/zrq/ansible/hosts.yml
+	..	
+	keypair: ''
+	...
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+# https://podman.readthedocs.io/en/latest/markdown/podman-run.1.html
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml" \
+        --env "ANSIBLE_CODE=/mnt/ansible" \
+        --volume "${AGLAIS_CODE:?}/experiments/zrq/ansible:/mnt/ansible" \
+        atolmis/ansible-client:latest \
+        bash
+
+	# Success
+
+
+
+# -----------------------------------------------------
+# Create our Ansible include vars file.
+#[root@ansibler]
+
+    cat > /tmp/ansible-vars.yml << EOF
+buildtag:  'aglais-$(date '+%Y%m%d')'
+cloudname: '${cloudname}'
+clouduser: '${clouduser}'
+EOF
+
+
+# -----------------------------------------------------
+# Run the scripts from the ansible directory.
+#[root@ansibler]
+
+    cd "${ANSIBLE_CODE:?}"
+
+
+
+# -----------------------------------------------------
+# Run the initial part of our deployment.
+#[root@ansibler]
+	
+    ansible-playbook \
+        --inventory "hosts.yml" \
+        "combined-01.yml"
+
+PLAY RECAP **************************************************************************************************************************************************************************************************
+gateway                    : ok=8    changed=6    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+localhost                  : ok=33   changed=24   unreachable=0    failed=0    skipped=1    rescued=0    ignored=0   
+master01                   : ok=4    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+master02                   : ok=4    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+worker01                   : ok=4    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+worker02                   : ok=4    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+zeppelin                   : ok=4    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0    
+
+
+
+
+# -----------------------------------------------------
+# Run the Hadoop part of our deployment.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory "hosts.yml" \
+        "combined-02.yml"
+
+PLAY RECAP **************************************************************************************************************************************************************************************************
+localhost                  : ok=26   changed=23   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+master01                   : ok=24   changed=18   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+master02                   : ok=19   changed=13   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+worker01                   : ok=22   changed=19   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+worker02                   : ok=22   changed=19   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+zeppelin                   : ok=23   changed=22   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+
+
+
+
+# -----------------------------------------------------
+# Format the HDFS NameNode on master01.
+#[root@ansibler]
+
+    ssh master01 \
+        '
+        hdfs namenode -format
+        '
+
+# -----------------------------------------------------
+# Start the HDFS services.
+#[root@ansibler]
+
+    ssh master01 \
+        '
+        start-all.sh
+	'	
+
+# -----------------------------------------------------
+# Start the HDFS services.
+#[root@ansibler]
+
+    ssh master01 \
+        '
+        hdfs dfsadmin -safemode leave
+	'	
+
+# -----------------------------------------------------
+# Create our HDFS log directory.
+#[root@ansibler]
+
+    ssh master01 \
+        '
+        hdfs dfs -mkdir /spark-log
+        '
+
+
+# -----------------------------------------------------
+# Check the HDFS status.
+#[root@ansibler]
+
+    ssh master01 \
+        '
+        hdfs dfsadmin -report
+	'
+
+Configured Capacity: 1099511627776 (1 TB)
+Present Capacity: 1095180492800 (1019.97 GB)
+DFS Remaining: 1095180484608 (1019.97 GB)
+DFS Used: 8192 (8 KB)
+DFS Used%: 0.00%
+Replicated Blocks:
+	Under replicated blocks: 0
+	Blocks with corrupt replicas: 0
+	Missing blocks: 0
+	Missing blocks (with replication factor 1): 0
+	Low redundancy blocks with highest priority to recover: 0
+	Pending deletion blocks: 0
+Erasure Coded Block Groups: 
+	Low redundancy block groups: 0
+	Block groups with corrupt internal blocks: 0
+	Missing block groups: 0
+	Low redundancy blocks with highest priority to recover: 0
+	Pending deletion blocks: 0
+
+-------------------------------------------------
+Live datanodes (2):
+
+Name: 10.10.1.152:9866 (worker01)
+Hostname: worker01
+Decommission Status : Normal
+Configured Capacity: 549755813888 (512 GB)
+DFS Used: 4096 (4 KB)
+Non DFS Used: 17297408 (16.50 MB)
+DFS Remaining: 547590242304 (509.98 GB)
+DFS Used%: 0.00%
+DFS Remaining%: 99.61%
+Configured Cache Capacity: 0 (0 B)
+Cache Used: 0 (0 B)
+Cache Remaining: 0 (0 B)
+Cache Used%: 100.00%
+Cache Remaining%: 0.00%
+Xceivers: 1
+Last contact: Wed Sep 16 14:28:46 UTC 2020
+Last Block Report: Wed Sep 16 14:23:52 UTC 2020
+Num of Blocks: 0
+
+
+Name: 10.10.3.202:9866 (worker02)
+Hostname: worker02
+Decommission Status : Normal
+Configured Capacity: 549755813888 (512 GB)
+DFS Used: 4096 (4 KB)
+Non DFS Used: 17297408 (16.50 MB)
+DFS Remaining: 547590242304 (509.98 GB)
+DFS Used%: 0.00%
+DFS Remaining%: 99.61%
+Configured Cache Capacity: 0 (0 B)
+Cache Used: 0 (0 B)
+Cache Remaining: 0 (0 B)
+Cache Used%: 100.00%
+Cache Remaining%: 0.00%
+Xceivers: 1
+Last contact: Wed Sep 16 14:28:44 UTC 2020
+Last Block Report: Wed Sep 16 14:23:50 UTC 2020
+Num of Blocks: 0
+
+
+
+
+
+# -----------------------------------------------------
+# Install the Spark binaries.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory "hosts.yml" \
+        "20-install-spark.yml"
+
+
+PLAY RECAP **************************************************************************************************************************************************************************************************
+master01                   : ok=3    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+zeppelin                   : ok=3    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0 
+
+
+# -----------------------------------------------------
+# Add the security rules for Spark.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory "hosts.yml" \
+        "21-config-spark-security.yml"
+
+
+PLAY RECAP **************************************************************************************************************************************************************************************************
+localhost                  : ok=6    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+
+
+# -----------------------------------------------------
+# Create our Spark configuration.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory "hosts.yml" \
+        "22-config-spark-master.yml"
+
+	
+PLAY RECAP **************************************************************************************************************************************************************************************************
+gateway                    : ok=2    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+master01                   : ok=2    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+
+
+
+# -----------------------------------------------------
+# Run the SparkPi example from the Spark install instructtions.
+# https://spark.apache.org/docs/3.0.0-preview2/running-on-yarn.html#launching-spark-on-yarn
+#[root@ansibler]
+
+    ssh master01 \
+        '
+        cd "${SPARK_HOME:?}"
+
+        spark-submit \
+            --class org.apache.spark.examples.SparkPi \
+            --master yarn \
+            --deploy-mode cluster \
+            --driver-memory 1g \
+            --executor-memory 1g \
+            --executor-cores 1 \
+            examples/jars/spark-examples*.jar \
+                10
+        '
+
+2020-09-16 14:32:03,284 INFO yarn.Client: Application report for application_1600266237067_0001 (state: RUNNING)
+2020-09-16 14:32:04,286 INFO yarn.Client: Application report for application_1600266237067_0001 (state: RUNNING)
+2020-09-16 14:32:05,289 INFO yarn.Client: Application report for application_1600266237067_0001 (state: RUNNING)
+2020-09-16 14:32:06,291 INFO yarn.Client: Application report for application_1600266237067_0001 (state: FINISHED)
+2020-09-16 14:32:06,292 INFO yarn.Client: 
+	 client token: N/A
+	 diagnostics: N/A
+	 ApplicationMaster host: worker02
+	 ApplicationMaster RPC port: 42547
+	 queue: default
+	 start time: 1600266706120
+	 final status: SUCCEEDED
+	 tracking URL: http://master01:8088/proxy/application_1600266237067_0001/
+	 user: fedora
+2020-09-16 14:32:06,303 INFO util.ShutdownHookManager: Shutdown hook called
+2020-09-16 14:32:06,303 INFO util.ShutdownHookManager: Deleting directory /tmp/spark-e5b113df-a16a-43c4-85fb-ea1fa1626b5f
+2020-09-16 14:32:06,318 INFO util.ShutdownHookManager: Deleting directory /opt/spark-2.4.7-bin-hadoop2.7/local/spark-84bd4543-dd2c-455c-b67e-489faaa9fceb
+
+
+# -----------------------------------------------------
+# Run the Zeppelin install.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory "hosts.yml" \
+        "combined-04.yml"
+	
+
+PLAY RECAP **************************************************************************************************************************************************************************************************
+localhost                  : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+master01                   : ok=7    changed=7    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+master02                   : ok=7    changed=7    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+worker01                   : ok=7    changed=7    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+worker02                   : ok=7    changed=7    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+zeppelin                   : ok=12   changed=11   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0 
+
+
+# -----------------------------------------------------
+# Start the YARN services.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        /home/fedora/zeppelin-0.8.2-bin-all/bin/zeppelin-daemon.sh start
+        '
+
+Log dir doesn't exist, create /home/fedora/zeppelin-0.8.2-bin-all/logs
+Pid dir doesn't exist, create /home/fedora/zeppelin-0.8.2-bin-all/run
+Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+#  Get IP Address
+#[root@ansibler]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        floating ip list
+
+
++--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+| ID                                   | Floating IP Address | Fixed IP Address | Port                                 | Floating Network                     | Project                          |
++--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+| 64904f3d-b9d4-447e-8759-7e25bf6eb6c8 | 128.232.227.136     | 10.10.0.228      | 05041e1b-d7a9-4dbe-a389-b26166928398 | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | bea28e83e6aa47a8962b59c3b24495fe |
+| b1b47c58-56cb-41d0-b29d-dbcf362035b9 | 128.232.227.249     | 10.10.3.93       | 5c1e4e58-50d9-479b-a163-96559f17ff4d | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | bea28e83e6aa47a8962b59c3b24495fe |
++--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+
+
+
+# -----------------------------------------------------
+# Try some Spark jobs via the Zeppelin GUI.
+# http://128.232.227.249:8080/
+
+
+%spark.pyspark
+x = 1
+
+# Success
+
+

@@ -1,0 +1,984 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    We had problems mounting the existing static CephFS share of Gaia DR2.
+    Suspect it may be because the static CephFS share was created by converting a dynamic share.
+
+    Plan is to try to create a new static CephFS share from clean and import the data.
+    Ended up stuck with authentication errors :
+
+        MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "clustername=${CLUSTER_NAME:?}" \
+        --volume "${HOME}/clouds.yaml:/etc/openstack/clouds.yaml:z" \
+        atolmis/openstack-client \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+#[user@kubernator]
+
+    mkdir -p "${HOME}/.kube"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster config \
+            "${clustername:?}" \
+                --force \
+                --dir "${HOME}/.kube"
+
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://....
+    >   Heapster is running at https://....
+    >   CoreDNS is running at https://....
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# Install YQ.
+# TODO - add this to the kubernator image
+#[user@kubernator]
+
+    mkdir   "${HOME:?}/bin"
+    wget -O "${HOME:?}/bin/yq" https://github.com/mikefarah/yq/releases/download/3.3.2/yq_linux_amd64
+    chmod a+x "${HOME:?}/bin/yq"
+
+
+# -----------------------------------------------------
+# Read our Openstack settings from our cloud config file.
+#[user@kubernator]
+
+    osdomain=default
+    osproject=iris-${cloudname:?}
+
+    osauthurl=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.auth_url'
+        )
+
+    osregion=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.region_name'
+        )
+
+    osusername=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.username'
+        )
+
+    ospassword=$(
+        yq r /etc/openstack/clouds.yaml \
+            'clouds.gaia-prod-tester.auth.password'
+        )
+
+cat << EOF
+    OS authurl  [${osauthurl:?}]
+    OS region   [${osregion:?}]
+    OS username [${osusername:?}]
+    OS password [${ospassword:?}]
+EOF
+
+
+# -----------------------------------------------------
+# List the current shares.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
+
+    >   +----------------+--------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ID             | Name               | Size | Share Proto | Status    | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +----------------+--------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ad1d .... 6098 | gaia-dr2-share     | 4399 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 8611 .... 80a7 | pvc-16ea .... f0a6 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | 7758 .... 1195 | pvc-1f17 .... 23a0 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | 0e1e .... f52f | pvc-2b42 .... a668 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | b9c3 .... 1c26 | pvc-6791 .... 6ea3 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | b0fd .... 14b5 | pvc-70e6 .... 83ce |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   | f5ad .... 7e45 | pvc-e41d .... ce36 |    1 | CEPHFS      | available | False     | cephfsnativetype |      | nova              |
+    >   +----------------+--------------------+------+-------------+-----------+-----------+------------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# Create a new static share.
+# https://docs.openstack.org/python-openstackclient/latest/cli/plugin-commands/manila.html#share-create
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --public true \
+            --name 'gaia-dr2' \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            5000 \
+    | tee /tmp/gaiadr2-share.json
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2020-09-28T14:51:14.000000",
+    >     "description": null,
+    >     "has_replicas": false,
+    >     "id": "355e .... 5562",
+    >     "is_public": true,
+    >     "metadata": {},
+    >     "mount_snapshot_support": false,
+    >     "name": "gaia-dr2",
+    >     "project_id": "21b4 .... 63af",
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "5d0f .... b5d8",
+    >     "share_type_name": "cephfsnativetype",
+    >     "size": 5000,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "creating",
+    >     "task_state": null,
+    >     "user_id": "9816 .... 6488",
+    >     "volume_type": "cephfsnativetype"
+    >   }
+
+
+    shareid=$(
+        jq -r '.id' /tmp/gaiadr2-share.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                "${shareid:?}"
+
+    >   +---------------------------------------+-----------------------------------------------------------------------------------------+
+    >   | Field                                 | Value                                                                                   |
+    >   +---------------------------------------+-----------------------------------------------------------------------------------------+
+    >   | access_rules_status                   | active                                                                                  |
+    >   | availability_zone                     | nova                                                                                    |
+    >   | create_share_from_snapshot_support    | False                                                                                   |
+    >   | created_at                            | 2020-09-28T14:51:14.000000                                                              |
+    >   | description                           | None                                                                                    |
+    >   | export_locations                      |                                                                                         |
+    >   |                                       | path = 10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/17e5 .... 3b2d |
+    >   |                                       | id = c949 .... c525                                                                     |
+    >   |                                       | preferred = False                                                                       |
+    >   | has_replicas                          | False                                                                                   |
+    >   | id                                    | 355e .... 5562                                                                          |
+    >   | is_public                             | True                                                                                    |
+    >   | mount_snapshot_support                | False                                                                                   |
+    >   | name                                  | gaia-dr2                                                                                |
+    >   | project_id                            | 21b4 .... 63af                                                                          |
+    >   | properties                            |                                                                                         |
+    >   | replication_type                      | None                                                                                    |
+    >   | revert_to_snapshot_support            | False                                                                                   |
+    >   | share_group_id                        | None                                                                                    |
+    >   | share_network_id                      | None                                                                                    |
+    >   | share_proto                           | CEPHFS                                                                                  |
+    >   | share_type                            | 5d0f .... b5d8                                                                          |
+    >   | share_type_name                       | cephfsnativetype                                                                        |
+    >   | size                                  | 5000                                                                                    |
+    >   | snapshot_id                           | None                                                                                    |
+    >   | snapshot_support                      | False                                                                                   |
+    >   | source_share_group_snapshot_member_id | None                                                                                    |
+    >   | status                                | available                                                                               |
+    >   | task_state                            | None                                                                                    |
+    >   | user_id                               | 9816 .... 6488                                                                          |
+    >   | volume_type                           | cephfsnativetype                                                                        |
+    >   +---------------------------------------+-----------------------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            '*' \
+    | tee /tmp/gaiadr2-access.json
+
+    accessid=$(
+        jq -r '.id' /tmp/gaiadr2-access.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                "${accessid:?}"
+
+    >   +--------------+-----------------------------+
+    >   | Field        | Value                       |
+    >   +--------------+-----------------------------+
+    >   | id           | e39e .... f774              |
+    >   | share_id     | 355e .... 5562              |
+    >   | access_level | rw                          |
+    >   | access_to    | *                           |
+    >   | access_type  | cephx                       |
+    >   | state        | active                      |
+    >   | access_key   | AQBa .... RA==              |
+    >   | created_at   | 2020-09-28T14:55:21.000000  |
+    >   | updated_at   | 2020-09-28T14:55:22.000000  |
+    >   | properties   |                             |
+    >   +--------------+-----------------------------+
+
+
+# -----------------------------------------------------
+# Create a RO access rule for our share.
+#[user@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            '*' \
+    | tee /tmp/gaiadr2-access.json
+
+    >   Failed to create access to share '<Share: 355e .... 5562>': Share access cephx:* exists. (HTTP 400) (Request-ID: req-765ec346-363f-4bc9-8b1f-30f881e05f74)
+
+
+# -----------------------------------------------------
+
+    We still don't know what should actually go in the 'access_to' field.
+    '*' was an experiment, but it gave us another clue.
+
+    Just found more info about what goes in the 'access_to' field.
+    https://docs.openstack.org/ocata/config-reference/shared-file-systems/drivers/cephfs-native-driver.html
+
+    It looks like the 'access_to' and 'access_key' fields map to the user and secret key passed to the CephFS client.
+
+    https://docs.openstack.org/ocata/config-reference/shared-file-systems/drivers/cephfs-native-driver.html
+
+        "The CephFS Native driver enables the Shared File Systems service to export shared file systems to guests
+         using the Ceph network protocol. Guests require a Ceph client in order to mount the file system."
+
+        "Access is controlled via Ceph’s cephx authentication system. When a user requests share access for an ID,
+         Ceph creates a corresponding Ceph auth ID and a secret key, if they do not already exist, and authorizes
+         the ID to access the share. The client can then mount the share using the ID and the secret key."
+
+    Key part of that :
+
+        "Ceph creates a corresponding Ceph auth ID and a secret key .. and authorizes the ID to access the share."
+
+    https://docs.openstack.org/ocata/config-reference/shared-file-systems/drivers/cephfs-native-driver.html#allowing-access-to-shares
+        "Allow Ceph auth ID 'alice' access to the share using 'cephx' access type."
+
+
+    CephCSI issues
+        Implement NodeStage and NodeUnstage for rbd #457
+        https://github.com/ceph/ceph-csi/pull/457
+
+    Manila client V2
+    https://github.com/openstack/python-manilaclient/tree/master/manilaclient/v2
+    https://github.com/openstack/python-manilaclient/blob/master/manilaclient/v2/shares.py
+
+
+# -----------------------------------------------------
+# Delete the existing share access grants.
+#[user@kubernator]
+
+    for accessid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share access list \
+                --format json \
+                "${shareid:?}" \
+        | jq -r '.[] | .id'
+        )
+    do
+        echo "Access ID [${accessid:?}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share access delete \
+                "${shareid:?}" \
+                "${accessid:?}"
+    done
+
+    >   Access ID [e39e .... f774]
+
+
+# -----------------------------------------------------
+# Create a RW access rule for our share.
+#[user@kubernator]
+
+    accessname=gaia-admin
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${accessname:?}" \
+    | tee "/tmp/${accessname}.json"
+
+    >   {
+    >     "id": "260a .... a583",
+    >     "share_id": "355e .... 5562",
+    >     "access_level": "rw",
+    >     "access_to": "gaia-admin",
+    >     "access_type": "cephx",
+    >     "state": "queued_to_apply",
+    >     "access_key": null,
+    >     "created_at": "2020-09-28T15:51:54.000000",
+    >     "updated_at": null,
+    >     "properties": ""
+    >   }
+
+
+    accessid=$(
+        jq -r '.id' "/tmp/${accessname}.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share access show \
+                "${accessid:?}"
+
+    >   +--------------+----------------------------+
+    >   | Field        | Value                      |
+    >   +--------------+----------------------------+
+    >   | id           | 260a .... a583             |
+    >   | share_id     | 355e .... 5562             |
+    >   | access_level | rw                         |
+    >   | access_to    | gaia-admin                 |
+    >   | access_type  | cephx                      |
+    >   | state        | active                     |
+    >   | access_key   | AQCb .... eQ==             |
+    >   | created_at   | 2020-09-28T15:51:54.000000 |
+    >   | updated_at   | 2020-09-28T15:51:55.000000 |
+    >   | properties   |                            |
+    >   +--------------+----------------------------+
+
+
+# -----------------------------------------------------
+# Extract the Ceph auth ID and key.
+#[user@kubernator]
+
+    cephauthid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share access show \
+                --format json \
+                "${accessid:?}" \
+        | jq -r '.access_to'
+        )
+
+    cephauthkey=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share access show \
+                --format json \
+                "${accessid:?}" \
+        | jq -r '.access_key'
+        )
+
+cat << EOF
+    Ceph auth ID  [${cephauthid:?}]
+    Ceph auth key [${cephauthkey:?}]
+EOF
+
+
+# -----------------------------------------------------
+# Create a Kubernetes Secret using the Ceph auth ID and key.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-secret.yaml" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${accessname}-secret
+  namespace: default
+stringData:
+  os-authURL:     "${osauthurl:?}"
+  os-region:      "${osregion:?}"
+  os-domainID:    "${osdomain:?}"
+  os-projectName: "${osproject:?}"
+  os-userName:    "${cephauthid:?}"
+  os-password:    "${cephauthkey:?}"
+EOF
+
+    kubectl create \
+        --filename "/tmp/${accessname}-secret.yaml"
+
+    kubectl describe \
+        secret \
+            "${accessname}-secret"
+
+
+# -----------------------------------------------------
+# Create a PersistentVolume using the Secret.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-volume.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ${accessname}-volume
+  labels:
+    name: ${accessname}-volume
+spec:
+  accessModes:
+  - ReadWriteMany
+  capacity:
+    storage: 5Ti
+  csi:
+    driver: cephfs.manila.csi.openstack.org
+    nodeStageSecretRef:
+      name: ${accessname}-secret
+      namespace: default
+    nodePublishSecretRef:
+      name: ${accessname}-secret
+      namespace: default
+    volumeHandle: ${accessname}-handle
+    volumeAttributes:
+      shareID: ${shareid:?}
+      shareAccessID: ${accessid:?}
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-volume.yaml"
+
+    kubectl describe \
+        persistentvolume \
+            "${accessname}-volume"
+
+
+    >   Name:            gaia-admin-volume
+    >   Labels:          name=gaia-admin-volume
+    >   Annotations:     kubectl.kubernetes.io/last-applied-configuration:
+    >                      {"apiVersion":"v1","kind":"PersistentVolume","metadata":{"annotations":{},"labels":{"name":"gaia-admin-volume"},"name":"gaia-admin-volume"...
+    >   Finalizers:      [kubernetes.io/pv-protection]
+    >   StorageClass:
+    >   Status:          Available
+    >   Claim:
+    >   Reclaim Policy:  Retain
+    >   Access Modes:    RWX
+    >   VolumeMode:      Filesystem
+    >   Capacity:        5Ti
+    >   Node Affinity:   <none>
+    >   Message:
+    >   Source:
+    >       Type:              CSI (a Container Storage Interface (CSI) volume source)
+    >       Driver:            cephfs.manila.csi.openstack.org
+    >       VolumeHandle:      gaia-admin-handle
+    >       ReadOnly:          false
+    >       VolumeAttributes:      shareAccessID=8b27384d-923d-49aa-be86-dae21c9937ae
+    >                              shareID=355e8458-bdad-4e7d-9d11-6a42b6915562
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Create a PersistentVolumeClaim.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-claim.yaml" << EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ${accessname}-claim
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Ti
+  selector:
+    matchExpressions:
+    - key: name
+      operator: In
+      values: ["${accessname}-volume"]
+EOF
+
+    kubectl apply \
+        --filename "/tmp/${accessname}-claim.yaml"
+
+    kubectl describe \
+        persistentvolumeclaim \
+            "${accessname}-claim"
+
+
+    >   Name:          gaia-admin-claim
+    >   Namespace:     default
+    >   StorageClass:
+    >   Status:        Bound
+    >   Volume:        gaia-admin-volume
+    >   Labels:        <none>
+    >   Annotations:   kubectl.kubernetes.io/last-applied-configuration:
+    >                    {"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"annotations":{},"name":"gaia-admin-claim","namespace":"default"},"spec":{"a...
+    >                  pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      5Ti
+    >   Access Modes:  RWX
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    <none>
+    >   Events:        <none>
+
+
+# -----------------------------------------------------
+# Create a test Pod to mount the volume.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-pod.yaml" << EOF
+kind: Pod
+apiVersion: v1
+metadata:
+  name: ${accessname}-pod
+  namespace: default
+spec:
+  volumes:
+    - name: share-data
+      persistentVolumeClaim:
+        claimName: ${accessname}-claim
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: ${accessname}-container
+      image: 'fedora:latest'
+      volumeMounts:
+        - name: share-data
+          mountPath: /share-data
+        - name: local-data
+          mountPath: /local-data
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /share-data/\${HOSTNAME}.log;
+          sleep 1;
+          done
+EOF
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-pod.yaml"
+
+    kubectl \
+        describe pod \
+            "${accessname}-pod"
+
+
+    >   Name:         gaia-admin-pod
+    >   Namespace:    default
+    >   Node:         tiberius-20200923-nqzekodqww64-node-3/10.0.0.41
+    >   Start Time:   Mon, 28 Sep 2020 16:38:14 +0000
+    >   Labels:       <none>
+    >   Annotations:  kubectl.kubernetes.io/last-applied-configuration:
+    >                   {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"name":"gaia-admin-pod","namespace":"default"},"spec":{"containers":[{"args":...
+    >   Status:       Pending
+    >   IP:
+    >   Containers:
+    >     gaia-admin-container:
+    >       Container ID:
+    >       Image:         fedora:latest
+    >       Image ID:
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Command:
+    >         /bin/sh
+    >       Args:
+    >         -c
+    >         while true; do date >> /share-data/${HOSTNAME}.log; sleep 1; done
+    >       State:          Waiting
+    >         Reason:       ContainerCreating
+    >       Ready:          False
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /local-data from local-data (rw)
+    >         /share-data from share-data (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-pxrzv (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             False
+    >     ContainersReady   False
+    >     PodScheduled      True
+    >   Volumes:
+    >     share-data:
+    >       Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    >       ClaimName:  gaia-admin-claim
+    >       ReadOnly:   false
+    >     local-data:
+    >       Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    >       Medium:
+    >       SizeLimit:  <unset>
+    >     default-token-pxrzv:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-pxrzv
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type     Reason       Age        From                                            Message
+    >     ----     ------       ----       ----                                            -------
+    >     Normal   Scheduled    <unknown>  default-scheduler                               Successfully assigned default/gaia-admin-pod to tiberius-20200923-nqzekodqww64-node-3
+    >     Warning  FailedMount  0s         kubelet, tiberius-20200923-nqzekodqww64-node-3  MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = Unauthenticated desc = failed to create Manila v2 client: failed to authenticate: Authentication failed
+
+
+# -----------------------------------------------------
+# List the test Pod events.
+#[user@kubernator]
+
+    kubectl \
+        get event \
+            --namespace 'default'
+
+    >   LAST SEEN   TYPE      REASON        OBJECT               MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/gaia-admin-pod   Successfully assigned default/gaia-admin-pod to tiberius-20200923-nqzekodqww64-node-3
+    >   3m28s       Warning   FailedMount   pod/gaia-admin-pod   MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = Unauthenticated desc = failed to create Manila v2 client: failed to authenticate: Authentication failed
+    >   80s         Warning   FailedMount   pod/gaia-admin-pod   MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >   86s         Warning   FailedMount   pod/gaia-admin-pod   Unable to attach or mount volumes: unmounted volumes=[share-data], unattached volumes=[local-data default-token-pxrzv share-data]: timed out waiting for the condition
+
+
+# -----------------------------------------------------
+# Delete the Pod, Claim, Volume and Secret.
+#[user@kubernator]
+
+    kubectl \
+        delete Pod \
+            "${accessname}-pod"
+
+    kubectl \
+        delete PersistentVolumeClaim \
+            "${accessname}-claim"
+
+    kubectl \
+        delete PersistentVolume \
+            "${accessname}-volume"
+
+    kubectl \
+        delete Secret \
+            "${accessname}-secret"
+
+
+# -----------------------------------------------------
+# Create a Kubernetes Secret using just the Openstack params.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-secret.yaml" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${accessname}-secret
+  namespace: default
+stringData:
+  os-authURL:     "${osauthurl:?}"
+  os-region:      "${osregion:?}"
+  os-domainID:    "${osdomain:?}"
+  os-projectName: "${osproject:?}"
+  os-userName:    "${osusername:?}"
+  os-password:    "${ospassword:?}"
+EOF
+
+    kubectl create \
+        --filename "/tmp/${accessname}-secret.yaml"
+
+    kubectl describe \
+        secret \
+            "${accessname}-secret"
+
+    >   ....
+    >   ....
+    >   Data
+    >   ====
+    >   os-authURL:      47 bytes
+    >   os-domainID:     7 bytes
+    >   os-password:     37 bytes
+    >   os-projectName:  14 bytes
+    >   os-region:       9 bytes
+    >   os-userName:     17 bytes
+
+
+
+# -----------------------------------------------------
+# Create the Volume, Claim and Pod.
+#[user@kubernator]
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-volume.yaml"
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-claim.yaml"
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-pod.yaml"
+
+
+# -----------------------------------------------------
+# List the test Pod events.
+#[user@kubernator]
+
+    kubectl \
+        get event \
+            --namespace 'default'
+
+    >   ....
+    >   ....
+    >   <unknown>   Normal    Scheduled     pod/gaia-admin-pod   Successfully assigned default/gaia-admin-pod to tiberius-20200923-nqzekodqww64-node-3
+    >   15s         Warning   FailedMount   pod/gaia-admin-pod   MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >   20s         Warning   FailedMount   pod/gaia-admin-pod   Unable to attach or mount volumes: unmounted volumes=[share-data], unattached volumes=[share-data local-data default-token-pxrzv]: timed out waiting for the condition
+
+    A guess ....
+    The error message matches this issue.
+    https://github.com/ceph/ceph-csi/issues/68
+
+    ... which is part of the CephFS CSI driver.
+
+    So the auth failed is below Manila CSI and in CephFS CSI ?
+
+    The CephFS CSI has an example secrets file ..
+    https://github.com/ceph/ceph-csi/blob/master/examples/cephfs/secret.yaml
+
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: csi-cephfs-secret
+          namespace: default
+        stringData:
+          # Required for statically provisioned volumes
+          userID: <plaintext ID>
+          userKey: <Ceph auth key corresponding to ID above>
+
+          # Required for dynamically provisioned volumes
+          adminID: <plaintext ID>
+          adminKey: <Ceph auth key corresponding to ID above>
+
+    What happens if we add those to our Secret ?
+
+
+# -----------------------------------------------------
+# Delete the Pod, Claim, Volume and Secret.
+#[user@kubernator]
+
+    kubectl \
+        delete Pod \
+            "${accessname}-pod"
+
+    kubectl \
+        delete PersistentVolumeClaim \
+            "${accessname}-claim"
+
+    kubectl \
+        delete PersistentVolume \
+            "${accessname}-volume"
+
+    kubectl \
+        delete Secret \
+            "${accessname}-secret"
+
+
+# -----------------------------------------------------
+# Create a Kubernetes Secret using the Openstack and Ceph auth params.
+#[user@kubernator]
+
+    cat > "/tmp/${accessname}-secret.yaml" << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${accessname}-secret
+  namespace: default
+stringData:
+  os-authURL:     "${osauthurl:?}"
+  os-region:      "${osregion:?}"
+  os-domainID:    "${osdomain:?}"
+  os-projectName: "${osproject:?}"
+  os-userName:    "${osusername:?}"
+  os-password:    "${ospassword:?}"
+  userID:         "${cephauthid:?}"
+  userKey:        "${cephauthkey:?}"
+EOF
+
+    kubectl create \
+        --filename "/tmp/${accessname}-secret.yaml"
+
+    kubectl describe \
+        secret \
+            "${accessname}-secret"
+
+    >   ....
+    >   ....
+    >   Data
+    >   ====
+    >   os-domainID:     7 bytes
+    >   os-password:     37 bytes
+    >   os-projectName:  14 bytes
+    >   os-region:       9 bytes
+    >   os-userName:     17 bytes
+    >   userID:          10 bytes
+    >   userKey:         40 bytes
+    >   os-authURL:      47 bytes
+
+
+# -----------------------------------------------------
+# Create the Volume, Claim and Pod.
+#[user@kubernator]
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-volume.yaml"
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-claim.yaml"
+
+    kubectl \
+        apply \
+            --filename "/tmp/${accessname}-pod.yaml"
+
+
+# -----------------------------------------------------
+# List the test Pod events.
+#[user@kubernator]
+
+    kubectl \
+        get event \
+            --namespace 'default'
+
+    >   ....
+    >   ....
+    >   <unknown>   Normal    Scheduled     pod/gaia-admin-pod   Successfully assigned default/gaia-admin-pod to tiberius-20200923-nqzekodqww64-node-3
+    >   40s         Warning   FailedMount   pod/gaia-admin-pod   MountVolume.MountDevice failed for volume "gaia-admin-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >   31s         Warning   FailedMount   pod/gaia-admin-pod   Unable to attach or mount volumes: unmounted volumes=[share-data], unattached volumes=[share-data local-data default-token-pxrzv]: timed out waiting for the condition
+
+
+# -----------------------------------------------------
+# List the Ceph CSI Pods.
+#[user@kubernator]
+
+    kubectl         get pods --namespace ceph-csi-cephfs
+
+    >   NAME                                           READY   STATUS    RESTARTS   AGE
+    >   ceph-csi-cephfs-nodeplugin-p6p5f               3/3     Running   0          4d15h
+    >   ceph-csi-cephfs-nodeplugin-v8jbb               3/3     Running   0          4d15h
+    >   ceph-csi-cephfs-nodeplugin-x7h5j               3/3     Running   0          4d15h
+    >   ceph-csi-cephfs-nodeplugin-xzjhv               3/3     Running   0          4d15h
+    >   ceph-csi-cephfs-provisioner-6c6c9c4f97-h7k9l   6/6     Running   0          4d15h
+    >   ceph-csi-cephfs-provisioner-6c6c9c4f97-nltbq   6/6     Running   0          4d15h
+    >   ceph-csi-cephfs-provisioner-6c6c9c4f97-nzg5f   6/6     Running   0          4d15h
+
+
+# -----------------------------------------------------
+# Peek at the Ceph CSI Pod logs.
+#[user@kubernator]
+
+    kubectl logs  --namespace ceph-csi-cephfs ceph-csi-cephfs-nodeplugin-p6p5f -c csi-cephfsplugin
+
+    >   I0924 02:26:25.517042       1 cephcsi.go:123] Driver version: v3.1.0 and Git version: 5d48473582a31c21d9080d1d824db97ebf4a7a80
+    >   I0924 02:26:25.517349       1 cephcsi.go:141] Initial PID limit is set to -1
+    >   I0924 02:26:25.517402       1 cephcsi.go:150] Reconfigured PID limit to -1 (max)
+    >   I0924 02:26:25.517410       1 cephcsi.go:169] Starting driver type: cephfs with name: cephfs.csi.ceph.com
+    >   ....
+    >   ....
+    >   I0928 17:26:25.623447       1 utils.go:165] ID: 6692 GRPC response: {}
+    >   I0928 17:27:25.622304       1 utils.go:159] ID: 6693 GRPC call: /csi.v1.Identity/Probe
+    >   I0928 17:27:25.622709       1 utils.go:160] ID: 6693 GRPC request: {}
+    >   I0928 17:27:25.623033       1 utils.go:165] ID: 6693 GRPC response: {}
+
+
+    kubectl logs  --namespace ceph-csi-cephfs ceph-csi-cephfs-nodeplugin-v8jbb -c csi-cephfsplugin
+
+    >   ....
+    >   ....
+    >   I0928 17:28:22.698591       1 utils.go:165] ID: 6711 GRPC response: {}
+    >   I0928 17:29:22.697864       1 utils.go:159] ID: 6712 GRPC call: /csi.v1.Identity/Probe
+    >   I0928 17:29:22.698445       1 utils.go:160] ID: 6712 GRPC request: {}
+    >   I0928 17:29:22.698916       1 utils.go:165] ID: 6712 GRPC response: {}
+    >   I0928 17:30:15.975159       1 utils.go:159] ID: 6713 Req-ID: gaia-admin-handle GRPC call: /csi.v1.Node/NodeStageVolume
+    >   I0928 17:30:15.976772       1 utils.go:160] ID: 6713 Req-ID: gaia-admin-handle GRPC request: {"staging_target_path":"/var/lib/kubelet/plugins/kubernetes.io/csi/pv/gaia-admin-volume/globalmount","volume_capability":{"AccessType":{"Mount":{}},"access_mode":{"mode":5}},"volume_id":"gaia-admin-handle"}
+    >   E0928 17:30:15.976799       1 utils.go:163] ID: 6713 Req-ID: gaia-admin-handle GRPC error: rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >   I0928 17:30:22.698011       1 utils.go:159] ID: 6714 GRPC call: /csi.v1.Identity/Probe
+    >   I0928 17:30:22.698997       1 utils.go:160] ID: 6714 GRPC request: {}
+    >   I0928 17:30:22.700402       1 utils.go:165] ID: 6714 GRPC response: {}
+
+
+
+    Mounting shares using FUSE client
+    https://docs.openstack.org/ocata/config-reference/shared-file-systems/drivers/cephfs-native-driver.html#mounting-shares-using-fuse-client
+
+        Using the secret key of the authorized ID alice, create a keyring file alice.keyring.
+
+            [client.alice]
+                key = AQA8+ANW/4ZWNRAAOtWJMFPEihBA1unFImJczA==
+
+        Using the monitor IP addresses from the share’s export location, create a configuration file, ceph.conf:
+
+            [client]
+                client quota = true
+                mon host = 192.168.1.7:6789, 192.168.1.8:6789, 192.168.1.9:6789
+
+        Finally, mount the file system, substituting the file names of the keyring and configuration
+        files you just created, and substituting the path to be mounted from the share’s export location:
+
+            sudo ceph-fuse ~/mnt \
+                --id=alice \
+                --conf=./ceph.conf \
+                --keyring=./alice.keyring \
+                --client-mountpoint=/volumes/_nogroup/4c55ad20-9c55-4a5e-9233-8ac64566b98c
+
+        The CSI plugin should be able to get the alice's name and key from the Openstack share access entry.
+        So the only thing we need to pass to the client would be the share id and the access id.
+
+

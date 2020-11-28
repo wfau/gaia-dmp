@@ -33,16 +33,45 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
+    echo "---- ---- ----"
+    echo "Cloud name [${cloudname}]"
+    echo "Cloud user [${clouduser}]"
+
+    buildtag="aglais-k8s-$(date '+%Y%m%d')"
+
+    echo "Build tag  [${buildtag}]"
+    echo "---- ---- ----"
+
+
 # -----------------------------------------------------
-# Create our Spark log directory.
+# Create our Magnum cluster.
+
+    '/kubernetes/bin/magnum-create.sh' \
+        "${cloudname:?}" \
+        "${buildtag:?}"
+
+
+# -----------------------------------------------------
+# Create our CephFS router.
+
+    '/kubernetes/bin/cephfs-router.sh' \
+        "${cloudname:?}" \
+        "${buildtag:?}"
+
+
+# -----------------------------------------------------
+# Mount the Gaia DR2 data.
 
     echo ""
     echo "---- ----"
-    echo "Creating Spark log directory"
+    echo "Mounting Gaia DR2 data"
 
-    ssh master01 \
-        '
-        hdfs dfs -mkdir /spark-log
-        '
+# -----------------------------------------------------
+# Mount the user data.
+
+
+    echo ""
+    echo "---- ----"
+    echo "Mounting user data"
 
 

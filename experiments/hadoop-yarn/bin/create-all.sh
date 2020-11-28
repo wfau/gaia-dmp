@@ -30,23 +30,23 @@
 
     echo ""
     echo "---- ---- ----"
-    echo "File [${binfile:?}]"
-    echo "Path [${binpath:?}]"
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname:?}]"
-    echo "Cloud user [${clouduser:?}]"
+    echo "Cloud name [${cloudname}]"
+    echo "Cloud user [${clouduser}]"
 
-    buildtag="aglais-$(date '+%Y%m%d')"
+    buildname="aglais-$(date '+%Y%m%d')"
 
+    echo "Build name [${buildname}]"
     echo "---- ---- ----"
-    echo "Build tag [${buildtag:?}]"
 
 # -----------------------------------------------------
 # Create our Ansible include vars file.
 
     cat > /tmp/ansible-vars.yml << EOF
-buildtag:  '${buildtag:?}'
+buildtag:  '${buildname:?}'
 cloudname: '${cloudname:?}'
 clouduser: '${clouduser:?}'
 EOF
@@ -56,7 +56,7 @@ EOF
 
     echo ""
     echo "---- ----"
-    echo "Ansible deploy"
+    echo "Running Ansible deploy"
 
     pushd "/hadoop-yarn/ansible"
 
@@ -86,21 +86,31 @@ EOF
 
 
 # -----------------------------------------------------
-# Create the Manila router.
+# Create our CephFS router.
 
-    '/openstack/bin/cephfs-router.sh' \
+    '/hadoop-yarn/bin/cephfs-router.sh' \
         "${cloudname:?}" \
-        "${buildtag:?}"
+        "${buildname:?}"
 
 
 # -----------------------------------------------------
 # Mount the Gaia DR2 data.
+# Note the hard coded cloud name to get details of the static share.
 
     '/hadoop-yarn/bin/cephfs-mount.sh' \
-        "${cloudname:?}" \
+        'gaia-prod' \
         'aglais-gaia-dr2' \
         '/data/gaia/dr2'
 
 
+# -----------------------------------------------------
+# Mount the user data volume.
+# Note the hard coded cloud name to get details of the static share.
+
+    '/hadoop-yarn/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        'aglais-user-nch' \
+        '/user/nch' \
+        'rw'
 
 

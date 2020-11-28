@@ -30,17 +30,83 @@
 
     echo ""
     echo "---- ---- ----"
-    echo "File [${binfile:?}]"
-    echo "Path [${binpath:?}]"
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
 
     cloudname=${1:?}
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname:?}]"
+    echo "Cloud name [${cloudname}]"
+    echo "---- ---- ----"
 
 
 # -----------------------------------------------------
-# Delete all the servers.
+# Delete any Mangum clusters.
+# First attempt to shutdown the autoscaling response.
+
+    echo ""
+    echo "---- ----"
+    echo "Deleting clusters"
+
+    # TODO Move to common tools
+    pullstatus()
+        {
+        local clid=${1:?}
+        openstack \
+            --os-cloud "${cloudname:?}"-super \
+            coe cluster show \
+                --format json \
+                "${clid:?}" \
+        > '/tmp/cluster-status.json'
+        # TODO Catch HTTP 404 error
+        # TODO re-direct stderr
+        }
+
+    jsonstatus()
+        {
+        jq -r '.status' '/tmp/cluster-status.json'
+        # TODO Catch blank file
+        }
+
+    bothstatus()
+        {
+        local clid=${1:?}
+        pullstatus "${clid:?}"
+        jsonstatus
+        }
+
+    for clusterid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[] | .uuid'
+        )
+    do
+        echo "- Deleting cluster [${clusterid}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster \
+                delete \
+                "${clusterid:?}"
+
+        # TODO Handle empty response
+         while [ $(bothstatus ${clusterid:?}) == 'DELETE_IN_PROGRESS' ]
+            do
+                echo "IN PROGRESS"
+                sleep 10
+            done
+
+        if [ $(jsonstatus) == 'DELETE_FAILED' ]
+        then
+            echo "DELETE FAILED"
+            cat '/tmp/cluster-status.json'
+        fi
+    done
+
+
+# -----------------------------------------------------
+# Delete any remaining servers.
 
     echo ""
     echo "---- ----"
@@ -54,15 +120,16 @@
         | jq -r '.[] | .ID'
         )
     do
-        echo "Deleting server [${serverid:?}]"
+        echo "- Deleting server [${serverid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             server delete \
                 "${serverid:?}"
     done
 
+
 # -----------------------------------------------------
-# Delete all the volumes.
+# Delete any remaining volumes.
 
 
     echo ""
@@ -77,15 +144,16 @@
         | jq -r '.[] | .ID'
         )
     do
-        echo "Deleting volume [${volumeid:?}]"
+        echo "- Deleting volume [${volumeid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             volume delete \
                 "${volumeid:?}"
     done
 
+
 # -----------------------------------------------------
-# Release all the floating IP addresses.
+# Release any remaining floating IP addresses.
 
     echo ""
     echo "---- ----"
@@ -99,7 +167,7 @@
         | jq -r '.[] | .ID'
         )
         do
-            echo "Releasing address [${floatingid:?}]"
+            echo "- Releasing address [${floatingid}]"
             openstack \
                 --os-cloud "${cloudname:?}" \
                 floating ip unset \
@@ -113,7 +181,7 @@
 
 
 # -----------------------------------------------------
-# Delete all the routers.
+# Delete any remaining routers.
 
     echo ""
     echo "---- ----"
@@ -128,11 +196,9 @@
         )
     do
 
-        echo "----"
-        echo "Router [${routerid:?}]"
+        echo "- Router [${routerid}]"
 
-        echo "----"
-        echo "Deleting routes"
+        echo "-- Deleting routes"
         for routedesc in $(
             openstack \
                 --os-cloud "${cloudname:?}" \
@@ -142,7 +208,7 @@
             | jq -r '.routes[] | "gateway=" + .nexthop + ",destination=" + .destination'
             )
         do
-            echo "Deleting route [${routedesc:?}]"
+            echo "--- Deleting route [${routedesc}]"
             openstack \
                 --os-cloud "${cloudname:?}" \
                 router unset \
@@ -150,8 +216,7 @@
                     "${routerid:?}"
         done
 
-        echo "----"
-        echo "Deleting ports"
+        echo "-- Deleting ports"
         for portid in $(
             openstack \
                 --os-cloud "${cloudname:?}" \
@@ -161,7 +226,7 @@
                 | jq -r '.interfaces_info[].port_id'
                 )
                 do
-                    echo "Deleting port [${portid}]"
+                    echo "--- Deleting port [${portid}]"
                     openstack \
                         --os-cloud "${cloudname:?}" \
                         router remove port \
@@ -169,8 +234,7 @@
                             "${portid:?}"
                 done
 
-        echo "----"
-        echo "Deleting router [${routerid:?}]"
+        echo "- Deleting router [${routerid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             router delete \
@@ -180,7 +244,6 @@
 
 # -----------------------------------------------------
 # Delete any extra subnets.
-#[user@openstacker]
 
     echo ""
     echo "---- ----"
@@ -198,11 +261,9 @@
             ) | .ID'
         )
     do
-        echo "----"
-        echo "Subnet [${subnetid:?}]"
+        echo "- Subnet [${subnetid}]"
 
-        echo "----"
-        echo "Deleting subnet ports"
+        echo "-- Deleting subnet ports"
         for subportid in $(
                 openstack \
                     --os-cloud "${cloudname:?}" \
@@ -213,7 +274,7 @@
                 )
 
         do
-            echo "Deleting subnet port [${subportid:?}]"
+            echo "--- Deleting subnet port [${subportid}]"
             openstack \
                 --os-cloud "${cloudname:?}" \
                 port delete \
@@ -221,7 +282,7 @@
 
         done
 
-        echo "Deleting subnet [${subnetid:?}]"
+        echo "- Deleting subnet [${subnetid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             subnet delete \
@@ -231,7 +292,6 @@
 
 # -----------------------------------------------------
 # Delete any extra networks.
-#[user@openstacker]
 
     echo ""
     echo "---- ----"
@@ -249,7 +309,7 @@
             ) | .ID'
         )
     do
-        echo "Deleting network [${networkid:?}]"
+        echo "- Deleting network [${networkid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             network delete \
@@ -258,8 +318,7 @@
 
 
 # -----------------------------------------------------
-# Delete all the security groups.
-#[user@openstacker]
+# Delete any extra security groups.
 
     echo ""
     echo "---- ----"
@@ -273,7 +332,7 @@
         | jq -r '.[] | select(.Name != "default") | .ID'
         )
     do
-        echo "Deleting group [${groupid:?}]"
+        echo "- Deleting security group [${groupid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             security group delete \
@@ -282,12 +341,39 @@
 
 
 # -----------------------------------------------------
-# Delete any Mangum clusters.
-#[user@openstacker]
+# Delete any remaining Mangum clusters.
+# Second attempt after deleting the extra routers and subnets.
 
     echo ""
     echo "---- ----"
     echo "Deleting clusters"
+
+    # TODO Move to common tools
+    pullstatus()
+        {
+        local clid=${1:?}
+        openstack \
+            --os-cloud "${cloudname:?}"-super \
+            coe cluster show \
+                --format json \
+                "${clid:?}" \
+        > '/tmp/cluster-status.json'
+        # TODO Catch HTTP 404 error
+        # TODO re-direct stderr
+        }
+
+    jsonstatus()
+        {
+        jq -r '.status' '/tmp/cluster-status.json'
+        # TODO Catch blank file
+        }
+
+    bothstatus()
+        {
+        local clid=${1:?}
+        pullstatus "${clid:?}"
+        jsonstatus
+        }
 
     for clusterid in $(
         openstack \
@@ -297,20 +383,31 @@
         | jq -r '.[] | .uuid'
         )
     do
-        echo "Deleting cluster [${clusterid:?}]"
+        echo "- Deleting cluster [${clusterid}]"
         openstack \
             --os-cloud "${cloudname:?}" \
             coe cluster \
                 delete \
                 "${clusterid:?}"
-        echo "Pause ..."
-        sleep 30
+
+        # TODO Handle empty response
+         while [ $(bothstatus ${clusterid:?}) == 'DELETE_IN_PROGRESS' ]
+            do
+                echo "IN PROGRESS"
+                sleep 10
+            done
+
+        if [ $(jsonstatus) == 'DELETE_FAILED' ]
+        then
+            echo "DELETE FAILED"
+            cat '/tmp/cluster-status.json'
+        fi
     done
+
 
 
 # -----------------------------------------------------
 # List the remaining resources.
-#[user@openstacker]
 
     echo ""
     echo "---- ----"
@@ -319,36 +416,49 @@
         --os-cloud "${cloudname:?}" \
         server list
 
+    echo ""
+    echo "---- ----"
+    echo "List volumes"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        volume list
+
+    echo ""
     echo "---- ----"
     echo "List addresses"
     openstack \
         --os-cloud "${cloudname:?}" \
         floating ip list
 
+    echo ""
     echo "---- ----"
     echo "List routers"
     openstack \
         --os-cloud "${cloudname:?}" \
         router list
 
+    echo ""
     echo "---- ----"
     echo "List networks"
     openstack \
         --os-cloud "${cloudname:?}" \
         network list
 
+    echo ""
     echo "---- ----"
     echo "List subnets"
     openstack \
         --os-cloud "${cloudname:?}" \
         subnet list
 
+    echo ""
     echo "---- ----"
     echo "List security groups"
     openstack \
         --os-cloud "${cloudname:?}" \
         security group list
 
+    echo ""
     echo "---- ----"
     echo "List clusters"
     openstack \

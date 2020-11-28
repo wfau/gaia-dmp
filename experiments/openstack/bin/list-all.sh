@@ -33,16 +33,81 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
+    cloudname=${1:?}
+
+    echo "---- ---- ----"
+    echo "Cloud name [${cloudname}]"
+    echo "---- ---- ----"
+
+
 # -----------------------------------------------------
-# Create our Spark log directory.
+# List the currenbt resources.
 
     echo ""
     echo "---- ----"
-    echo "Creating Spark log directory"
+    echo "Clusters"
 
-    ssh master01 \
-        '
-        hdfs dfs -mkdir /spark-log
-        '
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+
+    echo ""
+    echo "---- ----"
+    echo "Servers"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+
+    echo ""
+    echo "---- ----"
+    echo "Volumes"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        volume list
+
+
+    echo ""
+    echo "---- ----"
+    echo "Floating addresses"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        floating ip list
+
+
+    echo ""
+    echo "---- ----"
+    echo "Routers"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+
+    echo ""
+    echo "---- ----"
+    echo "Networks"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+
+    echo ""
+    echo "---- ----"
+    echo "Subnets"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+
+    echo ""
+    echo "---- ----"
+    echo "Security groups"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group list
+
+
+
 
 

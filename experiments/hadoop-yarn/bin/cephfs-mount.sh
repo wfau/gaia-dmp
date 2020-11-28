@@ -30,19 +30,19 @@
 
     echo ""
     echo "---- ---- ----"
-    echo "File [${binfile:?}]"
-    echo "Path [${binpath:?}]"
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
 
     cloudname=${1:?}
     sharename=${2:?}
     mountpath=${3:?}
-    sharemode='ro'
+    sharemode=${4:-'ro'}
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname:?}]"
-    echo "Share name [${sharename:?}]"
-    echo "Mount path [${mountpath:?}]"
-    echo "Share mode [${sharemode:?}]"
+    echo "Cloud name [${cloudname}]"
+    echo "Share name [${sharename}]"
+    echo "Mount path [${mountpath}]"
+    echo "Share mode [${sharemode}]"
     echo "---- ---- ----"
     echo ""
 
@@ -59,7 +59,7 @@
 # -----------------------------------------------------
 # Identify the Manila share.
 
-    echo "Target [${cloudname:?}][${sharename:?}]"
+    echo "Target [${cloudname}][${sharename}]"
 
     shareid=$(
         openstack \
@@ -69,7 +69,7 @@
         | jq -r '.[] | select( .Name == "'${sharename:?}'") | .ID'
         )
 
-    echo "Found  [${shareid:?}]"
+    echo "Found  [${shareid}]"
 
 # -----------------------------------------------------
 # Get details of the Ceph export location.
@@ -147,15 +147,15 @@
         )
 
     echo "----"
-    echo "Ceph user [${cephuser:?}]"
-    echo "Ceph key  [${cephkey:?}]"
+    echo "Ceph user [${cephuser}]"
+    echo "Ceph key  [${cephkey}]"
     echo ""
 
 
 # -----------------------------------------------------
 # Add details of the share to our Ansible vars file.
 
-    cat >> /tmp/ceph-vars.yml << EOF
+    cat > /tmp/ceph-vars.yml << EOF
 
 mntpath:  '${mountpath:?}'
 mntopts:  'async,auto,nodev,noexec,nosuid,${sharemode:?},_netdev'

@@ -85,6 +85,13 @@ EOF
     '/hadoop-yarn/bin/init-spark.sh'
 
 
+
+# -----------------------------------------------------
+# Initialise the Zeppelin service.
+
+    '/hadoop-yarn/bin/start-zeppelin.sh'
+
+
 # -----------------------------------------------------
 # Create our CephFS router.
 

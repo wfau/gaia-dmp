@@ -100,7 +100,9 @@
         if [ $(jsonstatus) == 'DELETE_FAILED' ]
         then
             echo "DELETE FAILED"
-            cat '/tmp/cluster-status.json'
+            jq '
+                {status, faults}
+                ' '/tmp/cluster-status.json'
         fi
     done
 

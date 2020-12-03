@@ -62,21 +62,13 @@
 # -----------------------------------------------------
 # Get the connection details for our cluster.
 
-    clusteruuid=$(
+    clusterid=$(
         jq -r '.uuid' '/tmp/cluster-status.json'
         )
 
-    echo "----"
-    echo "Cluster uuid [${clusteruuid}]"
-
-    mkdir -p "${HOME}/.kube"
-    openstack \
-        --os-cloud "${cloudname:?}" \
-        coe cluster config \
-            "${clusteruuid:?}" \
-                --force \
-                --dir "${HOME}/.kube" \
-    > '/dev/null' 2>&1
+    '/kubernetes/bin/cluster-config.sh' \
+        "${cloudname:?}" \
+        "${clusterid:?}"
 
     echo "----"
     echo "Cluster info"

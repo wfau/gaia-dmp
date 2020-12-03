@@ -37,9 +37,9 @@
     echo "Cloud name [${cloudname}]"
     echo "Cloud user [${clouduser}]"
 
-    buildtag="aglais-k8s-$(date '+%Y%m%d')"
+    buildname="aglais-k8s-$(date '+%Y%m%d')"
 
-    echo "Build tag  [${buildtag}]"
+    echo "Build name [${buildname}]"
     echo "---- ---- ----"
 
 
@@ -48,7 +48,7 @@
 
     '/kubernetes/bin/magnum-create.sh' \
         "${cloudname:?}" \
-        "${buildtag:?}"
+        "${buildname:?}"
 
 
 # -----------------------------------------------------
@@ -56,22 +56,141 @@
 
     '/kubernetes/bin/cephfs-router.sh' \
         "${cloudname:?}" \
-        "${buildtag:?}"
+        "${buildname:?}"
+
+
+# -----------------------------------------------------
+# Get the connection details for our cluster.
+
+    clusterid=$(
+        jq -r '.uuid' '/tmp/cluster-status.json'
+        )
+
+    '/kubernetes/bin/cluster-config.sh' \
+        "${cloudname:?}" \
+        "${clusterid:?}"
+
+    echo "----"
+    echo "Cluster info"
+
+    kubectl \
+        cluster-info
+
+
+# -----------------------------------------------------
+# Install our main Helm chart.
+# Using 'upgrade --install' to make the command idempotent
+# https://github.com/helm/helm/issues/3134
+
+    namespace=${buildname,,}
+
+    echo ""
+    echo "----"
+    echo "Installing Aglais Helm chart"
+    echo "Namespace [${namespace}]"
+
+    helm dependency update \
+        "/kubernetes/helm"
+
+    helm install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        'aglais' \
+        "/kubernetes/helm"
+
+
+# -----------------------------------------------------
+# Install our dashboard chart.
+# Using 'upgrade --install' to make the command idempotent
+# https://github.com/helm/helm/issues/3134
+
+    dashhost=valeria.metagrid.xyz
+
+    echo ""
+    echo "----"
+    echo "Installing dashboard Helm chart"
+    echo "Namespace [${namespace}]"
+    echo "Dash host [${dashhost}]"
+
+    helm dependency update \
+        "/kubernetes/helm/tools/dashboard"
+
+    cat > "/tmp/dashboard-values.yaml" << EOF
+kubernetes-dashboard:
+  ingress:
+    enabled: true
+    paths:
+      - /
+    hosts:
+      - ${dashhost:?}
+EOF
+
+    helm upgrade \
+        --install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        'aglais-dashboard' \
+        "/kubernetes/helm/tools/dashboard" \
+        --values "/tmp/dashboard-values.yaml"
+
+#TODO Patch the k8s metrics
+
+
+# -----------------------------------------------------
+# Install our Zeppelin chart.
+# Using 'upgrade --install' to make the command idempotent
+# https://github.com/helm/helm/issues/3134
+
+    zepphost=zeppelin.metagrid.xyz
+
+    echo ""
+    echo "----"
+    echo "Installing Zeppelin Helm chart"
+    echo "Namespace [${namespace}]"
+    echo "Zepp host [${zepphost}]"
+
+
+    helm dependency update \
+        "/kubernetes/helm/tools/zeppelin"
+
+    cat > "/tmp/zeppelin-values.yaml" << EOF
+zeppelin_server_hostname: "${zepphost:?}"
+EOF
+
+    helm upgrade \
+        --install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        'aglais-zeppelin' \
+        "/kubernetes/helm/tools/zeppelin" \
+        --values "/tmp/zeppelin-values.yaml"
 
 
 # -----------------------------------------------------
 # Mount the Gaia DR2 data.
+# Note the hard coded cloud name to get details of the static share.
 
-    echo ""
-    echo "---- ----"
-    echo "Mounting Gaia DR2 data"
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        'aglais-gaia-dr2' \
+        '/data/gaia/dr2' \
+        'rw'
+
 
 # -----------------------------------------------------
-# Mount the user data.
+# Mount the user data volume.
+# Note the hard coded cloud name to get details of the static share.
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        'aglais-user-nch' \
+        '/user/nch' \
+        'rw'
 
 
-    echo ""
-    echo "---- ----"
-    echo "Mounting user data"
+
+
 
 

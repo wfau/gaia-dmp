@@ -1,0 +1,528 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Target:
+
+        Update our Zeppelin image to load our user data alongside the Gaia DR2 data.
+
+    Source:
+
+        Previous notes :
+            notes/zrq/20201103-02-zeppelin-data.txt
+
+    Result:
+
+        In progress ....
+
+
+# -----------------------------------------------------
+# Edit the volume mounts in our interpreter template.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    gedit "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/k8s/interpreter/100-interpreter-spec.yaml"
+
+            ....
+            ....
+
+            volumeMounts:
+            {% if zeppelin.k8s.interpreter.group.name == "spark" %}
+              - name: spark-home
+                mountPath: /spark
+              - name: aglais-gaia-dr2
+    -           mountPath: /aglais/data/gaia/dr2
+    +           mountPath: /data/gaia/dr2
+                readOnly: true
+    +         - name: aglais-user-nch
+    +           mountPath: /user/nch
+    +           readOnly: false
+    +         - name: aglais-user-stv
+    +           mountPath: /user/stv
+    +           readOnly: false
+    +         - name: aglais-user-zrq
+    +           mountPath: /user/zrq
+    +           readOnly: false
+            {% endif %}
+
+            ....
+            ....
+
+
+            volumes:
+            {% if zeppelin.k8s.interpreter.group.name == "spark" %}
+              - name: spark-home
+                emptyDir: {}
+              - name: aglais-gaia-dr2
+                persistentVolumeClaim:
+                  claimName: aglais-gaia-dr2-claim
+    +         - name: aglais-user-nch
+    +           persistentVolumeClaim:
+    +             claimName: aglais-user-nch-claim
+    +         - name: aglais-user-stv
+    +           persistentVolumeClaim:
+    +             claimName: aglais-user-stv-claim
+    +         - name: aglais-user-zrq
+    +           persistentVolumeClaim:
+    +             claimName: aglais-user-zrq-claim
+              {% endif %}
+
+
+# -----------------------------------------------------
+# Check the lib directory exists.
+# Needed because lib is on a different un-merged branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE:?}/experiments/zrq/zeppelin"
+
+        if [ ! -d 'lib' ]
+        then
+            echo "Making [$(pwd)][lib]"
+            mkdir 'lib'
+            touch 'lib/empty'
+        fi
+
+    popd
+
+# -----------------------------------------------------
+# Update the zeppelin-mod image.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    builddir=$(mktemp -d)
+    buildsrc=20200914-174101
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    buildah bud \
+        --format docker \
+        --tag aglais/zeppelin-mod:latest \
+        --tag aglais/zeppelin-mod:${buildtag:?} \
+        --build-arg "buildsrc=${buildsrc:?}" \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE:?}/experiments/zrq/zeppelin/docker/Dockermod" \
+        "${AGLAIS_CODE:?}/experiments/zrq/zeppelin"
+
+    >   STEP 1: FROM aglais/zeppelin-main:20200914-174101
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   STEP 5: LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+    >   STEP 6: LABEL buildtag="${buildtag}"
+    >   STEP 7: LABEL buildtime="${buildtime}"
+    >   STEP 8: LABEL gitrepo="https://github.com/wfau/aglais"
+    >   STEP 9: COPY lib/* /zeppelin/lib
+    >   STEP 10: COPY k8s/interpreter/100-interpreter-spec.yaml /zeppelin/k8s/interpreter/
+    >   STEP 11: COPY conf/shiro.ini /zeppelin/conf/shiro.ini
+    >   STEP 12: COMMIT aglais/zeppelin-mod:latest
+    >   Getting image source signatures
+    >   Copying blob e06660e80cf4 skipped: already exists
+    >   Copying blob 41a253a417e6 skipped: already exists
+    >   Copying blob 87c128261339 skipped: already exists
+    >   Copying blob dcc0cc99372e skipped: already exists
+    >   Copying blob a5791c8427f1 skipped: already exists
+    >   Copying blob bd59303cdc70 skipped: already exists
+    >   Copying blob 8157b177576d done
+    >   Copying config 29d38143bc done
+    >   Writing manifest to image destination
+    >   Storing signatures
+    >   --> 29d38143bc7
+    >   29d38143bc73b099651c5733f123d245bd0d92ef84324585336bc08ab8845eb5
+
+
+# -----------------------------------------------------
+# Push the modified image to Docker hub.
+#[user@desktop]
+
+    buildah login \
+        --username $(secret docker.io.user) \
+        --password $(secret docker.io.pass) \
+        registry-1.docker.io
+
+    >   Login Succeeded!
+
+    buildah push "aglais/zeppelin-mod:${buildtag:?}"
+
+    >   Getting image source signatures
+    >   Copying blob bd59303cdc70 skipped: already exists
+    >   Copying blob e06660e80cf4 skipped: already exists
+    >   Copying blob dcc0cc99372e skipped: already exists
+    >   Copying blob a5791c8427f1 skipped: already exists
+    >   Copying blob 41a253a417e6 skipped: already exists
+    >   Copying blob 87c128261339 skipped: already exists
+    >   Copying blob 8157b177576d done
+    >   Copying config 29d38143bc done
+    >   Writing manifest to image destination
+    >   Storing signatures
+
+
+    buildah push "aglais/zeppelin-mod:latest"
+
+    >   Getting image source signatures
+    >   Copying blob 87c128261339 skipped: already exists
+    >   Copying blob dcc0cc99372e skipped: already exists
+    >   Copying blob a5791c8427f1 skipped: already exists
+    >   Copying blob 41a253a417e6 skipped: already exists
+    >   Copying blob bd59303cdc70 skipped: already exists
+    >   Copying blob e06660e80cf4 skipped: already exists
+    >   Copying blob 8157b177576d [--------------------------------------] 0.0b / 0.0b
+    >   Copying config 29d38143bc [--------------------------------------] 0.0b / 15.7KiB
+    >   Writing manifest to image destination
+    >   Storing signatures
+
+
+# -----------------------------------------------------
+# Create a container to work with (including buildtag).
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "buildtag=${buildtag:?}" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# List the available clusters.
+#[root@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | uuid                                 | name                        | keypair          | node_count | master_count | status          | health_status |
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | e0323dad-1071-4815-8c64-9fe8079d2fe7 | aglais-k8s-20201202-cluster | zrq-gaia-keypair |          4 |            1 | CREATE_COMPLETE | HEALTHY       |
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+
+
+# -----------------------------------------------------
+# Get the connection details the first cluster in the list.
+#[root@kubernator]
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[0] | .uuid'
+        )
+
+    '/kubernetes/bin/cluster-config.sh' \
+        "${cloudname:?}" \
+        "${clusterid:?}"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.148:6443
+    >   Heapster is running at https://128.232.227.148:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.148:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Get our deployment namespace.
+#[root@kubernator]
+
+    namespace=$(
+        kubectl \
+            get namespace \
+                --output json \
+        | jq -r '.items[] | .metadata.name | select(. | startswith("aglais"))'
+        )
+
+    echo "Namespace [${namespace}]"
+
+    >   Namespace [aglais-k8s-20201202]
+
+
+# -----------------------------------------------------
+# Override the default chart values.
+#[user@kubernator]
+
+    zepphost=zeppelin.metagrid.xyz
+
+    cat > "/tmp/zeppelin-values.yaml" << EOF
+
+zeppelin_server_hostname: "${zepphost:?}"
+zeppelin_server_image:    "aglais/zeppelin-mod:${buildtag:?}"
+
+EOF
+
+
+# -----------------------------------------------------
+# Fetch the chart dependencies.
+#[user@kubernator]
+
+    helm dependency update \
+        "/kubernetes/helm/tools/zeppelin"
+
+    >   -
+
+
+# -----------------------------------------------------
+# Update our deployment.
+# Use 'upgrade --install' to make the command idempotent
+#[user@kubernator]
+
+    chartname=aglais-zeppelin
+
+    helm upgrade \
+        --debug \
+        --install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        "${chartname:?}" \
+        "/kubernetes/helm/tools/zeppelin" \
+        --values "/tmp/zeppelin-values.yaml"
+
+    >   ....
+    >   ....
+    >   Release "aglais-zeppelin" has been upgraded. Happy Helming!
+    >   NAME: aglais-zeppelin
+    >   LAST DEPLOYED: Thu Dec  3 05:58:15 2020
+    >   NAMESPACE: aglais-k8s-20201202
+    >   STATUS: deployed
+    >   REVISION: 2
+    >   TEST SUITE: None
+    >   USER-SUPPLIED VALUES:
+    >   zeppelin_server_hostname: zeppelin.metagrid.xyz
+    >   zeppelin_server_image: aglais/zeppelin-mod:20201203-054117
+    >   
+    >   COMPUTED VALUES:
+    >   spark_worker_image: aglais/pyspark-mod:latest
+    >   zeppelin_server_hostname: zeppelin.metagrid.xyz
+    >   zeppelin_server_image: aglais/zeppelin-mod:20201203-054117
+    >   zeppelin_server_tlscert: zeppelin-tls-secret
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin and test ...
+#[user@desktop]
+
+    firefox --new-window "https://zeppelin.metagrid.xyz/" &
+
+
+# -----------------------------------------------------
+# Mount the Gaia data in our Spark workers.
+#[user@zeppelin]
+
+    %spark.conf
+
+    spark.executor.instances 10
+
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.mount.path        /data/gaia/dr2
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.mount.readOnly    true
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.options.claimName aglais-gaia-dr2-claim
+
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-nch.mount.path        /user/nch
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-nch.mount.readOnly    true
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-nch.options.claimName aglais-user-nch-claim
+
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-zrq.mount.path        /user/zrq
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-zrq.mount.readOnly    false
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-zrq.options.claimName aglais-user-zrq-claim
+
+    >   Took 0 sec. Last updated by user1 at December 03 2020, 6:06:04 AM.
+
+# --------------------------------
+
+    %spark.pyspark
+
+    gaia = sqlContext.read.parquet(
+        "/data/gaia/dr2"
+        )
+
+    print("DF count: ", gaia.count())
+    print("DF partitions: ", gaia.rdd.getNumPartitions())
+
+    >   DF count:  1692919135
+    >   DF partitions:  5985
+    >   SPARK JOB FINISHED
+
+    >   Took 1 min 12 sec. Last updated by user1 at December 03 2020, 6:07:49 AM.....
+
+
+# -----------------------------------------------------
+# Read in the CSV files.
+#[user@zeppelin]
+
+    %spark.pyspark
+
+    from pyspark.sql import *
+    from pyspark.sql.types import *
+
+    tmass_schema = StructType([
+        StructField("cx", DoubleType(), True),
+        StructField("cy", DoubleType(), True),
+        StructField("cz", DoubleType(), True),
+        StructField("htmID", LongType(), True),
+        StructField("ra", DoubleType(), True),
+        StructField("dec", DoubleType(), True),
+        StructField("err_maj", DoubleType(), True),
+        StructField("err_min", DoubleType(), True),
+        StructField("err_ang", IntegerType(), True),
+        StructField("designation", StringType(), True),
+        StructField("j_m", DoubleType(), True),
+        StructField("j_cmsig", DoubleType(), True),
+        StructField("j_msigcom", DoubleType(), True),
+        StructField("j_snr", DoubleType(), True),
+        StructField("h_m", DoubleType(), True),
+        StructField("h_cmsig", DoubleType(), True),
+        StructField("h_msigcom", DoubleType(), True),
+        StructField("h_snr", DoubleType(), True),
+        StructField("k_m", DoubleType(), True),
+        StructField("k_cmsig", DoubleType(), True),
+        StructField("k_msigcom", DoubleType(), True),
+        StructField("k_snr", DoubleType(), True),
+        StructField("ph_qual", StringType(), True),
+        StructField("rd_flg", StringType(), True),
+        StructField("bl_flg", StringType(), True),
+        StructField("cc_flg", StringType(), True),
+        StructField("ndet", StringType(), True),
+        StructField("prox", DoubleType(), True),
+        StructField("pxpa", IntegerType(), True),
+        StructField("pxcntr", IntegerType(), True),
+        StructField("gal_contam", IntegerType(), True),
+        StructField("mp_flg", IntegerType(), True),
+        StructField("pts_key", IntegerType(), True),
+        StructField("hemis", StringType(), True),
+        StructField("date", DateType(), True),
+        StructField("scan", IntegerType(), True),
+        StructField("glon", DoubleType(), True),
+        StructField("glat", DoubleType(), True),
+        StructField("x_scan", DoubleType(), True),
+        StructField("jdate", DoubleType(), True),
+        StructField("j_psfchi", DoubleType(), True),
+        StructField("h_psfchi", DoubleType(), True),
+        StructField("k_psfchi", DoubleType(), True),
+        StructField("j_m_stdap", DoubleType(), True),
+        StructField("j_msig_stdap", DoubleType(), True),
+        StructField("h_m_stdap", DoubleType(), True),
+        StructField("h_msig_stdap", DoubleType(), True),
+        StructField("k_m_stdap", DoubleType(), True),
+        StructField("k_msig_stdap", DoubleType(), True),
+        StructField("dist_edge_ns", IntegerType(), True),
+        StructField("dist_edge_ew", IntegerType(), True),
+        StructField("dist_edge_flg", StringType(), True),
+        StructField("dup_src", IntegerType(), True),
+        StructField("use_src", IntegerType(), True),
+        StructField("a", StringType(), True),
+        StructField("dist_opt", DoubleType(), True),
+        StructField("phi_opt", IntegerType(), True),
+        StructField("b_m_opt", DoubleType(), True),
+        StructField("vr_m_opt", DoubleType(), True),
+        StructField("nopt_mchs", IntegerType(), True),
+        StructField("ext_key", IntegerType(), True),
+        StructField("scan_key", IntegerType(), True),
+        StructField("coadd_key", IntegerType(), True),
+        StructField("coadd", IntegerType(), True)
+    ])
+
+    tmass = sqlContext.read.option("header", "true").option("delimiter", '|').schema(tmass_schema).csv(
+        "/user/nch/CSV/2MASS/psc*"
+        )
+
+    print("DF count: ", tmass.count())
+    print("DF partitions: ", tmass.rdd.getNumPartitions())
+
+    >   DF count:  470992878
+    >   DF partitions:  1186
+
+
+# -----------------------------------------------------
+# Write the data back out as parquet files.
+#[user@zeppelin]
+
+    tmass.write.parquet(
+        "/user/zrq/tmass/dr1"
+        )
+
+    >   Took 51 min 34 sec. Last updated by user1 at December 03 2020, 7:56:53 AM.
+
+    #
+    # This step ends with an ERROR -
+    # Caused by: java.io.FileNotFoundException: /user/zrq/tmass/pqt/_SUCCESS (Permission denied)
+    #
+
+
+# -----------------------------------------------------
+# Check how many rows we got.
+#[user@zeppelin]
+
+    %spark.pyspark
+
+    test = sqlContext.read.parquet(
+        "/user/zrq/tmass/pqt"
+        )
+
+    print("DF count: ", test.count())
+    print("DF partitions: ", test.rdd.getNumPartitions())
+
+
+    >   DF count:  470992878
+    >   DF partitions:  290
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Monitor progress via the test pod ...
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+            exec \
+                "zeppelin-c2a3bb7627480179-exec-6" \
+                    --tty \
+                    --stdin \
+                    -- \
+            du -h /user/zrq/tmass/pqt
+
+    >   ....
+    >   ....
+    >   30G	/user/zrq/tmass/pqt
+
+
+
+

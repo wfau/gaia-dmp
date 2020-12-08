@@ -19,7 +19,8 @@
 # </meta:header>
 #
 
-FROM drupal:8.9.11-apache-buster
+ARG buildsrc
+FROM aglais/drupal-main:${buildsrc}
 MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
 
 ARG buildtag
@@ -30,28 +31,7 @@ LABEL buildtag="${buildtag}"
 LABEL buildtime="${buildtime}"
 LABEL gitrepo="https://github.com/wfau/aglais"
 
-RUN apt-get update && apt-get install unzip
-
 WORKDIR /opt/drupal
-
-RUN set -eux; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/bee:^1.1'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/content_export_yaml:^2.9'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/devel:^4.0'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/extlink:^1.3'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/markdown:^2.0'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/pathauto:^1.8'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/redirect:^1.6'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/robotstxt:^1.4'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/token:^1.7'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/webform:^5.20';
-
-RUN set -eux; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/business_responsive_theme:^2.0'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/bootstrap_mint:^5.0'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/bootstrap4:^2.1'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/bootstrap:^3.23'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/paxton:^1.3';
 
 RUN set -eux; \
     php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/simple_oauth:^5.0'; \

@@ -53,12 +53,4 @@ RUN set -eux; \
     php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/bootstrap:^3.23'; \
     php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/paxton:^1.3';
 
-RUN set -eux; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/simple_oauth:^5.0'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/oauth_server_sso:^1.1';
-
-
-
-
-
 

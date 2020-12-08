@@ -1,0 +1,584 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Target :
+
+        Deploy Drupal and experiment.
+
+    Result :
+
+        Work in progress
+
+    References :
+
+        notes/zrq/20200924-01-drupal-test.txt
+        notes/zrq/20200928-01-drupal-notes.txt
+
+
+# -----------------------------------------------------
+# Check our Drupal Dockerfile ...
+#[user@desktoop]
+
+    source "${HOME}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+        pushd 'experiments/zrq/drupal/docker'
+
+            gedit Dockermod &
+
+                ....
+                ....
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Build our Docker image.
+#[user@desktoop]
+
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    source "${HOME}/aglais.env"
+    buildah bud \
+        --format docker \
+        --tag aglais/drupal-mod:${buildtag:?} \
+        --tag aglais/drupal-mod:latest \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE}/experiments/zrq/drupal/docker/Dockermod" \
+        "${AGLAIS_CODE:?}/experiments/zrq/drupal/docker"
+
+    >   STEP 1: FROM drupal:8.9.6-apache-buster
+    >   Getting image source signatures
+    >   Copying blob 60538287851f done
+    >   ....
+    >   ....
+    >   Copying config ada0481dbb done
+    >   Writing manifest to image destination
+    >   Storing signatures
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   STEP 5: LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+    >   STEP 6: LABEL buildtag="${buildtag}"
+    >   STEP 7: LABEL buildtime="${buildtime}"
+    >   STEP 8: LABEL gitrepo="https://github.com/wfau/aglais"
+    >   STEP 9: RUN apt-get update && apt-get install unzip
+    >   STEP 10: WORKDIR /opt/drupal
+    >   STEP 11: RUN set -eux; php -d memory_limit=-1 /usr/local/bin/composer require ....
+    >   STEP 12: RUN set -eux; php -d memory_limit=-1 /usr/local/bin/composer require ....
+    >   STEP 13: COMMIT aglais/drupal-mod:20201204-195217
+    >   Getting image source signatures
+    >   Copying blob 07cab4339852 skipped: already exists
+    >   ....
+    >   ....
+    >   Copying config 39bd65c985 done
+    >   Writing manifest to image destination
+    >   Storing signatures
+    >   --> 39bd65c985d
+    >   39bd65c985d8822e354a015c549a78970fe4e94a7ecebfe87702f39bb4aa7525
+
+
+# -----------------------------------------------------
+# Create a container to work with (including buildtag).
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "buildtag=${buildtag:?}" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# List the available clusters.
+#[root@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | uuid                                 | name                        | keypair          | node_count | master_count | status          | health_status |
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | e0323dad-1071-4815-8c64-9fe8079d2fe7 | aglais-k8s-20201202-cluster | zrq-gaia-keypair |          4 |            1 | CREATE_COMPLETE | HEALTHY       |
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+
+
+# -----------------------------------------------------
+# Get the connection details the first cluster in the list.
+#[root@kubernator]
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[0] | .uuid'
+        )
+
+    '/kubernetes/bin/cluster-config.sh' \
+        "${cloudname:?}" \
+        "${clusterid:?}"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.148:6443
+    >   Heapster is running at https://128.232.227.148:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.148:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Get our deployment namespace.
+#[root@kubernator]
+
+    namespace=$(
+        kubectl \
+            get namespace \
+                --output json \
+        | jq -r '.items[] | .metadata.name | select(. | startswith("aglais"))'
+        )
+
+    echo "Namespace [${namespace}]"
+
+    >   Namespace [aglais-k8s-20201202]
+
+
+# -----------------------------------------------------
+# Install the Drupal Operator.
+# https://github.com/geerlingguy/drupal-operator
+#[user@kubernator]
+
+    kubectl apply \
+        --filename \
+            'https://raw.githubusercontent.com/geerlingguy/drupal-operator/master/deploy/drupal-operator.yaml'
+
+    >   clusterrole.rbac.authorization.k8s.io/drupal-operator created
+    >   clusterrolebinding.rbac.authorization.k8s.io/drupal-operator created
+    >   serviceaccount/drupal-operator created
+    >   deployment.apps/drupal-operator created
+    >   customresourcedefinition.apiextensions.k8s.io/drupals.drupal.drupal.org created
+
+
+# -----------------------------------------------------
+# Install our Drupal site.
+# https://github.com/geerlingguy/drupal-operator
+#[user@kubernator]
+
+    # Use the value of buildtag from the Drupal build.
+    drupaltag=${buildtag:?}
+    drupalimage=aglais/drupal-mod:${drupaltag:?}
+
+    drupaldbpass=$(pwgen 20 1)
+
+    cat > "/tmp/drupal-site.yaml" << EOF
+---
+apiVersion: drupal.drupal.org/v1alpha1
+kind: Drupal
+metadata:
+  name: 'drupal-site'
+  namespace: '${namespace:?}'
+spec:
+  # The container image to use for the Drupal deployment.
+  drupal_image: '${drupalimage:?}'
+
+  # Set this to 'true' to use a single-pod database managed by this operator.
+  manage_database: true
+  database_image: 'mariadb:10'
+  database_pvc_size: '1Gi'
+  database_password: '${drupaldbpass:?}'
+  database_host: 'drupal-site-mariadb'
+
+  # Set this to 'true' to have this operator manage Ingress for the site.
+  manage_ingress: true
+  drupal_hostname: 'drupal.metagrid.xyz'
+EOF
+
+    kubectl apply \
+        --filename \
+            "/tmp/drupal-site.yaml"
+
+    >   drupal.drupal.drupal.org/drupal-site created
+
+
+# -----------------------------------------------------
+# List the installed components.
+#[user@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get all
+
+    >   NAME                                                READY   STATUS    RESTARTS   AGE
+    >   ....
+    >   pod/drupal-site-drupal-544d8c5bbd-fhvct             0/1     Pending   0          115s
+    >   pod/drupal-site-mariadb-6575ff988b-vtd8q            0/1     Pending   0          76s
+    >   ....
+    >   
+    >   NAME                                                TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)                                  AGE
+    >   ....
+    >   service/drupal-site                                 NodePort       10.254.239.83    <none>            80:31887/TCP                             106s
+    >   service/drupal-site-mariadb                         ClusterIP      10.254.234.211   <none>            3306/TCP                                 67s
+    >   ....
+    >   
+    >   NAME                                                READY   UP-TO-DATE   AVAILABLE   AGE
+    >   ....
+    >   deployment.apps/drupal-site-drupal                  0/1     1            0           116s
+    >   deployment.apps/drupal-site-mariadb                 0/1     1            0           77s
+    >   ....
+    >   
+    >   NAME                                                DESIRED   CURRENT   READY   AGE
+    >   ....
+    >   replicaset.apps/drupal-site-drupal-544d8c5bbd       1         1         0       116s
+    >   replicaset.apps/drupal-site-mariadb-6575ff988b      1         1         0       77s
+    >   ....
+
+
+    #
+    # Both Pods are 'Pending' because they need their storage claims met.
+    #
+
+
+# -----------------------------------------------------
+# Create a StorageClass for Manila shares using os-trustee secrets.
+#[user@kubernator]
+
+    cat > "/tmp/manila-trust-class.yaml" << EOF
+apiVersion: 'storage.k8s.io/v1'
+kind: 'StorageClass'
+metadata:
+  name: 'manila-trust-class'
+  namespace: '${namespace:?}'
+provisioner: 'cephfs.manila.csi.openstack.org'
+reclaimPolicy: 'Retain'
+parameters:
+  type: 'cephfsnativetype'
+
+  csi.storage.k8s.io/provisioner-secret-name: 'os-trustee'
+  csi.storage.k8s.io/provisioner-secret-namespace: 'kube-system'
+  csi.storage.k8s.io/node-stage-secret-name: 'os-trustee'
+  csi.storage.k8s.io/node-stage-secret-namespace: 'kube-system'
+  csi.storage.k8s.io/node-publish-secret-name: 'os-trustee'
+  csi.storage.k8s.io/node-publish-secret-namespace: 'kube-system'
+
+EOF
+
+    kubectl create \
+        --filename "/tmp/manila-trust-class.yaml"
+
+    >   storageclass.storage.k8s.io/manila-trust-class created
+
+
+    kubectl describe \
+        --namespace "${namespace:?}" \
+        storageclass \
+            manila-trust-class
+
+    >   Name:                  manila-trust-class
+    >   IsDefaultClass:        No
+    >   Annotations:           <none>
+    >   Provisioner:           cephfs.manila.csi.openstack.org
+    >   Parameters:            csi.storage.k8s.io/node-publish-secret-name=os-trustee....
+    >   AllowVolumeExpansion:  <unset>
+    >   MountOptions:          <none>
+    >   ReclaimPolicy:         Retain
+    >   VolumeBindingMode:     Immediate
+    >   Events:                <none>
+
+
+# -----------------------------------------------------
+# Replace the 'files' PersistentVolumeClaim.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        --namespace "${namespace:?}" \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc \
+    | jq '.spec.storageClassName = "manila-trust-class" | del(.status) | del(.metadata.uid) | del(.metadata.annotations)' \
+    | tee "/tmp/drupal-site-files-pvc.yaml"
+
+    >   {
+    >     "apiVersion": "v1",
+    >     "kind": "PersistentVolumeClaim",
+    >     "metadata": {
+    >       "creationTimestamp": "2020-12-04T20:27:27Z",
+    >       "finalizers": [
+    >         "kubernetes.io/pvc-protection"
+    >       ],
+    >       "name": "drupal-site-files-pvc",
+    >       "namespace": "aglais-k8s-20201202",
+    >       "resourceVersion": "976414",
+    >       "selfLink": "/api/v1/namespaces/aglais-k8s-20201202/persistentvolumeclaims/drupal-site-files-pvc"
+    >     },
+    >     "spec": {
+    >       "accessModes": [
+    >         "ReadWriteOnce"
+    >       ],
+    >       "resources": {
+    >         "requests": {
+    >           "storage": "1Gi"
+    >         }
+    >       },
+    >       "volumeMode": "Filesystem",
+    >       "storageClassName": "manila-trust-class"
+    >     }
+    >   }
+
+
+    kubectl delete \
+        --namespace "${namespace:?}" \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc
+
+    >   persistentvolumeclaim "drupal-site-files-pvc" deleted
+
+
+    kubectl apply \
+        --filename \
+            "/tmp/drupal-site-files-pvc.yaml"
+
+    >   persistentvolumeclaim/drupal-site-files-pvc created
+
+
+    kubectl describe \
+        --namespace "${namespace:?}" \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc
+
+    >   Name:          drupal-site-files-pvc
+    >   Namespace:     aglais-k8s-20201202
+    >   StorageClass:  manila-trust-class
+    >   Status:        Pending
+    >   Volume:
+    >   Labels:        <none>
+    >   Annotations:   volume.beta.kubernetes.io/storage-provisioner: cephfs.manila.csi.openstack.org
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:
+    >   Access Modes:
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    drupal-site-drupal-544d8c5bbd-fhvct
+    >   Events:
+    >     Type    Reason                Age              From                                                                                                                 Message
+    >     ----    ------                ----             ----                                                                                                                 -------
+    >     Normal  ExternalProvisioning  5s (x3 over 5s)  persistentvolume-controller                                                                                          waiting for a volume to be created, either by external provisioner "cephfs.manila.csi.openstack.org" or manually created by system administrator
+    >     Normal  Provisioning          5s               cephfs.manila.csi.openstack.org_aglais-openstack-manila-csi-controllerplugin-0_c397a64e-1b1c-4f38-b211-f6e7398cf900  External provisioner is provisioning volume for claim "aglais-k8s-20201202/drupal-site-files-pvc"
+
+
+# -----------------------------------------------------
+# Replace the 'database' PersistentVolumeClaim.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        --namespace "${namespace:?}" \
+        PersistentVolumeClaim \
+            drupal-site-db-pvc \
+    | jq '.spec.storageClassName = "manila-trust-class" | del(.status) | del(.metadata.uid) | del(.metadata.annotations)' \
+    | tee "/tmp/drupal-site-db-pvc.yaml"
+
+    >   {
+    >     "apiVersion": "v1",
+    >     "kind": "PersistentVolumeClaim",
+    >     "metadata": {
+    >       "creationTimestamp": "2020-12-04T20:28:06Z",
+    >       "finalizers": [
+    >         "kubernetes.io/pvc-protection"
+    >       ],
+    >       "name": "drupal-site-db-pvc",
+    >       "namespace": "aglais-k8s-20201202",
+    >       "resourceVersion": "976664",
+    >       "selfLink": "/api/v1/namespaces/aglais-k8s-20201202/persistentvolumeclaims/drupal-site-db-pvc"
+    >     },
+    >     "spec": {
+    >       "accessModes": [
+    >         "ReadWriteOnce"
+    >       ],
+    >       "resources": {
+    >         "requests": {
+    >           "storage": "1Gi"
+    >         }
+    >       },
+    >       "volumeMode": "Filesystem",
+    >       "storageClassName": "manila-trust-class"
+    >     }
+    >   }
+
+
+    kubectl delete \
+        --namespace "${namespace:?}" \
+        PersistentVolumeClaim \
+            drupal-site-db-pvc
+
+    >   persistentvolumeclaim "drupal-site-db-pvc" deleted
+
+
+    kubectl apply \
+        --filename \
+            "/tmp/drupal-site-db-pvc.yaml"
+
+    >   persistentvolumeclaim/drupal-site-db-pvc created
+
+
+    kubectl describe \
+        --namespace "${namespace:?}" \
+        PersistentVolumeClaim \
+            drupal-site-db-pvc
+
+    >   Name:          drupal-site-db-pvc
+    >   Namespace:     aglais-k8s-20201202
+    >   StorageClass:  manila-trust-class
+    >   Status:        Bound
+    >   Volume:        pvc-e3707194-2036-4bbe-ba28-1e56c950d55e
+    >   Labels:        <none>
+    >   Annotations:   pv.kubernetes.io/bind-completed: yes
+    >                  pv.kubernetes.io/bound-by-controller: yes
+    >                  volume.beta.kubernetes.io/storage-provisioner: cephfs.manila.csi.openstack.org
+    >   Finalizers:    [kubernetes.io/pvc-protection]
+    >   Capacity:      1Gi
+    >   Access Modes:  RWO
+    >   VolumeMode:    Filesystem
+    >   Mounted By:    drupal-site-mariadb-6575ff988b-vtd8q
+    >   Events:
+    >     Type    Reason                 Age               From                                                                                                                 Message
+    >     ----    ------                 ----              ----                                                                                                                 -------
+    >     Normal  Provisioning           12s               cephfs.manila.csi.openstack.org_aglais-openstack-manila-csi-controllerplugin-0_c397a64e-1b1c-4f38-b211-f6e7398cf900  External provisioner is provisioning volume for claim "aglais-k8s-20201202/drupal-site-db-pvc"
+    >     Normal  ExternalProvisioning   8s (x3 over 12s)  persistentvolume-controller                                                                                          waiting for a volume to be created, either by external provisioner "cephfs.manila.csi.openstack.org" or manually created by system administrator
+    >     Normal  ProvisioningSucceeded  2s                cephfs.manila.csi.openstack.org_aglais-openstack-manila-csi-controllerplugin-0_c397a64e-1b1c-4f38-b211-f6e7398cf900  Successfully provisioned volume pvc-e3707194-2036-4bbe-ba28-1e56c950d55e
+
+
+# -----------------------------------------------------
+# Check the Drupal Pod status.
+#[user@kubernator]
+
+    drupalpod=$(
+        kubectl get \
+            --output json \
+            --namespace "${namespace:?}" \
+            Pod \
+        | jq -r '.items[] | .metadata.name | select(startswith("drupal-site-drupal"))'
+        )
+
+    echo "Drupal Pod [${drupalpod}]"
+
+    >   Drupal Pod [drupal-site-drupal-544d8c5bbd-fhvct]
+
+
+    kubectl describe \
+        --namespace "${namespace:?}" \
+        Pod \
+            ${drupalpod:?}
+
+    >   Name:         drupal-site-drupal-544d8c5bbd-fhvct
+    >   Namespace:    aglais-k8s-20201202
+    >   Node:         aglais-k8s-20201202-cluster-g72acmifaxwg-node-1/10.0.0.171
+    >   Start Time:   Fri, 04 Dec 2020 20:37:42 +0000
+    >   Labels:       app=drupal
+    >                 pod-template-hash=544d8c5bbd
+    >   Annotations:  <none>
+    >   Status:       Pending
+    >   IP:           10.100.3.97
+    >   IPs:
+    >     IP:           10.100.3.97
+    >   Controlled By:  ReplicaSet/drupal-site-drupal-544d8c5bbd
+    >   Containers:
+    >     drupal:
+    >       Container ID:
+    >       Image:          aglais/drupal-mod:20201204-195217
+    >       Image ID:
+    >       Port:           80/TCP
+    >       Host Port:      0/TCP
+    >       State:          Waiting
+    >         Reason:       ImagePullBackOff
+    >       Ready:          False
+    >       Restart Count:  0
+    >       Liveness:       tcp-socket :80 delay=60s timeout=1s period=10s #success=1 #failure=3
+    >       Readiness:      tcp-socket :80 delay=30s timeout=1s period=10s #success=1 #failure=3
+    >       Environment:    <none>
+    >       Mounts:
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-qwrvj (ro)
+    >         /var/www/html/sites/default/ from drupal-settings (rw)
+    >         /var/www/html/sites/default/files/ from drupal-files (rw)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             False
+    >     ContainersReady   False
+    >     PodScheduled      True
+    >   Volumes:
+    >     drupal-settings:
+    >       Type:      ConfigMap (a volume populated by a ConfigMap)
+    >       Name:      drupal-site-drupal-config
+    >       Optional:  false
+    >     drupal-files:
+    >       Type:       PersistentVolumeClaim (a reference to a PersistentVolumeClaim in the same namespace)
+    >       ClaimName:  drupal-site-files-pvc
+    >       ReadOnly:   false
+    >     default-token-qwrvj:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-qwrvj
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type     Reason             Age                    From                                                      Message
+    >     ----     ------             ----                   ----                                                      -------
+    >     Warning  FailedScheduling   <unknown>              default-scheduler                                         error while running "VolumeBinding" filter plugin for pod "drupal-site-drupal-544d8c5bbd-fhvct": pod has unbound immediate PersistentVolumeClaims
+    >     Warning  FailedScheduling   <unknown>              default-scheduler                                         error while running "VolumeBinding" filter plugin for pod "drupal-site-drupal-544d8c5bbd-fhvct": pod has unbound immediate PersistentVolumeClaims
+    >     Normal   Scheduled          <unknown>              default-scheduler                                         Successfully assigned aglais-k8s-20201202/drupal-site-drupal-544d8c5bbd-fhvct to aglais-k8s-20201202-cluster-g72acmifaxwg-node-1
+    >     Warning  FailedScheduling   <unknown>              default-scheduler                                         error while running "VolumeBinding" filter plugin for pod "drupal-site-drupal-544d8c5bbd-fhvct": error getting PVC "aglais-k8s-20201202/drupal-site-files-pvc": could not find v1.PersistentVolumeClaim "aglais-k8s-20201202/drupal-site-files-pvc"
+    >     Warning  FailedScheduling   <unknown>              default-scheduler                                         error while running "VolumeBinding" filter plugin for pod "drupal-site-drupal-544d8c5bbd-fhvct": pod has unbound immediate PersistentVolumeClaims
+    >     Warning  FailedScheduling   <unknown>              default-scheduler                                         error while running "VolumeBinding" filter plugin for pod "drupal-site-drupal-544d8c5bbd-fhvct": pod has unbound immediate PersistentVolumeClaims
+    >     Normal   NotTriggerScaleUp  5m (x61 over 15m)      cluster-autoscaler                                        pod didn't trigger scale-up (it wouldn't fit if a new node is added): 1 max limit reached
+    >     Normal   Pulling            4m36s (x2 over 4m55s)  kubelet, aglais-k8s-20201202-cluster-g72acmifaxwg-node-1  Pulling image "aglais/drupal-mod:20201204-195217"
+    >     Warning  Failed             4m29s (x2 over 4m47s)  kubelet, aglais-k8s-20201202-cluster-g72acmifaxwg-node-1  Failed to pull image "aglais/drupal-mod:20201204-195217": rpc error: code = Unknown desc = manifest for docker.io/aglais/drupal-mod:20201204-195217 not found
+    >     Warning  Failed             4m29s (x2 over 4m47s)  kubelet, aglais-k8s-20201202-cluster-g72acmifaxwg-node-1  Error: ErrImagePull
+    >     Normal   SandboxChanged     4m27s (x7 over 4m46s)  kubelet, aglais-k8s-20201202-cluster-g72acmifaxwg-node-1  Pod sandbox changed, it will be killed and re-created.
+    >     Normal   BackOff            4m25s (x6 over 4m45s)  kubelet, aglais-k8s-20201202-cluster-g72acmifaxwg-node-1  Back-off pulling image "aglais/drupal-mod:20201204-195217"
+    >     Warning  Failed             4m25s (x6 over 4m45s)  kubelet, aglais-k8s-20201202-cluster-g72acmifaxwg-node-1  Error: ImagePullBackOff
+
+    #
+    # We didn't push the Drupal container image to the Docker registry !!
+    #
+
+
+

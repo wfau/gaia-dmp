@@ -1,0 +1,196 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Target:
+
+        Update the Drupal config to add a couple of new modules.
+
+    Result :
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Update the Drupal container image source.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit experiments/kubernetes/docker/drupal/dev/Dockerfile
+
+            php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/simple_oauth:^5.0'; \
+        ~   php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/oauth_server_sso:^1.1'; \
+        +   php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/fullcalendar_view:^5.0'; \
+        +   php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/nextpath_bat_booking:^1.0@alpha';
+
+
+    popd
+
+
+# -----------------------------------------------------
+# Build our Docker image.
+#[user@desktoop]
+
+    buildsrc=20201208-131705
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    source "${HOME}/aglais.env"
+    buildah bud \
+        --format docker \
+        --tag aglais/drupal-dev:${buildtag:?} \
+        --tag aglais/drupal-dev:latest \
+        --build-arg "buildsrc=${buildsrc:?}" \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        "${AGLAIS_CODE:?}/experiments/kubernetes/docker/drupal/dev"
+
+    >   STEP 1: FROM aglais/drupal-main:20201208-131705
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   STEP 5: LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+    >   STEP 6: LABEL buildtag="${buildtag}"
+    >   STEP 7: LABEL buildtime="${buildtime}"
+    >   STEP 8: LABEL gitrepo="https://github.com/wfau/aglais"
+    >   STEP 9: WORKDIR /opt/drupal
+    >   STEP 10: RUN set -eux; php -d memory_limit=-1 /usr/local/bin/composer require ....
+    >   ....
+    >   ....
+    >   STEP 11: COMMIT aglais/drupal-dev:20201209-180302
+    >   Getting image source signatures
+    >   ....
+    >   ....
+    >   Writing manifest to image destination
+    >   Storing signatures
+    >   --> 9c8fd96a172
+    >   9c8fd96a172fb4f004be9486093afc43b9833548ab4f7f379a47d20793eb51bb
+
+
+# -----------------------------------------------------
+# Push our new Drupal image to the registry.
+#[user@desktoop]
+
+    buildah login \
+        --username $(secret docker.io.user) \
+        --password $(secret docker.io.pass) \
+        registry-1.docker.io
+
+    buildah push "aglais/drupal-dev:${buildtag:?}"
+
+    buildah push "aglais/drupal-dev:latest"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Create a ssh gateway and manually pull the new image to the K8s worker nodes.
+    See notes/zrq/20201209-04-docker-pull.txt
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+# -----------------------------------------------------
+# Create a container to work with (with buildtag).
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "buildtag=${buildtag:?}" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Get the cluster connection details.
+    See notes/zrq/20201209-03-kubectl-login.txt
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # We want to upate the Drupal deployment, but we don't want to change the secrets.
+    # Which means we can't use our Helm chart - because we don't have the original secrets !
+    # https://github.com/wfau/aglais/issues/278
+    #
+
+
+# -----------------------------------------------------
+# Update our Drupal deployment.
+# https://kubernetes.io/docs/reference/kubectl/cheatsheet/#patching-resources
+#[root@kubernator]
+
+    podname=$(
+        kubectl \
+            --output json \
+            --namespace ${namespace:?} \
+            get pod \
+        | jq -r '.items[] | select(.metadata.name | contains("drupal-drupal")) | .metadata.name'
+        )
+
+    imagename=aglais/drupal-dev:${buildtag:?}
+
+    kubectl \
+        --namespace ${namespace:?} \
+        patch pod \
+            "${podname:?}" \
+            --type 'json' \
+            --patch "[{'op': 'replace', 'path': '/spec/containers/0/image', 'value':'${imagename:?}'}]"
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Drupal and test ...
+#[user@desktop]
+
+    firefox --new-window "https://drupal.metagrid.xyz/" &
+
+    #
+    # Works :-)
+    ;
+
+
+
+

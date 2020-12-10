@@ -1,0 +1,348 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Target:
+
+        Generate a valid SSL certificate for the OAuth proxy.
+
+    Source:
+
+        notes/zrq/20201210-01-drupal-oauth.txt
+        notes/zrq/20201210-02-nginx-conf.txt
+
+        https://stackoverflow.com/questions/64814173/how-do-i-use-sans-with-openssl-instead-of-common-name
+        https://geekflare.com/san-ssl-certificate/
+        https://serverfault.com/questions/845766/generating-a-self-signed-cert-with-openssl-that-works-in-chrome-58
+        https://support.citrix.com/article/CTX135602
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Install the OpenSSL tools.
+#[user@kubernator]
+
+    dnf install -y openssl
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Create our SSL key.
+# https://support.citrix.com/article/CTX135602
+#[user@kubernator]
+
+    hostname=vernon.metagrid.xyz
+    certname=tls-secret
+
+    cat > "/tmp/${certname:?}.cfg" << EOF
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_req
+prompt = no
+[req_distinguished_name]
+O = Edinburgh University
+OU = The Wide Field Astronomy Unit (WFAU)
+CN = https://github.com/wfau/aglais
+[v3_req]
+keyUsage = keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = drupal.metagrid.xyz
+DNS.2 = vernon.metagrid.xyz
+DNS.3 = valeria.metagrid.xyz
+DNS.4 = zeppelin.metagrid.xyz
+EOF
+
+    openssl req \
+        -x509 \
+        -nodes \
+        -sha256 \
+        -days 365 \
+        -newkey rsa:2048 \
+        -keyout "/tmp/${certname:?}.key" \
+        -out    "/tmp/${certname:?}.crt" \
+        -config "/tmp/${certname:?}.cfg" \
+        -extensions 'v3_req'
+
+    >   Generating a RSA private key
+    >   ...........................+++++
+    >   ....+++++
+    >   writing new private key to '/tmp/tls-secret.key'
+    >   -----
+
+
+# -----------------------------------------------------
+# Check our SSL key.
+# https://support.citrix.com/article/CTX135602
+#[user@kubernator]
+
+    openssl \
+        x509 \
+        -in "/tmp/${certname:?}.crt" \
+        -noout \
+        -text
+
+    >   Certificate:
+    >       Data:
+    >           Version: 3 (0x2)
+    >           Serial Number:
+    >               ....
+    >           Signature Algorithm: sha256WithRSAEncryption
+    >           Issuer: O = Edinburgh University, OU = The Wide Field Astronomy Unit (WFAU), CN = https://github.com/wfau/aglais
+    >           Validity
+    >               Not Before: Dec 10 14:40:29 2020 GMT
+    >               Not After : Dec 10 14:40:29 2021 GMT
+    >           Subject: O = Edinburgh University, OU = The Wide Field Astronomy Unit (WFAU), CN = https://github.com/wfau/aglais
+    >           Subject Public Key Info:
+    >               Public Key Algorithm: rsaEncryption
+    >                   RSA Public-Key: (2048 bit)
+    >                   Modulus:
+    >                       ....
+    >                       ....
+    >                       ....
+    >                       ....
+    >                   Exponent: 65537 (0x10001)
+    >           X509v3 extensions:
+    >               X509v3 Key Usage:
+    >                   Key Encipherment, Data Encipherment
+    >               X509v3 Extended Key Usage:
+    >                   TLS Web Server Authentication
+    >               X509v3 Subject Alternative Name:
+    >                   DNS:drupal.metagrid.xyz, DNS:vernon.metagrid.xyz, DNS:valeria.metagrid.xyz, DNS:zeppelin.metagrid.xyz
+    >       Signature Algorithm: sha256WithRSAEncryption
+    >            ....
+    >            ....
+    >            ....
+    >            ....
+
+
+# -----------------------------------------------------
+# Store our keys in a Kubernetes secret.
+# https://github.com/kubernetes/ingress-nginx/blob/master/docs/examples/PREREQUISITES.md#tls-certificates
+#[user@kubernator]
+
+    kubectl delete secret \
+        "${certname:?}"
+
+    >   secret "tls-secret" deleted
+
+
+    kubectl create secret \
+        tls \
+        "${certname:?}" \
+            --key  "/tmp/${certname:?}.key" \
+            --cert "/tmp/${certname:?}.crt"
+
+    >   secret/tls-secret created
+
+
+    kubectl describe \
+        secret \
+            "${certname:?}"
+
+    >   Name:         tls-secret
+    >   Namespace:    default
+    >   Labels:       <none>
+    >   Annotations:  <none>
+    >   
+    >   Type:  kubernetes.io/tls
+    >   
+    >   Data
+    >   ====
+    >   tls.crt:  1452 bytes
+    >   tls.key:  1704 bytes
+
+
+# -----------------------------------------------------
+# Test our SSL keys.
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#deployment
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#validation
+#[user@kubernator]
+
+    curl --head "http://${hostname:?}/tls-test"
+
+    >   HTTP/1.1 308 Permanent Redirect
+    >   Date: Thu, 10 Dec 2020 14:49:43 GMT
+    >   Content-Type: text/html
+    >   Content-Length: 164
+    >   Connection: keep-alive
+    >   Location: https://vernon.metagrid.xyz/tls-test
+
+
+    curl --head "https://${hostname:?}/tls-test"
+
+    >   curl: (60) SSL certificate problem: self signed certificate
+
+
+    curl --head --insecure "https://${hostname:?}/tls-test"
+
+    >   HTTP/2 200
+    >   date: Thu, 10 Dec 2020 14:50:22 GMT
+    >   content-type: text/plain
+    >   strict-transport-security: max-age=15724800; includeSubDomains
+
+
+# -----------------------------------------------------
+# Test the OAuth endpoints.
+#[user@kubernator]
+
+    curl --head --insecure "https://${hostname:?}/test"
+
+    >   HTTP/2 500
+    >   date: Thu, 10 Dec 2020 14:51:55 GMT
+    >   content-type: text/html
+    >   content-length: 170
+    >   strict-transport-security: max-age=15724800; includeSubDomains
+
+
+# -----------------------------------------------------
+# Check the controller logs.
+#[user@kubernator]
+
+    kubectl \
+        ingress-nginx \
+            --namespace 'aglais-k8s-20201208' \
+            --deployment 'aglais-ingress-nginx-controller' \
+            logs
+
+    >   ....
+    >   ....
+    >   2020/12/10 14:54:13 [error] 8678#8678: *9209286 vernon.metagrid.xyz could not be resolved (3: Host not found), client: 10.100.4.0, server: vernon.metagrid.xyz, request: "HEAD /test HTTP/2.0", subrequest: "/_external-auth-Lw", host: "vernon.metagrid.xyz"
+    >   2020/12/10 14:54:13 [error] 8678#8678: *9209286 auth request unexpected status: 502 while sending to client, client: 10.100.4.0, server: vernon.metagrid.xyz, request: "HEAD /test HTTP/2.0", host: "vernon.metagrid.xyz"
+    >   10.100.4.0 - - [10/Dec/2020:14:54:13 +0000] "HEAD /test HTTP/2.0" 500 0 "-" "curl/7.71.1" 44 0.036 [default-http-svc-80] [] - - - - 796daaa9e3eaed1138b9747872a1838c
+
+    #
+    # OK - another level of complexity.
+    # The server side is trying to resolve the DNS name!?
+    # ... is that because
+    #       1) the name is in the request
+    #       2) the name is in the certificate
+    #       3) the name is in the redirect
+    #
+
+    #
+    # Initial fix, add a public DNS entry for that hostname.
+    #
+
+# -----------------------------------------------------
+# Check the DNS name resolves from a Pod in the cluster.
+#[user@kubernator]
+
+    kubectl \
+        --namespace ${namespace:?} \
+        exec \
+            -i -t \
+            aglais-user-zrq-testpod \
+            -- \
+            bash
+
+            dnf -y instal bind-utils
+
+    >   ....
+    >   ....
+
+
+            host vernon.metagrid.xyz
+    >   vernon.metagrid.xyz is an alias for aglais-001.metagrid.xyz.
+    >   aglais-001.metagrid.xyz has address 128.232.227.125
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Test the OAuth endpoints.
+#[user@desktop]
+
+    hostname=vernon.metagrid.xyz
+
+    curl --head --insecure "https://${hostname:?}/test"
+
+    >   HTTP/2 302
+    >   date: Thu, 10 Dec 2020 17:24:57 GMT
+    >   content-type: text/html
+    >   content-length: 138
+    >   location: https://vernon.metagrid.xyz/agromulupt/start?rd=%2Ftest
+
+
+    curl --insecure 'https://vernon.metagrid.xyz/agromulupt/start?rd=%2Ftest'
+
+
+    >   <a href="https://accounts.google.com/o/oauth2/auth?access_type=offline&amp;approval_prompt=force&amp;client_id=1082949370657-vmdchgfkaducq7a70keba10alis5ui76.apps.googleusercontent.com&amp;redirect_uri=https%3A%2F%2Fvernon.metagrid.xyz%2Fagromulupt%2Fcallback&amp;response_type=code&amp;scope=profile+email&amp;state=0f117bddb13358d5fdbaf335734226da%3A%2Ftest">Found</a>.
+
+    #
+    # Looking good :-)
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Watch the controller logs.
+#[user@kubernator]
+
+    kubectl \
+        ingress-nginx \
+            --namespace 'aglais-k8s-20201208' \
+            --deployment 'aglais-ingress-nginx-controller' \
+            logs \
+                --follow \
+                --tail 20
+
+    >   10.100.2.1 - - [10/Dec/2020:17:24:57 +0000] "GET /agromulupt/auth HTTP/1.1" 401 21 "-" "curl/7.69.1" 363 0.002 [default-oauth-proxy-4180] [] 10.100.4.49:4180 21 0.002 401 67c68233d47fc3b6c80fac6edb869eec
+    >   10.100.3.0 - - [10/Dec/2020:17:24:57 +0000] "HEAD /test HTTP/2.0" 401 0 "-" "curl/7.69.1" 0 0.412 [default-http-svc-80] [] 128.232.227.125:443 0 0.004 401 67c68233d47fc3b6c80fac6edb869eec
+    >   10.100.3.0 - - [10/Dec/2020:17:24:57 +0000] "HEAD /test HTTP/2.0" 302 0 "-" "curl/7.69.1" 44 0.412 [default-http-svc-80] [] - - - - 67c68233d47fc3b6c80fac6edb869eec
+    >   10.100.1.0 - - [10/Dec/2020:17:25:21 +0000] "GET /admin/structure HTTP/2.0" 200 4401 "https://drupal.metagrid.xyz/unit/1" "Mozilla/5.0 (X11; Linux x86_64; rv:78.0) Gecko/20100101 Firefox/78.0" 310 0.119 [aglais-k8s-20201208-aglais-drupal-drupal-service-80] [] 10.100.4.56:80 4479 0.119 200 54120fb91dc61feebc8927e513fe89a2
+
+    >   ....
+    >   ....
+
+    #
+    # Looking good :-)
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# try a web browser ...
+#[user@desktop]
+
+    firefox --new-window "https://vernon.metagrid.xyz/" &
+
+    #
+    # Yay - works.
+    # Re-directed to Google and then back to vernon.
+    # Someone in the chain needed to be able to resolve the hostname,
+    # either the nginx oauth-proxy in our Pod, or the Google OAuth service.
+    #
+
+
+
+
+
+
+

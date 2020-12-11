@@ -1,0 +1,373 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#  
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+# Benchmarking the Zeppelin REST API
+# ------------------------------------
+
+# Summary of benchmarking suit:
+  We use the "zdairi" Zeppelin rest client to run our benchmarks in the following way:
+    - Create secrets file
+    - Create notebooks.json config where we store the list of our curated notebooks. Each entry has a link to the raw json file of the Zeppelin notebook 
+    
+    - For each notebook:
+         Fetch notebook json file store in temp folder on local machine
+         Create notebook in Zeppelin instance (Create under tmp directory in Zeppelin, i.e. change name to /tmp/notebook..)
+         Run notebook, and store the execution duration
+         Delete notebook from Zeppelin
+         Delete temporary notebook json file in local machine
+    
+    - Return a dictionary of the Notebook ID's and the execution duration for each 
+    - As a one off, run the benchmark suite, to get the execution time for each notebook using our test prototype 
+        Test prototype deployed this way: https://github.com/stvoutsin/aglais/blob/stv-ansible-deploy/notes/stv/20201102-automated-deploy.txt
+
+
+# zdairi is zeppelin CLI tool which wrapper zeppelin REST API for control notebook and interpreter.
+# https://pypi.org/project/zdairi/
+
+
+
+
+# The following was run a local machine (Ubuntu)
+
+
+# Setup Virtualenv
+# stelios@stelios-pc
+# --------------------
+
+virtualenv mypython
+source mypython/bin/activate
+
+
+# Install zdairi
+# (mypython) stelios@stelios-pc
+# -----------------------------
+
+pip install zdairi
+
+
+pushd mypython/
+ 
+
+# Create secrets yaml file
+# (mypython) stelios@stelios-pc
+# --------------------------------
+
+   nano ~/.zdari.yml
+        ..
+ 	zeppelin_url: http://zeppelin.aglais.uk:8080
+	zeppelin_auth: true
+	zeppelin_user: user
+	zeppelin_password: pass
+        ..  
+
+
+# Create benchmark Python file
+# (mypython) stelios@stelios-pc
+# --------------------------------
+
+cat > "benchmark.py" << EOF
+
+import os
+import requests
+import subprocess
+import time
+from os import listdir
+from os.path import isfile, join
+import json
+import urllib.request, json
+import logging
+
+class Benchmarker(object):
+
+    def getNote(self, urlpath):
+        with urllib.request.urlopen(urlpath) as url:
+            data = json.loads(url.read().decode())
+        return data
+
+    def __init__(self, config=None):
+        if config:
+            with open(config) as f:
+                self.notebooks= json.load(f)["notebooks"]
+
+    def run_notebook(self, filepath):
+        start = time.time()
+        status = "SUCCESS"
+        tmpfile = "/tmp/temp.json"
+
+        try:
+
+            data = self.getNote(filepath)
+            data["name"] = "/tmp/" + data["name"]
+            with open(tmpfile, 'w+') as cred:
+                json.dump(data, cred)
+
+            # Make notebook
+            batcmd="zdairi notebook create --filepath " + tmpfile
+            pipe = subprocess.Popen(batcmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
+            result = pipe.communicate()[0].decode().split("\n")
+            print(result)
+            text = result[2]
+            notebookid = text.split(": ")[1]
+
+            # Run notebook
+            batcmd="zdairi notebook run --notebook " + notebookid
+            pipe = subprocess.Popen(batcmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
+            text = pipe.communicate()[0].decode()
+
+            # Delete notebook
+            batcmd="zdairi notebook delete --notebook " + notebookid
+            pipe = subprocess.Popen(batcmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True)
+            os.remove(tmpfile)
+        except Exception as e:
+            status = "ERROR"
+            logging.exception(e)
+        end = time.time()
+        return (status, end-start)
+
+    def run(self):
+        results = {}
+        for notebook in self.notebooks:
+            expectedtime = notebook["totaltime"]
+            filepath = notebook["filepath"]
+            name = notebook["name"]
+
+            status, totaltime = self.run_notebook(filepath)
+            if totaltime > expectedtime:
+                status = "SLOW"
+            results[name] = {"totaltime" : totaltime, "status" : status}
+
+        print(results)
+
+if __name__ == '__main__':
+    Benchmarker("/home/stelios/projects/gdaf-benchmark/mypython/notebooks.json").run()
+
+
+EOF
+
+
+
+# Clone Notebook Repository
+# (mypython) stelios@stelios-pc
+# --------------------------------
+
+git clone https://github.com/wfau/aglais-notebooks
+
+
+
+# Create our benchmark configuration file
+# (mypython) stelios@stelios-pc
+# -----------------------------------------
+
+# For a quick test
+
+
+cat > "notebooks.json" << EOF
+{
+	"notebooks" : [
+	   {
+              "name" : "2A94M5J1Z",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2A94M5J1Z/note.json",
+       	      "totaltime" : 10
+           }
+
+	]
+}
+EOF
+
+
+
+# Run Quick test
+# (mypython) stelios@stelios-pc
+# --------------------------------
+
+python benchmarking.py 
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FSC2HCCX', '']
+{'2A94M5J1Z': {'totaltime': 22.3457932472229, 'status': 'SUCCESS'}}
+
+
+
+
+# Create our benchmark configuration file with full list of curated notebooks
+# (mypython) stelios@stelios-pc
+# ----------------------------------------------------------------------------
+
+cat > "notebooks.json" << EOF
+{
+	"notebooks" : [
+	   {
+              "name" : "2A94M5J1Z",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2A94M5J1Z/note.json",
+       	      "totaltime" :  9.14
+           },
+           {
+              "name" : "2BWJFTXKJ",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2BWJFTXKJ/note.json",
+              "totaltime" : 5.58
+           },
+           {
+              "name" : "2BYEZ5EVK",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2BYEZ5EVK/note.json",
+              "totaltime" : 3.28
+           },
+           {
+              "name" : "2C2AUG798",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2C2AUG798/note.json",
+              "totaltime" : 7.08
+           },
+           {
+              "name" : "2C35YU814",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2C35YU814/note.json",
+              "totaltime" : 4.48
+           },
+           {
+              "name" : "2C57UKYWR",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2C57UKYWR/note.json",
+              "totaltime" : 4.93
+           },
+           {
+              "name" : "2EVCKW4TC",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2EVCKW4TC/note.json",
+              "totaltime" : 3.39
+           },
+           {
+              "name" : "2EWGJFYEZ",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2EWGJFYEZ/note.json",
+              "totaltime" : 2.21
+           },           
+           {
+              "name" : "2EZ3MQG4S",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2EZ3MQG4S/note.json",
+              "totaltime" : 11.07
+           },           
+           {
+              "name" : "2F2C6W3GE",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2F2C6W3GE/note.json",
+              "totaltime" : 14.15
+           },           
+           {
+              "name" : "2F5K5SNWQ",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2F5K5SNWQ/note.json",
+              "totaltime" : 6.09
+           },           
+           {
+              "name" : "2F85ZPCFT",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2F85ZPCFT/note.json",
+              "totaltime" : 8.90
+           },           
+           {
+              "name" : "2F9KCMT2Z",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2F9KCMT2Z/note.json",
+              "totaltime" : 10.13
+           },           
+           {
+              "name" : "2F9Y1FPB1",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2F9Y1FPB1/note.json",
+              "totaltime" : 9.38
+           },           
+           {
+              "name" : "2FCZWWCZX",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FCZWWCZX/note.json",
+              "totaltime" : 7.79
+           },           
+           {
+              "name" : "2FEU2J2ND",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FEU2J2ND/note.json",
+              "totaltime" : 7.56
+           },           
+           {
+              "name" : "2FF2VTAAM",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FF2VTAAM/note.json",
+              "totaltime" : 10.56
+           },           
+           {
+              "name" : "2FFPFW4JA",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FFPFW4JA/note.json",
+              "totaltime" : 11.35
+           },           
+           {
+              "name" : "2FGTQBMX2",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FGTQBMX2/note.json",
+              "totaltime" : 9.37
+           },           
+           {
+              "name" : "2FKJ25GVF",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FKJ25GVF/note.json",
+              "totaltime" : 9.66
+           },           
+           {
+              "name" : "2FQ9BR1YM",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FQ9BR1YM/note.json",
+              "totaltime" : 10.82
+           },           
+           {
+              "name" : "2FQEUJXWH",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FQEUJXWH/note.json",
+              "totaltime" : 7.96
+           },           
+           {
+              "name" : "2FRPC4BFS",
+              "filepath" : "https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json",
+              "totaltime" : 5.99
+           }
+
+	]
+}
+EOF
+
+# ( Note: See below how we got these timing values )
+
+
+# Run  Full Benchmarks
+# (mypython) stelios@stelios-pc
+# --------------------------------------
+python benchmarking.py 
+
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FTFK5VTJ', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FT1BHAG8', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FRTEX7DB', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FSHTRA8D', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FTFM94Z3', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FRSK1KTX', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FQGBHFN6', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FRXGW4TH', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FQXR82NR', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FRHTDEB8', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FQS6SJDB', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FSG1ZKM5', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FTGAUNR4', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FTC8D7RW', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FQNWQHKP', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FTZE2ZJR', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FQNZDUBA', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FQBH3ZJ7', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FS4D1FEY', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FT8YRDTC', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FS2DE5FF', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FQW3NAJ6', '']
+['/home/stelios/projects/gdaf-benchmark/mypython/local/lib/python2.7/site-packages/zdairi/zdairi.py:32: YAMLLoadWarning: calling yaml.load() without Loader=... is deprecated, as the default Loader is unsafe. Please read https://msg.pyyaml.org/load for full details.', '  config = yaml.load(open(config_path, "r"))', 'Create notebook: 2FSA3EXEF', '']
+{'2A94M5J1Z': {'totaltime': 9.144065380096436, 'status': 'SUCCESS'}, '2BWJFTXKJ': {'totaltime': 5.587023973464966, 'status': 'SUCCESS'}, '2BYEZ5EVK': {'totaltime': 3.2840235233306885, 'status': 'SUCCESS'}, '2C2AUG798': {'totaltime': 7.084914207458496, 'status': 'SUCCESS'}, '2C35YU814': {'totaltime': 4.482041120529175, 'status': 'SUCCESS'}, '2C57UKYWR': {'totaltime': 4.937843561172485, 'status': 'SUCCESS'}, '2EVCKW4TC': {'totaltime': 3.3951416015625, 'status': 'SUCCESS'}, '2EWGJFYEZ': {'totaltime': 2.2177085876464844, 'status': 'SUCCESS'}, '2EZ3MQG4S': {'totaltime': 11.078608512878418, 'status': 'SUCCESS'}, '2F2C6W3GE': {'totaltime': 14.154561042785645, 'status': 'SUCCESS'}, '2F5K5SNWQ': {'totaltime': 6.097092151641846, 'status': 'SUCCESS'}, '2F85ZPCFT': {'totaltime': 8.908214330673218, 'status': 'SUCCESS'}, '2F9KCMT2Z': {'totaltime': 10.132311344146729, 'status': 'SUCCESS'}, '2F9Y1FPB1': {'totaltime': 9.389394044876099, 'status': 'SUCCESS'}, '2FCZWWCZX': {'totaltime': 7.798213005065918, 'status': 'SUCCESS'}, '2FEU2J2ND': {'totaltime': 7.56306791305542, 'status': 'SUCCESS'}, '2FF2VTAAM': {'totaltime': 10.566426038742065, 'status': 'SUCCESS'}, '2FFPFW4JA': {'totaltime': 11.350412845611572, 'status': 'SUCCESS'}, '2FGTQBMX2': {'totaltime': 9.378245115280151, 'status': 'SUCCESS'}, '2FKJ25GVF': {'totaltime': 9.665738821029663, 'status': 'SUCCESS'}, '2FQ9BR1YM': {'totaltime': 10.825435400009155, 'status': 'SUCCESS'}, '2FQEUJXWH': {'totaltime': 7.964391231536865, 'status': 'SUCCESS'}, '2FRPC4BFS': {'totaltime': 5.993959426879883, 'status': 'SUCCESS'}}
+
+
+# Update our notebook.json creation with these values
+
+# TODO fix warning messages
+

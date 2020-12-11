@@ -1,0 +1,910 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Target:
+
+        Create a new configuration that uses Drupal as the OAuth server.
+
+    Source:
+
+        notes/zrq/20201210-03-openssl-cert.txt
+        notes/zrq/20201210-01-drupal-oauth.txt
+
+        https://drupalcommerce.org/blog/32567/using-openid-connect-single-sign-drupal
+        https://www.drupal.org/project/oauth2_server
+        https://www.drupal.org/project/openid_connect_sso
+        https://www.drupal.org/node/1938218
+
+        miniorange.oauth.mail
+        miniorange.oauth.pass
+        miniorange.oauth.code
+        miniorange.oauth.ident
+        miniorange.oauth.secret
+
+
+    Result:
+
+        Work in progress ...
+
+
+
+# -----------------------------------------------------
+# Create a container to work in.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock:z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Configure our secret function.
+# https://www.reddit.com/r/Fedora/comments/jh9iyi/f33_openssh_no_mutual_signature_algorithm/g9yebel/
+#[user@kubernator]
+
+    mkdir ${HOME}/bin
+    cat > ${HOME}/bin/secret << 'EOF'
+ssh -n \
+    'Zarquan@data.metagrid.co.uk' \
+        -o 'PubkeyAcceptedKeyTypes=+ssh-rsa' \
+            "bin/secret '${1}'"
+EOF
+    chmod a+x ${HOME}/bin/secret
+
+    secret frog
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Get the cluster connection details.
+    See notes/zrq/20201209-03-kubectl-login.txt
+
+
+# -----------------------------------------------------
+# Configure our secret function.
+#[user@kubernator]
+
+    mkdir ${HOME}/bin
+    cat > ${HOME}/bin/secret << 'EOF'
+ssh -n \
+    'Zarquan@data.metagrid.co.uk' \
+        -o 'PubkeyAcceptedKeyTypes=+ssh-rsa' \
+            "bin/secret '${1}'"
+EOF
+    chmod a+x ${HOME}/bin/secret
+
+    secret frog
+
+# -----------------------------------------------------
+# Configure a new oauth2_proxy Service to use Drupal.
+#[user@kubernator]
+
+    # Drupal endpoint URLs
+    # https://www.drupal.org/project/infrastructure/issues/2908988
+    # [drupal]/oauth2/{token|authenticate|UserInfo}
+
+    certname=tls-secret
+
+    OAUTH2_PROXY_HOSTNAME=gwerf.metagrid.xyz
+    OAUTH2_PROXY_AUTHPATH=cribnart
+
+    OAUTH2_PROXY_REDIRECT_URL=https://${OAUTH2_PROXY_HOSTNAME:?}/${OAUTH2_PROXY_AUTHPATH:?}/callback
+    OAUTH2_PROXY_CLIENT_NAME=$(secret miniorange.oauth.name)
+    OAUTH2_PROXY_CLIENT_IDENT=$(secret miniorange.oauth.ident)
+    OAUTH2_PROXY_CLIENT_SECRET=$(secret miniorange.oauth.secret)
+
+    OAUTH2_DRUPAL_SERVER_BASE=http://drupal.metagrid.xyz/
+    OAUTH2_DRUPAL_SERVER_AUTH=http://drupal.metagrid.xyz/authorize
+    OAUTH2_DRUPAL_SERVER_TOKEN=http://drupal.metagrid.xyz/access_token
+    OAUTH2_DRUPAL_SERVER_USER=http://drupal.metagrid.xyz/user_info
+    OAUTH2_DRUPAL_SERVER_KEYS=http://drupal.metagrid.xyz/unknown
+
+    OAUTH2_PROXY_COOKIE_SECRET=$(
+        python -c 'import os,base64; print(base64.b64encode(os.urandom(16)).decode("ascii"))'
+        )
+
+    cat > /tmp/drupal-oauth-proxy.yaml << EOF
+---
+apiVersion: v1
+kind: Service
+metadata:
+ labels:
+   k8s-app: drupal-oauth-proxy
+ name: drupal-oauth-proxy
+ namespace: default
+spec:
+ ports:
+ - name: http
+   port: 4180
+   protocol: TCP
+   targetPort: 4180
+ selector:
+   k8s-app: drupal-oauth-proxy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+ labels:
+   k8s-app: drupal-oauth-proxy
+ name: drupal-oauth-proxy
+ namespace: default
+spec:
+ replicas: 1
+ selector:
+   matchLabels:
+     k8s-app: drupal-oauth-proxy
+ template:
+   metadata:
+     labels:
+       k8s-app: drupal-oauth-proxy
+   spec:
+     containers:
+     - args:
+        - --provider=oidc
+        - --proxy-prefix=/${OAUTH2_PROXY_AUTHPATH:?}
+        - --client-id=${OAUTH2_PROXY_CLIENT_IDENT:?}
+        - --client-secret=${OAUTH2_PROXY_CLIENT_SECRET:?}
+        - --redirect-url=${OAUTH2_PROXY_REDIRECT_URL:?}
+        - --oidc-issuer-url=${OAUTH2_DRUPAL_SERVER_BASE:?}
+        - --skip-oidc-discovery
+        - --login-url=${OAUTH2_DRUPAL_SERVER_AUTH:?}
+        - --redeem-url=${OAUTH2_DRUPAL_SERVER_TOKEN:?}
+        - --profile-url=${OAUTH2_DRUPAL_SERVER_USER:?}
+        - --cookie-secret=$(pwgen 32 1)
+        - --email-domain=*
+        - --http-address=0.0.0.0:4180
+        - --oidc-jwks-url=${OAUTH2_DRUPAL_SERVER_KEYS:?}
+       image: quay.io/oauth2-proxy/oauth2-proxy:latest
+       imagePullPolicy: Always
+       name: drupal-oauth-proxy
+       ports:
+       - containerPort: 4180
+         protocol: TCP
+EOF
+
+
+# -----------------------------------------------------
+# Delete the Drupal OAuth proxy components.
+#[user@kubernator]
+
+    kubectl delete \
+        service drupal-oauth-proxy
+
+    >   service "drupal-oauth-proxy" deleted
+
+
+    kubectl delete \
+        deployment drupal-oauth-proxy
+
+    >   deployment.apps "drupal-oauth-proxy" deleted
+
+
+# -----------------------------------------------------
+# Deploy the Drupal OAuth proxy components.
+#[user@kubernator]
+
+    kubectl create \
+        --filename /tmp/drupal-oauth-proxy.yaml
+
+    >   service/drupal-oauth-proxy created
+    >   deployment.apps/drupal-oauth-proxy created
+
+
+# -----------------------------------------------------
+# Configure the Drupal OAuth Ingress.
+#[user@kubernator]
+
+    #
+    # WARNING The auth-url and auth-signin URLs contain '$' values.
+    # WARNING If bash tries to fill them in, they will end up blank.
+    #   https:///oauth2/auth
+    #   https:///oauth2/start?rd
+    # WARNING This disables the authentication, leaving the protected resource exposed.
+    #
+
+    cat > /tmp/drupal-oauth-ingress.yaml << EOF
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+ annotations:
+   nginx.ingress.kubernetes.io/auth-url:    "https://\$host/${OAUTH2_PROXY_AUTHPATH:?}/auth"
+   nginx.ingress.kubernetes.io/auth-signin: "https://\$host/${OAUTH2_PROXY_AUTHPATH:?}/start?rd=\$escaped_request_uri"
+   nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user, x-auth-request-email"
+ name: drupal-oauth-protected
+ namespace: default
+spec:
+ rules:
+ - host: ${OAUTH2_PROXY_HOSTNAME:?}
+   http:
+     paths:
+     - path: /
+       backend:
+         serviceName: http-svc
+         servicePort: 80
+ tls:
+ - hosts:
+   - ${OAUTH2_PROXY_HOSTNAME:?}
+   secretName: ${certname:?}
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+ name: drupal-oauth-protector
+ namespace: default
+spec:
+ rules:
+ - host: ${OAUTH2_PROXY_HOSTNAME:?}
+   http:
+     paths:
+     - path: /${OAUTH2_PROXY_AUTHPATH:?}
+       backend:
+         serviceName: drupal-oauth-proxy
+         servicePort: 4180
+
+ tls:
+ - hosts:
+   - ${OAUTH2_PROXY_HOSTNAME:?}
+   secretName: ${certname:?}
+EOF
+
+
+# -----------------------------------------------------
+# Delete the OAuth Ingress components.
+#[user@kubernator]
+
+    kubectl delete \
+        ingress drupal-oauth-protected
+
+    >   ingress.extensions "drupal-oauth-protected" deleted
+
+
+    kubectl delete \
+        ingress drupal-oauth-protector
+
+    >   ingress.extensions "drupal-oauth-protector" deleted
+
+
+# -----------------------------------------------------
+# Deploy the OAuth Ingress components.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename /tmp/drupal-oauth-ingress.yaml
+
+    >   ingress.networking.k8s.io/drupal-oauth-protected created
+    >   ingress.networking.k8s.io/drupal-oauth-protector created
+
+
+    kubectl describe \
+        ingress drupal-oauth-protected
+
+    >   Name:             drupal-oauth-protected
+    >   Namespace:        default
+    >   Address:
+    >   Default backend:  default-http-backend:80 (<error: endpoints "default-http-backend" not found>)
+    >   TLS:
+    >     tls-secret terminates gwerf.metagrid.xyz
+    >   Rules:
+    >     Host                Path  Backends
+    >     ----                ----  --------
+    >     gwerf.metagrid.xyz
+    >                         /   http-svc:80 (10.100.4.48:8080)
+    >   Annotations:          nginx.ingress.kubernetes.io/auth-response-headers: x-auth-request-user, x-auth-request-email
+    >                         nginx.ingress.kubernetes.io/auth-signin: https://$host/cribnart/start?rd=$escaped_request_uri
+    >                         nginx.ingress.kubernetes.io/auth-url: https://$host/cribnart/auth
+    >   Events:
+    >     Type    Reason  Age   From                      Message
+    >     ----    ------  ----  ----                      -------
+    >     Normal  CREATE  9s    nginx-ingress-controller  Ingress default/drupal-oauth-protected
+
+
+    kubectl describe \
+        ingress drupal-oauth-protector
+
+    >   Name:             drupal-oauth-protector
+    >   Namespace:        default
+    >   Address:          128.232.227.125
+    >   Default backend:  default-http-backend:80 (<error: endpoints "default-http-backend" not found>)
+    >   TLS:
+    >     tls-secret terminates gwerf.metagrid.xyz
+    >   Rules:
+    >     Host                Path  Backends
+    >     ----                ----  --------
+    >     gwerf.metagrid.xyz
+    >                         /cribnart   drupal-oauth-proxy:4180 ()
+    >   Annotations:          Events:
+    >     Type                Reason  Age   From                      Message
+    >     ----                ------  ----  ----                      -------
+    >     Normal              CREATE  24s   nginx-ingress-controller  Ingress default/drupal-oauth-protector
+    >     Normal              UPDATE  10s   nginx-ingress-controller  Ingress default/drupal-oauth-protector
+
+
+# -----------------------------------------------------
+# Install krew plugin manager for kubectl.
+# https://krew.sigs.k8s.io/
+# https://krew.sigs.k8s.io/docs/user-guide/setup/install/
+#[user@kubernator]
+
+    dnf install -y git
+
+    (
+      set -x; cd "$(mktemp -d)" &&
+      curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/krew.tar.gz" &&
+      tar zxvf krew.tar.gz &&
+      KREW=./krew-"$(uname | tr '[:upper:]' '[:lower:]')_$(uname -m | sed -e 's/x86_64/amd64/' -e 's/arm.*$/arm/')" &&
+      "$KREW" install krew
+    )
+
+    export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install the ingress-nginx kubectl plugin.
+# https://kubernetes.github.io/ingress-nginx/kubectl-plugin/
+#[user@kubernator]
+
+    kubectl krew install ingress-nginx
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Watch our nginx-controller logs.
+#[user@kubernator]
+
+    kubectl \
+        ingress-nginx \
+            --namespace 'aglais-k8s-20201208' \
+            --deployment 'aglais-ingress-nginx-controller' \
+            logs \
+                --follow \
+                --tail 20
+
+    >   ....
+    >   ....
+    >   W1211 05:14:57.394849       8 controller.go:937] Service "default/drupal-oauth-proxy" does not have any active Endpoint.
+
+
+# -----------------------------------------------------
+# Checkout the drupal-oauth-proxy Pod.
+#[user@kubernator]
+
+    kubectl \
+        --namespace 'default' \
+        describe pod \
+            drupal-oauth-proxy
+
+    >   Name:         drupal-oauth-proxy-c887b587-fw2wc
+    >   Namespace:    default
+    >   Node:         aglais-k8s-20201208-cluster-p5qlctagesrg-node-2/10.0.0.40
+    >   Start Time:   Fri, 11 Dec 2020 05:08:51 +0000
+    >   Labels:       k8s-app=drupal-oauth-proxy
+    >                 pod-template-hash=c887b587
+    >   Annotations:  <none>
+    >   Status:       Running
+    >   IP:           10.100.4.60
+    >   IPs:
+    >     IP:           10.100.4.60
+    >   Controlled By:  ReplicaSet/drupal-oauth-proxy-c887b587
+    >   Containers:
+    >     drupal-oauth-proxy:
+    >       Container ID:  docker://46ff69c4ec3d4e766bc01047289de60c3cb3cf7d2e67bf0c87115e07567d0d6e
+    >       Image:         quay.io/oauth2-proxy/oauth2-proxy:latest
+    >       Image ID:      docker-pullable://quay.io/oauth2-proxy/oauth2-proxy@sha256:791aef35b8d1d2a325028b188d5a650605d69985a0dab1233c06079e7321eee0
+    >       Port:          4180/TCP
+    >       Host Port:     0/TCP
+    >       Args:
+    >         --provider=oidc
+    >         --proxy-prefix=/cribnart
+    >         --client-id=Sfm2YWiuNfQa4qMw5sX8QtG5pNwTO2
+    >         --client-secret=ovoltOXlDvL9FHEjVygoyzZ6hlbvKn
+    >         --redirect-url=https://gwerf.metagrid.xyz/cribnart/callback
+    >         --oidc-issuer-url=http://drupal.metagrid.xyz/
+    >         --skip-oidc-discovery
+    >         --login-url=http://drupal.metagrid.xyz/authorize
+    >         --redeem-url=http://drupal.metagrid.xyz/access_token
+    >         --profile-url=http://drupal.metagrid.xyz/user_info
+    >       State:          Waiting
+    >         Reason:       CrashLoopBackOff
+    >       Last State:     Terminated
+    >         Reason:       Error
+    >         Exit Code:    1
+    >         Started:      Fri, 11 Dec 2020 05:19:59 +0000
+    >         Finished:     Fri, 11 Dec 2020 05:19:59 +0000
+    >       Ready:          False
+    >       Restart Count:  7
+    >       Environment:    <none>
+    >       Mounts:
+    >         /var/run/secrets/kubernetes.io/serviceaccount from default-token-bd75n (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             False
+    >     ContainersReady   False
+    >     PodScheduled      True
+    >   Volumes:
+    >     default-token-bd75n:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  default-token-bd75n
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type     Reason     Age                   From                                                      Message
+    >     ----     ------     ----                  ----                                                      -------
+    >     Normal   Scheduled  <unknown>             default-scheduler                                         Successfully assigned default/drupal-oauth-proxy-c887b587-fw2wc to aglais-k8s-20201208-cluster-p5qlctagesrg-node-2
+    >     Normal   Created    11m (x4 over 12m)     kubelet, aglais-k8s-20201208-cluster-p5qlctagesrg-node-2  Created container drupal-oauth-proxy
+    >     Normal   Started    11m (x4 over 12m)     kubelet, aglais-k8s-20201208-cluster-p5qlctagesrg-node-2  Started container drupal-oauth-proxy
+    >     Normal   Pulling    11m (x5 over 12m)     kubelet, aglais-k8s-20201208-cluster-p5qlctagesrg-node-2  Pulling image "quay.io/oauth2-proxy/oauth2-proxy:latest"
+    >     Normal   Pulled     11m (x5 over 12m)     kubelet, aglais-k8s-20201208-cluster-p5qlctagesrg-node-2  Successfully pulled image "quay.io/oauth2-proxy/oauth2-proxy:latest"
+    >     Warning  BackOff    2m40s (x47 over 12m)  kubelet, aglais-k8s-20201208-cluster-p5qlctagesrg-node-2  Back-off restarting failed container
+
+
+    kubectl \
+        --namespace 'default' \
+        logs \
+            drupal-oauth-proxy-c887b587-fw2wc
+
+    >   [2020/12/11 05:19:59] [logger.go:490] invalid configuration:
+    >     missing setting: cookie-secret
+    >     missing setting for email validation: email-domain or authenticated-emails-file required.
+    >         use email-domain=* to authorize all email addresses
+    >     missing setting: oidc-jwks-url
+
+
+# -----------------------------------------------------
+# Edit the drupal-oauth-proxy settings and re-deploy ...
+#[user@kubernator]
+
+    +   --cookie-secret=$(pwgen 10 1)
+    +   --email-domain=*
+    +   --oidc-jwks-url=${OAUTH2_DRUPAL_SERVER_KEYS:?}
+
+# -----------------------------------------------------
+# Checkout the drupal-oauth-proxy Pod.
+#[user@kubernator]
+
+    kubectl \
+        --namespace 'default' \
+        describe pod \
+            drupal-oauth-proxy
+
+    >   Name:         drupal-oauth-proxy-5ff75bb7fd-6pcst
+    >   Namespace:    default
+    >   Node:         aglais-k8s-20201208-cluster-p5qlctagesrg-node-2/10.0.0.40
+    >   Start Time:   Fri, 11 Dec 2020 05:36:19 +0000
+    >   Labels:       k8s-app=drupal-oauth-proxy
+    >                 pod-template-hash=5ff75bb7fd
+    >   Annotations:  <none>
+    >   Status:       Running
+    >   IP:           10.100.4.62
+    >   ....
+    >   ....
+
+
+    kubectl \
+        --namespace 'default' \
+        logs \
+            drupal-oauth-proxy-5ff75bb7fd-6pcst
+
+    >   [2020/12/11 05:37:17] [logger.go:490] invalid configuration:
+    >     cookie_secret must be 16, 24, or 32 bytes to create an AES cipher, but is 10 bytes
+
+
+# -----------------------------------------------------
+# Edit the drupal-oauth-proxy settings and re-deploy ...
+#[user@kubernator]
+
+    +   --cookie-secret=$(pwgen 32 1)
+
+
+# -----------------------------------------------------
+# Checkout the drupal-oauth-proxy Pod.
+#[user@kubernator]
+
+    kubectl \
+        --namespace 'default' \
+        describe pod \
+            drupal-oauth-proxy
+
+    >   Name:         drupal-oauth-proxy-b75467b77-hth9x
+    >   Namespace:    default
+    >   Node:         aglais-k8s-20201208-cluster-p5qlctagesrg-node-2/10.0.0.40
+    >   Start Time:   Fri, 11 Dec 2020 05:39:40 +0000
+    >   Labels:       k8s-app=drupal-oauth-proxy
+    >                 pod-template-hash=b75467b77
+    >   Annotations:  <none>
+    >   Status:       Running
+    >   IP:           10.100.4.63
+    >   ....
+    >   ....
+
+
+    kubectl \
+        --namespace 'default' \
+        logs \
+            drupal-oauth-proxy-b75467b77-hth9x
+
+    >   [2020/12/11 05:39:45] [logger.go:490] OAuthProxy configured for OpenID Connect Client ID: Sfm2YWiuNfQa4qMw5sX8QtG5pNwTO2
+    >   [2020/12/11 05:39:45] [logger.go:490] Cookie settings: name:_oauth2_proxy secure(https):true httponly:true expiry:168h0m0s domains: path:/ samesite: refresh:disabled
+    >   [2020/12/11 05:39:45] [logger.go:490] HTTP: listening on 127.0.0.1:4180
+
+
+# -----------------------------------------------------
+# Edit the drupal-oauth-proxy settings and re-deploy ...
+#[user@kubernator]
+
+    +   --http-address=0.0.0.0:4180
+
+
+# -----------------------------------------------------
+# Checkout the drupal-oauth-proxy Pod.
+#[user@kubernator]
+
+    kubectl \
+        --namespace 'default' \
+        describe pod \
+            drupal-oauth-proxy
+
+    >   Name:         drupal-oauth-proxy-557f7d865c-wxwcp
+    >   Namespace:    default
+    >   Node:         aglais-k8s-20201208-cluster-p5qlctagesrg-node-2/10.0.0.40
+    >   Start Time:   Fri, 11 Dec 2020 05:42:41 +0000
+    >   Labels:       k8s-app=drupal-oauth-proxy
+    >                 pod-template-hash=557f7d865c
+    >   Annotations:  <none>
+    >   Status:       Running
+    >   IP:           10.100.4.64
+    >   ....
+    >   ....
+
+
+    kubectl \
+        --namespace 'default' \
+        logs \
+            drupal-oauth-proxy-557f7d865c-wxwcp
+
+
+    >   [2020/12/11 05:42:45] [logger.go:490] OAuthProxy configured for OpenID Connect Client ID: Sfm2YWiuNfQa4qMw5sX8QtG5pNwTO2
+    >   [2020/12/11 05:42:45] [logger.go:490] Cookie settings: name:_oauth2_proxy secure(https):true httponly:true expiry:168h0m0s domains: path:/ samesite: refresh:disabled
+    >   [2020/12/11 05:42:45] [logger.go:490] HTTP: listening on 0.0.0.0:4180
+
+
+
+# -----------------------------------------------------
+# Watch our nginx-controller logs.
+#[user@kubernator]
+
+    kubectl \
+        ingress-nginx \
+            --namespace 'aglais-k8s-20201208' \
+            --deployment 'aglais-ingress-nginx-controller' \
+            logs \
+                --follow \
+                --tail 20
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Test the deployment.
+#[user@desktop]
+
+    curl --head --insecure "https://gwerf.metagrid.xyz/test"
+
+    >   date: Fri, 11 Dec 2020 05:44:17 GMT
+    >   content-type: text/html
+    >   content-length: 138
+    >   location: https://gwerf.metagrid.xyz/cribnart/start?rd=%2Ftest
+
+    curl --head --insecure "https://gwerf.metagrid.xyz/cribnart/start?rd=%2Ftest"
+
+    >   HTTP/2 302
+    >   date: Fri, 11 Dec 2020 05:44:48 GMT
+    >   content-type: text/html; charset=utf-8
+    >   location: http://drupal.metagrid.xyz/authorize?approval_prompt=force&client_id=Sfm2YWiuNfQa4qMw5sX8QtG5pNwTO2&redirect_uri=https%3A%2F%2Fgwerf.metagrid.xyz%2Fcribnart%2Fcallback&response_type=code&scope=openid+email+profile&state=37880cff77550778deefd34475274425%3A%2Ftest
+    >   cache-control: no-cache, no-store, must-revalidate, max-age=0
+    >   expires: Thu, 01 Jan 1970 00:00:00 UTC
+    >   set-cookie: _oauth2_proxy_csrf=37880cff77550778deefd34475274425; Path=/; Expires=Fri, 18 Dec 2020 05:44:48 GMT; HttpOnly; Secure; SameSite
+    >   strict-transport-security: max-age=15724800; includeSubDomains
+
+    curl --head --insecure "http://drupal.metagrid.xyz/authorize?approval_prompt=force&client_id=Sfm2YWiuNfQa4qMw5sX8QtG5pNwTO2&redirect_uri=https%3A%2F%2Fgwerf.metagrid.xyz%2Fcribnart%2Fcallback&response_type=code&scope=openid+email+profile&state=37880cff77550778deefd34475274425%3A%2Ftest"
+
+    >   HTTP/1.1 308 Permanent Redirect
+    >   Date: Fri, 11 Dec 2020 05:45:35 GMT
+    >   Content-Type: text/html
+    >   Content-Length: 164
+    >   Connection: keep-alive
+    >   Location: https://drupal.metagrid.xyz/authorize?approval_prompt=force&client_id=Sfm2YWiuNfQa4qMw5sX8QtG5pNwTO2&redirect_uri=https%3A%2F%2Fgwerf.metagrid.xyz%2Fcribnart%2Fcallback&response_type=code&scope=openid+email+profile&state=37880cff77550778deefd34475274425%3A%2Ftest
+
+    curl --head --insecure "https://drupal.metagrid.xyz/authorize?approval_prompt=force&client_id=Sfm2YWiuNfQa4qMw5sX8QtG5pNwTO2&redirect_uri=https%3A%2F%2Fgwerf.metagrid.xyz%2Fcribnart%2Fcallback&response_type=code&scope=openid+email+profile&state=37880cff77550778deefd34475274425%3A%2Ftest"
+
+    >   date: Fri, 11 Dec 2020 05:46:23 GMT
+    >   content-type: text/html; charset=UTF-8
+    >   location: user/login
+    >   x-powered-by: PHP/7.4.13
+    >   set-cookie: Drupal.visitor.redirecting_url=http%3A%2F%2Fdrupal.metagrid.xyz%2Fauthorize%3Fapproval_prompt%3Dforce%26client_id%3DSfm2YWiuNfQa4qMw5sX8QtG5pNwTO2%26redirect_uri%3Dhttps%253A%252F%252Fgwerf.metagrid.xyz%252Fcribnart%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%2Bemail%2Bprofile%26state%3D37880cff77550778deefd34475274425%253A%252Ftest; expires=Sat, 11-Dec-2021 05:46:23 GMT; Max-Age=31536000; path=/
+    >   cache-control: no-cache, private
+    >   strict-transport-security: max-age=15724800; includeSubDomains
+
+    ..
+    ..
+
+
+# -----------------------------------------------------
+# Test the deployment.
+#[user@desktop]
+
+    firefox --new-window "https://gwerf.metagrid.xyz/test" &
+
+
+
+# -----------------------------------------------------
+# Watch the oauth-proxy logs.
+#[user@kubernator]
+
+    kubectl \
+        --namespace 'default' \
+        logs \
+            'drupal-oauth-proxy-557f7d865c-wxwcp'
+
+    >   ....
+    >   [2020/12/11 05:55:08] [logger.go:508] Error redeeming code during OAuth2 callback: token exchange: Post "https://drupal.metagrid.xyz/access_token": x509: certificate is valid for ingress.local, not drupal.metagrid.xyz
+    >   ....
+
+    #
+    # The Drupal ingress is using the default certificate, not our new one.
+    #
+
+# -----------------------------------------------------
+# Update the Drupla Ingress
+#[user@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get ingress
+
+    >   NAME                                    HOSTS                   ADDRESS           PORTS     AGE
+    >   aglais-dashboard-kubernetes-dashboard   valeria.metagrid.xyz    128.232.227.125   80        3d4h
+    >   aglais-drupal-drupal-ingress            drupal.metagrid.xyz     128.232.227.125   80, 443   16h
+    >   zeppelin-server-ingress                 zeppelin.metagrid.xyz   128.232.227.125   80, 443   3d4h
+
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get ingress \
+            --output json \
+                'aglais-drupal-drupal-ingress'
+
+    >   {
+    >       "apiVersion": "extensions/v1beta1",
+    >       "kind": "Ingress",
+    >       "metadata": {
+    >           "annotations": {
+    >               "kubernetes.io/ingress.class": "nginx",
+    >               "meta.helm.sh/release-name": "aglais-drupal",
+    >               "meta.helm.sh/release-namespace": "aglais-k8s-20201208",
+    >               "nginx.ingress.kubernetes.io/ssl-passthrough": "false",
+    >               "nginx.ingress.kubernetes.io/ssl-redirect": "true"
+    >           },
+    >           "creationTimestamp": "2020-12-10T14:16:03Z",
+    >           "generation": 1,
+    >           "labels": {
+    >               "app.kubernetes.io/instance": "aglais-drupal",
+    >               "app.kubernetes.io/managed-by": "Helm",
+    >               "app.kubernetes.io/name": "aglais-drupal",
+    >               "app.kubernetes.io/version": "0.0.1",
+    >               "helm.sh/chart": "aglais-drupal-0.0.1"
+    >           },
+    >           "name": "aglais-drupal-drupal-ingress",
+    >           "namespace": "aglais-k8s-20201208",
+    >           "resourceVersion": "1182584",
+    >           "selfLink": "/apis/extensions/v1beta1/namespaces/aglais-k8s-20201208/ingresses/aglais-drupal-drupal-ingress",
+    >           "uid": "d166f95f-0273-46cc-a093-1667a9892761"
+    >       },
+    >       "spec": {
+    >           "rules": [
+    >               {
+    >                   "host": "drupal.metagrid.xyz",
+    >                   "http": {
+    >                       "paths": [
+    >                           {
+    >                               "backend": {
+    >                                   "serviceName": "aglais-drupal-drupal-service",
+    >                                   "servicePort": 80
+    >                               },
+    >                               "path": "/"
+    >                           }
+    >                       ]
+    >                   }
+    >               }
+    >           ],
+    >           "tls": [
+    >               {
+    >                   "hosts": [
+    >                       "drupal.metagrid.xyz"
+    >                   ],
+    >                   "secretName": "drupal-ingress-tls-secret"
+    >               }
+    >           ]
+    >       },
+    >       "status": {
+    >           "loadBalancer": {
+    >               "ingress": [
+    >                   {
+    >                       "ip": "128.232.227.125"
+    >                   }
+    >               ]
+    >           }
+    >       }
+    >   }
+
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get ingress \
+            --output json \
+                'aglais-drupal-drupal-ingress' \
+    | jq -r '.spec.tls[0].secretName'
+
+    >   drupal-ingress-tls-secret
+
+
+    kubectl \
+        --namespace ${namespace:?} \
+        patch ingress \
+            'aglais-drupal-drupal-ingress' \
+            --type 'json' \
+            --patch "[{'op': 'replace', 'path': '/spec/tls/0/secretName', 'value':'${certname:?}'}]"
+
+    >   ingress.extensions/aglais-drupal-drupal-ingress patched
+
+    #
+    # Patching the Ingress didn't fix the issue.
+    # Drupal site still returns the 'fake' certificate.
+    #
+
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get ingress \
+            --output json \
+                'aglais-drupal-drupal-ingress' \
+    | tee '/tmp/aglais-drupal-ingress.json'
+
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        delete ingress \
+            'aglais-drupal-drupal-ingress'
+
+    kubectl apply \
+        --filename '/tmp/aglais-drupal-ingress.json'
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        describe ingress \
+            'aglais-drupal-drupal-ingress'
+
+    >   Name:             aglais-drupal-drupal-ingress
+    >   Namespace:        aglais-k8s-20201208
+    >   Address:          128.232.227.125
+    >   Default backend:  default-http-backend:80 (<error: endpoints "default-http-backend" not found>)
+    >   TLS:
+    >     tls-secret terminates drupal.metagrid.xyz
+    >   Rules:
+    >     Host                 Path  Backends
+    >     ----                 ----  --------
+    >     drupal.metagrid.xyz
+    >                          /   aglais-drupal-drupal-service:80 (10.100.4.56:80)
+    >   Annotations:           kubernetes.io/ingress.class: nginx
+    >                          meta.helm.sh/release-name: aglais-drupal
+    >                          meta.helm.sh/release-namespace: aglais-k8s-20201208
+    >                          nginx.ingress.kubernetes.io/ssl-passthrough: false
+    >                          nginx.ingress.kubernetes.io/ssl-redirect: true
+    >   Events:
+    >     Type    Reason  Age   From                      Message
+    >     ----    ------  ----  ----                      -------
+    >     Normal  CREATE  39s   nginx-ingress-controller  Ingress aglais-k8s-20201208/aglais-drupal-drupal-ingress
+    >     Normal  UPDATE  23s   nginx-ingress-controller  Ingress aglais-k8s-20201208/aglais-drupal-drupal-ingress
+
+    #
+    # Nope - probably because the Ingress and the secret are in different namespaces.
+    #
+
+# -----------------------------------------------------
+# Create a new secret in our deployment namespace.
+#[user@kubernator]
+
+
+
+    kubectl create secret \
+        --namespace "${namespace:?}" \
+        tls \
+        "${certname:?}" \
+            --key  "/tmp/${certname:?}.key" \
+            --cert "/tmp/${certname:?}.crt"
+
+    >   secret/tls-secret created
+
+
+    kubectl describe \
+        --namespace "${namespace:?}" \
+        secret \
+            "${certname:?}"
+
+    >   Name:         tls-secret
+    >   Namespace:    aglais-k8s-20201208
+    >   Labels:       <none>
+    >   Annotations:  <none>
+    >   
+    >   Type:  kubernetes.io/tls
+    >   
+    >   Data
+    >   ====
+    >   tls.crt:  1452 bytes
+    >   tls.key:  1704 bytes
+
+
+
+    kubectl \
+        --namespace 'default' \
+        logs \
+            'drupal-oauth-proxy-557f7d865c-wxwcp' \
+            --follow
+
+    #
+    # OK - the Druapl site returns the new certificate too.
+    #
+
+    #
+    # but ... oauth-proxy won't accept the self-signed certificate
+
+    >   ....
+    >   [2020/12/11 07:01:07] [logger.go:508] Error redeeming code during OAuth2 callback: token exchange: Post "https://drupal.metagrid.xyz/access_token": x509: certificate signed by unknown authority
+    >   ....
+
+

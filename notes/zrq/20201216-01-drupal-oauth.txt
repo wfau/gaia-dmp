@@ -1,0 +1,462 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Target:
+
+        Swap from using the miniOrange module to the OAuth2 Server module.
+
+    Result:
+
+        Work in progress ....
+
+    Source:
+
+        Authorization flows and grant types
+        https://www.drupal.org/node/1958718
+
+        How to use OpenID Connect Generic plugin with Drupal
+        https://www.daggerhart.com/use-openid-connect-generic-plugin-drupal/
+
+        Authenticating Drupal users via OAuth2
+        https://colan.consulting/blog/authenticating-drupal-users-oauth2
+
+        Provide openid-configuration and certificate as JWK to meet OpenID 1.0 specs
+        https://www.drupal.org/project/oauth2_server/issues/2950666
+
+        OpenId Connect autodiscovery
+        https://www.drupal.org/project/openid_connect_autodiscovery
+
+
+        notes/zrq/20201210-04-drupal-clean.txt
+        notes/zrq/20201209-03-kubectl-login.txt
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Deploy a clean install of Drupal.
+    notes/zrq/20201210-04-drupal-clean.txt
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+    Configure the OAuth2 Server
+
+    https://drupal.metagrid.xyz/admin/structure/oauth2-servers
+    https://drupal.metagrid.xyz/admin/structure/oauth2-servers/manage/michael_chriton/edit
+    https://drupal.metagrid.xyz/admin/structure/oauth2-servers/manage/michael_chriton/scopes
+    https://drupal.metagrid.xyz/admin/structure/oauth2-servers/manage/michael_chriton/clients
+    https://drupal.metagrid.xyz/admin/structure/oauth2-servers/manage/michael_chriton/clients/iebetoopahya1zahthee/edit
+
+        Label:
+            Albert Crichton
+
+        Client ID:
+            drupal.oauth2.client.ident
+
+        Client Secret:
+            drupal.oauth2.client.secret
+
+        Redirect URL:
+            https://gwerf.metagrid.xyz/cribnart/callback
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock:z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Get the cluster connection details.
+    See notes/zrq/20201209-03-kubectl-login.txt
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Configure our secret function.
+# https://www.reddit.com/r/Fedora/comments/jh9iyi/f33_openssh_no_mutual_signature_algorithm/g9yebel/
+#[user@kubernator]
+
+    mkdir ${HOME}/bin
+    cat > ${HOME}/bin/secret << 'EOF'
+ssh -n \
+    'Zarquan@data.metagrid.co.uk' \
+        -o 'PubkeyAcceptedKeyTypes=+ssh-rsa' \
+            "bin/secret '${1}'"
+EOF
+    chmod a+x ${HOME}/bin/secret
+
+    secret frog
+
+
+# -----------------------------------------------------
+# Delete our OAuth proxy components.
+#[user@kubernator]
+
+    kubectl delete \
+        service drupal-oauth-proxy
+
+    >   service "drupal-oauth-proxy" deleted
+
+
+    kubectl delete \
+        deployment drupal-oauth-proxy
+
+    >   deployment.apps "drupal-oauth-proxy" deleted
+
+
+# -----------------------------------------------------
+# Configure our OAuth2Proxy Service.
+#[user@kubernator]
+
+    # Drupal endpoint URLs
+    # https://www.drupal.org/project/infrastructure/issues/2908988
+    # [drupal]/oauth2/{token|authenticate|UserInfo}
+
+    certname=tls-secret
+
+    OAUTH2_PROXY_HOSTNAME=gwerf.metagrid.xyz
+    OAUTH2_PROXY_AUTHPATH=cribnart
+
+    OAUTH2_PROXY_REDIRECT_URL=https://${OAUTH2_PROXY_HOSTNAME:?}/${OAUTH2_PROXY_AUTHPATH:?}/callback
+    OAUTH2_PROXY_CLIENT_IDENT=$(secret drupal.oauth2.client.ident)
+    OAUTH2_PROXY_CLIENT_SECRET=$(secret drupal.oauth2.client.secret)
+
+    OAUTH2_DRUPAL_SERVER_BASE=https://drupal.metagrid.xyz/
+    OAUTH2_DRUPAL_SERVER_AUTH=https://drupal.metagrid.xyz/oauth2/authorize
+    OAUTH2_DRUPAL_SERVER_TOKEN=https://drupal.metagrid.xyz/oauth2/token
+    OAUTH2_DRUPAL_SERVER_USER=https://drupal.metagrid.xyz/oauth2/UserInfo
+    OAUTH2_DRUPAL_SERVER_JWKS=https://drupal.metagrid.xyz/.well-known/openid-jwks
+
+    OAUTH2_PROXY_COOKIE_SECRET=$(
+        python -c 'import os,base64; print(base64.b64encode(os.urandom(16)).decode("ascii"))'
+        )
+
+    cat > /tmp/drupal-oauth-proxy.yaml << EOF
+---
+apiVersion: v1
+kind: Service
+metadata:
+ labels:
+   k8s-app: drupal-oauth-proxy
+ name: drupal-oauth-proxy
+ namespace: default
+spec:
+ ports:
+ - name: http
+   port: 4180
+   protocol: TCP
+   targetPort: 4180
+ selector:
+   k8s-app: drupal-oauth-proxy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+ labels:
+   k8s-app: drupal-oauth-proxy
+ name: drupal-oauth-proxy
+ namespace: default
+spec:
+ replicas: 1
+ selector:
+   matchLabels:
+     k8s-app: drupal-oauth-proxy
+ template:
+   metadata:
+     labels:
+       k8s-app: drupal-oauth-proxy
+   spec:
+     containers:
+     - args:
+        - --provider=oidc
+        - --proxy-prefix=/${OAUTH2_PROXY_AUTHPATH:?}
+        - --client-id=${OAUTH2_PROXY_CLIENT_IDENT:?}
+        - --client-secret=${OAUTH2_PROXY_CLIENT_SECRET:?}
+        - --redirect-url=${OAUTH2_PROXY_REDIRECT_URL:?}
+        - --oidc-issuer-url=${OAUTH2_DRUPAL_SERVER_BASE:?}
+        - --login-url=${OAUTH2_DRUPAL_SERVER_AUTH:?}
+        - --redeem-url=${OAUTH2_DRUPAL_SERVER_TOKEN:?}
+        - --profile-url=${OAUTH2_DRUPAL_SERVER_USER:?}
+        - --skip-oidc-discovery
+        - --oidc-jwks-url=${OAUTH2_DRUPAL_SERVER_JWKS:?}
+        - --cookie-secret=$(pwgen 32 1)
+        - --email-domain=*
+        - --http-address=0.0.0.0:4180
+        - --ssl-insecure-skip-verify
+        - --ssl-upstream-insecure-skip-verify
+       image: quay.io/oauth2-proxy/oauth2-proxy:latest
+       imagePullPolicy: Always
+       name: drupal-oauth-proxy
+       ports:
+       - containerPort: 4180
+         protocol: TCP
+EOF
+
+
+# -----------------------------------------------------
+# Deploy our OAuth proxy components.
+#[user@kubernator]
+
+    kubectl create \
+        --filename /tmp/drupal-oauth-proxy.yaml
+
+    >   service/drupal-oauth-proxy created
+    >   deployment.apps/drupal-oauth-proxy created
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    # Added the certificates endpoint.
+
+    OAUTH2_DRUPAL_SERVER_KEYS=https://drupal.metagrid.xyz/oauth2/certificates
+
+    #
+    # OAuth Proxy logged an error because it was expecting JSON not a raw certificate.
+
+    >   ....
+    >   [2020/12/16 04:18:44] [logger.go:508] Error redeeming code during OAuth2 callback: could not verify id_token: failed to verify signature: fetching keys oidc: failed to decode keys: got Content-Type = application/json, but could not unmarshal as JSON: json: cannot unmarshal array into Go value of type jose.JSONWebKeySet ["-----BEGIN CERTIFICATE-----\nMIID......1O9o=\n-----END CERTIFICATE-----\n"]
+    >   ....
+
+    #
+    # Google-foo found these:
+
+        Provide openid-configuration and certificate as JWK to meet OpenID 1.0 specs
+        https://www.drupal.org/project/oauth2_server/issues/2950666
+
+        OpenId Connect autodiscovery
+        https://www.drupal.org/project/openid_connect_autodiscovery
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Edited the Docker file and re-deployed our Drupal container ...
+
+        php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/oauth2_server:^2.0@beta'; \
+    +   php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/openid_connect_autodiscovery:^1.0';
+
+    notes/zrq/20201209-02-drupal-update.txt
+    notes/zrq/20201209-04-docker-pull.txt
+
+
+    Remove the oidc-discovery and oidc-jwks-url config params for OAuthProxy
+
+    -   - --skip-oidc-discovery
+    -   - --oidc-jwks-url=${OAUTH2_DRUPAL_SERVER_KEYS:?}
+
+
+    >   # Drupal
+    >   ....
+    >   10.100.4.67 - - [16/Dec/2020:05:07:28 +0000] "GET /.well-known/openid-configuration HTTP/1.1" 200 931 "-" "Go-http-client/1.1"
+    >   ....
+
+    >   # OAuthProxy
+    >   ....
+    >   [2020/12/16 05:07:28] [logger.go:490] oidc: failed to decode provider discovery object: got Content-Type = application/json, but could not unmarshal as JSON: json: cannot unmarshal string into Go struct field providerJSON.id_token_signing_alg_values_supported of type []string
+    >   ....
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check what we get from the well-known openid-configuration URL ..
+#[user@desktop]
+
+curl --insecure https://drupal.metagrid.xyz/.well-known/openid-configuration | jq '.'
+
+    >     % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+    >                                    Dload  Upload   Total   Spent    Left  Speed
+    >   100   515  100   515    0     0   4517      0 --:--:-- --:--:-- --:--:--  4517
+
+    >   {
+    >     "issuer": "http://drupal.metagrid.xyz/",
+    >     "authorization_endpoint": "http://drupal.metagrid.xyz/oauth2/authorize",
+    >     "token_endpoint": "http://drupal.metagrid.xyz/oauth2/token",
+    >     "userinfo_endpoint": "http://drupal.metagrid.xyz/oauth2/UserInfo",
+    >     "end_session_endpoint": "http://drupal.metagrid.xyz/user/logout",
+    >     "subject_types_supported": [
+    >       "public"
+    >     ],
+    >     "response_types_supported": [
+    >       "code",
+    >       "token"
+    >     ],
+    >     "jwks_uri": "http://drupal.metagrid.xyz/.well-known/openid-jwks",
+    >     "id_token_signing_alg_values_supported": "RS256"
+    >   }
+
+    #
+    # Note the URLs in the response have the right hostname, but the wrong protocol.
+    # http:// not https://
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Restore the oidc-discovery and oidc-jwks-url config params
+
+    +   - --skip-oidc-discovery
+    +   - --oidc-jwks-url=${OAUTH2_DRUPAL_SERVER_KEYS:?}
+
+    >   # OAuthProxy
+    >   ....
+    >   [2020/12/16 05:22:26] [logger.go:508] Error redeeming code during OAuth2 callback: could not verify id_token: failed to verify signature: fetching keys oidc: failed to decode keys: got Content-Type = application/json, but could not unmarshal as JSON: illegal base64 data at input byte 19 {"keys":[{"e":"AQAB","n":"yKSzJRLOXZ7Nsgm....6E8Q"],"kty":"RSA","use":"sig","alg":"RS256"}]}
+    >   ....
+
+
+    >   .... "failed to decode keys: got Content-Type = application/json, but could not unmarshal as JSON: illegal base64 data at input byte 19" ....
+
+
+    >       {
+    >       "keys":[
+    >               {
+    >               "e":"AQAB",
+    >               "n":"yKSzJRLOXZ7NsgmDpra\/qnQQa\/UN99........WQ1Q==",
+    >               "mod":"yKSzJRLOXZ7NsgmDpra_qnQQa_UN99........WQ1Q",
+    >               "exp":"AQAB",
+    >               "x5c":[
+    >                   "MIIDATCCAemgAwIBAgIBATAN........6E8Q"
+    >                   ],
+    >               "kty":"RSA",
+    >               "use":"sig",
+    >               "alg":"RS256"
+    >               }
+    >           ]
+    >       }
+
+    Looking at the 'n' and 'mod' values, the illegal base64 data could be either the '\' or the '_'
+
+    "n":    "yKSzJRLOXZ7NsgmDpra\/
+    "mod":  "yKSzJRLOXZ7NsgmDpra_
+
+    According to Wikipedia, both of these would be invalid.
+    https://en.wikipedia.org/wiki/Base64
+
+
+
+    OK - looks like OIDC uses a 'variant' of base64 encoding !?
+
+    https://git.drupalcode.org/project/openid_connect_autodiscovery/-/blob/8.x-1.x/src/Controller/WellKnownController.php#L87
+
+        $jsonKeys['e'] = base64_encode($keyDetails['rsa']['e']);
+        $jsonKeys['n'] = base64_encode($keyDetails['rsa']['n']);
+        $jsonKeys['mod'] = self::base64url_encode($keyDetails['rsa']['n']);
+        $jsonKeys['exp'] = self::base64url_encode($keyDetails['rsa']['e']);
+
+    https://git.drupalcode.org/project/openid_connect_autodiscovery/-/blob/8.x-1.x/src/Controller/WellKnownController.php#L167
+
+        /**
+         * Do the specific Base64 encoding as used by OIDC.
+         * @param $data
+         * @return string
+         * @see http://php.net/manual/en/function.base64-encode.php#103849
+         */
+        public static function base64url_encode($data) {
+          return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+        }
+
+    Not just limited to Drupal.
+    https://stackoverflow.com/questions/28548920/googles-openidconnect-return-a-base64-token-that-cannot-be-parsed
+    https://stackoverflow.com/a/28562563
+    https://www.php.net/manual/en/function.base64-encode.php#103849
+
+    OMG ggrrgrgrgrgrgrg
+
+
+    https://tools.ietf.org/html/rfc7636#section-3
+
+        3.  Terminology
+
+          Base64url Encoding
+
+            Base64 encoding using the URL- and filename-safe character set
+            defined in Section 5 of [RFC4648], with all trailing '='
+            characters omitted (as permitted by Section 3.2 of [RFC4648]) and
+            without the inclusion of any line breaks, whitespace, or other
+            additional characters.  (See Appendix A for notes on implementing
+            base64url encoding without padding.)
+
+    https://tools.ietf.org/html/rfc4648#section-5
+
+        5.  Base 64 Encoding with URL and Filename Safe Alphabet
+
+            ....
+            This encoding is technically identical to the previous one, except
+            for the 62:nd and 63:rd alphabet character, as indicated in Table 2.
+
+            Table 2: The "URL and Filename safe" Base 64 Alphabet
+
+            Value Encoding  Value Encoding  Value Encoding  Value Encoding
+                0 A            17 R            34 i            51 z
+                1 B            18 S            35 j            52 0
+                2 C            19 T            36 k            53 1
+                3 D            20 U            37 l            54 2
+                4 E            21 V            38 m            55 3
+                5 F            22 W            39 n            56 4
+                6 G            23 X            40 o            57 5
+                7 H            24 Y            41 p            58 6
+                8 I            25 Z            42 q            59 7
+                9 J            26 a            43 r            60 8
+               10 K            27 b            44 s            61 9
+               11 L            28 c            45 t            62 - (minus)
+               12 M            29 d            46 u            63 _
+               13 N            30 e            47 v           (underline)
+               14 O            31 f            48 w
+               15 P            32 g            49 x
+               16 Q            33 h            50 y         (pad) =
+
+
+    So the '\/' in the 'n' value is OK, because that is a standard base64 encoded '/' value escaped to '\/' in order to express it in a JSON string.
+
+    This is replaced by '_' in the 'mod' value, because that is base64url encoded, replacing the 63rd '/' character with a '_' underscore character.
+
+    OK so far .... ?
+
+    So looks like we will need to tweak the source code for one or the other of the components - the Drupal openid_connect_autodiscovery module or the OAuthProxy.
+
+
+

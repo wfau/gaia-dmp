@@ -34,15 +34,15 @@ LABEL gitrepo="https://github.com/wfau/aglais"
 WORKDIR /opt/drupal
 
 RUN set -eux; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/simple_oauth:^5.0'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/oauth2_server:^2.0@beta'; \
-    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/oauth_server_sso:^1.1'; \
     php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/restui:^1.19'; \
     php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/fullcalendar_view:^5.0'; \
     php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/nextpath_bat_booking:^1.0@alpha'; \
     php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/search_api:^1.18'; \
     php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/facets:^1.6';
 
+RUN set -eux; \
+    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/oauth2_server:^2.0@beta'; \
+    php -d memory_limit=-1 /usr/local/bin/composer require 'drupal/openid_connect_autodiscovery:^1.0';
 
 
 

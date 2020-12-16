@@ -1,0 +1,789 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Target:
+
+
+    Source:
+
+        notes/zrq/20201210-04-drupal-clean.txt
+        notes/zrq/20201209-03-kubectl-login.txt
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Deploy a clean install of Drupal.
+    notes/zrq/20201210-04-drupal-clean.txt
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+    Configure the miniOrange OAuth Server
+
+    https://drupal.metagrid.xyz/admin/config/people/oauth_server_sso/customer_setup
+
+        Customer email
+            miniOrange@dm92.uk
+        Customer ID
+            ....
+        Token Key
+            ....
+        API Key
+            ....
+
+    https://drupal.metagrid.xyz/admin/config/people/oauth_server_sso/config_client
+
+        Client Name:
+            Albert Crichton
+
+        Authorized Redirect URL:
+            https://gwerf.metagrid.xyz/cribnart/callback
+
+        ---- ----
+
+        Client ID:
+            ........
+
+        Client Secret:
+            ........
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock:z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Get the cluster connection details.
+    See notes/zrq/20201209-03-kubectl-login.txt
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Configure our secret function.
+# https://www.reddit.com/r/Fedora/comments/jh9iyi/f33_openssh_no_mutual_signature_algorithm/g9yebel/
+#[user@kubernator]
+
+    mkdir ${HOME}/bin
+    cat > ${HOME}/bin/secret << 'EOF'
+ssh -n \
+    'Zarquan@data.metagrid.co.uk' \
+        -o 'PubkeyAcceptedKeyTypes=+ssh-rsa' \
+            "bin/secret '${1}'"
+EOF
+    chmod a+x ${HOME}/bin/secret
+
+    secret frog
+
+
+# -----------------------------------------------------
+# Delete our Drupal OAuth proxy components.
+#[user@kubernator]
+
+    kubectl delete \
+        service drupal-oauth-proxy
+
+    >   service "drupal-oauth-proxy" deleted
+
+
+    kubectl delete \
+        deployment drupal-oauth-proxy
+
+    >   deployment.apps "drupal-oauth-proxy" deleted
+
+
+# -----------------------------------------------------
+# Delete our OAuth Ingress components.
+#[user@kubernator]
+
+    kubectl delete \
+        ingress drupal-oauth-protected
+
+    >   ingress.extensions "drupal-oauth-protected" deleted
+
+
+    kubectl delete \
+        ingress drupal-oauth-protector
+
+    >   ingress.extensions "drupal-oauth-protector" deleted
+
+
+# -----------------------------------------------------
+# Configure our OAuth2Proxy Service to use Drupal.
+#[user@kubernator]
+
+    # Drupal endpoint URLs
+    # https://www.drupal.org/project/infrastructure/issues/2908988
+    # [drupal]/oauth2/{token|authenticate|UserInfo}
+
+    certname=tls-secret
+
+    OAUTH2_PROXY_HOSTNAME=gwerf.metagrid.xyz
+    OAUTH2_PROXY_AUTHPATH=cribnart
+
+    OAUTH2_PROXY_REDIRECT_URL=https://${OAUTH2_PROXY_HOSTNAME:?}/${OAUTH2_PROXY_AUTHPATH:?}/callback
+    OAUTH2_PROXY_CLIENT_NAME=$(secret miniorange.oauth.client.name)
+    OAUTH2_PROXY_CLIENT_IDENT=$(secret miniorange.oauth.client.ident)
+    OAUTH2_PROXY_CLIENT_SECRET=$(secret miniorange.oauth.client.secret)
+
+    OAUTH2_DRUPAL_SERVER_BASE=https://drupal.metagrid.xyz/
+    OAUTH2_DRUPAL_SERVER_AUTH=https://drupal.metagrid.xyz/authorize
+    OAUTH2_DRUPAL_SERVER_TOKEN=https://drupal.metagrid.xyz/access_token
+    OAUTH2_DRUPAL_SERVER_USER=https://drupal.metagrid.xyz/user_info
+    OAUTH2_DRUPAL_SERVER_KEYS=https://drupal.metagrid.xyz/unknown
+
+    OAUTH2_PROXY_COOKIE_SECRET=$(
+        python -c 'import os,base64; print(base64.b64encode(os.urandom(16)).decode("ascii"))'
+        )
+
+    cat > /tmp/drupal-oauth-proxy.yaml << EOF
+---
+apiVersion: v1
+kind: Service
+metadata:
+ labels:
+   k8s-app: drupal-oauth-proxy
+ name: drupal-oauth-proxy
+ namespace: default
+spec:
+ ports:
+ - name: http
+   port: 4180
+   protocol: TCP
+   targetPort: 4180
+ selector:
+   k8s-app: drupal-oauth-proxy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+ labels:
+   k8s-app: drupal-oauth-proxy
+ name: drupal-oauth-proxy
+ namespace: default
+spec:
+ replicas: 1
+ selector:
+   matchLabels:
+     k8s-app: drupal-oauth-proxy
+ template:
+   metadata:
+     labels:
+       k8s-app: drupal-oauth-proxy
+   spec:
+     containers:
+     - args:
+        - --provider=oidc
+        - --proxy-prefix=/${OAUTH2_PROXY_AUTHPATH:?}
+        - --client-id=${OAUTH2_PROXY_CLIENT_IDENT:?}
+        - --client-secret=${OAUTH2_PROXY_CLIENT_SECRET:?}
+        - --redirect-url=${OAUTH2_PROXY_REDIRECT_URL:?}
+        - --oidc-issuer-url=${OAUTH2_DRUPAL_SERVER_BASE:?}
+        - --skip-oidc-discovery
+        - --login-url=${OAUTH2_DRUPAL_SERVER_AUTH:?}
+        - --redeem-url=${OAUTH2_DRUPAL_SERVER_TOKEN:?}
+        - --profile-url=${OAUTH2_DRUPAL_SERVER_USER:?}
+        - --cookie-secret=$(pwgen 32 1)
+        - --email-domain=*
+        - --http-address=0.0.0.0:4180
+        - --oidc-jwks-url=${OAUTH2_DRUPAL_SERVER_KEYS:?}
+        - --ssl-insecure-skip-verify
+        - --ssl-upstream-insecure-skip-verify
+       image: quay.io/oauth2-proxy/oauth2-proxy:latest
+       imagePullPolicy: Always
+       name: drupal-oauth-proxy
+       ports:
+       - containerPort: 4180
+         protocol: TCP
+EOF
+
+
+# -----------------------------------------------------
+# Deploy our Drupal OAuth proxy components.
+#[user@kubernator]
+
+    kubectl create \
+        --filename /tmp/drupal-oauth-proxy.yaml
+
+    >   service/drupal-oauth-proxy created
+    >   deployment.apps/drupal-oauth-proxy created
+
+
+# -----------------------------------------------------
+# Configure our Drupal OAuth Ingress.
+#[user@kubernator]
+
+    #
+    # WARNING The auth-url and auth-signin URLs contain '$' values.
+    # WARNING If bash tries to fill them in, they will end up blank.
+    #   https:///oauth2/auth
+    #   https:///oauth2/start?rd
+    # WARNING This disables the authentication, leaving the protected resource exposed.
+    #
+
+    cat > /tmp/drupal-oauth-ingress.yaml << EOF
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+ annotations:
+   nginx.ingress.kubernetes.io/auth-url:    "https://\$host/${OAUTH2_PROXY_AUTHPATH:?}/auth"
+   nginx.ingress.kubernetes.io/auth-signin: "https://\$host/${OAUTH2_PROXY_AUTHPATH:?}/start?rd=\$escaped_request_uri"
+   nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user, x-auth-request-email"
+ name: drupal-oauth-protected
+ namespace: default
+spec:
+ rules:
+ - host: ${OAUTH2_PROXY_HOSTNAME:?}
+   http:
+     paths:
+     - path: /
+       backend:
+         serviceName: http-svc
+         servicePort: 80
+ tls:
+ - hosts:
+   - ${OAUTH2_PROXY_HOSTNAME:?}
+   secretName: ${certname:?}
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+ name: drupal-oauth-protector
+ namespace: default
+spec:
+ rules:
+ - host: ${OAUTH2_PROXY_HOSTNAME:?}
+   http:
+     paths:
+     - path: /${OAUTH2_PROXY_AUTHPATH:?}
+       backend:
+         serviceName: drupal-oauth-proxy
+         servicePort: 4180
+
+ tls:
+ - hosts:
+   - ${OAUTH2_PROXY_HOSTNAME:?}
+   secretName: ${certname:?}
+EOF
+
+
+# -----------------------------------------------------
+# Deploy the OAuth Ingress components.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename /tmp/drupal-oauth-ingress.yaml
+
+    >   ingress.networking.k8s.io/drupal-oauth-protected created
+    >   ingress.networking.k8s.io/drupal-oauth-protector created
+
+
+    kubectl describe \
+        ingress drupal-oauth-protected
+
+    >   ....
+    >   ....
+
+
+    kubectl describe \
+        ingress drupal-oauth-protector
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname kuberlogger \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details the first cluster in the list.
+#[root@kuberlogger]
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[0] | .uuid'
+        )
+
+    '/kubernetes/bin/cluster-config.sh' \
+        "${cloudname:?}" \
+        "${clusterid:?}"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.237:6443
+    >   Heapster is running at https://128.232.227.237:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.237:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Get the name of the 'aglais' namespace.
+#[root@kuberlogger]
+
+    namespace=$(
+        kubectl \
+            get namespace \
+                --output json \
+        | jq -r '.items[] | .metadata.name | select(. | startswith("aglais"))'
+        )
+
+    echo "Namespace [${namespace}]"
+
+    >   Namespace [aglais-k8s-20201208]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Follow the oauth-proxy pod logs.
+#[root@kuberlogger]
+
+    proxypodid=$(
+        kubectl \
+            --namespace 'default' \
+                get pods \
+                    --output json \
+        | jq -r '
+            .items[] |
+            select (
+                .metadata.name |
+                startswith(
+                    "drupal-oauth-proxy"
+                    )
+                ) |
+            .metadata.name'
+        )
+
+    kubectl \
+        --namespace 'default' \
+            logs \
+                --follow \
+                --tail 10 \
+                "${proxypodid:?}"
+
+    >   [2020/12/15 15:59:33] [logger.go:490] OAuthProxy configured for OpenID Connect Client ID: iCE4foI0zFkgX5sjxQPefk84ELAiVP
+    >   [2020/12/15 15:59:33] [logger.go:490] Cookie settings: name:_oauth2_proxy secure(https):true httponly:true expiry:168h0m0s domains: path:/ samesite: refresh:disabled
+    >   [2020/12/15 15:59:33] [logger.go:490] HTTP: listening on 0.0.0.0:4180
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Follow the drupal pod logs.
+#[root@kuberlogger]
+
+    drupalpodid=$(
+        kubectl \
+            --namespace "${namespace:?}" \
+                get pods \
+                    --output json \
+        | jq -r '
+            .items[] |
+            select (
+                .metadata.name |
+                startswith(
+                    "aglais-drupal-drupal-deploy"
+                    )
+                ) |
+            .metadata.name'
+        )
+
+    kubectl \
+        --namespace "${namespace:?}" \
+            logs \
+                --follow \
+                --tail 10 \
+                "${drupalpodid:?}"
+
+    >   10.100.4.67 - - [15/Dec/2020:15:49:16 +0000] "GET /core/misc/favicon.ico HTTP/1.1" 200 5676 "https://drupal.metagrid.xyz/admin/config/people/oauth_server_sso/customer_setup" "Mozilla/5.0 (X11; Fedora; Linux x86_64; rv:81.0) Gecko/20100101 Firefox/81.0"
+    >   10.100.4.67 - - [15/Dec/2020:15:49:37 +0000] "GET /admin/config/people/oauth_server_sso/config_client HTTP/1.1" 200 6228 "https://drupal.metagrid.xyz/admin/config/people/oauth_server_sso/customer_setup" "Mozilla/5.0 (X11; Fedora; Linux x86_64; rv:81.0) Gecko/20100101 Firefox/81.0"
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Follow the ingress controller logs.
+#[root@kuberlogger]
+
+    ingresspodid=$(
+        kubectl \
+            --namespace "${namespace:?}" \
+                get pod \
+                    --output json \
+        | jq -r '
+            .items[] |
+            select (
+                .metadata.name |
+                contains(
+                    "ingress-nginx-controller"
+                    )
+                ) |
+            .metadata.name'
+        )
+
+    kubectl \
+        --namespace "${namespace:?}" \
+            logs \
+                --follow \
+                --since 30s \
+                "${ingresspodid:?}"
+
+    >   I1216 01:43:28.011895       8 controller.go:569] Replacing location "/" for server "gwerf.metagrid.xyz" with upstream "upstream-default-backend" to use upstream "default-http-svc-80" (Ingress "default/drupal-oauth-protected")
+    >   I1216 01:43:28.011917       8 main.go:163] "Updating ssl expiration metrics"
+    >   I1216 01:43:28.011963       8 controller.go:138] No configuration change detected, skipping backend reload
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Install krew plugin manager for kubectl.
+# https://krew.sigs.k8s.io/
+# https://krew.sigs.k8s.io/docs/user-guide/setup/install/
+#[user@kubernator]
+
+    dnf install -y git
+
+    (
+      set -x; cd "$(mktemp -d)" &&
+      curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/krew.tar.gz" &&
+      tar zxvf krew.tar.gz &&
+      KREW=./krew-"$(uname | tr '[:upper:]' '[:lower:]')_$(uname -m | sed -e 's/x86_64/amd64/' -e 's/arm.*$/arm/')" &&
+      "$KREW" install krew
+    )
+
+    export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install the ingress-nginx kubectl plugin.
+# https://kubernetes.github.io/ingress-nginx/kubectl-plugin/
+#[user@kubernator]
+
+    kubectl krew install ingress-nginx
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Watch our nginx-controller logs.
+#[user@kubernator]
+
+    kubectl \
+        ingress-nginx \
+            --namespace 'aglais-k8s-20201208' \
+            --deployment 'aglais-ingress-nginx-controller' \
+            logs \
+                --follow
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Test the deployment.
+#[user@desktop]
+
+    curl \
+        --verbose \
+        --insecure \
+        'https://gwerf.metagrid.xyz/test'
+
+    >   *   Trying 128.232.227.125:443...
+    >   * Connected to gwerf.metagrid.xyz (128.232.227.125) port 443 (#0)
+    >   * ALPN, offering h2
+    >   * ALPN, offering http/1.1
+    >   * successfully set certificate verify locations:
+    >   *   CAfile: /etc/pki/tls/certs/ca-bundle.crt
+    >     CApath: none
+    >   * TLSv1.3 (OUT), TLS handshake, Client hello (1):
+    >   * TLSv1.3 (IN), TLS handshake, Server hello (2):
+    >   * TLSv1.3 (IN), TLS handshake, Encrypted Extensions (8):
+    >   * TLSv1.3 (IN), TLS handshake, Certificate (11):
+    >   * TLSv1.3 (IN), TLS handshake, CERT verify (15):
+    >   * TLSv1.3 (IN), TLS handshake, Finished (20):
+    >   * TLSv1.3 (OUT), TLS change cipher, Change cipher spec (1):
+    >   * TLSv1.3 (OUT), TLS handshake, Finished (20):
+    >   * SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384
+    >   * ALPN, server accepted to use h2
+    >   * Server certificate:
+    >   *  subject: O=Acme Co; CN=Kubernetes Ingress Controller Fake Certificate
+    >   *  start date: Dec 14 17:05:16 2020 GMT
+    >   *  expire date: Dec 14 17:05:16 2021 GMT
+    >   *  issuer: O=Acme Co; CN=Kubernetes Ingress Controller Fake Certificate
+    >   *  SSL certificate verify result: unable to get local issuer certificate (20), continuing anyway.
+    >   * Using HTTP2, server supports multi-use
+    >   * Connection state changed (HTTP/2 confirmed)
+    >   * Copying HTTP/2 data in stream buffer to connection buffer after upgrade: len=0
+    >   * Using Stream ID: 1 (easy handle 0x561bd104ea40)
+    >   > GET /test HTTP/2
+    >   > Host: gwerf.metagrid.xyz
+    >   > user-agent: curl/7.69.1
+    >   > accept: */*
+    >   >
+    >   * TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+    >   * TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+    >   * old SSL session ID is stale, removing
+    >   * Connection state changed (MAX_CONCURRENT_STREAMS == 128)!
+    >   < HTTP/2 302
+    >   < date: Wed, 16 Dec 2020 01:53:48 GMT
+    >   < content-type: text/html
+    >   < content-length: 138
+    >   < location: https://gwerf.metagrid.xyz/cribnart/start?rd=%2Ftest
+    >   <
+    >   <html>
+    >   <head><title>302 Found</title></head>
+    >   <body>
+    >   <center><h1>302 Found</h1></center>
+    >   <hr><center>nginx</center>
+    >   </body>
+    >   </html>
+    >   * Connection #0 to host gwerf.metagrid.xyz left intact
+
+    >   # Ingress
+    >   ....
+    >   10.100.4.1 - - [16/Dec/2020:01:53:48 +0000] "GET /cribnart/auth HTTP/1.1" 401 21 "-" "curl/7.69.1" 358 0.003 [default-drupal-oauth-proxy-4180] [] 10.100.4.70:4180 21 0.002 401 fd0f60f393451f3797f34a28afe8069b
+    >   10.100.3.0 - - [16/Dec/2020:01:53:48 +0000] "GET /test HTTP/2.0" 401 0 "-" "curl/7.69.1" 0 1.114 [default-http-svc-80] [] 128.232.227.125:443 0 0.005 401 fd0f60f393451f3797f34a28afe8069b
+    >   10.100.3.0 - - [16/Dec/2020:01:53:48 +0000] "GET /test HTTP/2.0" 302 138 "-" "curl/7.69.1" 39 1.114 [default-http-svc-80] [] - - - - fd0f60f393451f3797f34a28afe8069b
+    >   ....
+
+
+    >   # Proxy
+    >   ....
+    >   [2020/12/16 01:53:48] [logger.go:508] Error loading cookied session: cookie "_oauth2_proxy" not present, removing session
+    >   10.100.4.67:37820 - - [2020/12/16 01:53:48] gwerf.metagrid.xyz GET - "/cribnart/auth" HTTP/1.1 "curl/7.69.1" 401 21 0.001
+    >   ....
+
+
+# -----------------------------------------------------
+#[user@desktop]
+
+    curl \
+        --verbose \
+        --insecure \
+        'https://gwerf.metagrid.xyz/cribnart/start?rd=%2Ftest'
+
+    >   *   Trying 128.232.227.125:443...
+    >   * Connected to gwerf.metagrid.xyz (128.232.227.125) port 443 (#0)
+    >   * ALPN, offering h2
+    >   * ALPN, offering http/1.1
+    >   * successfully set certificate verify locations:
+    >   *   CAfile: /etc/pki/tls/certs/ca-bundle.crt
+    >     CApath: none
+    >   * TLSv1.3 (OUT), TLS handshake, Client hello (1):
+    >   * TLSv1.3 (IN), TLS handshake, Server hello (2):
+    >   * TLSv1.3 (IN), TLS handshake, Encrypted Extensions (8):
+    >   * TLSv1.3 (IN), TLS handshake, Certificate (11):
+    >   * TLSv1.3 (IN), TLS handshake, CERT verify (15):
+    >   * TLSv1.3 (IN), TLS handshake, Finished (20):
+    >   * TLSv1.3 (OUT), TLS change cipher, Change cipher spec (1):
+    >   * TLSv1.3 (OUT), TLS handshake, Finished (20):
+    >   * SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384
+    >   * ALPN, server accepted to use h2
+    >   * Server certificate:
+    >   *  subject: O=Acme Co; CN=Kubernetes Ingress Controller Fake Certificate
+    >   *  start date: Dec 14 17:05:16 2020 GMT
+    >   *  expire date: Dec 14 17:05:16 2021 GMT
+    >   *  issuer: O=Acme Co; CN=Kubernetes Ingress Controller Fake Certificate
+    >   *  SSL certificate verify result: unable to get local issuer certificate (20), continuing anyway.
+    >   * Using HTTP2, server supports multi-use
+    >   * Connection state changed (HTTP/2 confirmed)
+    >   * Copying HTTP/2 data in stream buffer to connection buffer after upgrade: len=0
+    >   * Using Stream ID: 1 (easy handle 0x56436a615a40)
+    >   > GET /cribnart/start?rd=%2Ftest HTTP/2
+    >   > Host: gwerf.metagrid.xyz
+    >   > user-agent: curl/7.69.1
+    >   > accept: */*
+    >   >
+    >   * TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+    >   * TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+    >   * old SSL session ID is stale, removing
+    >   * Connection state changed (MAX_CONCURRENT_STREAMS == 128)!
+    >   < HTTP/2 302
+    >   < date: Wed, 16 Dec 2020 02:01:44 GMT
+    >   < content-type: text/html; charset=utf-8
+    >   < content-length: 306
+    >   < location: https://drupal.metagrid.xyz/authorize?approval_prompt=force&client_id=iCE4foI0zFkgX5sjxQPefk84ELAiVP&redirect_uri=https%3A%2F%2Fgwerf.metagrid.xyz%2Fcribnart%2Fcallback&response_type=code&scope=openid+email+profile&state=f112f765ca75f36e8d2c84b42a93d256%3A%2Ftest
+    >   < cache-control: no-cache, no-store, must-revalidate, max-age=0
+    >   < expires: Thu, 01 Jan 1970 00:00:00 UTC
+    >   < set-cookie: _oauth2_proxy_csrf=f112f765ca75f36e8d2c84b42a93d256; Path=/; Expires=Wed, 23 Dec 2020 02:01:44 GMT; HttpOnly; Secure; SameSite
+    >   < strict-transport-security: max-age=15724800; includeSubDomains
+    >   <
+    >   <a href="https://drupal.metagrid.xyz/authorize?approval_prompt=force&amp;client_id=iCE4foI0zFkgX5sjxQPefk84ELAiVP&amp;redirect_uri=https%3A%2F%2Fgwerf.metagrid.xyz%2Fcribnart%2Fcallback&amp;response_type=code&amp;scope=openid+email+profile&amp;state=f112f765ca75f36e8d2c84b42a93d256%3A%2Ftest">Found</a>.
+    >   
+    >   * Connection #0 to host gwerf.metagrid.xyz left intact
+
+
+    >   # Ingress
+    >   ....
+    >   10.100.1.0 - - [16/Dec/2020:02:01:44 +0000] "GET /cribnart/start?rd=%2Ftest HTTP/2.0" 302 306 "-" "curl/7.69.1" 54 0.002 [default-drupal-oauth-proxy-4180] [] 10.100.4.70:4180 306 0.000 302 fc8b30b7fe205e84492e7dd67580aa66
+    >   ....
+
+
+    >   # Proxy
+    >   ....
+    >   10.100.4.67:38968 - - [2020/12/16 02:01:44] gwerf.metagrid.xyz GET - "/cribnart/start?rd=%2Ftest" HTTP/1.1 "curl/7.69.1" 302 306 0.000
+    >   ....
+
+
+# -----------------------------------------------------
+#[user@desktop]
+
+    curl \
+        --verbose \
+        --insecure \
+        'https://drupal.metagrid.xyz/authorize?approval_prompt=force&client_id=iCE4foI0zFkgX5sjxQPefk84ELAiVP&redirect_uri=https%3A%2F%2Fgwerf.metagrid.xyz%2Fcribnart%2Fcallback&response_type=code&scope=openid+email+profile&state=f112f765ca75f36e8d2c84b42a93d256%3A%2Ftest'
+
+    >   *   Trying 128.232.227.125:443...
+    >   * Connected to drupal.metagrid.xyz (128.232.227.125) port 443 (#0)
+    >   * ALPN, offering h2
+    >   * ALPN, offering http/1.1
+    >   * successfully set certificate verify locations:
+    >   *   CAfile: /etc/pki/tls/certs/ca-bundle.crt
+    >     CApath: none
+    >   * TLSv1.3 (OUT), TLS handshake, Client hello (1):
+    >   * TLSv1.3 (IN), TLS handshake, Server hello (2):
+    >   * TLSv1.3 (IN), TLS handshake, Encrypted Extensions (8):
+    >   * TLSv1.3 (IN), TLS handshake, Certificate (11):
+    >   * TLSv1.3 (IN), TLS handshake, CERT verify (15):
+    >   * TLSv1.3 (IN), TLS handshake, Finished (20):
+    >   * TLSv1.3 (OUT), TLS change cipher, Change cipher spec (1):
+    >   * TLSv1.3 (OUT), TLS handshake, Finished (20):
+    >   * SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384
+    >   * ALPN, server accepted to use h2
+    >   * Server certificate:
+    >   *  subject: O=Acme Co; CN=Kubernetes Ingress Controller Fake Certificate
+    >   *  start date: Dec 14 17:05:16 2020 GMT
+    >   *  expire date: Dec 14 17:05:16 2021 GMT
+    >   *  issuer: O=Acme Co; CN=Kubernetes Ingress Controller Fake Certificate
+    >   *  SSL certificate verify result: unable to get local issuer certificate (20), continuing anyway.
+    >   * Using HTTP2, server supports multi-use
+    >   * Connection state changed (HTTP/2 confirmed)
+    >   * Copying HTTP/2 data in stream buffer to connection buffer after upgrade: len=0
+    >   * Using Stream ID: 1 (easy handle 0x55b46802da40)
+    >   > GET /authorize?approval_prompt=force&client_id=iCE4foI0zFkgX5sjxQPefk84ELAiVP&redirect_uri=https%3A%2F%2Fgwerf.metagrid.xyz%2Fcribnart%2Fcallback&response_type=code&scope=openid+email+profile&state=f112f765ca75f36e8d2c84b42a93d256%3A%2Ftest HTTP/2
+    >   > Host: drupal.metagrid.xyz
+    >   > user-agent: curl/7.69.1
+    >   > accept: */*
+    >   >
+    >   * TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+    >   * TLSv1.3 (IN), TLS handshake, Newsession Ticket (4):
+    >   * old SSL session ID is stale, removing
+    >   * Connection state changed (MAX_CONCURRENT_STREAMS == 128)!
+    >   < HTTP/2 302
+    >   < date: Wed, 16 Dec 2020 02:09:16 GMT
+    >   < content-type: text/html; charset=UTF-8
+    >   < content-length: 354
+    >   < location: user/login
+    >   < x-powered-by: PHP/7.4.13
+    >   < set-cookie: Drupal.visitor.redirecting_url=http%3A%2F%2Fdrupal.metagrid.xyz%2Fauthorize%3Fapproval_prompt%3Dforce%26client_id%3DiCE4foI0zFkgX5sjxQPefk84ELAiVP%26redirect_uri%3Dhttps%253A%252F%252Fgwerf.metagrid.xyz%252Fcribnart%252Fcallback%26response_type%3Dcode%26scope%3Dopenid%2Bemail%2Bprofile%26state%3Df112f765ca75f36e8d2c84b42a93d256%253A%252Ftest; expires=Thu, 16-Dec-2021 02:09:16 GMT; Max-Age=31536000; path=/
+    >   < cache-control: no-cache, private
+    >   < strict-transport-security: max-age=15724800; includeSubDomains
+    >   <
+    >   <!DOCTYPE html>
+    >   <html>
+    >       <head>
+    >           <meta charset="UTF-8" />
+    >           <meta http-equiv="refresh" content="0;url='user/login'" />
+    >   
+    >           <title>Redirecting to user/login</title>
+    >       </head>
+    >       <body>
+    >           Redirecting to <a href="user/login">user/login</a>.
+    >       </body>
+    >   * Connection #0 to host drupal.metagrid.xyz left intact
+    >   </html>The website encountered an unexpected error. Please try again later.
+
+
+    >   # Ingress
+    >   ....
+    >   10.100.2.0 - - [16/Dec/2020:02:09:16 +0000] "GET /authorize?approval_prompt=force&client_id=iCE4foI0zFkgX5sjxQPefk84ELAiVP&redirect_uri=https%3A%2F%2Fgwerf.metagrid.xyz%2Fcribnart%2Fcallback&response_type=code&scope=openid+email+profile&state=f112f765ca75f36e8d2c84b42a93d256%3A%2Ftest HTTP/2.0" 302 354 "-" "curl/7.69.1" 208 0.057 [aglais-k8s-20201208-aglais-drupal-drupal-service-80] [] 10.100.4.68:80 354 0.057 302 640446413accdf6d56740776427ea33c
+    >   ....
+
+
+    >   # Drupal
+    >   ....
+    >   [Wed Dec 16 02:09:16.333787 2020] [php7:notice] [pid 55] [client 10.100.4.67:42296] Uncaught PHP Exception LogicException: "The controller must return a response (null given). Did you forget to add a return statement somewhere in your controller?" at /opt/drupal/vendor/symfony/http-kernel/HttpKernel.php line 169
+    >   10.100.4.67 - - [16/Dec/2020:02:09:16 +0000] "GET /authorize?approval_prompt=force&client_id=iCE4foI0zFkgX5sjxQPefk84ELAiVP&redirect_uri=https%3A%2F%2Fgwerf.metagrid.xyz%2Fcribnart%2Fcallback&response_type=code&scope=openid+email+profile&state=f112f765ca75f36e8d2c84b42a93d256%3A%2Ftest HTTP/1.1" 302 1029 "-" "curl/7.69.1"
+    >   ....
+
+
+
+# -----------------------------------------------------
+#[user@desktop]
+
+    firefox --new-window 'https://gwerf.metagrid.xyz/test' &
+
+
+

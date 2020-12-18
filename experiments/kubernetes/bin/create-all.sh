@@ -92,7 +92,8 @@
     helm dependency update \
         "/kubernetes/helm"
 
-    helm install \
+    helm upgrade \
+        --install \
         --create-namespace \
         --namespace "${namespace:?}" \
         'aglais' \
@@ -179,7 +180,7 @@ EOF
 
 
 # -----------------------------------------------------
-# Mount the user data volume.
+# Mount the user data volumes.
 # Note the hard coded cloud name to get details of the static share.
 
     '/kubernetes/bin/cephfs-mount.sh' \
@@ -189,6 +190,20 @@ EOF
         '/user/nch' \
         'rw'
 
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        'aglais-user-stv' \
+        '/user/stv' \
+        'rw'
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        'aglais-user-zrq' \
+        '/user/zrq' \
+        'rw'
 
 
 

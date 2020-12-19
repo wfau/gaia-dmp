@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:16.04 AS zeppelinbase
+FROM debian:10.7-slim
 MAINTAINER Apache Software Foundation <dev@zeppelin.apache.org>
 
 ARG buildtag
@@ -25,13 +25,21 @@ LABEL buildtime="${buildtime}"
 LABEL gitrepo="https://github.com/wfau/aglais"
 
 ENV LOG_TAG="[ZEPPELIN]:"
-ENV LANG=en_US.UTF-8
-ENV LC_ALL=en_US.UTF-8
+ENV LANG=en_GB.UTF-8
+#ENV LC_ALL=en_GB.UTF-8
+
+# Set the locale
+# https://serverfault.com/questions/362903/how-do-you-set-a-locale-non-interactively-on-debian-ubuntu
+ENV DEBIAN_FRONTEND=noninteractive
+RUN echo "$LOG_TAG configure locale" && \
+    apt-get -y update && \
+    apt-get install -y locales && \
+    echo "$LANG UTF-8" > /etc/locale.gen && \
+    dpkg-reconfigure --frontend=noninteractive locales && \
+    update-locale LANG=$LANG
 
 RUN echo "$LOG_TAG update and install basic packages" && \
     apt-get -y update && \
-    apt-get install -y locales && \
-    locale-gen $LANG && \
     apt-get install -y software-properties-common && \
     apt -y autoclean && \
     apt -y dist-upgrade && \
@@ -44,10 +52,18 @@ RUN echo "$LOG_TAG install tini related packages" && \
     dpkg -i tini.deb && \
     rm tini.deb
 
-ENV JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
-RUN echo "$LOG_TAG Install java8" && \
+# Create missing man directories.
+# https://github.com/debuerreotype/debuerreotype/issues/10
+# https://github.com/libvirt/libvirt-ci/commit/9cd2f73597e1599330e9657d51200eb0d2052bb2
+RUN mkdir -p /usr/share/man/man1
+
+# Update from openjdk-8-jdk to openjdk-11-jdk
+# https://stackoverflow.com/questions/57031649/how-to-install-openjdk-8-jdk-on-debian-10-buster
+# https://serverfault.com/questions/974992/why-isnt-there-a-openjdk-8-jdk-package-on-debian-anymore
+ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+RUN echo "$LOG_TAG Install java11" && \
     apt-get -y update && \
-    apt-get install -y openjdk-8-jdk && \
+    apt-get install -y openjdk-11-jdk && \
     rm -rf /var/lib/apt/lists/*
 
 # should install conda first before numpy, matploylib since pip and python will be installed by conda
@@ -62,13 +78,12 @@ RUN echo "$LOG_TAG Install miniconda3 related packages" && \
     rm ~/miniconda.sh
 
 ENV PATH /opt/conda/bin:$PATH
-
 RUN echo "$LOG_TAG Install python related packages" && \
     apt-get -y update && \
     apt-get install -y python-dev python-pip && \
     apt-get install -y gfortran && \
     # numerical/algebra packages
-    apt-get install -y libblas-dev libatlas-dev liblapack-dev && \
+    apt-get install -y libblas-dev libatlas-base-dev liblapack-dev && \
     # font, image
     apt-get install -y libpng-dev libfreetype6-dev libxft-dev && \
     # for tkinter
@@ -83,9 +98,8 @@ RUN echo "$LOG_TAG Install python related packages" && \
 
 RUN echo "$LOG_TAG Install R related packages" && \
     echo "PATH: $PATH" && \
-    ls /opt/conda/bin && \
-    echo "deb http://cran.rstudio.com/bin/linux/ubuntu xenial/" | tee -a /etc/apt/sources.list && \
-    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 51716619E084DAB9 && \
+    echo "deb http://cran.rstudio.com/bin/linux/debian buster-cran40/" | tee -a /etc/apt/sources.list && \
+    apt-key adv --keyserver keys.gnupg.net --recv-key FCAE2A0E115C3D8A && \
     apt-get -y update && \
     apt-get -y --allow-unauthenticated install r-base r-base-dev && \
     R -e "install.packages('evaluate', repos = 'https://cloud.r-project.org')" && \
@@ -96,7 +110,7 @@ RUN echo "$LOG_TAG Install R related packages" && \
     R -e "install.packages('IRkernel', repos = 'https://cloud.r-project.org');IRkernel::installspec()" && \
     R -e "install.packages('shiny', repos = 'https://cloud.r-project.org')" && \
     # for devtools, Rcpp
-    apt-get -y install libcurl4-gnutls-dev libssl-dev && \
+    apt-get -y install libcurl4-gnutls-dev libssl-dev libgit2-dev && \
     R -e "install.packages('devtools', repos='http://cran.us.r-project.org')" && \
     R -e "install.packages('Rcpp', repos='http://cran.us.r-project.org')" && \
     Rscript -e "library('devtools'); library('Rcpp'); install_github('ramnathv/rCharts')"

@@ -1,3 +1,6 @@
+#
+# Based on  an original file from the Apache Software Foundation (ASF).
+#
 # Licensed to the Apache Software Foundation (ASF) under one or more
 # contributor license agreements.  See the NOTICE file distributed with
 # this work for additional information regarding copyright ownership.
@@ -12,9 +15,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
 
 FROM debian:10.7-slim
-MAINTAINER Apache Software Foundation <dev@zeppelin.apache.org>
+MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
 
 ARG buildtag
 ARG buildtime

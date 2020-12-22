@@ -29,9 +29,8 @@ LABEL gitrepo="https://github.com/wfau/aglais"
 ENV Z_HOME="/zeppelin"
 ENV ZEPPELIN_ADDR="0.0.0.0"
 
-#COPY home ${Z_HOME}/
+COPY . ${Z_HOME}/
 RUN mkdir -p \
-        ${Z_HOME} \
         ${Z_HOME}/run \
         ${Z_HOME}/logs \
         ${Z_HOME}/conf \

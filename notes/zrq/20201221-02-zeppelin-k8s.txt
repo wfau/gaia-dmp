@@ -1,0 +1,217 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Chasing down how Zeppelin config properties get passed from one component to another.
+    In particular how the interpreter Pods are launched and configured.
+
+    Our Helm charts have two properties for the Zeppelin Docker images.
+
+        kubernetes/helm/tools/zeppelin/values.yaml
+
+            ...
+            zeppelin_server_image:   "aglais/zeppelin-dev:latest"
+            zeppelin_worker_image:   "aglais/zeppelin-dev:latest"
+
+    The server value is used immediatley in 'zeppelin-server-deploy' to
+
+        kubernetes/helm/tools/zeppelin/templates/zeppelin-server-deploy.yaml
+
+            containers:
+            - name: zeppelin-server-actual
+        ~     image: "{{ .Values.zeppelin_server_image }}"
+
+
+    The worker value goes through the following steps to launch the worker.
+
+
+    The name of the container image is loaded from the Zeppelin configuration by the K8sStandardInterpreterLauncher
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-plugins/launcher/k8s-standard/src/main/java/org/apache/zeppelin/interpreter/launcher/K8sStandardInterpreterLauncher.java#L143
+
+        public class K8sStandardInterpreterLauncher extends InterpreterLauncher {
+            ....
+            public InterpreterClient launchDirectly(InterpreterLaunchContext context) throws IOException {
+                ....
+                return new K8sRemoteInterpreterProcess(
+                    client,
+                    getNamespace(),
+                    new File(zConf.getK8sTemplatesDir(), "interpreter"),
+                    zConf.getK8sContainerImage(),
+                    ....
+                    );
+                }
+            ....
+            }
+
+
+    The name of the container image is set in the ZeppelinConfiguration by a `ZEPPELIN_K8S_CONTAINER_IMAGE` environment variable
+    or a default value based on the Zeppelin version.
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-interpreter/src/main/java/org/apache/zeppelin/conf/ZeppelinConfiguration.java#L835
+
+        public class ZeppelinConfiguration extends XMLConfiguration {
+            ....
+            public String getK8sContainerImage() {
+                return getRelativeDir(ConfVars.ZEPPELIN_K8S_CONTAINER_IMAGE);
+                }
+            ....
+            public enum ConfVars {
+                ....
+                ZEPPELIN_K8S_CONTAINER_IMAGE("zeppelin.k8s.container.image", "apache/zeppelin:" + Util.getVersion()),
+                ....
+                }
+            ....
+            }
+
+    The `containerImage` name is passed into the K8sRemoteInterpreterProcess constructor
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-plugins/launcher/k8s-standard/src/main/java/org/apache/zeppelin/interpreter/launcher/K8sRemoteInterpreterProcess.java#L62
+
+        K8sRemoteInterpreterProcess(
+            KubernetesClient client,
+            String namespace,
+            File specTemplates,
+            String containerImage,
+            ....
+            )
+
+    The containerImage name is put into the k8sProperties Properties map.
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-plugins/launcher/k8s-standard/src/main/java/org/apache/zeppelin/interpreter/launcher/K8sRemoteInterpreterProcess.java#L268
+
+        k8sProperties.put(
+            "zeppelin.k8s.interpreter.container.image",
+            containerImage
+            );
+
+    The K8sRemoteInterpreterProcess looks for the `specTemplates` directory path, and
+    interprets all the files in that directory as Jinja templates for Kubernetes
+    deployment files.
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-plugins/launcher/k8s-standard/src/main/java/org/apache/zeppelin/interpreter/launcher/K8sRemoteInterpreterProcess.java#L233
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-plugins/launcher/k8s-standard/src/main/java/org/apache/zeppelin/interpreter/launcher/K8sRemoteInterpreterProcess.java#L244
+
+
+    The `K8sSpecTemplate` class uses a
+    [Jinjava](https://github.com/HubSpot/jinjava) instance to render the Jinja
+    templates by applying the properties from the `k8sProperties` Properties map.
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-plugins/launcher/k8s-standard/src/main/java/org/apache/zeppelin/interpreter/launcher/K8sSpecTemplate.java#L38
+
+
+    The K8sRemoteInterpreterProcess then uses a
+    [fabric8 Kubernetes client](https://github.com/fabric8io/kubernetes-client)
+    to send the deployment instructions to our Kubernetes cluster.
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-plugins/launcher/k8s-standard/src/main/java/org/apache/zeppelin/interpreter/launcher/K8sRemoteInterpreterProcess.java#L247
+
+
+    Our interpresters are deployed from the `100-interpreter-spec.yaml` Kubernetes deployment file
+    built into our Docker image.
+
+        kubernetes/docker/zeppelin/dev/Dockerfile
+
+            ....
+            COPY k8s/interpreter/100-interpreter-spec.yaml /zeppelin/k8s/interpreter/
+            ....
+
+
+    This Jinja template uses the 'zeppelin.k8s.interpreter.container.image' property to
+    define the image to use to create our interpreter Pods.
+
+        kubernetes/docker/zeppelin/dev/k8s/interpreter/100-interpreter-spec.yaml
+
+            containers:
+            - name: {{zeppelin.k8s.interpreter.container.name}}
+              image: {{zeppelin.k8s.interpreter.container.image}}
+
+
+
+
+
+
+
+    Something to be aware of is K8sRemoteInterpreterProcess does not explicitly load our `100-interpreter-spec.yaml`
+    template by name. The name `100-interpreter-spec` does not appear anywhere in the Zeppelin code base.
+    Rather, the K8sRemoteInterpreterProcess reads all the files in the `k8s/interpreter` directory.
+
+    The directory path is loaded from the Zeppelin configuration by the K8sStandardInterpreterLauncher
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-plugins/launcher/k8s-standard/src/main/java/org/apache/zeppelin/interpreter/launcher/K8sStandardInterpreterLauncher.java#L143
+
+        public class K8sStandardInterpreterLauncher extends InterpreterLauncher {
+            ....
+            public InterpreterClient launchDirectly(InterpreterLaunchContext context) throws IOException {
+                ....
+                return new K8sRemoteInterpreterProcess(
+                    client,
+                    getNamespace(),
+                    new File(zConf.getK8sTemplatesDir(), "interpreter"),
+                    zConf.getK8sContainerImage(),
+                    ....
+                    );
+                }
+            ....
+            }
+
+    The directory path is set in the ZeppelinConfiguration using a `ZEPPELIN_K8S_TEMPLATE_DIR`
+    environment variable or the default value of `k8s`.
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-interpreter/src/main/java/org/apache/zeppelin/conf/ZeppelinConfiguration.java#L843
+    https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-interpreter/src/main/java/org/apache/zeppelin/conf/ZeppelinConfiguration.java#L1038
+
+        public class ZeppelinConfiguration extends XMLConfiguration {
+            ....
+            public String getK8sTemplatesDir() {
+                return getRelativeDir(ConfVars.ZEPPELIN_K8S_TEMPLATE_DIR);
+                }
+            ....
+            public enum ConfVars {
+                ....
+                ZEPPELIN_K8S_TEMPLATE_DIR("zeppelin.k8s.template.dir", "k8s"),
+                ....
+                }
+            ....
+            }
+
+
+    Which is a long way round of answering the question that started all this:
+
+    Can we move the '100-interpreter-spec.yaml' template out of our Docker image
+    and make it configurable using our Helm chart?
+
+    Yes.
+
+    We can move the templates directory out of our Docker image and into a
+    mounted volume by setting the `ZEPPELIN_K8S_TEMPLATE_DIR` environment variable.
+
+    We can generate or modify the template using Helm, and add it as a mounted
+    volume using a confguration map.
+
+    See
+    https://helm.sh/docs/chart_template_guide/accessing_files/
+
+
+
+
+
+
+
+
+
+

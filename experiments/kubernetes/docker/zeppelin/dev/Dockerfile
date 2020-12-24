@@ -32,7 +32,7 @@ LABEL buildtag="${buildtag}"
 LABEL buildtime="${buildtime}"
 LABEL gitrepo="https://github.com/wfau/aglais"
 
-COPY tmp/lib/* /zeppelin/lib
+#COPY tmp/lib/* /zeppelin/lib
 
 COPY k8s/interpreter/100-interpreter-spec.yaml /zeppelin/k8s/interpreter/
 

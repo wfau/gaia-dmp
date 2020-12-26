@@ -1,0 +1,305 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Target:
+
+        New clean deployment using latest Zepplein images.
+
+    Result:
+
+        K8s dashboard network issue mysteriously fixes itself !?
+        Zeppelin Spark interpreter fails, with NoClassDefFoundError errors.
+
+        I think we are using images with Java-11.
+        Looks like the newer versions of Java dropped some of the standard libraries.
+
+        TODO retest with a direct Java-8 to Java-11 comparison.
+
+
+# -----------------------------------------------------
+# Update the project name.
+#[user@desktop]
+
+    cloudname=gaia-prod
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+
+# -----------------------------------------------------
+# Modify the version number in our Helm charts.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE:?}"
+
+        gedit experiments/kubernetes/helm/tools/zeppelin/values.yaml
+
+        +   zeppelin_server_image:   "aglais/zeppelin-dev:20201224-060543"
+        +   zeppelin_worker_image:   "aglais/zeppelin-dev:20201224-060543"
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@kubernator]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Run the main Kubernetes deployment.
+#[root@kubernator]
+
+    buildname="aglais-$(date '+%Y%m%d')"
+    namespace=${buildname,,}
+
+    /kubernetes/bin/create-all.sh \
+        "${cloudname:?}" \
+        "${buildname:?}" \
+        "${namespace:?}"
+
+    >   ....
+    >   ....
+    >   Installing dashboard Helm chart
+    >   Namespace [aglais-20201226]
+    >   Dash host [valeria.metagrid.xyz]
+    >   Getting updates for unmanaged Helm repositories...
+    >   ...Successfully got an update from the "https://kubernetes.github.io/dashboard" chart repository
+    >   Saving 1 charts
+    >   Downloading kubernetes-dashboard from repo https://kubernetes.github.io/dashboard
+    >   Deleting outdated charts
+    >   Release "aglais-dashboard" does not exist. Installing it now.
+    >   NAME: aglais-dashboard
+    >   LAST DEPLOYED: Sat Dec 26 02:56:20 2020
+    >   NAMESPACE: aglais-20201226
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   ....
+    >   ....
+
+    #
+    # Dashboard network error has disappeared !?
+    # So what has changed ?
+    #
+
+
+# -----------------------------------------------------
+# Get the ServiceAccount token.
+#[root@kubernator]
+
+    secretname=$(
+        kubectl \
+            --output json \
+            --namespace "${namespace:?}" \
+            get ServiceAccount \
+                "aglais-dashboard-kubernetes-dashboard" \
+        | jq -r '.secrets[0].name'
+        )
+
+    kubectl \
+        --output json \
+        --namespace "${namespace:?}" \
+        get Secret \
+            "${secretname:?}" \
+    | jq -r '.data.token | @base64d'
+
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the Ingress address.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get Ingress
+
+    >   NAME                                    HOSTS                   ADDRESS           PORTS     AGE
+    >   aglais-dashboard-kubernetes-dashboard   valeria.metagrid.xyz    128.232.227.242   80        19m
+    >   zeppelin-server-ingress                 zeppelin.metagrid.xyz   128.232.227.242   80, 443   18m
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Update our DNS ..
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Dashboard and test ...
+#[user@desktop]
+
+    firefox --new-window "https://valeria.metagrid.xyz/" &
+
+        #
+        # Yay - Dashboard works :-)
+        # ... but why, what changed ?
+        # I don't like mysterious resolutions.
+        #
+
+
+# -----------------------------------------------------
+# Login to Zeppelin and test ...
+#[user@desktop]
+
+    firefox --new-window "https://zeppelin.metagrid.xyz/" &
+
+        #
+        # Yay - Seppelin works :-)
+        #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Mount the Gaia data in our Spark workers.
+#[user@zeppelin]
+
+# --------------------------------
+%spark.conf
+
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.mount.path        /data/gaia/dr2
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.mount.readOnly    true
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.options.claimName aglais-gaia-dr2-claim
+
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-nch.mount.path        /user/nch
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-nch.mount.readOnly    true
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-nch.options.claimName aglais-user-nch-claim
+
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-stv.mount.path        /user/stv
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-stv.mount.readOnly    true
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-stv.options.claimName aglais-user-stv-claim
+
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-zrq.mount.path        /user/zrq
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-zrq.mount.readOnly    false
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-user-zrq.options.claimName aglais-user-zrq-claim
+
+
+# --------------------------------
+%spark.pyspark
+
+gaia_data = sqlContext.read.parquet(
+    "/data/gaia/dr2"
+    )
+
+print("DF count: ",      gaia_data.count())
+print("DF partitions: ", gaia_data.rdd.getNumPartitions())
+
+
+    #
+    # Spark interpreter failed to run
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the logs on the Zeppelin Pod.
+#[root@kubernator]
+
+    zeppodid=$(
+        kubectl \
+            --namespace ${namespace} \
+                get pod \
+                --output json \
+        | jq -r '
+            .items[] |
+            select(
+                .metadata.name |
+                startswith(
+                    "zeppelin-server-deploy"
+                    )
+                ) |
+            .metadata.name
+            '
+        )
+
+    kubectl \
+        --namespace ${namespace} \
+            logs \
+                "${zeppodid:?}" \
+                --container zeppelin-server-actual
+
+
+    >   ....
+    >   ....
+    >   Dec 26, 2020 2:59:39 AM org.glassfish.jersey.internal.Errors logErrors
+    >   WARNING: The following warnings have been detected: WARNING: HK2 service reification failed for [org.glassfish.jersey.message.internal.DataSourceProvider] with an exception:
+    >   MultiException stack 1 of 2
+    >   java.lang.NoClassDefFoundError: javax/activation/DataSource
+    >       ....
+    >       ....
+    >   Caused by: java.lang.ClassNotFoundException: javax.activation.DataSource
+    >       ....
+    >       ....
+    >   MultiException stack 2 of 2
+    >   java.lang.IllegalArgumentException: Errors were discovered while reifying SystemDescriptor(
+    >       ....
+    >       ....
+    >   
+    >   WARNING: HK2 service reification failed for [org.glassfish.jersey.jaxb.internal.XmlJaxbElementProvider$App] with an exception:
+    >   MultiException stack 1 of 2
+    >   java.lang.NoClassDefFoundError: javax/xml/bind/PropertyException
+    >       ....
+    >       ....
+    >   Caused by: java.lang.ClassNotFoundException: javax.xml.bind.PropertyException
+    >       ....
+    >       ....
+

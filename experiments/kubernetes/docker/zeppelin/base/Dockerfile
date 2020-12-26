@@ -17,16 +17,24 @@
 # limitations under the License.
 #
 
-FROM debian:10.7-slim
+ARG ${debversion:-10.7-slim}
+
+FROM debian:${debversion}
 MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
 
 ARG buildtag
 ARG buildtime
 
+ARG ${jdkversion:-11}
+
 LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
 LABEL buildtag="${buildtag}"
 LABEL buildtime="${buildtime}"
 LABEL gitrepo="https://github.com/wfau/aglais"
+
+LABEL debversion="${debversion}"
+LABEL jdkversion="${jdkversion}"
+
 
 ENV LOG_TAG="[ZEPPELIN]:"
 ENV LANG=en_GB.UTF-8
@@ -64,10 +72,10 @@ RUN mkdir -p /usr/share/man/man1
 # Update from openjdk-8-jdk to openjdk-11-jdk
 # https://stackoverflow.com/questions/57031649/how-to-install-openjdk-8-jdk-on-debian-10-buster
 # https://serverfault.com/questions/974992/why-isnt-there-a-openjdk-8-jdk-package-on-debian-anymore
-ENV JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
-RUN echo "$LOG_TAG Install java11" && \
+ENV JAVA_HOME=/usr/lib/jvm/java-${jdkversion}-openjdk-amd64
+RUN echo "$LOG_TAG Install openjdk-${jdkversion}" && \
     apt-get -y update && \
-    apt-get install -y openjdk-11-jdk && \
+    apt-get install -y openjdk-${jdkversion}-jdk && \
     rm -rf /var/lib/apt/lists/*
 
 # should install conda first before numpy, matploylib since pip and python will be installed by conda

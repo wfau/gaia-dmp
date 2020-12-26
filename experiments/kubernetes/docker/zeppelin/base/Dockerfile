@@ -100,24 +100,24 @@ RUN echo "$LOG_TAG Install python related packages" && \
     pip install -q pycodestyle==2.5.0 && \
     pip install -q numpy==1.17.3 pandas==0.25.0 scipy==1.3.1 grpcio==1.19.0 bkzep==0.6.1 hvplot==0.5.2 protobuf==3.10.0 pandasql==0.7.3 ipython==7.8.0 matplotlib==3.0.3 ipykernel==5.1.2 jupyter_client==5.3.4 bokeh==1.3.4 panel==0.6.0 holoviews==1.12.3 seaborn==0.9.0 plotnine==0.5.1 intake==0.5.3 intake-parquet==0.2.2 altair==3.2.0 pycodestyle==2.5.0 apache_beam==2.15.0
 
-RUN echo "$LOG_TAG Install R related packages" && \
-    echo "PATH: $PATH" && \
-    echo "deb http://cran.rstudio.com/bin/linux/debian buster-cran40/" | tee -a /etc/apt/sources.list && \
-    apt-key adv --keyserver keys.gnupg.net --recv-key FCAE2A0E115C3D8A && \
-    apt-get -y update && \
-    apt-get -y --allow-unauthenticated install r-base r-base-dev && \
-    R -e "install.packages('evaluate', repos = 'https://cloud.r-project.org')" && \
-    R -e "install.packages('knitr', repos='http://cran.us.r-project.org')" && \
-    R -e "install.packages('ggplot2', repos='http://cran.us.r-project.org')" && \
-    R -e "install.packages('googleVis', repos='http://cran.us.r-project.org')" && \
-    R -e "install.packages('data.table', repos='http://cran.us.r-project.org')" && \
-    R -e "install.packages('IRkernel', repos = 'https://cloud.r-project.org');IRkernel::installspec()" && \
-    R -e "install.packages('shiny', repos = 'https://cloud.r-project.org')" && \
-    # for devtools, Rcpp
-    apt-get -y install libcurl4-gnutls-dev libssl-dev libgit2-dev && \
-    R -e "install.packages('devtools', repos='http://cran.us.r-project.org')" && \
-    R -e "install.packages('Rcpp', repos='http://cran.us.r-project.org')" && \
-    Rscript -e "library('devtools'); library('Rcpp'); install_github('ramnathv/rCharts')"
+#   RUN echo "$LOG_TAG Install R related packages" && \
+#       echo "PATH: $PATH" && \
+#       echo "deb http://cran.rstudio.com/bin/linux/debian buster-cran40/" | tee -a /etc/apt/sources.list && \
+#       apt-key adv --keyserver keys.gnupg.net --recv-key FCAE2A0E115C3D8A && \
+#       apt-get -y update && \
+#       apt-get -y --allow-unauthenticated install r-base r-base-dev && \
+#       R -e "install.packages('evaluate', repos = 'https://cloud.r-project.org')" && \
+#       R -e "install.packages('knitr', repos='http://cran.us.r-project.org')" && \
+#       R -e "install.packages('ggplot2', repos='http://cran.us.r-project.org')" && \
+#       R -e "install.packages('googleVis', repos='http://cran.us.r-project.org')" && \
+#       R -e "install.packages('data.table', repos='http://cran.us.r-project.org')" && \
+#       R -e "install.packages('IRkernel', repos = 'https://cloud.r-project.org');IRkernel::installspec()" && \
+#       R -e "install.packages('shiny', repos = 'https://cloud.r-project.org')" && \
+#       # for devtools, Rcpp
+#       apt-get -y install libcurl4-gnutls-dev libssl-dev libgit2-dev && \
+#       R -e "install.packages('devtools', repos='http://cran.us.r-project.org')" && \
+#       R -e "install.packages('Rcpp', repos='http://cran.us.r-project.org')" && \
+#       Rscript -e "library('devtools'); library('Rcpp'); install_github('ramnathv/rCharts')"
 
 RUN echo "$LOG_TAG Cleanup" && \
     apt-get autoclean && \

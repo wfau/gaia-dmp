@@ -31,8 +31,54 @@
 
     Result:
 
-        Fail - unable to get Zeppelin code to build correctly.
-        Issues with running the build as root.
+        Work in progress ....
+
+# -----------------------------------------------------
+# Build our modifed builder.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    buildah bud \
+        --format docker \
+        --tag aglais/builder:latest \
+        --tag aglais/builder:${buildtag:?} \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        "${AGLAIS_CODE:?}/experiments/kubernetes/docker/builder"
+
+    >   STEP 1: FROM firethorn/builder:latest
+    >   ....
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   STEP 5: LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+    >   STEP 6: LABEL buildtag="${buildtag}"
+    >   STEP 7: LABEL buildtime="${buildtime}"
+    >   STEP 8: LABEL gitrepo="https://github.com/wfau/aglais"
+    >   STEP 9: RUN dnf install -y bzip2
+    >   ....
+    >   STEP 10: COMMIT aglais/builder:latest
+    >   ....
+
+
+# -----------------------------------------------------
+# Push our new image to the registry.
+#[user@desktoop]
+
+    buildah login \
+        --username $(secret docker.io.user) \
+        --password $(secret docker.io.pass) \
+        registry-1.docker.io
+
+    buildah push "aglais/builder:${buildtag:?}"
+    buildah push "aglais/builder:latest"
+
+    >   ....
+    >   ....
+
 
 # -----------------------------------------------------
 # Create a vitual machine to work with.
@@ -176,7 +222,8 @@ EOF
 
 
 # -----------------------------------------------------
-# Run a Java build container.
+# Run a Java build container, using the same UID inside.
+# https://www.redhat.com/sysadmin/user-flag-rootless-containers
 [user@virtual]
 
     podman run \
@@ -184,20 +231,32 @@ EOF
         --tty \
         --interactive \
         --hostname builder \
+        --userns keep-id \
         --env "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" \
         --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock:z" \
         --volume "${HOME}/cache:/var/local/cache:rw" \
         --volume "${HOME}/build:/var/local/build:rw" \
-        "firethorn/builder:latest" \
+        "aglais/builder:latest" \
         bash
 
     >   ....
     >   ....
 
 
+
+# -----------------------------------------------------
+# Configure our home directory.
+# (*) defaults to /root
+#[user@builder]
+
+    HOME=/tmp/home
+
+    mkdir "${HOME}"
+
+
 # -----------------------------------------------------
 # Configure our source code paths.
-#[root@builder]
+#[user@builder]
 
     cat > "${HOME}/aglais.env" << 'EOF'
 AGLAIS_REPO='https://github.com/Zarquan/aglais.git'
@@ -212,69 +271,21 @@ EOF
 
 
 # -----------------------------------------------------
-# Install bzip2.
-# TODO Add this to our builder image.
-#[root@builder]
-
-    dnf install -y bzip2
-
-    >   ....
-    >   ....
-
-
-# -----------------------------------------------------
-# Allow Bower to run as root.
-#[root@builder]
-
-    # Maven build fails because we can't run Bower as root.
-    # We need to be root to install bzip2.
-    # We need bzip2 to install things like PhantomJS
-    #   Fix - add bzip2 to the image
-    #       Later ..
-    #   Fix - add .bowerrc
-    #       https://stackoverflow.com/a/42284426
-
-    cat >  /root/.bowerrc << EOF
-{ "allow_root": true }
-EOF
-
-# -----------------------------------------------------
 # Build our Zeppelin code.
-#[root@builder]
+#[user@builder]
 
     # Build all the components and install them in the Maven cache.
     source "${HOME}/aglais.env"
     pushd  "${ZEPPELIN_CODE:?}"
 
         mvn clean install -D skipTests -P build-distr -P hadoop3
-        mvn install -D skipTests -P build-distr -P hadoop3
-
-        pushd zeppelin-web
-            mvn install -D skipTests -P build-distr -P hadoop3
-        popd
-
-    popd
-
-
-        Still fails with obscure errors in npn.
-        All this goes away of we use a non-root user.
-        Create a builder container with bzip2 ..
-
-
-    # Load all the components from the Maven cache and pack them in a tar.gz.
-    source "${HOME}/aglais.env"
-    pushd  "${ZEPPELIN_CODE:?}"
-
-        pushd zeppelin-distribution
-            mvn clean package -D skipTests -P build-distr -P hadoop3
-        popd
 
     popd
 
 
 # -----------------------------------------------------
 # Exit back to our host VM.
-#[root@builder]
+#[user@builder]
 
     exit
 
@@ -298,8 +309,8 @@ EOF
 # Build the Zepplein base image.
 #[user@virtual]
 
-    debversion=10
-    jdkversion=11
+    debversion=10.7-slim
+    jdkversion=8
     versionstr=debian-${debversion}-java-${jdkversion}
 
     source "${HOME}/aglais.env"

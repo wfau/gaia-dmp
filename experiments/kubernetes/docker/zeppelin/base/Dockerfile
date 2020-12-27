@@ -17,7 +17,7 @@
 # limitations under the License.
 #
 
-ARG ${debversion:-10.7-slim}
+ARG debversion=10.7-slim
 
 FROM debian:${debversion}
 MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
@@ -25,7 +25,7 @@ MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
 ARG buildtag
 ARG buildtime
 
-ARG ${jdkversion:-11}
+ARG jdkversion=11
 
 LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
 LABEL buildtag="${buildtag}"

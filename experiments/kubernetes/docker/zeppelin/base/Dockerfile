@@ -17,9 +17,9 @@
 # limitations under the License.
 #
 
-ARG debversion=10.7-slim
+ARG debversion=10
 
-FROM debian:${debversion}
+FROM debian:${debversion}-slim
 MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
 
 ARG buildtag

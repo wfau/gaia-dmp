@@ -1,0 +1,191 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#  
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+Target:
+ 
+  Create custom distribution of Axs-spark and deploy on our cluster
+  
+
+# Summary of Experiment
+
+The notes here assume we have setup a Hadoop/Spark/Zeppelin cluster with the Spark version being the AXS one and using Hadoop 2.7.4
+From previous experiments with using the default Derby database for Hive, it seems that several issues arise related to concurrent access to it.
+Following different blog posts and tutorials, it seems that the best option is to setup a separate database to store the Hive tables.
+For this experiment we use MySQL
+ 
+
+
+# ------------------------------------------------
+# Follow instructions to install MySQL
+# fedora@zeppelin
+
+ https://tecadmin.net/install-mysql-8-on-fedora/
+
+
+
+
+# ------------------------------------------------
+# Get mysql connector and place in spark/jars
+# fedora@zeppelin
+
+pushd /opt/spark/jars/
+   wget https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.22/mysql-connector-java-8.0.22.jar
+popd
+
+
+
+
+# ------------------------------------------------
+# Create Hive user
+# fedora@zeppelin
+
+mysql>
+
+CREATE DATABASE hive;
+CREATE USER 'hiveuser'@'%' IDENTIFIED BY 'pass';
+GRANT ALL ON *.* TO 'hiveuser'@localhost IDENTIFIED BY 'hivepass';
+
+
+
+
+
+# Create hive-site.xml configuration to point to MySQL database
+# Copy hive-site to:
+# /opt/spark/conf/hive-site.xml
+# /opt/hadoop/etc/hadoop/hive-site.xml
+# /home/fedora/zeppelin-0.8.2-bin-all/conf/hive-site.xml
+
+hive-site.xml
+
+
+	<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+	<configuration>
+
+	<property>
+	  <name>javax.jdo.option.ConnectionURL</name>
+	  <value>jdbc:mysql://localhost:3306/hive?characterEncoding=utf8</value>
+	  <description>JDBC connect string for a JDBC metastore</description>
+	</property>
+
+	<property>
+	  <name>javax.jdo.option.ConnectionDriverName</name>
+	  <value>com.mysql.jdbc.Driver</value>
+	  <description>Driver class name for a JDBC metastore</description>
+	</property>
+
+	<property>
+	  <name>javax.jdo.option.ConnectionUserName</name>
+	  <value>hiveuser</value>
+	  <description>username to use against metastore database</description>
+	</property>
+
+	<property>
+	  <name>javax.jdo.option.ConnectionPassword</name>
+	  <value>pass</value>
+	  <description>password to use against metastore database</description>
+	</property>
+
+	</configuration>
+
+
+
+
+# ------------------------------------------------
+# Try AXS with pyspark
+# fedora@zeppelin
+
+
+pyspark
+
+# Initialise AXS
+from axs import AxsCatalog, Constants
+db = AxsCatalog(spark)
+
+
+# Create Dataframes from Parquet files for Gaia and 2Mass
+dfgaia = spark.read.parquet("file:///data/gaia/dr2/*.parquet").where("dec>89")
+df2mass = spark.read.parquet("file:////user/nch/PARQUET/TESTS/2MASS/*.parquet").where("dec>89")
+
+
+# Create new Parquet files in Spark Metastore
+db.save_axs_table(dfgaia, "gaia_source", repartition=False, calculate_zone=True)
+db.save_axs_table(dfgaia, "twomass", repartition=False, calculate_zone=True)
+
+
+# Import New Tables into AXS (Metadata database)
+db.import_existing_table('gaia_source', '', num_buckets=500, zone_height=Constants.ONE_AMIN,
+    import_into_spark=False, update_spark_bucketing=True)
+
+db.import_existing_table('twomass', '', num_buckets=500, zone_height=Constants.ONE_AMIN,
+    import_into_spark=False, update_spark_bucketing=True)
+
+
+# Get list of Tables
+for tname in db.list_tables():    
+    print(tname)
+
+> gaia_source
+> twomass
+
+
+
+# ------------------------------------------------
+# Try AXS with Zeppelin
+# fedora@zeppelin (Browser)
+
+
+# Initial attempts failed, and after some investigation it seems to be that Zeppelin creates a Derby database, and ignores the MySQL Hive configuration
+# Workaround is to setup the Hivecontext as seen below:
+
+
+# Initialize AXS, HiveContext
+%spark.pyspark
+from pyspark.sql import HiveContext
+
+sqlContext = HiveContext(sc)
+from axs import AxsCatalog, Constants
+db = AxsCatalog(spark)
+
+# Get list of tables
+for tname in db.list_tables():    
+    print(tname)
+
+> gaia_source
+> twomass
+
+
+# Load Tables from AXS
+gaia = db.load('gaia_source')
+twomass = db.load('twomass')
+
+
+
+# Run Crossmatch
+gaia_sdss_cm = gaia.crossmatch(twomass, 2*Constants.ONE_ASEC, return_min=False, include_dist_col=True)
+gaia_sdss_cm.show()
+
+# Success, rows of results showing up
+
+# Get Count of results
+gaia_sdss_cm.count()
+1091

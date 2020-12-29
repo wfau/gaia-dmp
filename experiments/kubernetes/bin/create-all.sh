@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # <meta:header>
 #   <meta:licence>
@@ -23,6 +23,9 @@
 
 # -----------------------------------------------------
 # Settings ...
+
+    set -eu
+    set -o pipefail
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"

@@ -1,0 +1,263 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Target:
+
+        Login to our worker nodes and pull a new image.
+
+    Result:
+
+        Work in progress ....
+
+
+# -----------------------------------------------------
+# Create a container to work with (with buildtag and SSH_AUTH).
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name openstacker \
+        --hostname openstacker \
+        --env "buildtag=${buildtag:?}" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+# -----------------------------------------------------
+# List our clusters.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | uuid                                 | name                        | keypair          | node_count | master_count | status          | health_status |
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | 1243a091-7741-453d-a836-893cc999ec58 | aglais-k8s-20201208-cluster | zrq-gaia-keypair |          4 |            1 | CREATE_COMPLETE | HEALTHY       |
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+
+
+# -----------------------------------------------------
+# List our servers.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+    >   +--------------------------------------+---------------------------------------------------+--------+------------------------------------+-------------------------+-------------------+
+    >   | ID                                   | Name                                              | Status | Networks                           | Image                   | Flavor            |
+    >   +--------------------------------------+---------------------------------------------------+--------+------------------------------------+-------------------------+-------------------+
+    >   | fe74be86-f1bd-4bb7-b4ae-a47fa847dcdc | aglais-k8s-20201208-cluster-gateway               | ACTIVE | private=10.0.0.83, 128.232.227.158 | Fedora-30-1.2           | general.v1.tiny   |
+    >   | aeab8066-b55e-403d-bc4f-6139065e89b6 | aglais-k8s-20201208-cluster-p5qlctagesrg-node-2   | ACTIVE | private=10.0.0.40                  | FedoraAtomic29-20191126 | general.v1.medium |
+    >   | 5628cbe1-90dd-4843-a7ef-31c72a00f608 | aglais-k8s-20201208-cluster-p5qlctagesrg-node-1   | ACTIVE | private=10.0.0.139                 | FedoraAtomic29-20191126 | general.v1.medium |
+    >   | 9ae246b9-739b-45f6-9a60-cdf4fc06b53a | aglais-k8s-20201208-cluster-p5qlctagesrg-node-3   | ACTIVE | private=10.0.0.111                 | FedoraAtomic29-20191126 | general.v1.medium |
+    >   | 0c4791b8-9772-41c0-8b18-926ffcd4e6b1 | aglais-k8s-20201208-cluster-p5qlctagesrg-node-0   | ACTIVE | private=10.0.0.129                 | FedoraAtomic29-20191126 | general.v1.medium |
+    >   | 85b97722-c9cd-40cf-8ae7-a5964a402f1e | aglais-k8s-20201208-cluster-p5qlctagesrg-master-0 | ACTIVE | private=10.0.0.60                  | FedoraAtomic29-20191126 | general.v1.tiny   |
+    >   +--------------------------------------+---------------------------------------------------+--------+------------------------------------+-------------------------+-------------------+
+
+
+# -----------------------------------------------------
+# Identify our gateway server.
+#[user@openstacker]
+
+    gatewayid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name | contains("gateway")) | .ID'
+        )
+
+    addresses=( $(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                server show \
+                    --format json \
+                    "${gatewayid:?}" \
+            | jq -r '.addresses' \
+            | sed '
+                s/private=//
+                s/[[:space:]]//
+                s/,/\n/
+                '
+            )
+        )
+
+    internal=${addresses[0]}
+    external=${addresses[1]}
+
+cat << EOF
+internal [${internal}]
+external [${external}]
+EOF
+
+    >   internal [10.0.0.83]
+    >   external [128.232.227.158]
+
+
+# -----------------------------------------------------
+# Identify our cluster nodes.
+#[user@openstacker]
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[] | select(.name | startswith("aglais")) | .uuid'
+        )
+
+    nodes=( $(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                coe cluster show \
+                    --format json \
+                    "${clusterid:?}" \
+            | jq -r '.node_addresses[]'
+            )
+        )
+
+    for nodeip in ${nodes[@]}
+        do
+            echo "Node [${nodeip}]"
+        done
+
+    >   Node [10.0.0.129]
+    >   Node [10.0.0.139]
+    >   Node [10.0.0.40]
+    >   Node [10.0.0.111]
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# SSH from our desktop to the gateway VM.
+#[user@desktop]
+
+    sshuser=fedora
+    sshopts='-o StrictHostKeyChecking=no'
+
+    ssh "${sshuser:?}@${external:?}" ${sshopts} \
+        '
+        date
+        hostname
+        '
+
+    >   Warning: Permanently added '128.232.227.158' (ECDSA) to the list of known hosts.
+    >   Thu Dec 10 03:03:34 UTC 2020
+    >   aglais-k8s-20201208-cluster-gateway.novalocal
+
+
+# -----------------------------------------------------
+# SSH into each of the nodes, using the gateway as a proxy.
+#[user@desktop]
+
+    sshuser=fedora
+    sshopts='-o StrictHostKeyChecking=no'
+
+    for nodeip in ${nodes[@]}
+        do
+            echo "---- ----"
+            echo "Node [${nodeip}]"
+            ssh -J "${sshuser:?}@${external:?}" "${sshuser:?}@${nodeip:?}" ${sshopts} \
+                '
+                date
+                hostname
+                '
+        done
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# SSH into each of the nodes and pull the new image.
+#[user@desktop]
+
+    for nodeip in ${nodes[@]}
+        do
+            echo ""
+            echo "Node [${nodeip}]"
+            ssh -J "${sshuser:?}@${external:?}" "${sshuser:?}@${nodeip:?}" ${sshopts} \
+                "
+                date
+                hostname
+                sudo docker pull 'aglais/drupal-dev:${buildtag:?}'
+                "
+        done
+
+
+    >   Node [10.0.0.129]
+    >   Warning: Permanently added '10.0.0.129' (ECDSA) to the list of known hosts.
+    >   Thu Dec 10 03:04:59 UTC 2020
+    >   aglais-k8s-20201208-cluster-p5qlctagesrg-node-0.novalocal
+    >   Trying to pull repository docker.io/aglais/drupal-dev ...
+    >   sha256:2de7c5ff634a903c4c37fa96625a7616044cf1d023d1a0232db4f45e233e3ed4: Pulling from docker.io/aglais/drupal-dev
+    >   ....
+    >   ....
+    >   Digest: sha256:2de7c5ff634a903c4c37fa96625a7616044cf1d023d1a0232db4f45e233e3ed4
+    >   Status: Downloaded newer image for docker.io/aglais/drupal-dev:20201210-025101
+    >
+    >   Node [10.0.0.139]
+    >   Warning: Permanently added '10.0.0.139' (ECDSA) to the list of known hosts.
+    >   Thu Dec 10 03:05:04 UTC 2020
+    >   aglais-k8s-20201208-cluster-p5qlctagesrg-node-1.novalocal
+    >   Trying to pull repository docker.io/aglais/drupal-dev ...
+    >   sha256:2de7c5ff634a903c4c37fa96625a7616044cf1d023d1a0232db4f45e233e3ed4: Pulling from docker.io/aglais/drupal-dev
+    >   ....
+    >   ....
+    >   Digest: sha256:2de7c5ff634a903c4c37fa96625a7616044cf1d023d1a0232db4f45e233e3ed4
+    >   Status: Downloaded newer image for docker.io/aglais/drupal-dev:20201210-025101
+    >
+    >   Node [10.0.0.40]
+    >   Warning: Permanently added '10.0.0.40' (ECDSA) to the list of known hosts.
+    >   Thu Dec 10 03:05:09 UTC 2020
+    >   aglais-k8s-20201208-cluster-p5qlctagesrg-node-2.novalocal
+    >   Trying to pull repository docker.io/aglais/drupal-dev ...
+    >   sha256:2de7c5ff634a903c4c37fa96625a7616044cf1d023d1a0232db4f45e233e3ed4: Pulling from docker.io/aglais/drupal-dev
+    >   ....
+    >   ....
+    >   Digest: sha256:2de7c5ff634a903c4c37fa96625a7616044cf1d023d1a0232db4f45e233e3ed4
+    >   Status: Downloaded newer image for docker.io/aglais/drupal-dev:20201210-025101
+    >
+    >   Node [10.0.0.111]
+    >   Warning: Permanently added '10.0.0.111' (ECDSA) to the list of known hosts.
+    >   Thu Dec 10 03:05:14 UTC 2020
+    >   aglais-k8s-20201208-cluster-p5qlctagesrg-node-3.novalocal
+    >   Trying to pull repository docker.io/aglais/drupal-dev ...
+    >   sha256:2de7c5ff634a903c4c37fa96625a7616044cf1d023d1a0232db4f45e233e3ed4: Pulling from docker.io/aglais/drupal-dev
+    >   ....
+    >   ....
+    >   Digest: sha256:2de7c5ff634a903c4c37fa96625a7616044cf1d023d1a0232db4f45e233e3ed4
+    >   Status: Downloaded newer image for docker.io/aglais/drupal-dev:20201210-025101
+
+

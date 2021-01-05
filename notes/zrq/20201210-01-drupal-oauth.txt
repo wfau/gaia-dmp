@@ -1,0 +1,611 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Target:
+
+        Exploring OAuth login and the service Ingress(s) we have.
+
+    Result:
+
+        Work in progress ....
+
+    Source:
+
+        Previous notes:
+            notes/zrq/20200825-01-oauth-proxy.txt
+            notes/zrq/20200826-01-user-accounts.txt
+
+
+# -----------------------------------------------------
+# Create a container to work in.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --env "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock:z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Configure our secret function.
+# https://www.reddit.com/r/Fedora/comments/jh9iyi/f33_openssh_no_mutual_signature_algorithm/g9yebel/
+#[user@kubernator]
+
+    mkdir ${HOME}/bin
+    cat > ${HOME}/bin/secret << 'EOF'
+ssh -n \
+    'Zarquan@data.metagrid.co.uk' \
+    -o 'PubkeyAcceptedKeyTypes=+ssh-rsa' \
+    "bin/secret '${1}'"
+EOF
+    chmod a+x ${HOME}/bin/secret
+
+    secret frog
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Get the cluster connection details.
+    See notes/zrq/20201209-03-kubectl-login.txt
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Get a copy of the Kubernetes NGINX Ingress project.
+# https://github.com/kubernetes/ingress-nginx.git
+#[user@kubernator]
+
+    dnf install -y  git
+
+    cd "${HOME}"
+    git clone 'https://github.com/kubernetes/ingress-nginx.git'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Deploy the test HTTP service.
+# https://github.com/kubernetes/ingress-nginx/blob/master/docs/examples/PREREQUISITES.md#test-http-service
+#[user@kubernator]
+
+    pushd "${HOME}/ingress-nginx"
+        pushd 'docs/examples'
+
+            kubectl create \
+                --filename 'http-svc.yaml'
+
+        popd
+    popd
+
+    >   deployment.apps/http-svc created
+    >   service/http-svc created
+
+
+# -----------------------------------------------------
+# Create our SSL keys and store them in a Kubernetes secret.
+# https://github.com/kubernetes/ingress-nginx/blob/master/docs/examples/PREREQUISITES.md#tls-certificates
+#[user@kubernator]
+
+    dnf install -y openssl
+
+    >   ....
+    >   ....
+
+
+    hostname=vernon.metagrid.xyz
+    certname=tls-secret
+
+    openssl req \
+        -x509 \
+        -sha256 \
+        -nodes \
+        -days 365 \
+        -newkey rsa:2048 \
+        -keyout /tmp/tls.key \
+        -out    /tmp/tls.crt \
+        -subj "/CN=${hostname:?}/O=Aglais"
+
+    >   Generating a RSA private key
+    >   ....................................+++++
+    >   ....................................+++++
+    >   writing new private key to '/tmp/tls.key'
+
+
+    kubectl create secret \
+        tls \
+        ${certname} \
+            --key  /tmp/tls.key \
+            --cert /tmp/tls.crt
+
+    >   secret/tls-secret created
+
+
+# -----------------------------------------------------
+# Deploy a TLS test Ingress
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#deployment
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#validation
+#[user@kubernator]
+
+    cat << EOF > /tmp/tls-test.yaml
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: tls-test
+spec:
+  tls:
+    - hosts:
+      - ${hostname}
+      secretName: ${certname}
+  rules:
+    - host: ${hostname}
+      http:
+        paths:
+        - path: /tls-test
+          backend:
+            serviceName: http-svc
+            servicePort: 80
+EOF
+
+    kubectl apply \
+        --filename /tmp/tls-test.yaml
+
+    >   ingress.networking.k8s.io/tls-test created
+
+
+    kubectl describe \
+        Ingress tls-test
+
+    >   Name:             tls-test
+    >   Namespace:        default
+    >   Address:          128.232.227.125
+    >   Default backend:  default-http-backend:80 (<error: endpoints "default-http-backend" not found>)
+    >   TLS:
+    >     tls-secret terminates vernon.metagrid.xyz
+    >   Rules:
+    >     Host                 Path  Backends
+    >     ----                 ----  --------
+    >     vernon.metagrid.xyz
+    >                          /tls-test   http-svc:80 (10.100.4.48:8080)
+    >   Annotations:           Events:
+    >     Type                 Reason  Age   From                      Message
+    >     ----                 ------  ----  ----                      -------
+    >     Normal               CREATE  12s   nginx-ingress-controller  Ingress default/tls-test
+    >     Normal               UPDATE  8s    nginx-ingress-controller  Ingress default/tls-test
+
+
+    ingressip=$(
+        kubectl get \
+            Ingress tls-test \
+                --output json \
+        | jq -r '.status.loadBalancer.ingress[0].ip'
+        )
+
+    echo "Ingress [${ingressip:?}]"
+
+    >   Ingress [128.232.227.125]
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Update our DNS
+
+        aglais-001              A       128.232.227.125
+        ....
+    +   vernon.metagrid.xyz     CNAME   aglais-001.metagrid.xyz.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Test our SSL keys.
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#deployment
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#validation
+#[user@kubernator]
+
+    curl --head "http://${ingressip:?}/tls-test"
+
+    >   HTTP/1.1 404 Not Found
+    >   Date: Thu, 10 Dec 2020 04:11:11 GMT
+    >   Content-Type: text/html
+    >   Content-Length: 146
+    >   Connection: keep-alive
+
+
+    curl --head "http://${hostname:?}/tls-test"
+
+    >   HTTP/1.1 308 Permanent Redirect
+    >   Date: Thu, 10 Dec 2020 04:14:17 GMT
+    >   Content-Type: text/html
+    >   Content-Length: 164
+    >   Connection: keep-alive
+    >   Location: https://vernon.metagrid.xyz/tls-test
+
+
+    curl --head "https://${hostname:?}/tls-test"
+
+    >   curl: (60) SSL certificate problem: self signed certificate
+
+
+    curl --head --insecure "https://${hostname:?}/tls-test"
+
+    >   HTTP/2 200
+    >   date: Thu, 10 Dec 2020 04:14:58 GMT
+    >   content-type: text/plain
+    >   strict-transport-security: max-age=15724800; includeSubDomains
+
+
+# -----------------------------------------------------
+# Configure our oauth2_proxy Service to use Google.
+#[user@kubernator]
+
+    OAUTH2_PROXY_CLIENT_ID=$(
+        secret google.amdar.id
+        )
+    OAUTH2_PROXY_CLIENT_SECRET=$(
+        secret google.amdar.secret
+        )
+    OAUTH2_PROXY_COOKIE_SECRET=$(
+        python -c 'import os,base64; print(base64.b64encode(os.urandom(16)).decode("ascii"))'
+        )
+
+    cat > /tmp/oauth-proxy.yaml << EOF
+---
+apiVersion: v1
+kind: Service
+metadata:
+ labels:
+   k8s-app: oauth-proxy
+ name: oauth-proxy
+ namespace: default
+spec:
+ ports:
+ - name: http
+   port: 4180
+   protocol: TCP
+   targetPort: 4180
+ selector:
+   k8s-app: oauth-proxy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+ labels:
+   k8s-app: oauth-proxy
+ name: oauth-proxy
+ namespace: default
+spec:
+ replicas: 1
+ selector:
+   matchLabels:
+     k8s-app: oauth-proxy
+ template:
+   metadata:
+     labels:
+       k8s-app: oauth-proxy
+   spec:
+     containers:
+     - args:
+       - --provider=google
+       - --email-domain=*
+       - --http-address=0.0.0.0:4180
+       - --proxy-prefix=/agromulupt
+       - --set-xauthrequest=true
+       env:
+       - name:    OAUTH2_PROXY_CLIENT_ID
+         value: ${OAUTH2_PROXY_CLIENT_ID}
+       - name:    OAUTH2_PROXY_CLIENT_SECRET
+         value: ${OAUTH2_PROXY_CLIENT_SECRET}
+       - name:    OAUTH2_PROXY_COOKIE_SECRET
+         value: ${OAUTH2_PROXY_COOKIE_SECRET}
+       image: quay.io/oauth2-proxy/oauth2-proxy:latest
+       imagePullPolicy: Always
+       name: oauth-proxy
+       ports:
+       - containerPort: 4180
+         protocol: TCP
+EOF
+
+
+# -----------------------------------------------------
+# Deploy the OAuth proxy.
+#[user@kubernator]
+
+    kubectl create \
+        --filename /tmp/oauth-proxy.yaml
+
+    >   deployment.apps/oauth-proxy created
+    >   service/oauth-proxy created
+
+
+# -----------------------------------------------------
+# Configure the oauth_proxy Ingress.
+#[user@kubernator]
+
+    #
+    # WARNING The auth-url and auth-signin URLs contain '$' values.
+    # WARNING If bash tries to fill them in, they will end up blank.
+    #   https:///oauth2/auth
+    #   https:///oauth2/start?rd
+    # WARNING This disables the authentication, leaving the protected resource exposed.
+    #
+
+    cat > /tmp/oauth-ingress.yaml << EOF
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+ annotations:
+   nginx.ingress.kubernetes.io/auth-url:    "https://\$host/agromulupt/auth"
+   nginx.ingress.kubernetes.io/auth-signin: "https://\$host/agromulupt/start?rd=\$escaped_request_uri"
+   nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user, x-auth-request-email"
+ name: oauth-protected
+ namespace: default
+spec:
+ rules:
+ - host: ${hostname:?}
+   http:
+     paths:
+     - path: /
+       backend:
+         serviceName: http-svc
+         servicePort: 80
+ tls:
+ - hosts:
+   - ${hostname:?}
+   secretName: ${certname:?}
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+ name: oauth-protector
+ namespace: default
+spec:
+ rules:
+ - host: ${hostname:?}
+   http:
+     paths:
+     - path: /agromulupt
+       backend:
+         serviceName: oauth-proxy
+         servicePort: 4180
+
+ tls:
+ - hosts:
+   - ${hostname:?}
+   secretName: ${certname:?}
+EOF
+
+
+# -----------------------------------------------------
+# Deploy the OAuth Ingress connectors.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename /tmp/oauth-ingress.yaml
+
+    >   ingress.networking.k8s.io/oauth-protected created
+    >   ingress.networking.k8s.io/oauth-protector created
+
+
+    kubectl describe \
+        ingress oauth-protected
+
+    >   Name:             oauth-protected
+    >   Namespace:        default
+    >   Address:          128.232.227.125
+    >   Default backend:  default-http-backend:80 (<error: endpoints "default-http-backend" not found>)
+    >   TLS:
+    >     tls-secret terminates vernon.metagrid.xyz
+    >   Rules:
+    >     Host                 Path  Backends
+    >     ----                 ----  --------
+    >     vernon.metagrid.xyz
+    >                          /   http-svc:80 (10.100.4.48:8080)
+    >   Annotations:           nginx.ingress.kubernetes.io/auth-response-headers: x-auth-request-user, x-auth-request-email
+    >                          nginx.ingress.kubernetes.io/auth-signin: https://$host/agromulupt/start?rd=$escaped_request_uri
+    >                          nginx.ingress.kubernetes.io/auth-url: https://$host/agromulupt/auth
+    >                          nginx.ingress.kubernetes.io/ssl-redirect: true
+    >   Events:
+    >     Type    Reason  Age                  From                      Message
+    >     ----    ------  ----                 ----                      -------
+    >     Normal  CREATE  39m                  nginx-ingress-controller  Ingress default/oauth-protected
+    >     Normal  UPDATE  9m12s (x5 over 38m)  nginx-ingress-controller  Ingress default/oauth-protected
+
+
+    kubectl describe \
+        ingress oauth-protector
+
+    >   Name:             oauth-protector
+    >   Namespace:        default
+    >   Address:          128.232.227.125
+    >   Default backend:  default-http-backend:80 (<error: endpoints "default-http-backend" not found>)
+    >   TLS:
+    >     tls-secret terminates vernon.metagrid.xyz
+    >   Rules:
+    >     Host                 Path  Backends
+    >     ----                 ----  --------
+    >     vernon.metagrid.xyz
+    >                          /agromulupt   oauth-proxy:4180 (10.100.4.49:4180)
+    >   Annotations:           nginx.ingress.kubernetes.io/ssl-redirect: true
+    >   Events:
+    >     Type    Reason  Age                  From                      Message
+    >     ----    ------  ----                 ----                      -------
+    >     Normal  CREATE  39m                  nginx-ingress-controller  Ingress default/oauth-protector
+    >     Normal  UPDATE  9m39s (x2 over 38m)  nginx-ingress-controller  Ingress default/oauth-protector
+
+
+# -----------------------------------------------------
+# Test the deployment.
+#[user@kubernator]
+
+    curl --head --insecure "https://${hostname:?}/test"
+
+    >   HTTP/2 500
+    >   date: Thu, 10 Dec 2020 04:58:56 GMT
+    >   content-type: text/html
+    >   content-length: 170
+    >   strict-transport-security: max-age=15724800; includeSubDomains
+
+
+    curl --head --insecure 'https://vernon.metagrid.xyz/agromulupt'
+
+    >   HTTP/2 403
+    >   date: Thu, 10 Dec 2020 04:59:41 GMT
+    >   content-type: text/html; charset=utf-8
+    >   cache-control: no-cache, no-store, must-revalidate, max-age=0
+    >   expires: Thu, 01 Jan 1970 00:00:00 UTC
+    >   strict-transport-security: max-age=15724800; includeSubDomains
+
+# -----------------------------------------------------
+# Install krew plugin manager for kubectl.
+# https://krew.sigs.k8s.io/
+# https://krew.sigs.k8s.io/docs/user-guide/setup/install/
+#[user@kubernator]
+
+    dnf install -y git
+
+    (
+      set -x; cd "$(mktemp -d)" &&
+      curl -fsSLO "https://github.com/kubernetes-sigs/krew/releases/latest/download/krew.tar.gz" &&
+      tar zxvf krew.tar.gz &&
+      KREW=./krew-"$(uname | tr '[:upper:]' '[:lower:]')_$(uname -m | sed -e 's/x86_64/amd64/' -e 's/arm.*$/arm/')" &&
+      "$KREW" install krew
+    )
+
+    export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH"
+
+
+# -----------------------------------------------------
+# Install the ingress-nginx kubectl plugin.
+# https://kubernetes.github.io/ingress-nginx/kubectl-plugin/
+#[user@kubernator]
+
+    kubectl krew install ingress-nginx
+
+    >   ....
+    >   ....
+
+
+    kubectl ingress-nginx --help
+
+    >   ....
+    >   ....
+
+
+    kubectl \
+        ingress-nginx \
+            --namespace 'aglais-k8s-20201208' \
+            --deployment 'aglais-ingress-nginx-controller' \
+            general
+
+    >   {}
+
+
+    kubectl \
+        ingress-nginx \
+            --namespace 'aglais-k8s-20201208' \
+            --deployment 'aglais-ingress-nginx-controller' \
+            backends
+
+    >   ....
+    >   .... Too much detail - See notes/zrq/20201210-02-nginx-conf.txt
+    >   ....
+
+
+    kubectl \
+        ingress-nginx \
+            --namespace 'aglais-k8s-20201208' \
+            --deployment 'aglais-ingress-nginx-controller' \
+            conf
+
+    >   ....
+    >   .... Too much detail - See notes/zrq/20201210-02-nginx-conf.txt
+    >   ....
+
+
+
+
+
+    kubectl \
+        ingress-nginx \
+            --namespace 'aglais-k8s-20201208' \
+            --deployment 'aglais-ingress-nginx-controller' \
+            logs
+
+    >   ....
+    >   ....
+    >   W1210 06:00:37.997631       8 controller.go:1168] Validating certificate against DNS names. This will be deprecated in a future version
+    >   W1210 06:01:07.992775       8 controller.go:1153] Error getting SSL certificate "aglais-k8s-20201208/zeppelin-tls-secret": local SSL certificate aglais-k8s-20201208/zeppelin-tls-secret was not found. Using default certificate
+    >   W1210 06:01:07.992809       8 controller.go:1153] Error getting SSL certificate "aglais-k8s-20201208/drupal-ingress-tls-secret": local SSL certificate aglais-k8s-20201208/drupal-ingress-tls-secret was not found. Using default certificate
+    >   W1210 06:01:07.992823       8 controller.go:1167] Unexpected error validating SSL certificate "default/tls-secret" for server "vernon.metagrid.xyz": x509: certificate relies on legacy Common Name field, use SANs or temporarily enable Common Name matching with GODEBUG=x509ignoreCN=0
+    >   ....
+    >   ....
+
+    #
+    # Found a clue !!!!
+    # Possibly the wrong clue, or a mis-direction, but it is a start ...
+    # https://github.com/kubernetes/ingress-nginx/issues/6559
+    # https://github.com/atc0005/check-cert/issues/70
+    # https://github.com/golang/go/issues/39568
+    #
+
+    #
+    # Old format certificates will be rejected.
+    # But this isn't the issue.
+    # The problem is our service is using the default certificate, when it should be using the one we generated.
+    #
+
+    # Found another clue ...
+    # https://github.com/kubernetes/ingress-nginx/issues/4674
+
+    # Looks like it is getting the right certificate.
+    #     Unexpected error validating SSL certificate "default/tls-secret" for server "vernon.metagrid.xyz"
+
+    # So is the cetificate generated by openssl to blame ?
+    # YES
+
+    # OK - head 'splodes !!
+
+    https://stackoverflow.com/questions/64814173/how-do-i-use-sans-with-openssl-instead-of-common-name
+    https://geekflare.com/san-ssl-certificate/
+    https://serverfault.com/questions/845766/generating-a-self-signed-cert-with-openssl-that-works-in-chrome-58
+
+    Wayyy too much information.
+    It is 06:34am .. and I need some sleep.
+    I'll deal with this tomorrow (later today).
+
+
+
+
+
+

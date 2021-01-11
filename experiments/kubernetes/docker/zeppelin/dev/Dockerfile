@@ -18,13 +18,25 @@
 #   </meta:licence>
 # </meta:header>
 #
----
 
-spark_worker_image:      "aglais/pyspark-mod:latest"
+ARG buildsrc
 
-zeppelin_server_image: "aglais/zeppelin-dev:20201227-051927-debian-9-java-8"
-zeppelin_worker_image: "aglais/zeppelin-dev:20201227-051927-debian-9-java-8"
-zeppelin_server_tlscert: "zeppelin-tls-secret"
+FROM aglais/zeppelin-main:${buildsrc}
+MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+
+ARG buildtag
+ARG buildtime
+
+LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+LABEL buildtag="${buildtag}"
+LABEL buildtime="${buildtime}"
+LABEL gitrepo="https://github.com/wfau/aglais"
+
+#COPY tmp/lib/* /zeppelin/lib
+
+COPY k8s/interpreter/100-interpreter-spec.yaml /zeppelin/k8s/interpreter/
+
+COPY conf/shiro.ini /zeppelin/conf/shiro.ini
 
 
 

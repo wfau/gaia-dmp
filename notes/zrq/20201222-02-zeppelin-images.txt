@@ -1,0 +1,514 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+    Target:
+
+        See if the FileNotFound issue with reading Parquet files into Spark
+        is caused by a change from Java-8 to Java-11.
+
+        Change the Debian version from debian:10 to debian:9.
+        Change the Java version from openjdk-11-jdk to openjdk-8-jdk.
+
+        See if we can speed up the upload process by building the
+        images on a machine at ROE.
+
+    Result:
+
+        Images built and pushed, not been tested yet though ...
+        Turns out, images still have issues :-(
+
+        Issues with building at ROE solved.
+        Issues with buiding in a container still remain.
+        Resorted to building in the VM without a container.
+        Works, but less reproducible.
+
+        Image push from ROE is still slow, but it isn't my network.
+
+
+# -----------------------------------------------------
+# Create a vitual machine to work with.
+#[user@desktop]
+
+    ssh trop04
+
+    >   ....
+    >   INFO : Node name [Wumar]
+    >   INFO : Base name [fedora-31-docker-base-20200722.qcow]
+    >   INFO : Base path [/var/lib/libvirt/images/base/fedora-31-docker-base-20200722.qcow]
+    >   INFO : Disc name [Wumar.qcow]
+    >   INFO : Disc size [32GiB]
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to the vitual machine and create our build environment.
+[user@virtual]
+
+    mkdir "${HOME}/build"
+    mkdir "${HOME}/cache"
+
+
+# -----------------------------------------------------
+# Run a Java build container.
+[user@virtual]
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --hostname builder \
+        --env "SSH_AUTH_SOCK=/tmp/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/tmp/ssh_auth_sock:z" \
+        --volume "${HOME}/cache:/var/local/cache:rw" \
+        --volume "${HOME}/build:/var/local/build:rw" \
+        "firethorn/builder:latest" \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install bzip2.
+# TODO Add this to our builder image.
+#[root@builder]
+
+    dnf install -y bzip2
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Allow a normal user account to create build directories.
+#[root@builder]
+
+    chmod a+rwx /var/local/build
+    chmod a+rwx /var/local/cache
+
+
+# -----------------------------------------------------
+# Add a user account to run the build.
+#[root@builder]
+
+    adduser Tinselpear
+    su - Tinselpear
+
+
+# -----------------------------------------------------
+# Configure the source code paths.
+#[user@builder]
+
+    cat > "${HOME}/aglais.env" << 'EOF'
+AGLAIS_REPO='https://github.com/Zarquan/aglais.git'
+AGLAIS_HOME='/var/local/build/aglais'
+AGLAIS_CODE="${AGLAIS_HOME:?}/github-zrq"
+AGLAIS_CLOUD=gaia-prod
+
+ZEPPELIN_REPO='https://github.com/Zarquan/aglais-zeppelin.git'
+ZEPPELIN_HOME='/var/local/build/aglais-zeppelin'
+ZEPPELIN_CODE="${ZEPPELIN_HOME:?}/github-zrq"
+EOF
+
+
+# -----------------------------------------------------
+# Update our source code.
+#[user@builder]
+
+    codecheck()
+        {
+        local codepath=${1:?}
+        local coderepo=${2:?}
+
+        local coderoot=$(dirname  ${codepath})
+        local codename=$(basename ${codepath})
+
+        echo "Checking [${codepath:?}]"
+        if [ -e "${codepath:?}" ]
+        then
+            echo "Updating [${codepath:?}]"
+            pushd "${codepath:?}"
+                git pull
+            popd
+        else
+            echo "Checking [${coderoot:?}]"
+            if [ ! -e "${coderoot:?}" ]
+            then
+                echo "Creating [${coderoot:?}]"
+                mkdir -p "${coderoot:?}"
+            fi
+
+            echo "Checkout [${coderoot:?}][${codename:?}]"
+            pushd "${coderoot:?}"
+                git clone "${coderepo:?}" "${codename:?}"
+            popd
+        fi
+        }
+
+    source "${HOME}/aglais.env"
+    codecheck "${AGLAIS_CODE:?}" "${AGLAIS_REPO:?}"
+
+    >   Checking [/var/local/build/aglais/github-zrq]
+    >   Checking [/var/local/build/aglais]
+    >   Checkout [/var/local/build/aglais][github-zrq]
+    >   /var/local/build/aglais ~
+    >   Cloning into 'github-zrq'...
+    >   remote: Enumerating objects: 681, done.
+    >   remote: Counting objects: 100% (681/681), done.
+    >   remote: Compressing objects: 100% (470/470), done.
+    >   remote: Total 5587 (delta 275), reused 431 (delta 183), pack-reused 4906
+    >   Receiving objects: 100% (5587/5587), 2.48 MiB | 2.87 MiB/s, done.
+    >   Resolving deltas: 100% (2904/2904), done.
+
+
+    source "${HOME}/aglais.env"
+    codecheck "${ZEPPELIN_CODE:?}" "${ZEPPELIN_REPO:?}"
+
+    >   Checking [/var/local/build/aglais-zeppelin/github-zrq]
+    >   Checking [/var/local/build/aglais-zeppelin]
+    >   Creating [/var/local/build/aglais-zeppelin]
+    >   Checkout [/var/local/build/aglais-zeppelin][github-zrq]
+    >   /var/local/build/aglais-zeppelin ~
+    >   Cloning into 'github-zrq'...
+    >   remote: Enumerating objects: 3, done.
+    >   remote: Counting objects: 100% (3/3), done.
+    >   remote: Compressing objects: 100% (3/3), done.
+    >   remote: Total 98409 (delta 0), reused 0 (delta 0), pack-reused 98406
+    >   Receiving objects: 100% (98409/98409), 86.36 MiB | 2.01 MiB/s, done.
+    >   Resolving deltas: 100% (40362/40362), done.
+
+
+# -----------------------------------------------------
+# Swap to our development branch.
+#[user@builder]
+
+    source "${HOME}/aglais.env"
+    pushd  "${AGLAIS_CODE:?}"
+
+        git checkout 20201218-zrq-working
+
+    popd
+
+
+    source "${HOME}/aglais.env"
+    pushd  "${ZEPPELIN_CODE:?}"
+
+        git checkout 20200911-zrq-devel
+
+    popd
+
+# -----------------------------------------------------
+# Build our Zeppelin code.
+#[user@builder]
+
+    # This will build all the components and then pack them in a tar.gz.
+    # It doesn't install any of them in the Maven cache.
+    source "${HOME}/aglais.env"
+    pushd  "${ZEPPELIN_CODE:?}"
+
+        mvn clean package -D skipTests -P build-distr -P hadoop3
+
+    popd
+
+    >   ....
+    >   ....
+
+
+    # This will build all the components and install them in the Maven cache.
+    source "${HOME}/aglais.env"
+    pushd  "${ZEPPELIN_CODE:?}"
+
+        mvn clean install -D skipTests -P build-distr -P hadoop3
+
+    popd
+
+
+    # This will build a component and install it in the Maven cache.
+    source "${HOME}/aglais.env"
+    pushd  "${ZEPPELIN_CODE:?}"
+
+        pushd zeppelin-zengine
+            mvn clean install -D skipTests -P hadoop3
+        popd
+
+    popd
+
+
+    # This will take components from the Maven cache and pack them in a tar.gz.
+    source "${HOME}/aglais.env"
+    pushd  "${ZEPPELIN_CODE:?}"
+
+        pushd zeppelin-distribution
+            mvn clean package -D skipTests -P build-distr -P hadoop3
+        popd
+
+    popd
+
+
+# -----------------------------------------------------
+#[user@builder]
+
+    # Exit back to root in the builder container.
+    exit
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Locate our build result.
+#[root@builder]
+
+    source "${HOME}/aglais.env"
+
+    zepversion=$(
+        sed -n '
+            s/^.*<version project="zeppelin">\(.*\)<\/version>.*$/\1/ p
+            ' "${ZEPPELIN_CODE:?}/pom.xml"
+        )
+
+    zepresult=zeppelin-distribution/target/zeppelin-${zepversion:?}/zeppelin-${zepversion:?}
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Install buildah.
+# TODO Add this to the builder image.
+#[root@builder]
+
+    dnf install -y buildah
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Build the Zeppelin base image.
+# https://developers.redhat.com/blog/2019/08/14/best-practices-for-running-buildah-in-a-container/
+#[root@builder]
+
+    source "${HOME}/aglais.env"
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    buildah bud \
+        --format docker \
+        --isolation chroot \
+        --storage-driver vfs \
+        --root '/var/local/cache/buildah' \
+        --runroot '/var/local/cache/buildah' \
+        --tag aglais/zeppelin-base:latest \
+        --tag aglais/zeppelin-base:${buildtag:?} \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        "${AGLAIS_CODE:?}/experiments/kubernetes/docker/zeppelin/base"
+
+    #
+    # Issues with no $HOME during the build process.
+    # See: notes/zrq/20201224-01-buildah-in-podman.txt
+    #
+
+# -----------------------------------------------------
+# Exit the builder container.
+#[root@builder]
+
+    exit
+
+
+# -----------------------------------------------------
+# Configure the source code paths.
+#[user@virtual]
+
+    cat > "${HOME}/aglais.env" << 'EOF'
+AGLAIS_REPO='https://github.com/Zarquan/aglais.git'
+AGLAIS_HOME="${HOME}/build/aglais"
+AGLAIS_CODE="${AGLAIS_HOME:?}/github-zrq"
+AGLAIS_CLOUD=gaia-prod
+
+ZEPPELIN_REPO='https://github.com/Zarquan/aglais-zeppelin.git'
+ZEPPELIN_HOME="${HOME}/build/aglais-zeppelin"
+ZEPPELIN_CODE="${ZEPPELIN_HOME:?}/github-zrq"
+EOF
+
+
+# -----------------------------------------------------
+# Locate our build result.
+#[user@virtual]
+
+    source "${HOME}/aglais.env"
+
+    zepversion=$(
+        sed -n '
+            s/^.*<version project="zeppelin">\(.*\)<\/version>.*$/\1/ p
+            ' "${ZEPPELIN_CODE:?}/pom.xml"
+        )
+
+    zepresult=zeppelin-distribution/target/zeppelin-${zepversion:?}/zeppelin-${zepversion:?}
+
+
+# -----------------------------------------------------
+# Build the Zeppelin base image.
+#[user@virtual]
+
+    source "${HOME}/aglais.env"
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    buildah bud \
+        --format docker \
+        --tag aglais/zeppelin-base:latest \
+        --tag aglais/zeppelin-base:${buildtag:?} \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        "${AGLAIS_CODE:?}/experiments/kubernetes/docker/zeppelin/base"
+
+#       --isolation chroot \
+#       --storage-driver vfs \
+#       --root "${HOME}/cache/buildah" \
+#       --runroot "${HOME}/cache/buildah" \
+
+
+    >   STEP 1: FROM debian:10.7-slim
+    >   ....
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   STEP 5: LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+    >   STEP 6: LABEL buildtag="${buildtag}"
+    >   STEP 7: LABEL buildtime="${buildtime}"
+    >   STEP 8: LABEL gitrepo="https://github.com/wfau/aglais"
+    >   STEP 9: ENV LOG_TAG="[ZEPPELIN]:"
+    >   STEP 10: ENV LANG=en_GB.UTF-8
+    >   STEP 11: ENV DEBIAN_FRONTEND=noninteractive
+    >   STEP 12: RUN echo "$LOG_TAG configure locale" && ....
+    >   ....
+    >   ....
+    >   STEP 22: RUN echo "$LOG_TAG Cleanup" && apt-get autoclean && apt-get clean
+    >   [ZEPPELIN]: Cleanup
+    >   ....
+    >   STEP 23: COMMIT aglais/zeppelin-base:latest
+    >   ....
+
+
+# -----------------------------------------------------
+# Build the Zeppelin main image.
+#[user@virtual]
+
+    buildsrc=${buildtag:?}
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    buildah bud \
+        --format docker \
+        --tag aglais/zeppelin-main:latest \
+        --tag aglais/zeppelin-main:${buildtag:?} \
+        --build-arg "buildsrc=${buildsrc:?}" \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE:?}/experiments/kubernetes/docker/zeppelin/main/Dockerfile" \
+        "${ZEPPELIN_CODE:?}/${zepresult:?}"
+
+    >   STEP 1: FROM aglais/zeppelin-base:20201224-060543
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   STEP 5: LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+    >   STEP 6: LABEL buildtag="${buildtag}"
+    >   STEP 7: LABEL buildtime="${buildtime}"
+    >   STEP 8: LABEL gitrepo="https://github.com/wfau/aglais"
+    >   STEP 9: ENV Z_HOME="/zeppelin"
+    >   STEP 10: ENV ZEPPELIN_ADDR="0.0.0.0"
+    >   STEP 11: COPY . ${Z_HOME}/
+    >   STEP 12: RUN mkdir -p         ${Z_HOME}/run ....
+    >   STEP 13: RUN chgrp root  /etc/passwd &&     chmod ug+rw /etc/passwd
+    >   STEP 14: COPY conf/log4j.properties ${Z_HOME}/conf/
+    >   STEP 15: USER 1000
+    >   STEP 16: EXPOSE 8080
+    >   STEP 17: ENTRYPOINT [ "/usr/bin/tini", "--" ]
+    >   STEP 18: WORKDIR ${Z_HOME}
+    >   STEP 19: CMD ["bin/zeppelin.sh"]
+    >   STEP 20: COMMIT aglais/zeppelin-main:latest
+    >   ....
+
+
+# -----------------------------------------------------
+# Build the Zeppelin dev image.
+#[user@virtual]
+
+    buildsrc=${buildtag:?}
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    buildah bud \
+        --format docker \
+        --tag aglais/zeppelin-dev:latest \
+        --tag aglais/zeppelin-dev:${buildtag:?} \
+        --build-arg "buildsrc=${buildsrc:?}" \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        "${AGLAIS_CODE:?}/experiments/kubernetes/docker/zeppelin/dev"
+
+
+    >   STEP 1: FROM aglais/zeppelin-main:20201224-060543
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   STEP 5: LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+    >   STEP 6: LABEL buildtag="${buildtag}"
+    >   STEP 7: LABEL buildtime="${buildtime}"
+    >   STEP 8: LABEL gitrepo="https://github.com/wfau/aglais"
+    >   STEP 9: COPY k8s/interpreter/100-interpreter-spec.yaml /zeppelin/k8s/interpreter/
+    >   STEP 10: COPY conf/shiro.ini /zeppelin/conf/shiro.ini
+    >   STEP 11: COMMIT aglais/zeppelin-dev:latest
+    >   ....
+
+
+# -----------------------------------------------------
+# Configure our secret function.
+#[user@virtual]
+
+    ....
+    secret frog
+
+
+# -----------------------------------------------------
+# Push our new Zeppelin images to the registry.
+#[user@virtual]
+
+    buildah login \
+        --username $(secret docker.io.user) \
+        --password $(secret docker.io.pass) \
+        registry-1.docker.io
+
+    buildah push "aglais/zeppelin-base:${buildtag:?}"
+    buildah push "aglais/zeppelin-base:latest"
+
+    buildah push "aglais/zeppelin-main:${buildtag:?}"
+    buildah push "aglais/zeppelin-main:latest"
+
+    buildah push "aglais/zeppelin-dev:${buildtag:?}"
+    buildah push "aglais/zeppelin-dev:latest"
+
+    >   ....
+    >   ....
+

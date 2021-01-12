@@ -140,7 +140,7 @@ EOF
 
 
 # -----------------------------------------------------
-# Mount the Gaia DR2 data.
+# Mount the Gaia DR2 and eDR3 data.
 # Note the hard coded cloud name to get details of the static share.
 
     '/kubernetes/bin/cephfs-mount.sh' \
@@ -150,6 +150,37 @@ EOF
         '/data/gaia/dr2' \
         'rw'
 
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        'aglais-gaia-edr3' \
+        '/data/gaia/edr3' \
+        'rw'
+
+# -----------------------------------------------------
+# Mount the additional catalogs.
+# Note the hard coded cloud name to get details of the static share.
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        'aglais-wise-allwise' \
+        '/data/wise/allwise' \
+        'rw'
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        'aglais-panstarrs-dr1' \
+        '/data/panstarrs/dr1' \
+        'rw'
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        'aglais-twomass-allsky' \
+        '/data/twomass/allsky' \
+        'rw'
 
 # -----------------------------------------------------
 # Mount the user data volumes.

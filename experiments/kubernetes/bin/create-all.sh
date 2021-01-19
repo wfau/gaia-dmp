@@ -43,6 +43,15 @@
 
 
 # -----------------------------------------------------
+# Create our SSH keypair.
+# Do we need this here, or does it go inside magnum-create ?
+
+    '/openstack/bin/create-keypair.sh' \
+        "${cloudname:?}" \
+        "${buildname:?}"
+
+
+# -----------------------------------------------------
 # Create our Magnum cluster.
 
     '/kubernetes/bin/magnum-create.sh' \

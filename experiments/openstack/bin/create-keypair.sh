@@ -41,6 +41,32 @@
     echo "Build name   [${buildname}]"
     echo "---- ---- ----"
 
-    keyname="${buildname:?}-keypair"
 
+# -----------------------------------------------------
+# Check for existing keypair.
+
+    echo "Checking for key [${buildname}]"
+    keyname=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair list \
+                --format json \
+        | jq -r '.[] | select(.Name | startswith("'${buildname:?}'")) | .Name'
+        )
+
+# -----------------------------------------------------
+# Create a new keypair if needed.
+
+    if [ -n "${keyname}" ]
+    then
+        echo "Found [${keyname}]"
+    else
+        newname=${buildname:?}-keypair
+        echo "Creating keypair [${newname}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair create \
+                --public-key "/common/ssh/aglais-team-keys" \
+                "${newname:?}"
+    fi
 

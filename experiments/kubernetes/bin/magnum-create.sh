@@ -50,7 +50,7 @@
             --os-cloud "${cloudname:?}" \
             keypair list \
                 --format json \
-        | jq -r '.[0] | .Name'
+        | jq -r '.[] | select(.Name | startswith("'${buildname:?}'")) | .Name'
         )
 
     echo ""

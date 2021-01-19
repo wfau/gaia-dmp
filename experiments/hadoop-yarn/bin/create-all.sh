@@ -34,21 +34,19 @@
     echo "Path [${binpath}]"
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname}]"
-    echo "Cloud user [${clouduser}]"
+    echo "Cloud name [${cloudname:?}]"
 
-    buildname="aglais-$(date '+%Y%m%d')"
+    buildtag="aglais-$(date '+%Y%m%d')"
 
-    echo "Build name [${buildname}]"
+    echo "Build tag [${buildtag:?}]"
     echo "---- ---- ----"
 
 # -----------------------------------------------------
 # Create our Ansible include vars file.
 
     cat > /tmp/ansible-vars.yml << EOF
-buildtag:  '${buildname:?}'
+buildtag:  '${buildtag:?}'
 cloudname: '${cloudname:?}'
-clouduser: '${clouduser:?}'
 EOF
 
 # -----------------------------------------------------
@@ -85,7 +83,6 @@ EOF
     '/hadoop-yarn/bin/init-spark.sh'
 
 
-
 # -----------------------------------------------------
 # Initialise the Zeppelin service.
 
@@ -97,27 +94,57 @@ EOF
 
     '/hadoop-yarn/bin/cephfs-router.sh' \
         "${cloudname:?}" \
-        "${buildname:?}"
+        "${buildtag:?}"
 
 
 # -----------------------------------------------------
-# Mount the Gaia DR2 data.
-# Note the hard coded cloud name to get details of the static share.
+# Mount the data shares.
+# Using a hard coded cloud name to make it portable.
 
-    '/hadoop-yarn/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        'aglais-gaia-dr2' \
-        '/data/gaia/dr2'
+    sharelist='/common/manila/datashares.yaml'
+    sharemode='ro'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        '/hadoop-yarn/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            "${sharemode:?}"
+
+    done
 
 
 # -----------------------------------------------------
-# Mount the user data volume.
-# Note the hard coded cloud name to get details of the static share.
+# Mount the user shares.
+# Using a hard coded cloud name to make it portable.
 
-    '/hadoop-yarn/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        'aglais-user-nch' \
-        '/user/nch' \
-        'rw'
+    sharelist='/common/manila/usershares.yaml'
+    sharemode='rw'
 
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        '/hadoop-yarn/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            "${sharemode:?}"
+
+    done
 

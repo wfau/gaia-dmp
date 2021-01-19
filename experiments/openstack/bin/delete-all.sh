@@ -33,10 +33,8 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
-    cloudname=${1:?}
-
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname}]"
+    echo "Cloud name [${cloudname:?}]"
     echo "---- ---- ----"
 
 

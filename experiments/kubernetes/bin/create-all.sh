@@ -33,12 +33,11 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
-    echo "---- ---- ----"
-    echo "Cloud name [${cloudname}]"
-    echo "Cloud user [${clouduser}]"
-
+    cloudname=${1:?}
     buildname="aglais-k8s-$(date '+%Y%m%d')"
 
+    echo "---- ---- ----"
+    echo "Cloud name [${cloudname}]"
     echo "Build name [${buildname}]"
     echo "---- ---- ----"
 

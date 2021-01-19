@@ -33,19 +33,19 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
+    cloudname=${1:?}
+    buildname="aglais-$(date '+%Y%m%d')"
+
     echo "---- ---- ----"
     echo "Cloud name [${cloudname:?}]"
-
-    buildtag="aglais-$(date '+%Y%m%d')"
-
-    echo "Build tag [${buildtag:?}]"
+    echo "Build name [${buildname:?}]"
     echo "---- ---- ----"
 
 # -----------------------------------------------------
 # Create our Ansible include vars file.
 
     cat > /tmp/ansible-vars.yml << EOF
-buildtag:  '${buildtag:?}'
+buildtag:  '${buildname:?}'
 cloudname: '${cloudname:?}'
 EOF
 
@@ -94,7 +94,7 @@ EOF
 
     '/hadoop-yarn/bin/cephfs-router.sh' \
         "${cloudname:?}" \
-        "${buildtag:?}"
+        "${buildname:?}"
 
 
 # -----------------------------------------------------

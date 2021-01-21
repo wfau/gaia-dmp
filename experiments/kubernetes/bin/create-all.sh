@@ -149,73 +149,57 @@ EOF
 
 
 # -----------------------------------------------------
-# Mount the Gaia DR2 and eDR3 data.
-# Note the hard coded cloud name to get details of the static share.
+# Mount the data shares.
+# Using a hard coded cloud name to make it portable.
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-gaia-dr2' \
-        '/data/gaia/dr2' \
-        'rw'
+    sharelist='/common/manila/datashares.yaml'
+    sharemode='ro'
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-gaia-edr3' \
-        '/data/gaia/edr3' \
-        'rw'
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        '/kubernetes/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${namespace:?}" \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            "${sharemode:?}"
+
+    done
+
 
 # -----------------------------------------------------
-# Mount the additional catalogs.
-# Note the hard coded cloud name to get details of the static share.
+# Mount the user shares.
+# Using a hard coded cloud name to make it portable.
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-wise-allwise' \
-        '/data/wise/allwise' \
-        'rw'
+    sharelist='/common/manila/usershares.yaml'
+    sharemode='rw'
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-panstarrs-dr1' \
-        '/data/panstarrs/dr1' \
-        'rw'
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "Share [${shareid:?}]"
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-twomass-allsky' \
-        '/data/twomass/allsky' \
-        'rw'
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
 
-# -----------------------------------------------------
-# Mount the user data volumes.
-# Note the hard coded cloud name to get details of the static share.
+        '/kubernetes/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${namespace:?}" \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            "${sharemode:?}"
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-user-nch' \
-        '/user/nch' \
-        'rw'
-
-
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-user-stv' \
-        '/user/stv' \
-        'rw'
-
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-user-zrq' \
-        '/user/zrq' \
-        'rw'
+    done
 
 
 # -----------------------------------------------------

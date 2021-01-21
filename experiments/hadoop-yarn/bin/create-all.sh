@@ -24,6 +24,9 @@
 # -----------------------------------------------------
 # Settings ...
 
+#   set -eu
+#   set -o pipefail
+
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
     srcpath="$(dirname ${binpath})"

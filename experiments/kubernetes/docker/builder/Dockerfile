@@ -18,16 +18,20 @@
 #   </meta:licence>
 # </meta:header>
 #
----
 
-spark_worker_image:      "aglais/pyspark-mod:latest"
+FROM firethorn/builder:latest
+MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
 
-zeppelin_server_image: "aglais/zeppelin-dev:20210112-142531-debian-9-java-8"
-zeppelin_worker_image: "aglais/zeppelin-dev:20210112-142531-debian-9-java-8"
-zeppelin_server_tlscert: "zeppelin-tls-secret"
+ARG buildtag
+ARG buildtime
 
+LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+LABEL buildtag="${buildtag}"
+LABEL buildtime="${buildtime}"
+LABEL gitrepo="https://github.com/wfau/aglais"
 
-
+# Add bzip2
+RUN dnf install -y bzip2
 
 
 

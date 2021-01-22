@@ -268,7 +268,6 @@ EOF
     echo "Namespace [${namespace}]"
     echo "Hostname  [${zepphost}]"
 
-
     helm dependency update \
         "/kubernetes/helm/tools/zeppelin"
 
@@ -305,11 +304,6 @@ EOF
     helm dependency update \
         "/kubernetes/helm/tools/drupal"
 
-    cat > "/tmp/zeppelin-values.yaml" << EOF
+    cat > "/tmp/drupal-values.yaml" << EOF
 drupal_server_hostname: "${drupalhost:?}"
 EOF
-
-
-
-
-

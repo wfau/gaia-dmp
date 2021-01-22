@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # <meta:header>
 #   <meta:licence>
@@ -23,6 +23,9 @@
 
 # -----------------------------------------------------
 # Settings ...
+
+    set -eu
+    set -o pipefail
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
@@ -178,7 +181,8 @@
         echo "COMPLETE"
     else
         echo "CREATE FAILED"
-        cat '/tmp/cluster-status.json'
+        jq '{uuid, status, faults}' '/tmp/cluster-status.json'
+        exit 1
     fi
 
 

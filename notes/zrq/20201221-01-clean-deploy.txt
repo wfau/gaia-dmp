@@ -1,0 +1,415 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#
+
+
+    Target:
+
+        Run the Kubernetes deploy
+
+    Source:
+
+        class ZeppelinConfiguration
+        https://github.com/wfau/aglais-zeppelin/blob/master/zeppelin-interpreter/src/main/java/org/apache/zeppelin/conf/ZeppelinConfiguration.java#L1035
+
+            public enum ConfVars {
+                ....
+                ZEPPELIN_K8S_CONTAINER_IMAGE("zeppelin.k8s.container.image", ....),
+                ....
+                }
+
+    Result:
+
+        Found two show stopper issues.
+        Something in the K8s network stack causing our Dashboard deploy to fail.
+        Discovered our new Zeppelin image was missing 90% of its content.
+        Uploading 3Gbyte images the wrong way up an ADLS line is painful.
+
+    TODO:
+
+        Debug the K8s network issue.
+        Fix our Zeppelin image.
+        Create a builder container to build our images in the cloud.
+        Deploy a local registry to host our images in the cloud.
+
+
+# -----------------------------------------------------
+# Check the Zeppelin version settings.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+        pushd experiments/kubernetes
+
+        gedit helm/tools/zeppelin/values.yaml &
+
+        ~   zeppelin_server_image:   "aglais/zeppelin-dev:latest"
+        ~   zeppelin_worker_image:   "aglais/zeppelin-dev:latest"
+
+
+        gedit helm/tools/zeppelin/templates/zeppelin-server-deploy.yaml &
+
+            containers:
+            - name: zeppelin-server-actual
+        ~     image: "{{ .Values.zeppelin_server_image }}"
+
+
+        gedit helm/tools/zeppelin/templates/zeppelin-server-conf.yaml
+
+        ~   ZEPPELIN_K8S_CONTAINER_IMAGE: "{{ .Values.zeppelin_worker_image}}"
+
+
+        gedit docker/zeppelin/dev/k8s/interpreter/100-interpreter-spec.yaml &
+
+            containers:
+            - name: {{zeppelin.k8s.interpreter.container.name}}
+        ~     image: {{zeppelin.k8s.interpreter.container.image}}
+
+
+    popd
+
+
+# -----------------------------------------------------
+# Update the project name.
+#[user@desktop]
+
+    cloudname=gaia-prod
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@kubernator]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Run the main Kubernetes deployment.
+#[root@kubernator]
+
+    buildname="aglais-$(date '+%Y%m%d')"
+    namespace=${buildname,,}
+
+    /kubernetes/bin/create-all.sh \
+        "${cloudname:?}" \
+        "${buildname:?}" \
+        "${namespace:?}"
+
+    >   ....
+    >   Installing dashboard Helm chart
+    >   Namespace [aglais-20201221]
+    >   Dash host [valeria.metagrid.xyz]
+    >   Getting updates for unmanaged Helm repositories...
+    >   ...Successfully got an update from the "https://kubernetes.github.io/dashboard" chart repository
+    >   Saving 1 charts
+    >   Downloading kubernetes-dashboard from repo https://kubernetes.github.io/dashboard
+    >   Deleting outdated charts
+    >   Release "aglais-dashboard" does not exist. Installing it now.
+    >   Error: Internal error occurred: failed calling webhook "validate.nginx.ingress.kubernetes.io": Post https://aglais-ingress-nginx-controller-admission.aglais-20201221.svc:443/networking/v1beta1/ingresses?timeout=10s: dial tcp 10.254.208.210:443: connect: connection refused
+    >   ....
+
+
+    #
+    # OK, so this is today's diversion. Things with this project are never simple.
+    # Our main Helm chart fixes the version of all the 3rd party Charts to try to prevent this happening.
+    # So what could have changed ?
+    #
+
+    #
+    # Carry on with the other steps to see if this is specific to the Dashboard or if it effects all of our Services.
+    #
+
+# -----------------------------------------------------
+# Get the ServiceAccount token.
+#[root@kubernator]
+
+    secretname=$(
+        kubectl \
+            --output json \
+            --namespace "${namespace:?}" \
+            get ServiceAccount \
+                "aglais-dashboard-kubernetes-dashboard" \
+        | jq -r '.secrets[0].name'
+        )
+
+    kubectl \
+        --output json \
+        --namespace "${namespace:?}" \
+        get Secret \
+            "${secretname:?}" \
+    | jq -r '.data.token | @base64d'
+
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the Ingress address.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get Ingress
+
+    >   NAME                      HOSTS                   ADDRESS           PORTS     AGE
+    >   zeppelin-server-ingress   zeppelin.metagrid.xyz   128.232.227.174   80, 443   6m48s
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Update our DNS ..
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Dashboard and test ...
+#[user@desktop]
+
+    firefox --new-window "https://valeria.metagrid.xyz/" &
+
+    #
+    # FAIL - 404 error from nginx.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin and test ...
+#[user@desktop]
+
+    firefox --new-window "https://zeppelin.metagrid.xyz/" &
+
+    #
+    # PASS - front page of Zeppelin works.
+    # FAIL - 503 server error from nginx.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# List the deployed Pods.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get pod
+
+    >   NAME                                                    READY   STATUS             RESTARTS   AGE
+    >   aglais-ceph-csi-cephfs-nodeplugin-4fcp9                 3/3     Running            0          10m
+    >   aglais-ceph-csi-cephfs-nodeplugin-dp2vp                 3/3     Running            0          10m
+    >   aglais-ceph-csi-cephfs-nodeplugin-srmbl                 3/3     Running            0          10m
+    >   aglais-ceph-csi-cephfs-nodeplugin-xws8l                 3/3     Running            0          10m
+    >   aglais-ceph-csi-cephfs-provisioner-f9ff8cd4c-525g2      6/6     Running            0          10m
+    >   aglais-ceph-csi-cephfs-provisioner-f9ff8cd4c-rm24r      6/6     Running            0          10m
+    >   aglais-ceph-csi-cephfs-provisioner-f9ff8cd4c-zk57k      6/6     Running            0          10m
+    >   aglais-dashboard-kubernetes-dashboard-65d5c6599-k7gkl   2/2     Running            0          10m
+    >   aglais-gaia-dr2-testpod                                 1/1     Running            0          10m
+    >   aglais-ingress-nginx-controller-54f444477b-wkgg4        1/1     Running            0          10m
+    >   aglais-openstack-manila-csi-controllerplugin-0          3/3     Running            0          10m
+    >   aglais-openstack-manila-csi-nodeplugin-bxf56            2/2     Running            0          10m
+    >   aglais-openstack-manila-csi-nodeplugin-gp6gh            2/2     Running            0          10m
+    >   aglais-openstack-manila-csi-nodeplugin-lcwfx            2/2     Running            0          10m
+    >   aglais-openstack-manila-csi-nodeplugin-pjdtj            2/2     Running            0          10m
+    >   aglais-user-nch-testpod                                 1/1     Running            0          9m54s
+    >   aglais-user-stv-testpod                                 1/1     Running            0          9m42s
+    >   aglais-user-zrq-testpod                                 1/1     Running            0          9m29s
+    >   zeppelin-server-deploy-5cdd946f67-4vrmv                 2/3     CrashLoopBackOff   6          9m25s
+
+# -----------------------------------------------------
+# Examine the Zeppelin Pod.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        describe pod \
+            zeppelin-server-deploy-5cdd946f67-4vrmv
+
+    >   Name:         zeppelin-server-deploy-5cdd946f67-4vrmv
+    >   Namespace:    aglais-20201222
+    >   Node:         aglais-20201222-cluster-562uwmitbe2a-node-3/10.0.0.29
+    >   Start Time:   Tue, 22 Dec 2020 00:50:18 +0000
+    >   Labels:       app.kubernetes.io/name=zeppelin-server-pods
+    >                 pod-template-hash=5cdd946f67
+    >   Annotations:  <none>
+    >   Status:       Running
+    >   IP:           10.100.1.12
+    >   IPs:
+    >     IP:           10.100.1.12
+    >   Controlled By:  ReplicaSet/zeppelin-server-deploy-5cdd946f67
+    >   Containers:
+    >     zeppelin-server-actual:
+    >       Container ID:  docker://fda5cbbe0cb3617136dbd2092966046a4a7f6d7966c37028be8594a15d44db14
+    >       Image:         aglais/zeppelin-dev:20201219-152019
+    >       Image ID:      docker-pullable://docker.io/aglais/zeppelin-dev@sha256:a052d5072484388a0b015f490676097aad595878aa4c655d3da7e4a104178d73
+    >       Ports:         8080/TCP, 8443/TCP, 12320/TCP
+    >       Host Ports:    0/TCP, 0/TCP, 0/TCP
+    >       Command:
+    >         sh
+    >         -c
+    >         $(ZEPPELIN_HOME)/bin/zeppelin.sh
+    >       State:          Waiting
+    >         Reason:       CrashLoopBackOff
+    >       Last State:     Terminated
+    >         Reason:       Error
+    >         Exit Code:    127
+    >         Started:      Tue, 22 Dec 2020 00:57:25 +0000
+    >         Finished:     Tue, 22 Dec 2020 00:57:25 +0000
+    >       Ready:          False
+    >       Restart Count:  6
+    >       Environment Variables from:
+    >         zeppelin-server-config  ConfigMap  Optional: false
+    >       Environment:
+    >         POD_UID:    (v1:metadata.uid)
+    >         POD_NAME:  zeppelin-server-deploy-5cdd946f67-4vrmv (v1:metadata.name)
+    >       Mounts:
+    >         /var/run/secrets/kubernetes.io/serviceaccount from zeppelin-server-account-token-8fhvj (ro)
+    >     zeppelin-server-nginx:
+    >       Container ID:  docker://0059688a1fe0235f7606c543f4b84c4cc14472510ea0140d5e771e8b5791410a
+    >       Image:         nginx:1.14.0
+    >       Image ID:      docker-pullable://docker.io/nginx@sha256:8b600a4d029481cc5b459f1380b30ff6cb98e27544fc02370de836e397e34030
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Command:
+    >         /bin/sh
+    >         -c
+    >       Args:
+    >         cp -f /tmp/conf/nginx.conf /etc/nginx/nginx.conf; sed -i -e "s/SERVICE_DOMAIN/$SERVICE_DOMAIN/g" /etc/nginx/nginx.conf; sed -i -e "s/NAMESPACE/$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)/g" /etc/nginx/nginx.conf; cat /etc/nginx/nginx.conf; /usr/sbin/nginx
+    >       State:          Running
+    >         Started:      Tue, 22 Dec 2020 00:51:37 +0000
+    >       Ready:          True
+    >       Restart Count:  0
+    >       Environment:
+    >         SERVICE_DOMAIN:  <set to the key 'SERVICE_DOMAIN' of config map 'zeppelin-server-config'>  Optional: false
+    >       Mounts:
+    >         /tmp/conf from nginx-conf (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from zeppelin-server-account-token-8fhvj (ro)
+    >     zeppelin-server-dnsmasq:
+    >       Container ID:  docker://25750c4a46555d7957bbab25c15ea95db97549df023d1507585d6d8dbba9d464
+    >       Image:         janeczku/go-dnsmasq:release-1.0.5
+    >       Image ID:      docker-pullable://docker.io/janeczku/go-dnsmasq@sha256:56119a82f973247eda467303dabe1c04034b6ee75fb2c2534f516b3bfdf14123
+    >       Port:          <none>
+    >       Host Port:     <none>
+    >       Args:
+    >         --listen
+    >         127.0.0.1:53
+    >         --default-resolver
+    >         --append-search-domains
+    >         --hostsfile=/etc/hosts
+    >         --verbose
+    >       State:          Running
+    >         Started:      Tue, 22 Dec 2020 00:51:40 +0000
+    >       Ready:          True
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /var/run/secrets/kubernetes.io/serviceaccount from zeppelin-server-account-token-8fhvj (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             False
+    >     ContainersReady   False
+    >     PodScheduled      True
+    >   Volumes:
+    >     nginx-conf:
+    >       Type:      ConfigMap (a volume populated by a ConfigMap)
+    >       Name:      zeppelin-nginx-config
+    >       Optional:  false
+    >     zeppelin-server-account-token-8fhvj:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  zeppelin-server-account-token-8fhvj
+    >       Optional:    false
+    >   QoS Class:       BestEffort
+    >   Node-Selectors:  <none>
+    >   Tolerations:     node.kubernetes.io/not-ready:NoExecute for 300s
+    >                    node.kubernetes.io/unreachable:NoExecute for 300s
+    >   Events:
+    >     Type     Reason     Age                     From                                                  Message
+    >     ----     ------     ----                    ----                                                  -------
+    >     Normal   Scheduled  <unknown>               default-scheduler                                     Successfully assigned aglais-20201222/zeppelin-server-deploy-5cdd946f67-4vrmv to aglais-20201222-cluster-562uwmitbe2a-node-3
+    >     Normal   Pulling    9m39s                   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Pulling image "aglais/zeppelin-dev:20201219-152019"
+    >     Normal   Pulled     8m47s                   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Successfully pulled image "aglais/zeppelin-dev:20201219-152019"
+    >     Normal   Pulling    8m41s                   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Pulling image "nginx:1.14.0"
+    >     Normal   Pulling    8m22s                   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Pulling image "janeczku/go-dnsmasq:release-1.0.5"
+    >     Normal   Started    8m22s                   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Started container zeppelin-server-nginx
+    >     Normal   Pulled     8m22s                   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Successfully pulled image "nginx:1.14.0"
+    >     Normal   Created    8m22s                   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Created container zeppelin-server-nginx
+    >     Normal   Pulled     8m19s                   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Successfully pulled image "janeczku/go-dnsmasq:release-1.0.5"
+    >     Normal   Created    8m19s                   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Created container zeppelin-server-dnsmasq
+    >     Normal   Started    8m19s                   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Started container zeppelin-server-dnsmasq
+    >     Normal   Started    7m36s (x4 over 8m41s)   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Started container zeppelin-server-actual
+    >     Normal   Created    7m36s (x4 over 8m41s)   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Created container zeppelin-server-actual
+    >     Normal   Pulled     7m36s (x3 over 8m18s)   kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Container image "aglais/zeppelin-dev:20201219-152019" already present on machine
+    >     Warning  BackOff    4m33s (x19 over 8m17s)  kubelet, aglais-20201222-cluster-562uwmitbe2a-node-3  Back-off restarting failed container
+
+
+# -----------------------------------------------------
+# Look at the logs from the Zeppelin Pod.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        logs \
+            zeppelin-server-deploy-5cdd946f67-4vrmv \
+                -c zeppelin-server-actual
+
+    >   sh: 1: /zeppelin/bin/zeppelin.sh: not found
+
+    #
+    # Major snafu in the main Zeppelin image.
+    # Fixed the snafu and re-built the Zeppelin images ....
+    #
+
+

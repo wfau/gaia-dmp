@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # <meta:header>
 #   <meta:licence>
@@ -24,6 +24,9 @@
 # -----------------------------------------------------
 # Settings ...
 
+#   set -eu
+#   set -o pipefail
+
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
     srcpath="$(dirname ${binpath})"
@@ -33,13 +36,14 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
+    cloudname=${1:?}
+    buildname=${2:?}
+    namespace=${3:?}
+
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname}]"
-    echo "Cloud user [${clouduser}]"
-
-    buildname="aglais-k8s-$(date '+%Y%m%d')"
-
-    echo "Build name [${buildname}]"
+    echo "Cloud name [${cloudname:?}]"
+    echo "Build name [${buildname:?}]"
+    echo "Namespace  [${namespace:?}]"
     echo "---- ---- ----"
 
 
@@ -81,8 +85,6 @@
 # Install our main Helm chart.
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
-
-    namespace=${buildname,,}
 
     echo ""
     echo "----"
@@ -138,36 +140,6 @@ EOF
 
 
 # -----------------------------------------------------
-# Install our Zeppelin chart.
-# Using 'upgrade --install' to make the command idempotent
-# https://github.com/helm/helm/issues/3134
-
-    zepphost=zeppelin.metagrid.xyz
-
-    echo ""
-    echo "----"
-    echo "Installing Zeppelin Helm chart"
-    echo "Namespace [${namespace}]"
-    echo "Zepp host [${zepphost}]"
-
-
-    helm dependency update \
-        "/kubernetes/helm/tools/zeppelin"
-
-    cat > "/tmp/zeppelin-values.yaml" << EOF
-zeppelin_server_hostname: "${zepphost:?}"
-EOF
-
-    helm upgrade \
-        --install \
-        --create-namespace \
-        --namespace "${namespace:?}" \
-        'aglais-zeppelin' \
-        "/kubernetes/helm/tools/zeppelin" \
-        --values "/tmp/zeppelin-values.yaml"
-
-
-# -----------------------------------------------------
 # Mount the Gaia DR2 data.
 # Note the hard coded cloud name to get details of the static share.
 
@@ -206,6 +178,52 @@ EOF
         'rw'
 
 
+# -----------------------------------------------------
+# Install our Zeppelin chart.
+# Using 'upgrade --install' to make the command idempotent
+# https://github.com/helm/helm/issues/3134
+
+    zepphost=zeppelin.metagrid.xyz
+
+    echo ""
+    echo "----"
+    echo "Installing Zeppelin Helm chart"
+    echo "Namespace [${namespace}]"
+    echo "Zepp host [${zepphost}]"
+
+
+    helm dependency update \
+        "/kubernetes/helm/tools/zeppelin"
+
+    cat > "/tmp/zeppelin-values.yaml" << EOF
+zeppelin_server_hostname: "${zepphost:?}"
+EOF
+
+    helm upgrade \
+        --install \
+        --create-namespace \
+        --namespace "${namespace:?}" \
+        'aglais-zeppelin' \
+        "/kubernetes/helm/tools/zeppelin" \
+        --values "/tmp/zeppelin-values.yaml"
+
+
+# -----------------------------------------------------
+# Install our Drupal chart.
+# Using 'upgrade --install' to make the command idempotent
+# https://github.com/helm/helm/issues/3134
+
+    drupalhost=drupal.metagrid.xyz
+
+    echo ""
+    echo "----"
+    echo "Installing Zeppelin Helm chart"
+    echo "Namespace [${namespace}]"
+    echo "Zepp host [${zepphost}]"
+
+
+    helm dependency update \
+        "/kubernetes/helm/tools/zeppelin"
 
 
 

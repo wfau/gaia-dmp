@@ -36,12 +36,44 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
-    cloudname=${1:?}
+    configyml=${1:-'/tmp/aglais-config.yml'}
+    statusyml=${2:-'/tmp/aglais-status.yml'}
+
     buildname="aglais-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
+
+    touch "${statusyml:?}"
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.type' \
+            'kubernetes'
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.name' \
+            "${buildname}"
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.date' \
+            "${builddate}"
+
+    cloudname=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.openstack.cloudname'
+        )
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.spec.openstack.cloudname' \
+            "${cloudname}"
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname}]"
+    echo "Config yml [${configyml}]"
     echo "Build name [${buildname}]"
+    echo "Cloud name [${cloudname}]"
     echo "---- ---- ----"
 
 
@@ -61,6 +93,14 @@
         "${cloudname:?}" \
         "${buildname:?}"
 
+    clusterid=$(
+        jq -r '.uuid' '/tmp/cluster-status.json'
+        )
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.openstack.cluster.id' \
+            "${clusterid}"
 
 # -----------------------------------------------------
 # Create our CephFS router.
@@ -72,10 +112,6 @@
 
 # -----------------------------------------------------
 # Get the connection details for our cluster.
-
-    clusterid=$(
-        jq -r '.uuid' '/tmp/cluster-status.json'
-        )
 
     '/kubernetes/bin/cluster-config.sh' \
         "${cloudname:?}" \
@@ -94,6 +130,11 @@
 # https://github.com/helm/helm/issues/3134
 
     namespace=${buildname,,}
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.kubernetes.namespace' \
+            "${namespace}"
 
     echo ""
     echo "----"
@@ -116,7 +157,11 @@
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
 
-    dashhost=valeria.metagrid.xyz
+    dashhost=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.dashboard.hostname'
+        )
 
     echo ""
     echo "----"
@@ -156,7 +201,9 @@ EOF
     sharemode='ro'
 
     for shareid in $(
-        yq read "${sharelist:?}" 'shares.[*].id'
+        yq read \
+            "${sharelist:?}" \
+                'shares.[*].id'
         )
     do
         echo ""
@@ -183,7 +230,9 @@ EOF
     sharemode='rw'
 
     for shareid in $(
-        yq read "${sharelist:?}" 'shares.[*].id'
+        yq read \
+            "${sharelist:?}" \
+                'shares.[*].id'
         )
     do
         echo ""
@@ -207,13 +256,17 @@ EOF
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
 
-    zepphost=zeppelin.metagrid.xyz
+    zepphost=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.zeppelin.hostname'
+        )
 
     echo ""
     echo "----"
     echo "Installing Zeppelin Helm chart"
     echo "Namespace [${namespace}]"
-    echo "Zepp host [${zepphost}]"
+    echo "Hostname  [${zepphost}]"
 
 
     helm dependency update \
@@ -237,17 +290,26 @@ EOF
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
 
-    drupalhost=drupal.metagrid.xyz
+    drupalhost=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.drupal.hostname'
+        )
 
     echo ""
     echo "----"
-    echo "Installing Zeppelin Helm chart"
+    echo "Installing Drupal Helm chart"
     echo "Namespace [${namespace}]"
-    echo "Zepp host [${zepphost}]"
-
+    echo "Hostname  [${drupalhost}]"
 
     helm dependency update \
-        "/kubernetes/helm/tools/zeppelin"
+        "/kubernetes/helm/tools/drupal"
+
+    cat > "/tmp/zeppelin-values.yaml" << EOF
+drupal_server_hostname: "${drupalhost:?}"
+EOF
+
+
 
 
 

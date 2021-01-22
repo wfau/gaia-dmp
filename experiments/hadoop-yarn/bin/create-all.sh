@@ -36,13 +36,46 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
-    cloudname=${1:?}
+    configyml=${1:-'/tmp/aglais-config.yml'}
+    statusyml=${2:-'/tmp/aglais-status.yml'}
+
     buildname="aglais-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
+
+    touch "${statusyml:?}"
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.type' \
+            'hadoop-yarn'
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.name' \
+            "${buildname}"
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.date' \
+            "${builddate}"
+
+    cloudname=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.openstack.cloudname'
+        )
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.spec.openstack.cloudname' \
+            "${cloudname}"
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname:?}]"
-    echo "Build name [${buildname:?}]"
+    echo "Config yml [${configyml}]"
+    echo "Build name [${buildname}]"
+    echo "Cloud name [${cloudname}]"
     echo "---- ---- ----"
+
 
 # -----------------------------------------------------
 # Create our Ansible include vars file.

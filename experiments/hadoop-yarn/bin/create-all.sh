@@ -24,6 +24,9 @@
 # -----------------------------------------------------
 # Settings ...
 
+#   set -eu
+#   set -o pipefail
+
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
     srcpath="$(dirname ${binpath})"
@@ -33,14 +36,46 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
-    echo "---- ---- ----"
-    echo "Cloud name [${cloudname}]"
-    echo "Cloud user [${clouduser}]"
+    configyml=${1:-'/tmp/aglais-config.yml'}
+    statusyml=${2:-'/tmp/aglais-status.yml'}
 
     buildname="aglais-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
 
-    echo "Build name [${buildname}]"
+    touch "${statusyml:?}"
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.type' \
+            'hadoop-yarn'
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.name' \
+            "${buildname}"
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.date' \
+            "${builddate}"
+
+    cloudname=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.openstack.cloudname'
+        )
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.spec.openstack.cloudname' \
+            "${cloudname}"
+
     echo "---- ---- ----"
+    echo "Config yml [${configyml}]"
+    echo "Build name [${buildname}]"
+    echo "Cloud name [${cloudname}]"
+    echo "---- ---- ----"
+
 
 # -----------------------------------------------------
 # Create our Ansible include vars file.
@@ -48,7 +83,6 @@
     cat > /tmp/ansible-vars.yml << EOF
 buildtag:  '${buildname:?}'
 cloudname: '${cloudname:?}'
-clouduser: '${clouduser:?}'
 EOF
 
 # -----------------------------------------------------
@@ -85,7 +119,6 @@ EOF
     '/hadoop-yarn/bin/init-spark.sh'
 
 
-
 # -----------------------------------------------------
 # Initialise the Zeppelin service.
 
@@ -101,23 +134,53 @@ EOF
 
 
 # -----------------------------------------------------
-# Mount the Gaia DR2 data.
-# Note the hard coded cloud name to get details of the static share.
+# Mount the data shares.
+# Using a hard coded cloud name to make it portable.
 
-    '/hadoop-yarn/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        'aglais-gaia-dr2' \
-        '/data/gaia/dr2'
+    sharelist='/common/manila/datashares.yaml'
+    sharemode='ro'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        '/hadoop-yarn/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            "${sharemode:?}"
+
+    done
 
 
 # -----------------------------------------------------
-# Mount the user data volume.
-# Note the hard coded cloud name to get details of the static share.
+# Mount the user shares.
+# Using a hard coded cloud name to make it portable.
 
-    '/hadoop-yarn/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        'aglais-user-nch' \
-        '/user/nch' \
-        'rw'
+    sharelist='/common/manila/usershares.yaml'
+    sharemode='rw'
 
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        '/hadoop-yarn/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            "${sharemode:?}"
+
+    done
 

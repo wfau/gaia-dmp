@@ -36,7 +36,7 @@
     cloudname=${1:?}
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname}]"
+    echo "Cloud name [${cloudname:?}]"
     echo "---- ---- ----"
 
 
@@ -343,6 +343,29 @@
 
 
 # -----------------------------------------------------
+# Delete keypairs that start with 'aglais'.
+
+    echo ""
+    echo "---- ----"
+    echo "Deleting ssh keys"
+
+    for keyname in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair list \
+                --format json \
+        | jq -r '.[] | select(.Name | startswith("aglais")) | .Name'
+        )
+    do
+        echo "- Deleting key [${keyname:?}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair delete \
+                "${keyname:?}"
+    done
+
+
+# -----------------------------------------------------
 # Delete any remaining Mangum clusters.
 # Second attempt after deleting the extra routers and subnets.
 
@@ -459,6 +482,13 @@
     openstack \
         --os-cloud "${cloudname:?}" \
         security group list
+
+    echo ""
+    echo "---- ----"
+    echo "List ssh keys"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
 
     echo ""
     echo "---- ----"

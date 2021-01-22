@@ -36,15 +36,54 @@
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
 
-    cloudname=${1:?}
-    buildname=${2:?}
-    namespace=${3:?}
+    configyml=${1:-'/tmp/aglais-config.yml'}
+    statusyml=${2:-'/tmp/aglais-status.yml'}
+
+    buildname="aglais-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
+
+    touch "${statusyml:?}"
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.type' \
+            'kubernetes'
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.name' \
+            "${buildname}"
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.date' \
+            "${builddate}"
+
+    cloudname=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.openstack.cloudname'
+        )
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.spec.openstack.cloudname' \
+            "${cloudname}"
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname:?}]"
-    echo "Build name [${buildname:?}]"
-    echo "Namespace  [${namespace:?}]"
+    echo "Config yml [${configyml}]"
+    echo "Build name [${buildname}]"
+    echo "Cloud name [${cloudname}]"
     echo "---- ---- ----"
+
+
+# -----------------------------------------------------
+# Create our SSH keypair.
+# Do we need this here, or does it go inside magnum-create ?
+
+    '/openstack/bin/create-keypair.sh' \
+        "${cloudname:?}" \
+        "${buildname:?}"
 
 
 # -----------------------------------------------------
@@ -54,6 +93,14 @@
         "${cloudname:?}" \
         "${buildname:?}"
 
+    clusterid=$(
+        jq -r '.uuid' '/tmp/cluster-status.json'
+        )
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.openstack.cluster.id' \
+            "${clusterid}"
 
 # -----------------------------------------------------
 # Create our CephFS router.
@@ -65,10 +112,6 @@
 
 # -----------------------------------------------------
 # Get the connection details for our cluster.
-
-    clusterid=$(
-        jq -r '.uuid' '/tmp/cluster-status.json'
-        )
 
     '/kubernetes/bin/cluster-config.sh' \
         "${cloudname:?}" \
@@ -85,6 +128,13 @@
 # Install our main Helm chart.
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
+
+    namespace=${buildname,,}
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.kubernetes.namespace' \
+            "${namespace}"
 
     echo ""
     echo "----"
@@ -107,7 +157,11 @@
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
 
-    dashhost=valeria.metagrid.xyz
+    dashhost=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.dashboard.hostname'
+        )
 
     echo ""
     echo "----"
@@ -140,73 +194,61 @@ EOF
 
 
 # -----------------------------------------------------
-# Mount the Gaia DR2 and eDR3 data.
-# Note the hard coded cloud name to get details of the static share.
+# Mount the data shares.
+# Using a hard coded cloud name to make it portable.
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-gaia-dr2' \
-        '/data/gaia/dr2' \
-        'rw'
+    sharelist='/common/manila/datashares.yaml'
+    sharemode='ro'
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-gaia-edr3' \
-        '/data/gaia/edr3' \
-        'rw'
+    for shareid in $(
+        yq read \
+            "${sharelist:?}" \
+                'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        '/kubernetes/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${namespace:?}" \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            "${sharemode:?}"
+
+    done
+
 
 # -----------------------------------------------------
-# Mount the additional catalogs.
-# Note the hard coded cloud name to get details of the static share.
+# Mount the user shares.
+# Using a hard coded cloud name to make it portable.
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-wise-allwise' \
-        '/data/wise/allwise' \
-        'rw'
+    sharelist='/common/manila/usershares.yaml'
+    sharemode='rw'
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-panstarrs-dr1' \
-        '/data/panstarrs/dr1' \
-        'rw'
+    for shareid in $(
+        yq read \
+            "${sharelist:?}" \
+                'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "Share [${shareid:?}]"
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-twomass-allsky' \
-        '/data/twomass/allsky' \
-        'rw'
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
 
-# -----------------------------------------------------
-# Mount the user data volumes.
-# Note the hard coded cloud name to get details of the static share.
+        '/kubernetes/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${namespace:?}" \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            "${sharemode:?}"
 
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-user-nch' \
-        '/user/nch' \
-        'rw'
-
-
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-user-stv' \
-        '/user/stv' \
-        'rw'
-
-    '/kubernetes/bin/cephfs-mount.sh' \
-        'gaia-prod' \
-        "${namespace:?}" \
-        'aglais-user-zrq' \
-        '/user/zrq' \
-        'rw'
+    done
 
 
 # -----------------------------------------------------
@@ -214,14 +256,17 @@ EOF
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
 
-    zepphost=zeppelin.metagrid.xyz
+    zepphost=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.zeppelin.hostname'
+        )
 
     echo ""
     echo "----"
     echo "Installing Zeppelin Helm chart"
     echo "Namespace [${namespace}]"
-    echo "Zepp host [${zepphost}]"
-
+    echo "Hostname  [${zepphost}]"
 
     helm dependency update \
         "/kubernetes/helm/tools/zeppelin"
@@ -244,17 +289,21 @@ EOF
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
 
-    drupalhost=drupal.metagrid.xyz
+    drupalhost=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.drupal.hostname'
+        )
 
     echo ""
     echo "----"
-    echo "Installing Zeppelin Helm chart"
+    echo "Installing Drupal Helm chart"
     echo "Namespace [${namespace}]"
-    echo "Zepp host [${zepphost}]"
-
+    echo "Hostname  [${drupalhost}]"
 
     helm dependency update \
-        "/kubernetes/helm/tools/zeppelin"
+        "/kubernetes/helm/tools/drupal"
 
-
-
+    cat > "/tmp/drupal-values.yaml" << EOF
+drupal_server_hostname: "${drupalhost:?}"
+EOF

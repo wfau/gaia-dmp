@@ -1,0 +1,276 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Openstack script to create a SSH key that contains everyone's keys.
+        Solving https://github.com/wfau/aglais/issues/29
+
+    Result:
+
+        Success - bash commands to create and delete keys as required.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# List our existing keypairs.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +-------------------------+-------------------------------------------------+
+    >   | Name                    | Fingerprint                                     |
+    >   +-------------------------+-------------------------------------------------+
+    >   | aglais-20210119-keypair | 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16 |
+    >   | zrq-gaia-keypair        | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +-------------------------+-------------------------------------------------+
+
+
+# -----------------------------------------------------
+# List our project keypairs.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list \
+            --format json \
+    | jq '.'
+
+
+    >   [
+    >     {
+    >       "Name": "aglais-20210119-keypair",
+    >       "Fingerprint": "2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16"
+    >     },
+    >     {
+    >       "Name": "zrq-gaia-keypair",
+    >       "Fingerprint": "a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4"
+    >     }
+    >   ]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list \
+            --format json \
+    | jq '.[] | select(.Name | startswith("aglais"))'
+
+
+    >   {
+    >     "Name": "aglais-20210119-keypair",
+    >     "Fingerprint": "2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16"
+    >   }
+
+# -----------------------------------------------------
+# List keypairs that start with 'aglais'.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list \
+            --format json \
+    | jq -r '.[] | select(.Name | startswith("aglais")) | .Name'
+
+    >   aglais-20210119-keypair
+
+
+# -----------------------------------------------------
+# List keypairs that match our buildtag.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list \
+            --format json \
+    | jq -r '.[] | select(.Name | startswith("'${buildtag:?}'")) | .Name'
+
+    >   aglais-20210119-keypair
+
+
+# -----------------------------------------------------
+# Delete keypairs that start with 'aglais'.
+#[root@ansibler]
+
+    for keyname in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair list \
+                --format json \
+        | jq -r '.[] | select(.Name | startswith("aglais")) | .Name'
+        )
+    do
+        echo "Keyname [${keyname:?}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair delete \
+                "${keyname:?}"
+    done
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +------------------+-------------------------------------------------+
+    >   | Name             | Fingerprint                                     |
+    >   +------------------+-------------------------------------------------+
+    >   | zrq-gaia-keypair | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +------------------+-------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create a new keypair with our common keys.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair create \
+            --public-key "/common/ssh/aglais-team-keys" \
+            "${buildtag:?}-keypair"
+
+    >   +-------------+-------------------------------------------------+
+    >   | Field       | Value                                           |
+    >   +-------------+-------------------------------------------------+
+    >   | fingerprint | 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16 |
+    >   | name        | aglais-20210119-keypair                         |
+    >   | user_id     | 98169f87de174ad4ac98c32e59646488                |
+    >   +-------------+-------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +-------------------------+-------------------------------------------------+
+    >   | Name                    | Fingerprint                                     |
+    >   +-------------------------+-------------------------------------------------+
+    >   | aglais-20210119-keypair | 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16 |
+    >   | zrq-gaia-keypair        | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +-------------------------+-------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Create a keypair if we don't already have one.
+#[root@ansibler]
+
+    createkey()
+        {
+        echo "Checking for key [${buildtag}]"
+        keyname=$(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                keypair list \
+                    --format json \
+            | jq -r '.[] | select(.Name | startswith("'${buildtag:?}'")) | .Name'
+            )
+
+
+        if [ -n "${keyname}" ]
+        then
+            echo "Found [${keyname}]"
+        else
+            newname=${buildtag:?}-keypair
+            echo "Creating keypair [${newname}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                keypair create \
+                    --public-key "/common/ssh/aglais-team-keys" \
+                    "${newname:?}"
+        fi
+        }
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +------------------+-------------------------------------------------+
+    >   | Name             | Fingerprint                                     |
+    >   +------------------+-------------------------------------------------+
+    >   | zrq-gaia-keypair | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +------------------+-------------------------------------------------+
+
+
+    createkey
+
+    >   Checking for key [aglais-20210119]
+    >   Creating keypair [aglais-20210119-keypair]
+    >   +-------------+-------------------------------------------------+
+    >   | Field       | Value                                           |
+    >   +-------------+-------------------------------------------------+
+    >   | fingerprint | 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16 |
+    >   | name        | aglais-20210119-keypair                         |
+    >   | user_id     | 98169f87de174ad4ac98c32e59646488                |
+    >   +-------------+-------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +-------------------------+-------------------------------------------------+
+    >   | Name                    | Fingerprint                                     |
+    >   +-------------------------+-------------------------------------------------+
+    >   | aglais-20210119-keypair | 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16 |
+    >   | zrq-gaia-keypair        | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +-------------------------+-------------------------------------------------+
+
+
+    createkey
+
+    >   Checking for key [aglais-20210119]
+    >   Found [aglais-20210119-keypair]
+
+
+
+
+

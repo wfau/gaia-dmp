@@ -1,0 +1,1339 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Manila shares for the additional catalogs.
+
+    Result:
+
+        Transfer completed and verified.
+
+# -----------------------------------------------------
+# Create a new container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details the first cluster in the list.
+#[root@kubernator]
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[0] | .uuid'
+        )
+
+    '/kubernetes/bin/cluster-config.sh' \
+        "${cloudname:?}" \
+        "${clusterid:?}"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.237:6443
+    >   Heapster is running at https://128.232.227.237:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.237:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Get the name of the 'aglais' namespace.
+#[root@kubernator]
+
+    namespace=$(
+        kubectl \
+            get namespace \
+                --output json \
+        | jq -r '.items[] | .metadata.name | select(. | startswith("aglais"))'
+        )
+
+    echo "Namespace [${namespace}]"
+
+    >   Namespace [aglais-20210111]
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+# -----------------------------------------------------
+# Create a YAML file describing our catalogs.
+#[root@kubernator]
+
+cat > /tmp/data-catalogs.yaml << EOF
+
+catalogs:
+
+  - name: "GEDR3"
+    source: "/user/nch/PARQUET/TESTS/GEDR3"
+    sharename: "aglais-gaia-edr3"
+    sharesize: "540"
+    mountpath: "/data/gaia/edr3"
+
+  - name: "ALLWISE"
+    source: "/user/nch/PARQUET/TESTS/ALLWISE"
+    sharename: "aglais-wise-allwise"
+    sharesize: "350"
+    mountpath: "/data/wise/allwise"
+
+  - name: "PS1"
+    source: "/user/nch/PARQUET/TESTS/PS1"
+    sharename: "aglais-panstarrs-dr1"
+    sharesize: "300"
+    mountpath: "/data/panstarrs/dr1"
+
+  - name: "2MASS"
+    source: "/user/nch/PARQUET/TESTS/2MASS"
+    sharename: "aglais-twomass-allsky"
+    sharesize: "40"
+    mountpath: "/data/twomass/allsky"
+
+EOF
+
+
+# -----------------------------------------------------
+# Create a new share for each of the catalogs.
+#[root@kubernator]
+
+    for name in $(
+        yq r /tmp/data-catalogs.yaml 'catalogs[*]/name'
+        )
+        do
+
+            sharename=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${name:?})/sharename")
+            sharesize=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${name:?})/sharesize")
+            mountpath=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${name:?})/mountpath")
+
+            echo "---- ----"
+            echo "Creating Manila share [${sharename}][${sharesize}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                share create \
+                    --format json \
+                    --name "${sharename:?}" \
+                    --share-type 'cephfsnativetype' \
+                    --availability-zone 'nova' \
+                    'CEPHFS' \
+                    "${sharesize:?}" \
+            > "/tmp/${sharename:?}-share.json"
+
+            shareid=$(
+                jq -r '.id' "/tmp/${sharename:?}-share.json"
+                )
+
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                    share show \
+                        --format json \
+                        "${shareid:?}" \
+            | jq '{id, name, size, status }'
+
+            echo "---- ----"
+            echo "Adding access rules to [${sharename}][${shareid}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                share access create \
+                    --format json \
+                    --access-level 'ro' \
+                    "${shareid:?}" \
+                    'cephx' \
+                    "${sharename:?}-ro" \
+            | jq '{id, access_to, access_level, access_type}'
+
+
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                share access create \
+                    --format json \
+                    --access-level 'rw' \
+                    "${shareid:?}" \
+                    'cephx' \
+                    "${sharename:?}-rw" \
+            | jq '{id, access_to, access_level, access_type}'
+
+            echo "---- ----"
+            echo "Mounting PVC claim [${sharename}][${mountpath}]"
+            '/kubernetes/bin/cephfs-mount.sh' \
+                "${cloudname:?}" \
+                "${namespace:?}" \
+                "${sharename:?}" \
+                "${mountpath:?}" \
+                'rw'
+
+        done
+
+    >   Creating Manila share [aglais-gaia-edr3][540]
+    >   {
+    >     "id": "ca8231c3-1f5c-4ebf-8ec0-d3cfe2629976",
+    >     "name": "aglais-gaia-edr3",
+    >     "size": 540,
+    >     "status": "available"
+    >   }
+    >   ---- ----
+    >   Adding access rules to [aglais-gaia-edr3][ca8231c3-1f5c-4ebf-8ec0-d3cfe2629976]
+    >   {
+    >     "id": "456e1f36-7184-4d37-8701-403fdc1509f8",
+    >     "access_to": "aglais-gaia-edr3-ro",
+    >     "access_level": "ro",
+    >     "access_type": "cephx"
+    >   }
+    >   {
+    >     "id": "0a4b37bc-e07e-4763-a8af-4d9cf3ae9620",
+    >     "access_to": "aglais-gaia-edr3-rw",
+    >     "access_level": "rw",
+    >     "access_type": "cephx"
+    >   }
+    >   ---- ----
+    >   Mounting PVC claim [aglais-gaia-edr3][/data/gaia/edr3]
+    >   ....
+    >   ....
+    >   Access rule [0a4b37bc-e07e-4763-a8af-4d9cf3ae9620]
+    >   Release "aglais-gaia-edr3" does not exist. Installing it now.
+    >   NAME: aglais-gaia-edr3
+    >   LAST DEPLOYED: Mon Jan 11 15:04:28 2021
+    >   NAMESPACE: aglais-20210111
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+    >   Creating Manila share [aglais-wise-allwise][350]
+    >   {
+    >     "id": "8f0b3452-3c66-4e65-8815-15eb73988b3e",
+    >     "name": "aglais-wise-allwise",
+    >     "size": 350,
+    >     "status": "available"
+    >   }
+    >   ---- ----
+    >   Adding access rules to [aglais-wise-allwise][8f0b3452-3c66-4e65-8815-15eb73988b3e]
+    >   {
+    >     "id": "530eb232-da76-4bdc-9664-cdcd2bf94614",
+    >     "access_to": "aglais-wise-allwise-ro",
+    >     "access_level": "ro",
+    >     "access_type": "cephx"
+    >   }
+    >   {
+    >     "id": "2e178f9a-4fc7-426f-bd9f-9f16c2a928e2",
+    >     "access_to": "aglais-wise-allwise-rw",
+    >     "access_level": "rw",
+    >     "access_type": "cephx"
+    >   }
+    >   ---- ----
+    >   Mounting PVC claim [aglais-wise-allwise][/data/wise/allwise]
+    >   ....
+    >   ....
+    >   Access rule [2e178f9a-4fc7-426f-bd9f-9f16c2a928e2]
+    >   Release "aglais-wise-allwise" does not exist. Installing it now.
+    >   NAME: aglais-wise-allwise
+    >   LAST DEPLOYED: Mon Jan 11 15:04:54 2021
+    >   NAMESPACE: aglais-20210111
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+    >   Creating Manila share [aglais-panstarrs-dr1][300]
+    >   {
+    >     "id": "ba66d6db-7d85-44c4-bb95-7410a000f6b7",
+    >     "name": "aglais-panstarrs-dr1",
+    >     "size": 300,
+    >     "status": "available"
+    >   }
+    >   ---- ----
+    >   Adding access rules to [aglais-panstarrs-dr1][ba66d6db-7d85-44c4-bb95-7410a000f6b7]
+    >   {
+    >     "id": "272215da-ddae-4078-8cb0-6805f85d3078",
+    >     "access_to": "aglais-panstarrs-dr1-ro",
+    >     "access_level": "ro",
+    >     "access_type": "cephx"
+    >   }
+    >   {
+    >     "id": "0882b651-705b-4abf-a334-bb110b671725",
+    >     "access_to": "aglais-panstarrs-dr1-rw",
+    >     "access_level": "rw",
+    >     "access_type": "cephx"
+    >   }
+    >   ---- ----
+    >   Mounting PVC claim [aglais-panstarrs-dr1][/data/panstarrs/dr1]
+    >   ....
+    >   ....
+    >   Access rule [0882b651-705b-4abf-a334-bb110b671725]
+    >   Release "aglais-panstarrs-dr1" does not exist. Installing it now.
+    >   NAME: aglais-panstarrs-dr1
+    >   LAST DEPLOYED: Mon Jan 11 15:05:23 2021
+    >   NAMESPACE: aglais-20210111
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+    >   Creating Manila share [aglais-twomass-allsky][40]
+    >   {
+    >     "id": "9dc3016a-f010-48bc-89fc-a9cbd688b7cc",
+    >     "name": "aglais-twomass-allsky",
+    >     "size": 40,
+    >     "status": "available"
+    >   }
+    >   ---- ----
+    >   Adding access rules to [aglais-twomass-allsky][9dc3016a-f010-48bc-89fc-a9cbd688b7cc]
+    >   {
+    >     "id": "db1e2d63-6be1-4504-b40b-03fccfda5463",
+    >     "access_to": "aglais-twomass-allsky-ro",
+    >     "access_level": "ro",
+    >     "access_type": "cephx"
+    >   }
+    >   {
+    >     "id": "5647d075-83fb-4a60-b562-a5248da54ec7",
+    >     "access_to": "aglais-twomass-allsky-rw",
+    >     "access_level": "rw",
+    >     "access_type": "cephx"
+    >   }
+    >   ---- ----
+    >   Mounting PVC claim [aglais-twomass-allsky][/data/twomass/allsky]
+    >   ....
+    >   ....
+    >   Access rule [5647d075-83fb-4a60-b562-a5248da54ec7]
+    >   Release "aglais-twomass-allsky" does not exist. Installing it now.
+    >   NAME: aglais-twomass-allsky
+    >   LAST DEPLOYED: Mon Jan 11 15:05:47 2021
+    >   NAMESPACE: aglais-20210111
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+# -----------------------------------------------------
+# Manual commands to delete things while debugging ...
+#[root@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share delete \
+            "269bbc5e-dffd-4a39-8270-f2f636313ba7"
+            "7b2f36be-6a2f-4c4c-be1f-74b75dff2260"
+            "a0abf4e9-6e94-47d1-9674-dedf26ab8373"
+            "851278c0-15f6-406e-8d3c-145dfa0e32a4"
+
+    helm \
+        --namespace "${namespace:?}" \
+        list
+
+    helm \
+        --namespace "${namespace:?}" \
+        delete \
+            aglais-gaia-edr3
+            aglais-panstarrs-dr1
+            aglais-twomass-allsky
+            aglais-wise-allwise
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get PersistentVolumeClaim
+
+
+# -----------------------------------------------------
+# Login to each test pod to check ....
+#[root@kubernator]
+
+    for name in $(
+        yq r /tmp/data-catalogs.yaml 'catalogs[*]/name'
+        )
+        do
+            sharename=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${name:?})/sharename")
+            mountpath=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${name:?})/mountpath")
+
+            echo ""
+            echo "---- ----"
+            echo "Share [${sharename:?}]"
+
+            kubectl \
+                --namespace "${namespace:?}" \
+                exec \
+                    "${sharename:?}-testpod" \
+                        --tty \
+                        --stdin \
+                        -- \
+                            df -h "${mountpath:?}"
+
+        done
+
+    >   Share [aglais-gaia-edr3]
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       540G     0  540G   0% /data/gaia/edr3
+    >
+    >   ---- ----
+    >   Share [aglais-wise-allwise]
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       350G     0  350G   0% /data/wise/allwise
+    >
+    >   ---- ----
+    >   Share [aglais-panstarrs-dr1]
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       300G     0  300G   0% /data/panstarrs/dr1
+    >
+    >   ---- ----
+    >   Share [aglais-twomass-allsky]
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        40G     0   40G   0% /data/twomass/allsky
+
+
+# -----------------------------------------------------
+# Modify the test pod to enable data transfers.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get pod
+
+    >   NAME                                                     READY   STATUS    RESTARTS   AGE
+    >   ....
+    >   ....
+    >   aglais-gaia-dr2-testpod                                  1/1     Running   0          4h54m
+    >   aglais-gaia-edr3-testpod                                 1/1     Running   0          74m
+    >   aglais-panstarrs-dr1-testpod                             1/1     Running   0          73m
+    >   aglais-twomass-allsky-testpod                            1/1     Running   0          72m
+    >   aglais-user-nch-testpod                                  1/1     Running   0          4h53m
+    >   aglais-user-stv-testpod                                  1/1     Running   0          4h53m
+    >   aglais-user-zrq-testpod                                  1/1     Running   0          4h53m
+    >   aglais-wise-allwise-testpod                              1/1     Running   0          73m
+    >   ....
+
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get pod \
+            --output yaml \
+            'aglais-user-nch-testpod'
+
+    >   apiVersion: v1
+    >   kind: Pod
+    >   metadata:
+    >     ....
+    >     name: aglais-user-nch-testpod
+    >     namespace: aglais-20210111
+    >     ....
+    >   spec:
+    >     containers:
+    >     - name: aglais-user-nch-container
+    >       ....
+    >       volumeMounts:
+    >       - mountPath: /user/nch
+    >         name: test-data
+    >         readOnly: true
+    >       - mountPath: /local-data
+    >         name: local-data
+    >     ....
+    >     volumes:
+    >     - name: test-data
+    >       persistentVolumeClaim:
+    >         claimName: aglais-user-nch-claim
+    >         readOnly: true
+    >     - emptyDir: {}
+    >       name: local-data
+    >   ....
+    >   ....
+
+
+    sharename=aglais-twomass-allsky
+    kubectl \
+        --namespace "${namespace:?}" \
+        get pod \
+            --output yaml \
+            "${sharename:?}-testpod"
+
+    >   apiVersion: v1
+    >   kind: Pod
+    >   metadata:
+    >     ....
+    >     name: aglais-twomass-allsky-testpod
+    >     namespace: aglais-20210111
+    >     ....
+    >   spec:
+    >     containers:
+    >     - name: aglais-twomass-allsky-container
+    >       ....
+    >       volumeMounts:
+    >       - mountPath: /data/twomass/allsky
+    >         name: test-data
+    >         readOnly: true
+    >       - mountPath: /local-data
+    >         name: local-data
+    >     ....
+    >     volumes:
+    >     - name: test-data
+    >       persistentVolumeClaim:
+    >         claimName: aglais-twomass-allsky-claim
+    >         readOnly: true
+    >     - emptyDir: {}
+    >       name: local-data
+    >   ....
+    >   ....
+
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        edit pod \
+            "${sharename:?}-testpod"
+
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              ....
+              name: aglais-twomass-allsky-testpod
+              namespace: aglais-20210111
+              ....
+            spec:
+              containers:
+              - name: aglais-twomass-allsky-container
+                ....
+                volumeMounts:
+        +       - mountPath: /user/nch
+        +         name: user-data
+        +         readOnly: true
+                - mountPath: /data/twomass/allsky
+                  name: test-data
+        ~         readOnly: false
+                - mountPath: /local-data
+                  name: local-data
+              ....
+              volumes:
+        +     - name: user-data
+        +       persistentVolumeClaim:
+        +         claimName: aglais-user-nch-claim
+        +         readOnly: true
+              - name: test-data
+                persistentVolumeClaim:
+                  claimName: aglais-twomass-allsky-claim
+        ~         readOnly: false
+              - emptyDir: {}
+                name: local-data
+            ....
+            ....
+
+
+    >   ....
+    >   # Forbidden: pod updates may not change fields other than
+    >       `spec.containers[*].image`,
+    >       `spec.initContainers[*].image`,
+    >       `spec.activeDeadlineSeconds`
+    >       `spec.tolerations`
+    >   ....
+
+# -----------------------------------------------------
+# Create a new Pod to transfer the twomass data.
+#[root@kubernator]
+
+    dataname=aglais-twomass-allsky
+    datapath=/data/twomass/allsky
+
+    username=aglais-user-nch
+    userpath=/user/nch
+
+    cat > "/tmp/${dataname:?}-copypod" << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "${dataname:?}-copypod"
+  labels:
+    aglais.name: "${dataname:?}-copypod"
+spec:
+  volumes:
+    - name: user-volume
+      persistentVolumeClaim:
+        claimName: "${username:?}-claim"
+        readOnly: true
+    - name: data-volume
+      persistentVolumeClaim:
+        claimName: "${dataname:?}-claim"
+        readOnly: false
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: "${sharename:?}-container"
+      image: "fedora:latest"
+      volumeMounts:
+        - name: data-volume
+          mountPath: ${datapath:?}
+          readOnly:  false
+        - name: user-volume
+          mountPath: ${userpath:?}
+          readOnly:  true
+        - name: local-data
+          mountPath: /local-data
+          readOnly: false
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /local-data/\${HOSTNAME}.log;
+          sleep 60;
+          done
+EOF
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        create \
+            -f "/tmp/${dataname:?}-copypod"
+
+    >   pod/aglais-twomass-allsky-copypod created
+
+
+# -----------------------------------------------------
+# Login to our copy Pod and perform the data transfer.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        exec \
+            "${sharename:?}-copypod" \
+                --tty \
+                --stdin \
+                -- \
+                    bash
+
+    du -h /user/nch/PARQUET/TESTS/2MASS/
+
+    >   37G	/user/nch/PARQUET/TESTS/2MASS/
+
+    df -h /data/twomass/allsky/
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        40G     0   40G   0% /data/twomass/allsky
+
+    cp --verbose \
+       /user/nch/PARQUET/TESTS/2MASS/* \
+       /data/twomass/allsky/
+
+
+    >   '/user/nch/PARQUET/TESTS/2MASS/_SUCCESS' -> '/data/twomass/allsky/_SUCCESS'
+    >   '/user/nch/PARQUET/TESTS/2MASS/part-00000-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet' -> '/data/twomass/allsky/part-00000-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/2MASS/part-00001-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet' -> '/data/twomass/allsky/part-00001-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/2MASS/part-00002-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet' -> '/data/twomass/allsky/part-00002-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/2MASS/part-00003-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet' -> '/data/twomass/allsky/part-00003-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet'
+    >   ....
+    >   ....
+    >   '/user/nch/PARQUET/TESTS/2MASS/part-01182-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet' -> '/data/twomass/allsky/part-01182-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/2MASS/part-01183-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet' -> '/data/twomass/allsky/part-01183-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/2MASS/part-01184-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet' -> '/data/twomass/allsky/part-01184-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/2MASS/part-01185-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet' -> '/data/twomass/allsky/part-01185-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet'
+
+
+    du -h /data/twomass/allsky/
+
+    >   37G	/data/twomass/allsky/
+
+
+    df -h /data/twomass/allsky/
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        40G   37G  3.5G  92% /data/twomass/allsky
+
+
+# -----------------------------------------------------
+# Create a new Pod to transfer the panstarrs data.
+#[root@kubernator]
+
+    catalog=PS1
+
+    dataname=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/sharename")
+    datapath=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/mountpath")
+
+    username=aglais-user-nch
+    userpath=/user/nch
+
+    cat > "/tmp/${dataname:?}-copypod" << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "${dataname:?}-copypod"
+  labels:
+    aglais.name: "${dataname:?}-copypod"
+spec:
+  volumes:
+    - name: user-volume
+      persistentVolumeClaim:
+        claimName: "${username:?}-claim"
+        readOnly: true
+    - name: data-volume
+      persistentVolumeClaim:
+        claimName: "${dataname:?}-claim"
+        readOnly: false
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: "${dataname:?}-copier"
+      image: "fedora:latest"
+      volumeMounts:
+        - name: data-volume
+          mountPath: ${datapath:?}
+          readOnly:  false
+        - name: user-volume
+          mountPath: ${userpath:?}
+          readOnly:  true
+        - name: local-data
+          mountPath: /local-data
+          readOnly: false
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /local-data/\${HOSTNAME}.log;
+          sleep 60;
+          done
+EOF
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        create \
+            -f "/tmp/${dataname:?}-copypod"
+
+    >   pod/aglais-panstarrs-dr1-copypod created
+
+
+# -----------------------------------------------------
+# Exec into our copy Pod and perform the data transfer.
+#[root@kubernator]
+
+    catalog=PS1
+
+    dataname=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/sharename")
+    datadest=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/mountpath")
+    datafrom=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/source")
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        exec \
+            "${dataname:?}-copypod" \
+                --tty \
+                --stdin \
+                -- \
+                    bash -c "
+                        du -h ${datafrom:?}
+                        df -h ${datadest}
+
+                        cp --verbose \
+                           ${datafrom:?}/* \
+                           ${datadest}/
+
+                        du -h ${datadest}/
+                        df -h ${datadest}/
+                        "
+
+    >   273G	/user/nch/PARQUET/TESTS/PS1
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       300G     0  300G   0% /data/panstarrs/dr1
+
+    >   '/user/nch/PARQUET/TESTS/PS1/_SUCCESS' -> '/data/panstarrs/dr1/_SUCCESS'
+    >   '/user/nch/PARQUET/TESTS/PS1/part-00000-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet' -> '/data/panstarrs/dr1/part-00000-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/PS1/part-00001-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet' -> '/data/panstarrs/dr1/part-00001-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/PS1/part-00002-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet' -> '/data/panstarrs/dr1/part-00002-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/PS1/part-00003-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet' -> '/data/panstarrs/dr1/part-00003-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet'
+    >   ....
+    >   ....
+    >   '/user/nch/PARQUET/TESTS/PS1/part-07729-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet' -> '/data/panstarrs/dr1/part-07729-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/PS1/part-07730-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet' -> '/data/panstarrs/dr1/part-07730-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/PS1/part-07731-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet' -> '/data/panstarrs/dr1/part-07731-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/PS1/part-07732-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet' -> '/data/panstarrs/dr1/part-07732-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet'
+
+    >   270G	/data/panstarrs/dr1/
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       300G  270G   31G  90% /data/panstarrs/dr1
+
+
+# -----------------------------------------------------
+# Exec into our copy Pod and verify the data transfer.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        exec \
+            "${dataname:?}-copypod" \
+                --tty \
+                --stdin \
+                -- \
+                    bash -c "
+                        dnf -y install diffutils
+
+                        diff -s \
+                           ${datafrom:?}/ \
+                           ${datadest}/
+                        "
+
+    >   Only in /user/nch/PARQUET/TESTS/PS1/: ._SUCCESS.crc
+    >   Only in /user/nch/PARQUET/TESTS/PS1/: .part-00000-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet.crc
+    >   Only in /user/nch/PARQUET/TESTS/PS1/: .part-00001-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet.crc
+    >   ....
+    >   ....
+    >   Only in /user/nch/PARQUET/TESTS/PS1/: .part-07731-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet.crc
+    >   Only in /user/nch/PARQUET/TESTS/PS1/: .part-07732-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet.crc
+    >   Files /user/nch/PARQUET/TESTS/PS1/_SUCCESS and /data/panstarrs/dr1/_SUCCESS are identical
+    >   Files /user/nch/PARQUET/TESTS/PS1/part-00000-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet and /data/panstarrs/dr1/part-00000-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet are identical
+    >   Files /user/nch/PARQUET/TESTS/PS1/part-00001-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet and /data/panstarrs/dr1/part-00001-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet are identical
+    >   ....
+    >   ....
+    >   Files /user/nch/PARQUET/TESTS/PS1/part-07731-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet and /data/panstarrs/dr1/part-07731-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet are identical
+    >   Files /user/nch/PARQUET/TESTS/PS1/part-07732-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet and /data/panstarrs/dr1/part-07732-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet are identical
+    >   command terminated with exit code 1
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a new container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name datacopier-01 \
+        --hostname datacopier-01 \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details the first cluster in the list.
+#[root@datacopier-01]
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[0] | .uuid'
+        )
+
+    '/kubernetes/bin/cluster-config.sh' \
+        "${cloudname:?}" \
+        "${clusterid:?}"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.237:6443
+    >   Heapster is running at https://128.232.227.237:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.237:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Get the name of the 'aglais' namespace.
+#[root@datacopier-01]
+
+    namespace=$(
+        kubectl \
+            get namespace \
+                --output json \
+        | jq -r '.items[] | .metadata.name | select(. | startswith("aglais"))'
+        )
+
+    echo "Namespace [${namespace}]"
+
+    >   Namespace [aglais-20210111]
+
+
+# -----------------------------------------------------
+# Create a YAML file describing our catalogs.
+#[root@datacopier-01]
+
+cat > /tmp/data-catalogs.yaml << EOF
+
+catalogs:
+
+  - name: "GEDR3"
+    source: "/user/nch/PARQUET/TESTS/GEDR3"
+    sharename: "aglais-gaia-edr3"
+    sharesize: "540"
+    mountpath: "/data/gaia/edr3"
+
+  - name: "ALLWISE"
+    source: "/user/nch/PARQUET/TESTS/ALLWISE"
+    sharename: "aglais-wise-allwise"
+    sharesize: "350"
+    mountpath: "/data/wise/allwise"
+
+  - name: "PS1"
+    source: "/user/nch/PARQUET/TESTS/PS1"
+    sharename: "aglais-panstarrs-dr1"
+    sharesize: "300"
+    mountpath: "/data/panstarrs/dr1"
+
+  - name: "2MASS"
+    source: "/user/nch/PARQUET/TESTS/2MASS"
+    sharename: "aglais-twomass-allsky"
+    sharesize: "40"
+    mountpath: "/data/twomass/allsky"
+
+EOF
+
+
+# -----------------------------------------------------
+# Create a new Pod to transfer the wise data.
+#[root@datacopier-01]
+
+    catalog=ALLWISE
+
+    dataname=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/sharename")
+    datapath=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/mountpath")
+
+    username=aglais-user-nch
+    userpath=/user/nch
+
+    cat > "/tmp/${dataname:?}-copypod" << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "${dataname:?}-copypod"
+  labels:
+    aglais.name: "${dataname:?}-copypod"
+spec:
+  volumes:
+    - name: user-volume
+      persistentVolumeClaim:
+        claimName: "${username:?}-claim"
+        readOnly: true
+    - name: data-volume
+      persistentVolumeClaim:
+        claimName: "${dataname:?}-claim"
+        readOnly: false
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: "${dataname:?}-copier"
+      image: "fedora:latest"
+      volumeMounts:
+        - name: data-volume
+          mountPath: ${datapath:?}
+          readOnly:  false
+        - name: user-volume
+          mountPath: ${userpath:?}
+          readOnly:  true
+        - name: local-data
+          mountPath: /local-data
+          readOnly: false
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /local-data/\${HOSTNAME}.log;
+          sleep 60;
+          done
+EOF
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        create \
+            -f "/tmp/${dataname:?}-copypod"
+
+    >   pod/aglais-wise-allwise-copypod created
+
+
+# -----------------------------------------------------
+# Exec into our copy Pod and perform the data transfer.
+#[root@datacopier-01]
+
+    catalog=ALLWISE
+
+    dataname=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/sharename")
+    datadest=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/mountpath")
+    datafrom=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/source")
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        exec \
+            "${dataname:?}-copypod" \
+                --tty \
+                --stdin \
+                -- \
+                    bash -c "
+                        echo ''
+                        du -h ${datafrom:?}
+                        echo ''
+                        df -h ${datadest}
+
+                        echo ''
+                        cp --verbose \
+                           ${datafrom:?}/* \
+                           ${datadest}/
+
+                        echo ''
+                        du -h ${datadest}/
+                        echo ''
+                        df -h ${datadest}/
+                        "
+
+
+    >   343G	/user/nch/PARQUET/TESTS/ALLWISE
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       350G     0  350G   0% /data/wise/allwise
+
+    >   '/user/nch/PARQUET/TESTS/ALLWISE/_SUCCESS' -> '/data/wise/allwise/_SUCCESS'
+    >   '/user/nch/PARQUET/TESTS/ALLWISE/part-00000-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet' -> '/data/wise/allwise/part-00000-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/ALLWISE/part-00001-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet' -> '/data/wise/allwise/part-00001-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/ALLWISE/part-00002-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet' -> '/data/wise/allwise/part-00002-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/ALLWISE/part-00003-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet' -> '/data/wise/allwise/part-00003-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet'
+    >   ....
+    >   ....
+    >   '/user/nch/PARQUET/TESTS/ALLWISE/part-09130-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet' -> '/data/wise/allwise/part-09130-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/ALLWISE/part-09131-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet' -> '/data/wise/allwise/part-09131-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/ALLWISE/part-09132-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet' -> '/data/wise/allwise/part-09132-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/ALLWISE/part-09133-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet' -> '/data/wise/allwise/part-09133-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet'
+
+    >   341G	/data/wise/allwise/
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       350G  340G   11G  98% /data/wise/allwise
+
+
+# -----------------------------------------------------
+# Exec into our copy Pod and verify the data transfer.
+#[root@datacopier-01]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        exec \
+            "${dataname:?}-copypod" \
+                --tty \
+                --stdin \
+                -- \
+                    bash -c "
+                        dnf -y install diffutils
+
+                        diff -s \
+                           ${datafrom:?}/ \
+                           ${datadest}/
+                        "
+
+    >   Only in /user/nch/PARQUET/TESTS/ALLWISE/: ._SUCCESS.crc
+    >   Only in /user/nch/PARQUET/TESTS/ALLWISE/: .part-00000-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet.crc
+    >   Only in /user/nch/PARQUET/TESTS/ALLWISE/: .part-00001-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet.crc
+    >   ....
+    >   ....
+    >   Only in /user/nch/PARQUET/TESTS/ALLWISE/: .part-09132-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet.crc
+    >   Only in /user/nch/PARQUET/TESTS/ALLWISE/: .part-09133-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet.crc
+    >   Files /user/nch/PARQUET/TESTS/ALLWISE/_SUCCESS and /data/wise/allwise/_SUCCESS are identical
+    >   Files /user/nch/PARQUET/TESTS/ALLWISE/part-00000-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet and /data/wise/allwise/part-00000-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet are identical
+    >   Files /user/nch/PARQUET/TESTS/ALLWISE/part-00001-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet and /data/wise/allwise/part-00001-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet are identical
+    >   ....
+    >   ....
+    >   Files /user/nch/PARQUET/TESTS/ALLWISE/part-09132-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet and /data/wise/allwise/part-09132-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet are identical
+    >   Files /user/nch/PARQUET/TESTS/ALLWISE/part-09133-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet and /data/wise/allwise/part-09133-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet are identical
+    >   command terminated with exit code 1
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a new container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name datacopier-02 \
+        --hostname datacopier-02 \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Get the connection details the first cluster in the list.
+#[root@datacopier-02]
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[0] | .uuid'
+        )
+
+    '/kubernetes/bin/cluster-config.sh' \
+        "${cloudname:?}" \
+        "${clusterid:?}"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.237:6443
+    >   Heapster is running at https://128.232.227.237:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.237:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Get the name of the 'aglais' namespace.
+#[root@datacopier-02]
+
+    namespace=$(
+        kubectl \
+            get namespace \
+                --output json \
+        | jq -r '.items[] | .metadata.name | select(. | startswith("aglais"))'
+        )
+
+    echo "Namespace [${namespace}]"
+
+    >   Namespace [aglais-20210111]
+
+
+# -----------------------------------------------------
+# Create a YAML file describing our catalogs.
+#[root@datacopier-02]
+
+cat > /tmp/data-catalogs.yaml << EOF
+
+catalogs:
+
+  - name: "GEDR3"
+    source: "/user/nch/PARQUET/TESTS/GEDR3"
+    sharename: "aglais-gaia-edr3"
+    sharesize: "540"
+    mountpath: "/data/gaia/edr3"
+
+  - name: "ALLWISE"
+    source: "/user/nch/PARQUET/TESTS/ALLWISE"
+    sharename: "aglais-wise-allwise"
+    sharesize: "350"
+    mountpath: "/data/wise/allwise"
+
+  - name: "PS1"
+    source: "/user/nch/PARQUET/TESTS/PS1"
+    sharename: "aglais-panstarrs-dr1"
+    sharesize: "300"
+    mountpath: "/data/panstarrs/dr1"
+
+  - name: "2MASS"
+    source: "/user/nch/PARQUET/TESTS/2MASS"
+    sharename: "aglais-twomass-allsky"
+    sharesize: "40"
+    mountpath: "/data/twomass/allsky"
+
+EOF
+
+
+# -----------------------------------------------------
+# Create a new Pod to transfer the wise data.
+#[root@datacopier-02]
+
+    catalog=GEDR3
+
+    dataname=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/sharename")
+    datapath=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/mountpath")
+
+    username=aglais-user-nch
+    userpath=/user/nch
+
+    cat > "/tmp/${dataname:?}-copypod" << EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "${dataname:?}-copypod"
+  labels:
+    aglais.name: "${dataname:?}-copypod"
+spec:
+  volumes:
+    - name: user-volume
+      persistentVolumeClaim:
+        claimName: "${username:?}-claim"
+        readOnly: true
+    - name: data-volume
+      persistentVolumeClaim:
+        claimName: "${dataname:?}-claim"
+        readOnly: false
+    - name: local-data
+      emptyDir: {}
+  containers:
+    - name: "${dataname:?}-copier"
+      image: "fedora:latest"
+      volumeMounts:
+        - name: data-volume
+          mountPath: ${datapath:?}
+          readOnly:  false
+        - name: user-volume
+          mountPath: ${userpath:?}
+          readOnly:  true
+        - name: local-data
+          mountPath: /local-data
+          readOnly: false
+      command: ["/bin/sh"]
+      args:
+        - "-c"
+        - >-
+          while true; do
+          date >> /local-data/\${HOSTNAME}.log;
+          sleep 60;
+          done
+EOF
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        create \
+            -f "/tmp/${dataname:?}-copypod"
+
+    >   pod/aglais-gaia-edr3-copypod created
+
+
+# -----------------------------------------------------
+# Exec into our copy Pod and perform the data transfer.
+#[root@datacopier-02]
+
+    catalog=GEDR3
+
+    dataname=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/sharename")
+    datadest=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/mountpath")
+    datafrom=$( yq r /tmp/data-catalogs.yaml "catalogs(name==${catalog:?})/source")
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        exec \
+            "${dataname:?}-copypod" \
+                --tty \
+                --stdin \
+                -- \
+                    bash -c "
+                        echo ''
+                        du -h ${datafrom:?}
+                        echo ''
+                        df -h ${datadest}
+
+                        echo ''
+                        cp --verbose \
+                           ${datafrom:?}/* \
+                           ${datadest}/
+
+                        echo ''
+                        du -h ${datadest}/
+                        echo ''
+                        df -h ${datadest}/
+                        "
+
+    >   537G	/user/nch/PARQUET/TESTS/GEDR3
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       540G     0  540G   0% /data/gaia/edr3
+
+    >   '/user/nch/PARQUET/TESTS/GEDR3/_SUCCESS' -> '/data/gaia/edr3/_SUCCESS'
+    >   '/user/nch/PARQUET/TESTS/GEDR3/part-00000-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet' -> '/data/gaia/edr3/part-00000-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/GEDR3/part-00001-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet' -> '/data/gaia/edr3/part-00001-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/GEDR3/part-00002-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet' -> '/data/gaia/edr3/part-00002-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/GEDR3/part-00003-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet' -> '/data/gaia/edr3/part-00003-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet'
+    >   ....
+    >   ....
+    >   '/user/nch/PARQUET/TESTS/GEDR3/part-11928-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet' -> '/data/gaia/edr3/part-11928-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/GEDR3/part-11929-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet' -> '/data/gaia/edr3/part-11929-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/GEDR3/part-11930-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet' -> '/data/gaia/edr3/part-11930-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet'
+    >   '/user/nch/PARQUET/TESTS/GEDR3/part-11931-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet' -> '/data/gaia/edr3/part-11931-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet'
+
+    >   533G	/data/gaia/edr3/
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       540G  532G  8.1G  99% /data/gaia/edr3
+
+# -----------------------------------------------------
+# Exec into our copy Pod and verify the data transfer.
+#[root@datacopier-02]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        exec \
+            "${dataname:?}-copypod" \
+                --tty \
+                --stdin \
+                -- \
+                    bash
+                     -c "
+                        dnf -y install diffutils
+
+                        diff -s \
+                           ${datafrom:?}/* \
+                           ${datadest}/
+                        "
+
+    >   Only in /user/nch/PARQUET/TESTS/GEDR3/: ._SUCCESS.crc
+    >   Only in /user/nch/PARQUET/TESTS/GEDR3/: .part-00000-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet.crc
+    >   Only in /user/nch/PARQUET/TESTS/GEDR3/: .part-00001-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet.crc
+    >   ....
+    >   ....
+    >   Only in /user/nch/PARQUET/TESTS/GEDR3/: .part-11930-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet.crc
+    >   Only in /user/nch/PARQUET/TESTS/GEDR3/: .part-11931-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet.crc
+    >   Files /user/nch/PARQUET/TESTS/GEDR3/_SUCCESS and /data/gaia/edr3/_SUCCESS are identical
+    >   Files /user/nch/PARQUET/TESTS/GEDR3/part-00000-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet and /data/gaia/edr3/part-00000-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet are identical
+    >   Files /user/nch/PARQUET/TESTS/GEDR3/part-00001-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet and /data/gaia/edr3/part-00001-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet are identical
+    >   ....
+    >   ....
+    >   Files /user/nch/PARQUET/TESTS/GEDR3/part-11930-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet and /data/gaia/edr3/part-11930-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet are identical
+    >   Files /user/nch/PARQUET/TESTS/GEDR3/part-11931-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet and /data/gaia/edr3/part-11931-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet are identical
+
+
+

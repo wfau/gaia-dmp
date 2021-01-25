@@ -1,0 +1,1274 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Try to get the Kubernetes deployment to work.
+        Starting from clean ... again.
+
+    Results:
+
+        Work in progress ..
+
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+# (*) mount kubernetes directory as read/write
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@kubernator]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our Aglais configuration.
+#[root@kubernator]
+
+cat > '/tmp/aglais-config.yml' << EOF
+aglais:
+    version: 1.0
+    spec:
+        openstack:
+            cloudname: ${cloudname:?}
+        dashboard:
+            hostname: dashboard.metagrid.xyz
+        zeppelin:
+            hostname: zeppelin.metagrid.xyz
+        drupal:
+            hostname: drupal.metagrid.xyz
+EOF
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@kubernator]
+
+    /kubernetes/bin/create-all.sh
+
+    >   ....
+    >   ....
+
+    #
+    # Dashboard installed OK this time ...
+    #
+
+
+# -----------------------------------------------------
+# Check the results.
+#[root@kubernator]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: kubernetes
+    >         name: aglais-20210125
+    >         date: 20210125:123446
+    >       openstack:
+    >         cloudname: gaia-dev
+    >         magnum:
+    >           uuid: fb90b7c3-49d8-48e8-8b7b-60976ba3f187
+    >       kubernetes:
+    >         namespace: aglais-20210125
+    >         ingress:
+    >           dashboard:
+    >             hostname: dashboard.metagrid.xyz
+    >             ipv4: null
+    >           zeppelin:
+    >             hostname: zeppelin.metagrid.xyz
+    >             ipv4: null
+
+
+# -----------------------------------------------------
+# Get the cluster ID and K8s namespace.
+#[root@kubernator]
+
+    magnumid=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.openstack.magnum.uuid'
+        )
+
+    namespace=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.kubernetes.namespace'
+        )
+
+cat << EOF
+Magnum uuid [${magnumid}]
+Name space  [${namespace}]
+EOF
+
+    >   Magnum uuid [fb90b7c3-49d8-48e8-8b7b-60976ba3f187]
+    >   Name space  [aglais-20210125]
+
+
+# -----------------------------------------------------
+# Get the Dashboard ServiceAccount token.
+#[root@kubernator]
+
+    secretname=$(
+        kubectl \
+            --output json \
+            --namespace "${namespace:?}" \
+            get ServiceAccount \
+                "aglais-dashboard-kubernetes-dashboard" \
+        | jq -r '.secrets[0].name'
+        )
+
+    kubectl \
+        --output json \
+        --namespace "${namespace:?}" \
+        get Secret \
+            "${secretname:?}" \
+    | jq -r '.data.token | @base64d'
+
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check our ingress status.
+# ** Kubernetes needs time time to allocate the IP address.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get Ingress
+
+    >   NAME                                    HOSTS                    ADDRESS           PORTS     AGE
+    >   aglais-dashboard-kubernetes-dashboard   dashboard.metagrid.xyz   128.232.227.177   80        5m6s
+    >   zeppelin-server-ingress                 zeppelin.metagrid.xyz    128.232.227.177   80, 443   3m20s
+
+
+# -----------------------------------------------------
+# Capture our Dashboard ingress IP address.
+# ** Kubernetes needs time time to allocate the IP address.
+
+    daship=$(
+        kubectl \
+            --namespace "${namespace:?}" \
+            get Ingress \
+                --output json \
+        | jq -r '
+            .items[]
+          | select(.metadata.name == "aglais-dashboard-kubernetes-dashboard")
+          | .status.loadBalancer.ingress[0].ip
+          '
+        )
+
+    yq write \
+        --inplace \
+        '/tmp/aglais-status.yml' \
+            'aglais.status.kubernetes.ingress.dashboard.ipv4' \
+            "${daship}"
+
+
+# -----------------------------------------------------
+# Capture our Zeppelin ingress IP address.
+# ** Kubernetes needs time time to allocate the IP address.
+
+    zeppip=$(
+        kubectl \
+            --namespace "${namespace:?}" \
+            get Ingress \
+                --output json \
+        | jq -r '
+            .items[]
+          | select(.metadata.name == "zeppelin-server-ingress")
+          | .status.loadBalancer.ingress[0].ip
+          '
+        )
+
+    yq write \
+        --inplace \
+        '/tmp/aglais-status.yml' \
+            'aglais.status.kubernetes.ingress.zeppelin.ipv4' \
+            "${zeppip}"
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Update our DNS ..
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the Dashboard page.
+#[root@kubernator]
+
+    curl --head --insecure "https://dashboard.metagrid.xyz/"
+
+    >   HTTP/2 200
+    >   date: Mon, 25 Jan 2021 13:05:50 GMT
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the Zeppelin page.
+#[root@kubernator]
+
+    curl --head --insecure "https://zeppelin.metagrid.xyz/"
+
+    >   HTTP/2 200
+    >   date: Mon, 25 Jan 2021 13:06:05 GMT
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the test pod events for the data shares.
+#[root@kubernator]
+
+    sharelist='/common/manila/datashares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+        echo "----"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        kubectl \
+            --namespace "${namespace:?}" \
+            get event \
+                --field-selector "involvedObject.name=${sharename:?}-testpod"
+
+    done
+
+    >   ---- ----
+    >   Share [GDR2]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                        MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-gaia-dr2-testpod   Successfully assigned aglais-20210125/aglais-gaia-dr2-testpod to aglais-20210125-cluster-shr4k5gaja5a-node-2
+    >   18m         Warning   FailedMount   pod/aglais-gaia-dr2-testpod   MountVolume.MountDevice failed for volume "aglais-gaia-dr2-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-gaia-dr2-volume/globalmount: permission denied
+    >   8m33s       Warning   FailedMount   pod/aglais-gaia-dr2-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-fwhqc]: timed out waiting for the condition
+    >   3m59s       Warning   FailedMount   pod/aglais-gaia-dr2-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[local-data default-token-fwhqc test-data]: timed out waiting for the condition
+    >   33m         Warning   FailedMount   pod/aglais-gaia-dr2-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[default-token-fwhqc test-data local-data]: timed out waiting for the condition
+    >   
+    >   ---- ----
+    >   Share [GEDR3]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                         MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-gaia-edr3-testpod   Successfully assigned aglais-20210125/aglais-gaia-edr3-testpod to aglais-20210125-cluster-shr4k5gaja5a-node-3
+    >   18m         Warning   FailedMount   pod/aglais-gaia-edr3-testpod   MountVolume.MountDevice failed for volume "aglais-gaia-edr3-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-gaia-edr3-volume/globalmount: permission denied
+    >   8m17s       Warning   FailedMount   pod/aglais-gaia-edr3-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-fwhqc]: timed out waiting for the condition
+    >   3m46s       Warning   FailedMount   pod/aglais-gaia-edr3-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[default-token-fwhqc test-data local-data]: timed out waiting for the condition
+    >   
+    >   ---- ----
+    >   Share [ALLWISE]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                            MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-wise-allwise-testpod   Successfully assigned aglais-20210125/aglais-wise-allwise-testpod to aglais-20210125-cluster-shr4k5gaja5a-node-0
+    >   17m         Warning   FailedMount   pod/aglais-wise-allwise-testpod   MountVolume.MountDevice failed for volume "aglais-wise-allwise-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-wise-allwise-volume/globalmount: permission denied
+    >   3m30s       Warning   FailedMount   pod/aglais-wise-allwise-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-fwhqc]: timed out waiting for the condition
+    >   8m4s        Warning   FailedMount   pod/aglais-wise-allwise-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[default-token-fwhqc test-data local-data]: timed out waiting for the condition
+    >   
+    >   ---- ----
+    >   Share [PS1]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                             MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-panstarrs-dr1-testpod   Successfully assigned aglais-20210125/aglais-panstarrs-dr1-testpod to aglais-20210125-cluster-shr4k5gaja5a-node-0
+    >   17m         Warning   FailedMount   pod/aglais-panstarrs-dr1-testpod   MountVolume.MountDevice failed for volume "aglais-panstarrs-dr1-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-panstarrs-dr1-volume/globalmount: permission denied
+    >   30m         Warning   FailedMount   pod/aglais-panstarrs-dr1-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[default-token-fwhqc test-data local-data]: timed out waiting for the condition
+    >   3m17s       Warning   FailedMount   pod/aglais-panstarrs-dr1-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-fwhqc]: timed out waiting for the condition
+    >   37m         Warning   FailedMount   pod/aglais-panstarrs-dr1-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[local-data default-token-fwhqc test-data]: timed out waiting for the condition
+    >   
+    >   ---- ----
+    >   Share [2MASS]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                              MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-twomass-allsky-testpod   Successfully assigned aglais-20210125/aglais-twomass-allsky-testpod to aglais-20210125-cluster-shr4k5gaja5a-node-2
+    >   76s         Warning   FailedMount   pod/aglais-twomass-allsky-testpod   MountVolume.MountDevice failed for volume "aglais-twomass-allsky-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-twomass-allsky-volume/globalmount: permission denied
+    >   27m         Warning   FailedMount   pod/aglais-twomass-allsky-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[local-data default-token-fwhqc test-data]: timed out waiting for the condition
+    >   7m44s       Warning   FailedMount   pod/aglais-twomass-allsky-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-fwhqc]: timed out waiting for the condition
+    >   30m         Warning   FailedMount   pod/aglais-twomass-allsky-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[default-token-fwhqc test-data local-data]: timed out waiting for the condition
+
+    #
+    # All of them failed this time.
+    # All of them reported the same error this time.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Delete everything.
+#[root@kubernator]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Create everything.
+#[root@kubernator]
+
+    /kubernetes/bin/create-all.sh
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the results.
+#[root@kubernator]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the cluster ID and K8s namespace.
+#[root@kubernator]
+
+    magnumid=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.openstack.magnum.uuid'
+        )
+
+    namespace=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.kubernetes.namespace'
+        )
+
+cat << EOF
+Magnum uuid [${magnumid}]
+Name space  [${namespace}]
+EOF
+
+    >   Magnum uuid [cc17f847-fb02-427b-909a-6750dbad2060]
+    >   Name space  [aglais-20210125]
+
+
+# -----------------------------------------------------
+# Check the test pod events for the data shares.
+#[root@kubernator]
+
+    sharelist='/common/manila/datashares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+        echo "----"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        kubectl \
+            --namespace "${namespace:?}" \
+            get event \
+                --field-selector "involvedObject.name=${sharename:?}-testpod"
+
+    done
+
+    >   ---- ----
+    >   Share [GDR2]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                        MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-gaia-dr2-testpod   Successfully assigned aglais-20210125/aglais-gaia-dr2-testpod to aglais-20210125-cluster-bf3en5lv3e6a-node-0
+    >   90s         Warning   FailedMount   pod/aglais-gaia-dr2-testpod   MountVolume.MountDevice failed for volume "aglais-gaia-dr2-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-gaia-dr2-volume/globalmount: permission denied
+    >   97s         Warning   FailedMount   pod/aglais-gaia-dr2-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-4zmrq]: timed out waiting for the condition
+    >   
+    >   ---- ----
+    >   Share [GEDR3]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                         MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-gaia-edr3-testpod   Successfully assigned aglais-20210125/aglais-gaia-edr3-testpod to aglais-20210125-cluster-bf3en5lv3e6a-node-1
+    >   78s         Warning   FailedMount   pod/aglais-gaia-edr3-testpod   MountVolume.MountDevice failed for volume "aglais-gaia-edr3-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-gaia-edr3-volume/globalmount: permission denied
+    >   86s         Warning   FailedMount   pod/aglais-gaia-edr3-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[local-data default-token-4zmrq test-data]: timed out waiting for the condition
+    >   
+    >   ---- ----
+    >   Share [ALLWISE]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                            MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-wise-allwise-testpod   Successfully assigned aglais-20210125/aglais-wise-allwise-testpod to aglais-20210125-cluster-bf3en5lv3e6a-node-2
+    >   66s         Warning   FailedMount   pod/aglais-wise-allwise-testpod   MountVolume.MountDevice failed for volume "aglais-wise-allwise-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-wise-allwise-volume/globalmount: permission denied
+    >   73s         Warning   FailedMount   pod/aglais-wise-allwise-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-4zmrq]: timed out waiting for the condition
+    >   
+    >   ---- ----
+    >   Share [PS1]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                             MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-panstarrs-dr1-testpod   Successfully assigned aglais-20210125/aglais-panstarrs-dr1-testpod to aglais-20210125-cluster-bf3en5lv3e6a-node-2
+    >   53s         Warning   FailedMount   pod/aglais-panstarrs-dr1-testpod   MountVolume.MountDevice failed for volume "aglais-panstarrs-dr1-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-panstarrs-dr1-volume/globalmount: permission denied
+    >   60s         Warning   FailedMount   pod/aglais-panstarrs-dr1-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-4zmrq]: timed out waiting for the condition
+    >   
+    >   ---- ----
+    >   Share [2MASS]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                              MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-twomass-allsky-testpod   Successfully assigned aglais-20210125/aglais-twomass-allsky-testpod to aglais-20210125-cluster-bf3en5lv3e6a-node-3
+    >   40s         Warning   FailedMount   pod/aglais-twomass-allsky-testpod   MountVolume.MountDevice failed for volume "aglais-twomass-allsky-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-twomass-allsky-volume/globalmount: permission denied
+    >   47s         Warning   FailedMount   pod/aglais-twomass-allsky-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[default-token-4zmrq test-data local-data]: timed out waiting for the condition
+    >   [root@kubernator /]#
+
+
+    #
+    # All of them failed this time.
+    # All of them reported the same error this time.
+    #
+
+
+# -----------------------------------------------------
+# Check the test pod events for the user shares.
+#[root@kubernator]
+
+    sharelist='/common/manila/usershares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+        echo "----"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        kubectl \
+            --namespace "${namespace:?}" \
+            get event \
+                --field-selector "involvedObject.name=${sharename:?}-testpod"
+
+    done
+
+    >   ---- ----
+    >   Share [nch]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                        MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-user-nch-testpod   Successfully assigned aglais-20210125/aglais-user-nch-testpod to aglais-20210125-cluster-bf3en5lv3e6a-node-0
+    >   6m1s        Normal   Pulling     pod/aglais-user-nch-testpod   Pulling image "fedora:latest"
+    >   5m54s       Normal   Pulled      pod/aglais-user-nch-testpod   Successfully pulled image "fedora:latest"
+    >   5m53s       Normal   Created     pod/aglais-user-nch-testpod   Created container aglais-user-nch-container
+    >   5m53s       Normal   Started     pod/aglais-user-nch-testpod   Started container aglais-user-nch-container
+    >   
+    >   ---- ----
+    >   Share [zrq]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                        MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-user-zrq-testpod   Successfully assigned aglais-20210125/aglais-user-zrq-testpod to aglais-20210125-cluster-bf3en5lv3e6a-node-2
+    >   5m50s       Warning   FailedMount   pod/aglais-user-zrq-testpod   MountVolume.MountDevice failed for volume "aglais-user-zrq-volume" : rpc error: code = Internal desc = failed to retrieve share ff351afd-1f06-4d02-9f53-cbe20b0676cc: Request forbidden: [GET https://cumulus.openstack.hpc.cam.ac.uk:8786/v2/08e24c6d87f94740aa59c172462ed927/shares/ff351afd-1f06-4d02-9f53-cbe20b0676cc], error message: {"forbidden": {"message": "Policy doesn't allow share:get to be performed.", "code": 403}}
+    >   100s        Warning   FailedMount   pod/aglais-user-zrq-testpod   MountVolume.MountDevice failed for volume "aglais-user-zrq-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >   3m48s       Warning   FailedMount   pod/aglais-user-zrq-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-4zmrq]: timed out waiting for the condition
+    >   90s         Warning   FailedMount   pod/aglais-user-zrq-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[default-token-4zmrq test-data local-data]: timed out waiting for the condition
+    >   
+    >   ---- ----
+    >   Share [stv]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                        MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-user-stv-testpod   Successfully assigned aglais-20210125/aglais-user-stv-testpod to aglais-20210125-cluster-bf3en5lv3e6a-node-0
+    >   5m38s       Warning   FailedMount   pod/aglais-user-stv-testpod   MountVolume.MountDevice failed for volume "aglais-user-stv-volume" : rpc error: code = Internal desc = failed to retrieve share fe63568a-d90c-4fb0-8979-07504328809d: Request forbidden: [GET https://cumulus.openstack.hpc.cam.ac.uk:8786/v2/08e24c6d87f94740aa59c172462ed927/shares/fe63568a-d90c-4fb0-8979-07504328809d], error message: {"forbidden": {"message": "Policy doesn't allow share:get to be performed.", "code": 403}}
+    >   88s         Warning   FailedMount   pod/aglais-user-stv-testpod   MountVolume.MountDevice failed for volume "aglais-user-stv-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >   3m36s       Warning   FailedMount   pod/aglais-user-stv-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[default-token-4zmrq test-data local-data]: timed out waiting for the condition
+    >   81s         Warning   FailedMount   pod/aglais-user-stv-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[local-data default-token-4zmrq test-data]: timed out waiting for the condition
+
+    #
+    # One worked, the rest failed.
+    # Same error rmessage, but different to the data shares.
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Looking at the Horizon GUI, the failed user shares were not public.
+    Updated the share properties, making all of them public.
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Delete everything.
+#[root@kubernator]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Create everything.
+#[root@kubernator]
+
+    /kubernetes/bin/create-all.sh
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the results.
+#[root@kubernator]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: kubernetes
+    >         name: aglais-20210125
+    >         date: 20210125:140610
+    >       openstack:
+    >         cloudname: gaia-dev
+    >         magnum:
+    >           uuid: befc7a6f-57fd-4a8f-94a6-3694d20229b9
+    >       kubernetes:
+    >         namespace: aglais-20210125
+    >         ingress:
+    >           dashboard:
+    >             hostname: dashboard.metagrid.xyz
+    >             ipv4:
+    >           zeppelin:
+    >             hostname: zeppelin.metagrid.xyz
+    >             ipv4: null
+
+
+# -----------------------------------------------------
+# Get the cluster ID and K8s namespace.
+#[root@kubernator]
+
+    magnumid=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.openstack.magnum.uuid'
+        )
+
+    namespace=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.kubernetes.namespace'
+        )
+
+cat << EOF
+Magnum uuid [${magnumid}]
+Name space  [${namespace}]
+EOF
+
+    >   Magnum uuid [befc7a6f-57fd-4a8f-94a6-3694d20229b9]
+    >   Name space  [aglais-20210125]
+
+
+# -----------------------------------------------------
+# Check the test pod events for the user shares.
+#[root@kubernator]
+
+    sharelist='/common/manila/usershares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+        echo "----"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        kubectl \
+            --namespace "${namespace:?}" \
+            get event \
+                --field-selector "involvedObject.name=${sharename:?}-testpod"
+
+    done
+
+    >   ---- ----
+    >   Share [nch]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                        MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-user-nch-testpod   Successfully assigned aglais-20210125/aglais-user-nch-testpod to aglais-20210125-cluster-cmauzltjts5o-node-0
+    >   2m22s       Normal   Pulling     pod/aglais-user-nch-testpod   Pulling image "fedora:latest"
+    >   2m15s       Normal   Pulled      pod/aglais-user-nch-testpod   Successfully pulled image "fedora:latest"
+    >   2m14s       Normal   Created     pod/aglais-user-nch-testpod   Created container aglais-user-nch-container
+    >   2m14s       Normal   Started     pod/aglais-user-nch-testpod   Started container aglais-user-nch-container
+    >   
+    >   ---- ----
+    >   Share [zrq]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                        MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-user-zrq-testpod   Successfully assigned aglais-20210125/aglais-user-zrq-testpod to aglais-20210125-cluster-cmauzltjts5o-node-2
+    >   2m9s        Normal   Pulling     pod/aglais-user-zrq-testpod   Pulling image "fedora:latest"
+    >   2m1s        Normal   Pulled      pod/aglais-user-zrq-testpod   Successfully pulled image "fedora:latest"
+    >   2m1s        Normal   Created     pod/aglais-user-zrq-testpod   Created container aglais-user-zrq-container
+    >   2m1s        Normal   Started     pod/aglais-user-zrq-testpod   Started container aglais-user-zrq-container
+    >   
+    >   ---- ----
+    >   Share [stv]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                        MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-user-stv-testpod   Successfully assigned aglais-20210125/aglais-user-stv-testpod to aglais-20210125-cluster-cmauzltjts5o-node-2
+    >   116s        Normal   Pulling     pod/aglais-user-stv-testpod   Pulling image "fedora:latest"
+    >   112s        Normal   Pulled      pod/aglais-user-stv-testpod   Successfully pulled image "fedora:latest"
+    >   112s        Normal   Created     pod/aglais-user-stv-testpod   Created container aglais-user-stv-container
+    >   112s        Normal   Started     pod/aglais-user-stv-testpod   Started container aglais-user-stv-container
+
+    #
+    # OK - so they all worked.
+    # Needed to make them all public.
+    #
+
+
+# -----------------------------------------------------
+# Check the test pod events for the data shares.
+#[root@kubernator]
+
+    sharelist='/common/manila/datashares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+        echo "----"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        kubectl \
+            --namespace "${namespace:?}" \
+            get event \
+                --field-selector "involvedObject.name=${sharename:?}-testpod"
+
+    done
+
+
+    >   ---- ----
+    >   Share [GDR2]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                        MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-gaia-dr2-testpod   Successfully assigned aglais-20210125/aglais-gaia-dr2-testpod to aglais-20210125-cluster-cmauzltjts5o-node-0
+    >   2m7s        Warning   FailedMount   pod/aglais-gaia-dr2-testpod   MountVolume.MountDevice failed for volume "aglais-gaia-dr2-volume" : kubernetes.io/csi: attacher.MountDevice failed to create newCsiDriverClient: driver name cephfs.manila.csi.openstack.org not found in the list of registered CSI drivers
+    >   6s          Warning   FailedMount   pod/aglais-gaia-dr2-testpod   MountVolume.MountDevice failed for volume "aglais-gaia-dr2-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-gaia-dr2-volume/globalmount: permission denied
+    >   12s         Warning   FailedMount   pod/aglais-gaia-dr2-testpod   Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[local-data default-token-vc7cp test-data]: timed out waiting for the condition
+    >   
+    >   ---- ----
+    >   Share [GEDR3]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                         MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-gaia-edr3-testpod   Successfully assigned aglais-20210125/aglais-gaia-edr3-testpod to aglais-20210125-cluster-cmauzltjts5o-node-0
+    >   57s         Warning   FailedMount   pod/aglais-gaia-edr3-testpod   MountVolume.MountDevice failed for volume "aglais-gaia-edr3-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-gaia-edr3-volume/globalmount: permission denied
+    >   
+    >   ---- ----
+    >   Share [ALLWISE]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                            MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-wise-allwise-testpod   Successfully assigned aglais-20210125/aglais-wise-allwise-testpod to aglais-20210125-cluster-cmauzltjts5o-node-1
+    >   44s         Warning   FailedMount   pod/aglais-wise-allwise-testpod   MountVolume.MountDevice failed for volume "aglais-wise-allwise-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-wise-allwise-volume/globalmount: permission denied
+    >   
+    >   ---- ----
+    >   Share [PS1]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                             MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-panstarrs-dr1-testpod   Successfully assigned aglais-20210125/aglais-panstarrs-dr1-testpod to aglais-20210125-cluster-cmauzltjts5o-node-1
+    >   32s         Warning   FailedMount   pod/aglais-panstarrs-dr1-testpod   MountVolume.MountDevice failed for volume "aglais-panstarrs-dr1-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-panstarrs-dr1-volume/globalmount: permission denied
+    >   
+    >   ---- ----
+    >   Share [2MASS]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                              MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-twomass-allsky-testpod   Successfully assigned aglais-20210125/aglais-twomass-allsky-testpod to aglais-20210125-cluster-cmauzltjts5o-node-3
+    >   20s         Warning   FailedMount   pod/aglais-twomass-allsky-testpod   MountVolume.MountDevice failed for volume "aglais-twomass-allsky-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-twomass-allsky-volume/globalmount: permission denied
+
+
+    #
+    # First one is a glitch - the rest are as before.
+    #
+
+    #
+    # Difference between user shares and data shares ?
+    # We create the data shares as ro and user shares as rw.
+    # The cephfs-mount script the read/write mode to select the access rule.
+    # ... but due to earlier issues with cephfs-csi, we always mount using ReadWriteMany.
+    # Hence the 'permission denied' errors ?
+    #
+    #
+
+    #
+    # Edit the create all script to mount them as rw.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Delete everything.
+#[root@kubernator]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Create everything.
+#[root@kubernator]
+
+    /kubernetes/bin/create-all.sh
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the results.
+#[root@kubernator]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: kubernetes
+    >         name: aglais-20210125
+    >         date: 20210125:145052
+    >       openstack:
+    >         cloudname: gaia-dev
+    >         magnum:
+    >           uuid: 96fc649b-f5be-4ac0-8293-59a4ffdf4e97
+    >       kubernetes:
+    >         namespace: aglais-20210125
+    >         ingress:
+    >           dashboard:
+    >             hostname: dashboard.metagrid.xyz
+    >             ipv4:
+    >           zeppelin:
+    >             hostname: zeppelin.metagrid.xyz
+    >             ipv4: null
+
+# -----------------------------------------------------
+# Get the cluster ID and K8s namespace.
+#[root@kubernator]
+
+    magnumid=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.openstack.magnum.uuid'
+        )
+
+    namespace=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.kubernetes.namespace'
+        )
+
+cat << EOF
+Magnum uuid [${magnumid}]
+Name space  [${namespace}]
+EOF
+
+    >   Magnum uuid [96fc649b-f5be-4ac0-8293-59a4ffdf4e97]
+    >   Name space  [aglais-20210125]
+
+
+# -----------------------------------------------------
+# Check the test pod events for the user shares.
+#[root@kubernator]
+
+    sharelist='/common/manila/usershares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+        echo "----"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        kubectl \
+            --namespace "${namespace:?}" \
+            get event \
+                --field-selector "involvedObject.name=${sharename:?}-testpod"
+
+    done
+
+    >   ---- ----
+    >   Share [nch]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                        MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-user-nch-testpod   Successfully assigned aglais-20210125/aglais-user-nch-testpod to aglais-20210125-cluster-jbncmdarhg4l-node-2
+    >   9m5s        Normal   Pulling     pod/aglais-user-nch-testpod   Pulling image "fedora:latest"
+    >   9m2s        Normal   Pulled      pod/aglais-user-nch-testpod   Successfully pulled image "fedora:latest"
+    >   9m2s        Normal   Created     pod/aglais-user-nch-testpod   Created container aglais-user-nch-container
+    >   9m2s        Normal   Started     pod/aglais-user-nch-testpod   Started container aglais-user-nch-container
+    >   
+    >   ---- ----
+    >   Share [zrq]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                        MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-user-zrq-testpod   Successfully assigned aglais-20210125/aglais-user-zrq-testpod to aglais-20210125-cluster-jbncmdarhg4l-node-3
+    >   8m53s       Normal   Pulling     pod/aglais-user-zrq-testpod   Pulling image "fedora:latest"
+    >   8m49s       Normal   Pulled      pod/aglais-user-zrq-testpod   Successfully pulled image "fedora:latest"
+    >   8m49s       Normal   Created     pod/aglais-user-zrq-testpod   Created container aglais-user-zrq-container
+    >   8m49s       Normal   Started     pod/aglais-user-zrq-testpod   Started container aglais-user-zrq-container
+    >   
+    >   ---- ----
+    >   Share [stv]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                        MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-user-stv-testpod   Successfully assigned aglais-20210125/aglais-user-stv-testpod to aglais-20210125-cluster-jbncmdarhg4l-node-1
+    >   8m39s       Normal   Pulling     pod/aglais-user-stv-testpod   Pulling image "fedora:latest"
+    >   8m36s       Normal   Pulled      pod/aglais-user-stv-testpod   Successfully pulled image "fedora:latest"
+    >   8m36s       Normal   Created     pod/aglais-user-stv-testpod   Created container aglais-user-stv-container
+    >   8m36s       Normal   Started     pod/aglais-user-stv-testpod   Started container aglais-user-stv-container
+
+
+# -----------------------------------------------------
+# Check the test pod events for the data shares.
+#[root@kubernator]
+
+    sharelist='/common/manila/datashares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+        echo "----"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        kubectl \
+            --namespace "${namespace:?}" \
+            get event \
+                --field-selector "involvedObject.name=${sharename:?}-testpod"
+
+    done
+
+    >   ---- ----
+    >   Share [GDR2]
+    >   ----
+    >   LAST SEEN   TYPE      REASON        OBJECT                        MESSAGE
+    >   <unknown>   Normal    Scheduled     pod/aglais-gaia-dr2-testpod   Successfully assigned aglais-20210125/aglais-gaia-dr2-testpod to aglais-20210125-cluster-jbncmdarhg4l-node-1
+    >   10m         Warning   FailedMount   pod/aglais-gaia-dr2-testpod   MountVolume.MountDevice failed for volume "aglais-gaia-dr2-volume" : kubernetes.io/csi: attacher.MountDevice failed to create newCsiDriverClient: driver name cephfs.manila.csi.openstack.org not found in the list of registered CSI drivers
+    >   10m         Normal    Pulling       pod/aglais-gaia-dr2-testpod   Pulling image "fedora:latest"
+    >   10m         Normal    Pulled        pod/aglais-gaia-dr2-testpod   Successfully pulled image "fedora:latest"
+    >   10m         Normal    Created       pod/aglais-gaia-dr2-testpod   Created container aglais-gaia-dr2-container
+    >   10m         Normal    Started       pod/aglais-gaia-dr2-testpod   Started container aglais-gaia-dr2-container
+    >   
+    >   ---- ----
+    >   Share [GEDR3]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                         MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-gaia-edr3-testpod   Successfully assigned aglais-20210125/aglais-gaia-edr3-testpod to aglais-20210125-cluster-jbncmdarhg4l-node-2
+    >   10m         Normal   Pulling     pod/aglais-gaia-edr3-testpod   Pulling image "fedora:latest"
+    >   10m         Normal   Pulled      pod/aglais-gaia-edr3-testpod   Successfully pulled image "fedora:latest"
+    >   10m         Normal   Created     pod/aglais-gaia-edr3-testpod   Created container aglais-gaia-edr3-container
+    >   10m         Normal   Started     pod/aglais-gaia-edr3-testpod   Started container aglais-gaia-edr3-container
+    >   
+    >   ---- ----
+    >   Share [ALLWISE]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                            MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-wise-allwise-testpod   Successfully assigned aglais-20210125/aglais-wise-allwise-testpod to aglais-20210125-cluster-jbncmdarhg4l-node-0
+    >   10m         Normal   Pulling     pod/aglais-wise-allwise-testpod   Pulling image "fedora:latest"
+    >   9m53s       Normal   Pulled      pod/aglais-wise-allwise-testpod   Successfully pulled image "fedora:latest"
+    >   9m52s       Normal   Created     pod/aglais-wise-allwise-testpod   Created container aglais-wise-allwise-container
+    >   9m52s       Normal   Started     pod/aglais-wise-allwise-testpod   Started container aglais-wise-allwise-container
+    >   
+    >   ---- ----
+    >   Share [PS1]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                             MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-panstarrs-dr1-testpod   Successfully assigned aglais-20210125/aglais-panstarrs-dr1-testpod to aglais-20210125-cluster-jbncmdarhg4l-node-0
+    >   9m48s       Normal   Pulling     pod/aglais-panstarrs-dr1-testpod   Pulling image "fedora:latest"
+    >   9m45s       Normal   Pulled      pod/aglais-panstarrs-dr1-testpod   Successfully pulled image "fedora:latest"
+    >   9m45s       Normal   Created     pod/aglais-panstarrs-dr1-testpod   Created container aglais-panstarrs-dr1-container
+    >   9m45s       Normal   Started     pod/aglais-panstarrs-dr1-testpod   Started container aglais-panstarrs-dr1-container
+    >   
+    >   ---- ----
+    >   Share [2MASS]
+    >   ----
+    >   LAST SEEN   TYPE     REASON      OBJECT                              MESSAGE
+    >   <unknown>   Normal   Scheduled   pod/aglais-twomass-allsky-testpod   Successfully assigned aglais-20210125/aglais-twomass-allsky-testpod to aglais-20210125-cluster-jbncmdarhg4l-node-3
+    >   9m37s       Normal   Pulling     pod/aglais-twomass-allsky-testpod   Pulling image "fedora:latest"
+    >   9m29s       Normal   Pulled      pod/aglais-twomass-allsky-testpod   Successfully pulled image "fedora:latest"
+    >   9m28s       Normal   Created     pod/aglais-twomass-allsky-testpod   Created container aglais-twomass-allsky-container
+
+    #
+    # So the failed mounts were due to a combination of two things.
+    # Due to known issue with Cephfs CSI plugin, credentials don't work for anything other than ReadWriteMany.
+    # We were trying to use an Openstack 'ro' access rule to mount a CSI volume as 'ReadWriteMany'.
+    # => permission error
+    #
+    # We were trying to access a Openstack Manila share that wasn't public.
+    # => stage secrets cannot be nil or empty
+    #
+
+
+# -----------------------------------------------------
+# Check the CSI volumes, claims and testpods for the data volumes.
+#[root@kubernator]
+
+    sharelist='/common/manila/datashares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        podphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get pod \
+                    --output json \
+                    "${sharename:?}-testpod" \
+            | jq -r '.status.phase'
+            )
+
+        volphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get PersistentVolume \
+                    --output json \
+                        "${sharename:?}-volume" \
+            | jq -r '.status.phase'
+            )
+
+        claimphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get PersistentVolumeClaim \
+                    --output json \
+                        "${sharename:?}-claim" \
+            | jq -r '.status.phase'
+            )
+
+        echo "Testpod [${podphase}]"
+        echo "Volume  [${volphase}]"
+        echo "Claim   [${claimphase}]"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.testpod" \
+                "${podphase}"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.volume" \
+                "${volphase}"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.claim" \
+                "${claimphase}"
+
+        echo "----"
+        kubectl \
+            --namespace "${namespace:?}" \
+            exec \
+                --tty \
+                --stdin \
+                "${sharename:?}-testpod" \
+                    -- \
+                        /usr/bin/df -h "${mountpath:?}"
+        echo "----"
+
+    done
+
+    >   ---- ----
+    >   Share [GDR2]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       512G  473G   40G  93% /data/gaia/dr2
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [GEDR3]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       540G  533G  7.9G  99% /data/gaia/edr3
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [ALLWISE]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       350G  341G  9.9G  98% /data/wise/allwise
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [PS1]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       300G  270G   31G  90% /data/panstarrs/dr1
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [2MASS]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        40G   37G  3.5G  92% /data/twomass/allsky
+    >   ----
+
+
+# -----------------------------------------------------
+# Check the CSI volumes, claims and testpods for the user volumes.
+#[root@kubernator]
+
+    sharelist='/common/manila/usershares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        podphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get pod \
+                    --output json \
+                    "${sharename:?}-testpod" \
+            | jq -r '.status.phase'
+            )
+
+        volphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get PersistentVolume \
+                    --output json \
+                        "${sharename:?}-volume" \
+            | jq -r '.status.phase'
+            )
+
+        claimphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get PersistentVolumeClaim \
+                    --output json \
+                        "${sharename:?}-claim" \
+            | jq -r '.status.phase'
+            )
+
+        echo "Testpod [${podphase}]"
+        echo "Volume  [${volphase}]"
+        echo "Claim   [${claimphase}]"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.testpod" \
+                "${podphase}"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.volume" \
+                "${volphase}"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.claim" \
+                "${claimphase}"
+
+        echo "----"
+        kubectl \
+            --namespace "${namespace:?}" \
+            exec \
+                --tty \
+                --stdin \
+                "${sharename:?}-testpod" \
+                    -- \
+                        /usr/bin/df -h "${mountpath:?}"
+        echo "----"
+
+    done
+
+    >   ---- ----
+    >   Share [nch]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        10T  4.9T  5.2T  49% /user/nch
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [zrq]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T   30G  995G   3% /user/zrq
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [stv]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T     0  1.0T   0% /user/stv
+    >   ----
+
+
+# -----------------------------------------------------
+# Check our results
+#[root@kubernator]
+
+    cat /tmp/aglais-status.yml
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: kubernetes
+    >         name: aglais-20210125
+    >         date: 20210125:145052
+    >       openstack:
+    >         cloudname: gaia-dev
+    >         magnum:
+    >           uuid: 96fc649b-f5be-4ac0-8293-59a4ffdf4e97
+    >       kubernetes:
+    >         namespace: aglais-20210125
+    >         ingress:
+    >           dashboard:
+    >             hostname: dashboard.metagrid.xyz
+    >             ipv4:
+    >           zeppelin:
+    >             hostname: zeppelin.metagrid.xyz
+    >             ipv4: null
+    >         csi-manila:
+    >           aglais-gaia-dr2:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-gaia-edr3:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-wise-allwise:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-panstarrs-dr1:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-twomass-allsky:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-user-nch:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-user-zrq:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-user-stv:
+    >             testpod: Running
+    >             volume: Bound
+
+

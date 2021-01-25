@@ -67,7 +67,7 @@
     yq write \
         --inplace \
         "${statusyml:?}" \
-            'aglais.spec.openstack.cloudname' \
+            'aglais.status.openstack.cloudname' \
             "${cloudname}"
 
     echo "---- ---- ----"
@@ -99,7 +99,7 @@
     yq write \
         --inplace \
         "${statusyml:?}" \
-            'aglais.status.openstack.cluster.id' \
+            'aglais.status.openstack.magnum.uuid' \
             "${clusterid}"
 
 # -----------------------------------------------------
@@ -192,13 +192,22 @@ EOF
 
 #TODO Patch the k8s metrics
 
+    # We can't capture the external IP address here because it won't be ready yet.
+
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.kubernetes.ingress.dashboard.hostname' \
+            "${dashhost}"
+
 
 # -----------------------------------------------------
 # Mount the data shares.
 # Using a hard coded cloud name to make it portable.
+# Hard coded mode to 'rw' due to problems with ReadOnlyMany
 
     sharelist='/common/manila/datashares.yaml'
-    sharemode='ro'
+    sharemode='rw'
 
     for shareid in $(
         yq read \
@@ -283,6 +292,14 @@ EOF
         "/kubernetes/helm/tools/zeppelin" \
         --values "/tmp/zeppelin-values.yaml"
 
+    # We can't capture the IP address here because it won't be ready yet.
+
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.kubernetes.ingress.zeppelin.hostname' \
+            "${zepphost}"
+
 
 # -----------------------------------------------------
 # Install our Drupal chart.
@@ -307,3 +324,57 @@ EOF
     cat > "/tmp/drupal-values.yaml" << EOF
 drupal_server_hostname: "${drupalhost:?}"
 EOF
+
+
+
+
+# -----------------------------------------------------
+# Capture our Dashboard ingress IP address.
+# ** This has to be done after a delay to allow Kubernetes time to allocate the IP address.
+
+#   sleep 30
+
+    daship=$(
+        kubectl \
+            --namespace "${namespace:?}" \
+            get Ingress \
+                --output json \
+        | jq -r '
+            .items[]
+          | select(.metadata.name == "aglais-dashboard-kubernetes-dashboard")
+          | .status.loadBalancer.ingress[0].ip
+          '
+        )
+
+    yq write \
+        --inplace \
+        '/tmp/aglais-status.yml' \
+            'aglais.status.kubernetes.ingress.dashboard.ipv4' \
+            "${daship}"
+
+
+# -----------------------------------------------------
+# Capture our Zeppelin ingress IP address.
+# ** This has to be done after a delay to allow Kubernetes time to allocate the IP address.
+
+#   sleep 30
+
+    zeppip=$(
+        kubectl \
+            --namespace "${namespace:?}" \
+            get Ingress \
+                --output json \
+        | jq -r '
+            .items[]
+          | select(.metadata.name == "zeppelin-server-ingress")
+          | .status.loadBalancer.ingress[0].ip
+          '
+        )
+
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.kubernetes.ingress.zeppelin.ipv4' \
+            "${zeppip}"
+
+

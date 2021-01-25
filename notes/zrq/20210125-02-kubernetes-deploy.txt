@@ -1,0 +1,288 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Try to get the Kubernetes deployment to work.
+        Starting from clean ... again.
+
+    Results:
+
+        Failed.
+        Failing to mount the PV claims, intermittent .. different results, different reasons.
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+# (*) mount kubernetes directory as read/write
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@kubernator]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our Aglais configuration.
+#[root@kubernator]
+
+cat > '/tmp/aglais-config.yml' << EOF
+aglais:
+    version: 1.0
+    spec:
+        openstack:
+            cloudname: ${cloudname:?}
+        dashboard:
+            hostname: dashboard.metagrid.xyz
+        zeppelin:
+            hostname: zeppelin.metagrid.xyz
+        drupal:
+            hostname: drupal.metagrid.xyz
+EOF
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@kubernator]
+
+    /kubernetes/bin/create-all.sh
+
+    >   ....
+    >   ....
+    >   Installing dashboard Helm chart
+    >   Namespace [aglais-20210125]
+    >   Dash host [dashboard.metagrid.xyz]
+    >   Getting updates for unmanaged Helm repositories...
+    >   ...Successfully got an update from the "https://kubernetes.github.io/dashboard" chart repository
+    >   Saving 1 charts
+    >   Downloading kubernetes-dashboard from repo https://kubernetes.github.io/dashboard
+    >   Deleting outdated charts
+    >   Release "aglais-dashboard" does not exist. Installing it now.
+    >   NAME: aglais-dashboard
+    >   LAST DEPLOYED: Mon Jan 25 05:27:58 2021
+    >   NAMESPACE: aglais-20210125
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   ....
+    >   ....
+
+    #
+    # Dashboard worked this time, no errors.
+    #
+
+# -----------------------------------------------------
+# Check the results.
+#[root@kubernator]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: kubernetes
+    >         name: aglais-20210125
+    >         date: 20210125:051944
+    >       openstack:
+    >         cluster:
+    >           id: 958b10a3-aa60-4762-8405-5101eaaf6e1f
+    >       kubernetes:
+    >         namespace: aglais-20210125
+    >     spec:
+    >       openstack:
+    >         cloudname: gaia-dev
+
+
+# -----------------------------------------------------
+# Get the cluster ID and K8s namespace.
+#[root@kubernator]
+
+    clusterid=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.openstack.cluster.id'
+        )
+
+    namespace=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.kubernetes.namespace'
+        )
+
+cat << EOF
+Cluster ID [${clusterid}]
+Name space [${namespace}]
+EOF
+
+
+    >   Cluster ID [958b10a3-aa60-4762-8405-5101eaaf6e1f]
+    >   Name space [aglais-20210125]
+
+
+# -----------------------------------------------------
+# Get the Dashboard ServiceAccount token.
+#[root@kubernator]
+
+    secretname=$(
+        kubectl \
+            --output json \
+            --namespace "${namespace:?}" \
+            get ServiceAccount \
+                "aglais-dashboard-kubernetes-dashboard" \
+        | jq -r '.secrets[0].name'
+        )
+
+    kubectl \
+        --output json \
+        --namespace "${namespace:?}" \
+        get Secret \
+            "${secretname:?}" \
+    | jq -r '.data.token | @base64d'
+
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the Ingress address.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get Ingress
+
+    >   NAME                                    HOSTS                    ADDRESS           PORTS     AGE
+    >   aglais-dashboard-kubernetes-dashboard   dashboard.metagrid.xyz   128.232.227.177   80        5m6s
+    >   zeppelin-server-ingress                 zeppelin.metagrid.xyz    128.232.227.177   80, 443   3m20s
+
+
+    zeppelinip=$(
+        kubectl \
+            --namespace "${namespace:?}" \
+            get Ingress \
+                --output json \
+        | jq -r '
+            .items[]
+          | select(.metadata.name == "zeppelin-server-ingress")
+          | .status.loadBalancer.ingress[0].ip
+          '
+        )
+
+    echo "Zeppelin IP [${zeppelinip:?}]"
+
+    >   Zeppelin IP [128.232.227.177]
+
+    yq write \
+        --inplace \
+        '/tmp/aglais-status.yml' \
+            'aglais.status.kubernetes.ingress.zeppelin.ipv4' \
+            "${zeppelinip:?}"
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Update our DNS ..
+    #
+
+
+# -----------------------------------------------------
+# Check the Dashboard page.
+#[root@kubernator]
+
+    curl --head --insecure "https://dashboard.metagrid.xyz/"
+
+    >   HTTP/2 200
+    >   date: Mon, 25 Jan 2021 05:34:47 GMT
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the Zeppelin page.
+#[root@kubernator]
+
+    curl --head --insecure "https://zeppelin.metagrid.xyz/"
+
+    >   HTTP/2 200
+    >   date: Mon, 25 Jan 2021 05:35:12 GMT
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Dashboard and test ...
+#[user@desktop]
+
+    firefox --new-window "https://dashboard.metagrid.xyz/" &
+
+    >   Dashboard looks good.
+    >   Token works :-)
+
+
+    #
+    # Checking in dashboard, none of the share mounts worked :-(
+    # Failing to mount the PV claims .. different results, different reasons.
+    #
+
+
+

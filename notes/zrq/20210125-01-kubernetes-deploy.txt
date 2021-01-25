@@ -1,0 +1,992 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Try to get the Kubernetes deployment to work.
+
+    Results:
+
+        Failed.
+        Failing to mount the PV claims, intermittent .. different results, different reasons.
+
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+# (*) mount kubernetes directory as read/write
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@kubernator]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our Aglais configuration.
+#[root@kubernator]
+
+cat > '/tmp/aglais-config.yml' << EOF
+aglais:
+    version: 1.0
+    spec:
+        openstack:
+            cloudname: ${cloudname:?}
+        dashboard:
+            hostname: dashboard.metagrid.xyz
+        zeppelin:
+            hostname: zeppelin.metagrid.xyz
+        drupal:
+            hostname: drupal.metagrid.xyz
+EOF
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@kubernator]
+
+    /kubernetes/bin/create-all.sh
+
+
+    >   ....
+    >   ....
+    >   Installing dashboard Helm chart
+    >   Namespace [aglais-20210125]
+    >   Dash host [dashboard.metagrid.xyz]
+    >   Getting updates for unmanaged Helm repositories...
+    >   ...Successfully got an update from the "https://kubernetes.github.io/dashboard" chart repository
+    >   Saving 1 charts
+    >   Downloading kubernetes-dashboard from repo https://kubernetes.github.io/dashboard
+    >   Deleting outdated charts
+    >   Release "aglais-dashboard" does not exist. Installing it now.
+    >   Error: Internal error occurred: failed calling webhook "validate.nginx.ingress.kubernetes.io": Post https://aglais-ingress-nginx-controller-admission.aglais-20210125.svc:443/networking/v1beta1/ingresses?timeout=10s: dial tcp 10.254.121.232:443: connect: connection refused
+    >   ....
+    >   ....
+
+    #
+    # Dashboard error is back ...
+    #
+
+# -----------------------------------------------------
+# Check the results.
+#[root@kubernator]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: kubernetes
+    >         name: aglais-20210125
+    >         date: 20210125:024859
+    >       openstack:
+    >         cluster:
+    >           id: 789e1e50-735a-4705-ade3-b409e6f62fc5
+    >       kubernetes:
+    >         namespace: aglais-20210125
+    >     spec:
+    >       openstack:
+    >         cloudname: gaia-dev
+
+
+# -----------------------------------------------------
+# Get the cluster ID and K8s namespace.
+#[root@kubernator]
+
+    clusterid=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.openstack.cluster.id'
+        )
+
+    namespace=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.kubernetes.namespace'
+        )
+
+cat << EOF
+Cluster ID [${clusterid}]
+Name space [${namespace}]
+EOF
+
+
+    >   Cluster ID [789e1e50-735a-4705-ade3-b409e6f62fc5]
+    >   Name space [aglais-20210125]
+
+
+# -----------------------------------------------------
+# Get the Dashboard ServiceAccount token.
+#[root@kubernator]
+
+    secretname=$(
+        kubectl \
+            --output json \
+            --namespace "${namespace:?}" \
+            get ServiceAccount \
+                "aglais-dashboard-kubernetes-dashboard" \
+        | jq -r '.secrets[0].name'
+        )
+
+    kubectl \
+        --output json \
+        --namespace "${namespace:?}" \
+        get Secret \
+            "${secretname:?}" \
+    | jq -r '.data.token | @base64d'
+
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the Ingress address.
+#[root@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get Ingress
+
+    >   NAME                      HOSTS                   ADDRESS           PORTS     AGE
+    >   zeppelin-server-ingress   zeppelin.metagrid.xyz   128.232.227.215   80, 443   5m28s
+
+
+    zeppelinip=$(
+        kubectl \
+            --namespace "${namespace:?}" \
+            get Ingress \
+                --output json \
+        | jq -r '
+            .items[]
+          | select(.metadata.name == "zeppelin-server-ingress")
+          | .status.loadBalancer.ingress[0].ip
+          '
+        )
+
+    echo "Zeppelin IP [${zeppelinip:?}]"
+
+    >   Zeppelin IP [128.232.227.215]
+
+    yq write \
+        --inplace \
+        '/tmp/aglais-status.yml' \
+            'aglais.status.kubernetes.ingress.zeppelin.ipv4' \
+            "${zeppelinip:?}"
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Update our DNS ..
+    #
+
+
+# -----------------------------------------------------
+# Check the Dashboard page.
+#[root@kubernator]
+
+    curl --head --insecure "https://dashboard.metagrid.xyz/"
+
+    >   HTTP/2 404
+    >   date: Mon, 25 Jan 2021 03:30:30 GMT
+    >   content-type: text/html
+    >   content-length: 146
+    >   strict-transport-security: max-age=15724800; includeSubDomains
+
+    #
+    # As expected ..
+    #
+
+
+# -----------------------------------------------------
+# Check the Zeppelin page.
+#[root@kubernator]
+
+    curl --head --insecure "https://zeppelin.metagrid.xyz/"
+
+    >   HTTP/2 200
+    >   date: Mon, 25 Jan 2021 03:31:08 GMT
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin and test ...
+#[user@desktop]
+
+    firefox --new-window "https://zeppelin.metagrid.xyz/" &
+
+    >   Looks good.
+    >   Login works :-)
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Mount each of the external catalogs in Spark.
+#[user@zeppelin]
+
+# --------------------------------
+%spark.conf
+
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.mount.path        /data/gaia/dr2
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.mount.readOnly    true
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-dr2.options.claimName aglais-gaia-dr2-claim
+
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-edr3.mount.path        /data/gaia/edr3
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-edr3.mount.readOnly    true
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-gaia-edr3.options.claimName aglais-gaia-edr3-claim
+
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-wise-allwise.mount.path        /data/wise/allwise
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-wise-allwise.mount.readOnly    true
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-wise-allwise.options.claimName aglais-wise-allwise-claim
+
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-panstarrs-dr1.mount.path        /data/panstarrs/dr1
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-panstarrs-dr1.mount.readOnly    true
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-panstarrs-dr1.options.claimName aglais-panstarrs-dr1-claim
+
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-twomass-allsky.mount.path        /data/twomass/allsky
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-twomass-allsky.mount.readOnly    true
+spark.kubernetes.executor.volumes.persistentVolumeClaim.aglais-twomass-allsky.options.claimName aglais-twomass-allsky-claim
+
+
+# --------------------------------
+%spark.pyspark
+
+gaia_dr2 = sqlContext.read.parquet(
+    "/data/gaia/dr2"
+    )
+
+print("gaia-dr2 count: ",      gaia_dr2.count())
+print("gaia-dr2 partitions: ", gaia_dr2.rdd.getNumPartitions())
+
+    >   org.apache.zeppelin.interpreter.InterpreterException: java.io.IOException: Launching zeppelin interpreter on kubernetes is time out, kill it now
+    >   	at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.open(RemoteInterpreter.java:132)
+    >   	at org.apache.zeppelin.interpreter.remote.RemoteInterpreter.getFormType(RemoteInterpreter.java:279)
+    >   	at org.apache.zeppelin.notebook.Paragraph.jobRun(Paragraph.java:465)
+    >   	at org.apache.zeppelin.notebook.Paragraph.jobRun(Paragraph.java:73)
+    >   	at org.apache.zeppelin.scheduler.Job.run(Job.java:172)
+    >   	at org.apache.zeppelin.scheduler.AbstractScheduler.runJob(AbstractScheduler.java:130)
+    >   	at org.apache.zeppelin.scheduler.RemoteScheduler$JobRunner.run(RemoteScheduler.java:180)....
+    >   ....
+
+    #
+    # Failed to load the interpreter.
+    #
+
+
+# -----------------------------------------------------
+# List the active Pods.
+#[root@kubernator]
+
+    kubectl --namespace ${namespace} get pod
+
+    >   NAME                                                    READY   STATUS              RESTARTS   AGE
+    >   aglais-ceph-csi-cephfs-nodeplugin-j672m                 3/3     Running             0          60m
+    >   aglais-ceph-csi-cephfs-nodeplugin-vdswl                 3/3     Running             0          60m
+    >   aglais-ceph-csi-cephfs-nodeplugin-wdf9h                 3/3     Running             0          60m
+    >   aglais-ceph-csi-cephfs-nodeplugin-xplzq                 3/3     Running             0          60m
+    >   aglais-ceph-csi-cephfs-provisioner-f9ff8cd4c-2hzwq      6/6     Running             0          60m
+    >   aglais-ceph-csi-cephfs-provisioner-f9ff8cd4c-fltvf      6/6     Running             0          60m
+    >   aglais-ceph-csi-cephfs-provisioner-f9ff8cd4c-hn6xn      6/6     Running             0          60m
+    >   aglais-dashboard-kubernetes-dashboard-b5f955c8f-7sjvf   2/2     Running             0          60m
+    >   aglais-gaia-dr2-testpod                                 0/1     ContainerCreating   0          60m
+    >   aglais-gaia-edr3-testpod                                0/1     ContainerCreating   0          60m
+    >   aglais-ingress-nginx-controller-54f444477b-65hj2        1/1     Running             0          60m
+    >   aglais-openstack-manila-csi-controllerplugin-0          3/3     Running             0          60m
+    >   aglais-openstack-manila-csi-nodeplugin-jbnqb            2/2     Running             0          60m
+    >   aglais-openstack-manila-csi-nodeplugin-jwwgj            2/2     Running             0          60m
+    >   aglais-openstack-manila-csi-nodeplugin-ssd5j            2/2     Running             0          60m
+    >   aglais-openstack-manila-csi-nodeplugin-vprhp            2/2     Running             0          60m
+    >   aglais-panstarrs-dr1-testpod                            0/1     ContainerCreating   0          59m
+    >   aglais-twomass-allsky-testpod                           0/1     ContainerCreating   0          59m
+    >   aglais-user-nch-testpod                                 1/1     Running             0          59m
+    >   aglais-user-stv-testpod                                 0/1     ContainerCreating   0          58m
+    >   aglais-user-zrq-testpod                                 0/1     ContainerCreating   0          59m
+    >   aglais-wise-allwise-testpod                             0/1     ContainerCreating   0          59m
+    >   spark-sukuqz                                            0/1     Init:0/1            0          2s
+    >   zeppelin-server-deploy-7cb7f54d5c-srs95                 3/3     Running             0          58m
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the Spark interpreter Pod.
+#[root@kubernator]
+
+    kubectl --namespace ${namespace} get pod spark-sukuqz
+
+    >   NAME           READY   STATUS     RESTARTS   AGE
+    >   spark-sukuqz   0/1     Init:0/1   0          8s
+
+
+    kubectl --namespace ${namespace} describe pod spark-sukuqz
+
+    >   Name:         spark-sukuqz
+    >   Namespace:    aglais-20210125
+    >   Node:         aglais-20210125-cluster-rqiklyztkmq6-node-0/10.0.0.74
+    >   Start Time:   Mon, 25 Jan 2021 03:57:36 +0000
+    >   Labels:       app=spark-sukuqz
+    >                 interpreterGroupId=spark-shared_process
+    >                 interpreterSettingName=spark
+    >   Annotations:  <none>
+    >   Status:       Pending
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age                From                                                  Message
+    >     ----     ------       ----               ----                                                  -------
+    >     Normal   Scheduled    <unknown>          default-scheduler                                     Successfully assigned aglais-20210125/spark-sukuqz to aglais-20210125-cluster-rqiklyztkmq6-node-0
+    >     Warning  FailedMount  18s (x4 over 23s)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-0  MountVolume.MountDevice failed for volume "aglais-gaia-edr3-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >     Warning  FailedMount  18s (x4 over 23s)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-0  MountVolume.MountDevice failed for volume "aglais-wise-allwise-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >     Warning  FailedMount  17s (x4 over 23s)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-0  MountVolume.MountDevice failed for volume "aglais-gaia-dr2-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-gaia-dr2-volume/globalmount: permission denied
+    >     Warning  FailedMount  15s (x5 over 24s)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-0  MountVolume.MountDevice failed for volume "aglais-panstarrs-dr1-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >     Warning  FailedMount  15s (x4 over 20s)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-0  MountVolume.MountDevice failed for volume "aglais-user-stv-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+    >     Warning  FailedMount  15s (x4 over 19s)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-0  MountVolume.MountDevice failed for volume "aglais-user-zrq-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+# -----------------------------------------------------
+# Check the DR2 test Pod.
+#[root@kubernator]
+
+    kubectl --namespace ${namespace} describe pod aglais-gaia-dr2-testpod
+
+    >   Name:         aglais-gaia-dr2-testpod
+    >   Namespace:    aglais-20210125
+    >   Node:         aglais-20210125-cluster-rqiklyztkmq6-node-2/10.0.0.81
+    >   Start Time:   Mon, 25 Jan 2021 02:57:14 +0000
+    >   Labels:       aglais.dataset=aglais-gaia-dr2
+    >                 aglais.name=aglais-gaia-dr2-testpod
+    >                 app.kubernetes.io/instance=aglais-gaia-dr2
+    >                 app.kubernetes.io/managed-by=Helm
+    >                 app.kubernetes.io/name=manila-share
+    >                 app.kubernetes.io/version=0.0.1
+    >                 helm.sh/chart=manila-share-0.0.1
+    >   Annotations:  meta.helm.sh/release-name: aglais-gaia-dr2
+    >                 meta.helm.sh/release-namespace: aglais-20210125
+    >   Status:       Pending
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age                   From                                                  Message
+    >     ----     ------       ----                  ----                                                  -------
+    >     Warning  FailedMount  45m (x4 over 65m)     kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-2  Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[local-data default-token-swjxp test-data]: timed out waiting for the condition
+    >     Warning  FailedMount  22m (x3 over 54m)     kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-2  Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[default-token-swjxp test-data local-data]: timed out waiting for the condition
+    >     Warning  FailedMount  6m26s (x17 over 63m)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-2  Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-swjxp]: timed out waiting for the condition
+    >     Warning  FailedMount  2m7s (x34 over 66m)   kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-2  MountVolume.MountDevice failed for volume "aglais-gaia-dr2-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-gaia-dr2-volume/globalmount: permission denied
+
+# -----------------------------------------------------
+# Check the eDR3 test Pod.
+#[root@kubernator]
+
+    kubectl --namespace ${namespace} describe pod aglais-gaia-edr3-testpod
+
+    >   Name:         aglais-gaia-edr3-testpod
+    >   Namespace:    aglais-20210125
+    >   Node:         aglais-20210125-cluster-rqiklyztkmq6-node-1/10.0.0.172
+    >   Start Time:   Mon, 25 Jan 2021 02:57:27 +0000
+    >   Labels:       aglais.dataset=aglais-gaia-edr3
+    >                 aglais.name=aglais-gaia-edr3-testpod
+    >                 app.kubernetes.io/instance=aglais-gaia-edr3
+    >                 app.kubernetes.io/managed-by=Helm
+    >                 app.kubernetes.io/name=manila-share
+    >                 app.kubernetes.io/version=0.0.1
+    >                 helm.sh/chart=manila-share-0.0.1
+    >   Annotations:  meta.helm.sh/release-name: aglais-gaia-edr3
+    >                 meta.helm.sh/release-namespace: aglais-20210125
+    >   Status:       Pending
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age                   From                                                  Message
+    >     ----     ------       ----                  ----                                                  -------
+    >     Warning  FailedMount  22m (x16 over 63m)    kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-1  Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[test-data local-data default-token-swjxp]: timed out waiting for the condition
+    >     Warning  FailedMount  7m5s (x5 over 65m)    kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-1  Unable to attach or mount volumes: unmounted volumes=[test-data], unattached volumes=[default-token-swjxp test-data local-data]: timed out waiting for the condition
+    >     Warning  FailedMount  2m47s (x39 over 68m)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-1  MountVolume.MountDevice failed for volume "aglais-gaia-edr3-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+# -----------------------------------------------------
+# Uninstall the DR2 Helm chart.
+#[root@kubernator]
+
+    helm --namespace ${namespace} list
+
+    >   NAME                 	NAMESPACE      	REVISION	UPDATED                                	STATUS  	CHART                 	APP VERSION
+    >   aglais               	aglais-20210125	1       	2021-01-25 02:56:33.71216801 +0000 UTC 	deployed	aglais-0.0.1          	0.0.1
+    >   aglais-dashboard     	aglais-20210125	1       	2021-01-25 02:56:57.237206389 +0000 UTC	failed  	aglais-dashboard-0.0.1	0.0.1
+    >   aglais-gaia-dr2      	aglais-20210125	1       	2021-01-25 02:57:13.386058418 +0000 UTC	deployed	manila-share-0.0.1    	0.0.1
+    >   aglais-gaia-edr3     	aglais-20210125	1       	2021-01-25 02:57:26.35641445 +0000 UTC 	deployed	manila-share-0.0.1    	0.0.1
+    >   aglais-panstarrs-dr1 	aglais-20210125	1       	2021-01-25 02:57:50.90011394 +0000 UTC 	deployed	manila-share-0.0.1    	0.0.1
+    >   aglais-twomass-allsky	aglais-20210125	1       	2021-01-25 02:58:02.568336858 +0000 UTC	deployed	manila-share-0.0.1    	0.0.1
+    >   aglais-user-nch      	aglais-20210125	1       	2021-01-25 02:58:15.395168148 +0000 UTC	deployed	manila-share-0.0.1    	0.0.1
+    >   aglais-user-stv      	aglais-20210125	1       	2021-01-25 02:58:40.132723076 +0000 UTC	deployed	manila-share-0.0.1    	0.0.1
+    >   aglais-user-zrq      	aglais-20210125	1       	2021-01-25 02:58:27.136220405 +0000 UTC	deployed	manila-share-0.0.1    	0.0.1
+    >   aglais-wise-allwise  	aglais-20210125	1       	2021-01-25 02:57:38.726474125 +0000 UTC	deployed	manila-share-0.0.1    	0.0.1
+    >   aglais-zeppelin      	aglais-20210125	1       	2021-01-25 02:58:42.919251268 +0000 UTC	deployed	aglais-zeppelin-0.0.1 	0.0.1
+
+
+    helm --namespace ${namespace} uninstall aglais-gaia-dr2
+
+    >   release "aglais-gaia-dr2" uninstalled
+
+
+# -----------------------------------------------------
+# Install the DR2 Helm chart.
+#[root@kubernator]
+
+    sharename=aglais-gaia-dr2
+    mountpath=/data/gaia/dr2
+    sharemode='rw'
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        "${sharename:?}" \
+        "${mountpath:?}" \
+        "${sharemode:?}"
+
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/kubernetes/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Namespace  [aglais-20210125]
+    >   Share name [aglais-gaia-dr2]
+    >   Mount path [/data/gaia/dr2]
+    >   Share mode [rw]
+    >   ---- ---- ----
+    >   
+    >   ----
+    >   Share uuid [2e46b5a5-c5d9-44c0-b11c-310c222f4818]
+    >   ----
+    >   Share size [512]
+    >   ----
+    >   Access rule [50ad6086-491d-4056-9092-c57ac49d4d3d]
+    >   Release "aglais-gaia-dr2" does not exist. Installing it now.
+    >   NAME: aglais-gaia-dr2
+    >   LAST DEPLOYED: Mon Jan 25 04:18:06 2021
+    >   NAMESPACE: aglais-20210125
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+    kubectl --namespace ${namespace} describe pod aglais-gaia-dr2-testpod
+
+    >   Name:         aglais-gaia-dr2-testpod
+    >   Namespace:    aglais-20210125
+    >   Node:         aglais-20210125-cluster-rqiklyztkmq6-node-3/10.0.0.107
+    >   Start Time:   Mon, 25 Jan 2021 04:18:06 +0000
+    >   Labels:       aglais.dataset=aglais-gaia-dr2
+    >                 aglais.name=aglais-gaia-dr2-testpod
+    >                 app.kubernetes.io/instance=aglais-gaia-dr2
+    >                 app.kubernetes.io/managed-by=Helm
+    >                 app.kubernetes.io/name=manila-share
+    >                 app.kubernetes.io/version=0.0.1
+    >                 helm.sh/chart=manila-share-0.0.1
+    >   Annotations:  meta.helm.sh/release-name: aglais-gaia-dr2
+    >                 meta.helm.sh/release-namespace: aglais-20210125
+    >   Status:       Running
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                                  Message
+    >     ----    ------     ----       ----                                                  -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                                     Successfully assigned aglais-20210125/aglais-gaia-dr2-testpod to aglais-20210125-cluster-rqiklyztkmq6-node-3
+    >     Normal  Pulling    14s        kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-3  Pulling image "fedora:latest"
+    >     Normal  Pulled     7s         kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-3  Successfully pulled image "fedora:latest"
+    >     Normal  Created    6s         kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-3  Created container aglais-gaia-dr2-container
+    >     Normal  Started    6s         kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-3  Started container aglais-gaia-dr2-container
+
+
+# -----------------------------------------------------
+# Uninstall the eDR3 Helm chart.
+#[root@kubernator]
+
+    helm --namespace ${namespace} uninstall aglais-gaia-edr3
+
+    >   release "aglais-gaia-edr3" uninstalled
+
+
+# -----------------------------------------------------
+# Install the eDR3 Helm chart.
+#[root@kubernator]
+
+    sharename=aglais-gaia-edr3
+    mountpath=/data/gaia/edr3
+    sharemode='rw'
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        "${sharename:?}" \
+        "${mountpath:?}" \
+        "${sharemode:?}"
+
+    >   
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/kubernetes/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Namespace  [aglais-20210125]
+    >   Share name [aglais-gaia-edr3]
+    >   Mount path [/data/gaia/edr3]
+    >   Share mode [rw]
+    >   ---- ---- ----
+    >   
+    >   ----
+    >   Share uuid [ca8231c3-1f5c-4ebf-8ec0-d3cfe2629976]
+    >   ----
+    >   Share size [540]
+    >   ----
+    >   Access rule [0a4b37bc-e07e-4763-a8af-4d9cf3ae9620]
+    >   Release "aglais-gaia-edr3" does not exist. Installing it now.
+    >   NAME: aglais-gaia-edr3
+    >   LAST DEPLOYED: Mon Jan 25 04:39:15 2021
+    >   NAMESPACE: aglais-20210125
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+    kubectl --namespace ${namespace} describe pod aglais-gaia-edr3-testpod
+
+    >   Name:         aglais-gaia-edr3-testpod
+    >   Namespace:    aglais-20210125
+    >   Node:         aglais-20210125-cluster-rqiklyztkmq6-node-1/10.0.0.172
+    >   Start Time:   Mon, 25 Jan 2021 04:39:16 +0000
+    >   Labels:       aglais.dataset=aglais-gaia-edr3
+    >                 aglais.name=aglais-gaia-edr3-testpod
+    >                 app.kubernetes.io/instance=aglais-gaia-edr3
+    >                 app.kubernetes.io/managed-by=Helm
+    >                 app.kubernetes.io/name=manila-share
+    >                 app.kubernetes.io/version=0.0.1
+    >                 helm.sh/chart=manila-share-0.0.1
+    >   Annotations:  meta.helm.sh/release-name: aglais-gaia-edr3
+    >                 meta.helm.sh/release-namespace: aglais-20210125
+    >   Status:       Pending
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                                  Message
+    >     ----     ------       ----              ----                                                  -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                                     Successfully assigned aglais-20210125/aglais-gaia-edr3-testpod to aglais-20210125-cluster-rqiklyztkmq6-node-1
+    >     Warning  FailedMount  5s (x7 over 37s)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-1  MountVolume.MountDevice failed for volume "aglais-gaia-edr3-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+    #
+    # Issue is intermittent ..
+    # Repeat the uninstall/install for DR2 and we get a different result.
+    #
+
+
+# -----------------------------------------------------
+# Install the DR2 Helm chart.
+#[root@kubernator]
+
+    helm --namespace ${namespace} uninstall aglais-gaia-dr2
+
+    >   release "aglais-gaia-dr2" uninstalled
+
+    #
+    # Wait until the pod, pv and pvc have all gone.
+    #
+
+    sharename=aglais-gaia-dr2
+    mountpath=/data/gaia/dr2
+    sharemode='rw'
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        "${sharename:?}" \
+        "${mountpath:?}" \
+        "${sharemode:?}"
+
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/kubernetes/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Namespace  [aglais-20210125]
+    >   Share name [aglais-gaia-dr2]
+    >   Mount path [/data/gaia/dr2]
+    >   Share mode [rw]
+    >   ---- ---- ----
+    >   
+    >   ----
+    >   Share uuid [2e46b5a5-c5d9-44c0-b11c-310c222f4818]
+    >   ----
+    >   Share size [512]
+    >   ----
+    >   Access rule [50ad6086-491d-4056-9092-c57ac49d4d3d]
+    >   Release "aglais-gaia-dr2" does not exist. Installing it now.
+    >   NAME: aglais-gaia-dr2
+    >   LAST DEPLOYED: Mon Jan 25 04:43:46 2021
+    >   NAMESPACE: aglais-20210125
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+    kubectl --namespace ${namespace} get pv
+
+    >   NAME                           CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                                         STORAGECLASS   REASON   AGE
+    >   aglais-gaia-dr2-volume         512        RWX            Retain           Bound    aglais-20210125/aglais-gaia-dr2-claim                                 18s
+    >   ....
+    >   ....
+
+
+    kubectl --namespace ${namespace} get pvc
+
+    >   NAME                          STATUS   VOLUME                         CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+    >   aglais-gaia-dr2-claim         Bound    aglais-gaia-dr2-volume         512        RWX                           13s
+    >   ....
+    >   ....
+
+
+    kubectl --namespace ${namespace} describe pod aglais-gaia-dr2-testpod
+
+    >   Name:         aglais-gaia-dr2-testpod
+    >   Namespace:    aglais-20210125
+    >   Node:         aglais-20210125-cluster-rqiklyztkmq6-node-0/10.0.0.74
+    >   Start Time:   Mon, 25 Jan 2021 04:43:47 +0000
+    >   Labels:       aglais.dataset=aglais-gaia-dr2
+    >                 aglais.name=aglais-gaia-dr2-testpod
+    >                 app.kubernetes.io/instance=aglais-gaia-dr2
+    >                 app.kubernetes.io/managed-by=Helm
+    >                 app.kubernetes.io/name=manila-share
+    >                 app.kubernetes.io/version=0.0.1
+    >                 helm.sh/chart=manila-share-0.0.1
+    >   Annotations:  meta.helm.sh/release-name: aglais-gaia-dr2
+    >                 meta.helm.sh/release-namespace: aglais-20210125
+    >   Status:       Pending
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                                  Message
+    >     ----     ------       ----              ----                                                  -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                                     Successfully assigned aglais-20210125/aglais-gaia-dr2-testpod to aglais-20210125-cluster-rqiklyztkmq6-node-0
+    >     Warning  FailedMount  9s (x6 over 25s)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-0  MountVolume.MountDevice failed for volume "aglais-gaia-dr2-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-gaia-dr2-volume/globalmount: permission denied
+
+    #
+    # Issue is intermittent ..
+    # Repeat the uninstall/install for DR2 and we get a different result.
+    #
+
+# -----------------------------------------------------
+# Try again .....
+#[root@kubernator]
+
+    helm --namespace ${namespace} uninstall aglais-gaia-dr2
+
+    >   release "aglais-gaia-dr2" uninstalled
+
+    #
+    # Wait until the pod, pv and pvc have all gone.
+    #
+
+    sharename=aglais-gaia-dr2
+    mountpath=/data/gaia/dr2
+    sharemode='rw'
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        "${sharename:?}" \
+        "${mountpath:?}" \
+        "${sharemode:?}"
+
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/kubernetes/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Namespace  [aglais-20210125]
+    >   Share name [aglais-gaia-dr2]
+    >   Mount path [/data/gaia/dr2]
+    >   Share mode [rw]
+    >   ---- ---- ----
+    >   
+    >   ----
+    >   Share uuid [2e46b5a5-c5d9-44c0-b11c-310c222f4818]
+    >   ----
+    >   Share size [512]
+    >   ----
+    >   Access rule [50ad6086-491d-4056-9092-c57ac49d4d3d]
+    >   Release "aglais-gaia-dr2" does not exist. Installing it now.
+    >   NAME: aglais-gaia-dr2
+    >   LAST DEPLOYED: Mon Jan 25 04:47:22 2021
+    >   NAMESPACE: aglais-20210125
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+    kubectl --namespace ${namespace} describe pod aglais-gaia-dr2-testpod
+
+
+    >   Name:         aglais-gaia-dr2-testpod
+    >   Namespace:    aglais-20210125
+    >   Node:         aglais-20210125-cluster-rqiklyztkmq6-node-3/10.0.0.107
+    >   Start Time:   Mon, 25 Jan 2021 04:47:23 +0000
+    >   Labels:       aglais.dataset=aglais-gaia-dr2
+    >                 aglais.name=aglais-gaia-dr2-testpod
+    >                 app.kubernetes.io/instance=aglais-gaia-dr2
+    >                 app.kubernetes.io/managed-by=Helm
+    >                 app.kubernetes.io/name=manila-share
+    >                 app.kubernetes.io/version=0.0.1
+    >                 helm.sh/chart=manila-share-0.0.1
+    >   Annotations:  meta.helm.sh/release-name: aglais-gaia-dr2
+    >                 meta.helm.sh/release-namespace: aglais-20210125
+    >   Status:       Running
+    >   ....
+    >   ....
+    >   Events:
+    >     Type    Reason     Age        From                                                  Message
+    >     ----    ------     ----       ----                                                  -------
+    >     Normal  Scheduled  <unknown>  default-scheduler                                     Successfully assigned aglais-20210125/aglais-gaia-dr2-testpod to aglais-20210125-cluster-rqiklyztkmq6-node-3
+    >     Normal  Pulling    33s        kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-3  Pulling image "fedora:latest"
+    >     Normal  Pulled     30s        kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-3  Successfully pulled image "fedora:latest"
+    >     Normal  Created    30s        kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-3  Created container aglais-gaia-dr2-container
+    >     Normal  Started    30s        kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-3  Started container aglais-gaia-dr2-container
+
+
+    #
+    # Issue is intermittent ..
+    # Repeat the uninstall/install for eDR3 and we get a different result.
+    #
+
+# -----------------------------------------------------
+# Try again .....
+#[root@kubernator]
+
+    helm --namespace ${namespace} uninstall aglais-gaia-edr3
+
+    >   release "aglais-gaia-edr3" uninstalled
+
+    #
+    # Wait until the pod, pv and pvc have all gone.
+    #
+
+    sharename=aglais-gaia-edr3
+    mountpath=/data/gaia/edr3
+    sharemode='rw'
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        "${sharename:?}" \
+        "${mountpath:?}" \
+        "${sharemode:?}"
+
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/kubernetes/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Namespace  [aglais-20210125]
+    >   Share name [aglais-gaia-edr3]
+    >   Mount path [/data/gaia/edr3]
+    >   Share mode [rw]
+    >   ---- ---- ----
+    >   
+    >   ----
+    >   Share uuid [ca8231c3-1f5c-4ebf-8ec0-d3cfe2629976]
+    >   ----
+    >   Share size [540]
+    >   ----
+    >   Access rule [0a4b37bc-e07e-4763-a8af-4d9cf3ae9620]
+    >   Release "aglais-gaia-edr3" does not exist. Installing it now.
+    >   NAME: aglais-gaia-edr3
+    >   LAST DEPLOYED: Mon Jan 25 04:55:26 2021
+    >   NAMESPACE: aglais-20210125
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+    kubectl --namespace ${namespace} describe pod aglais-gaia-edr3-testpod
+
+    >   Name:         aglais-gaia-edr3-testpod
+    >   Namespace:    aglais-20210125
+    >   Node:         aglais-20210125-cluster-rqiklyztkmq6-node-1/10.0.0.172
+    >   Start Time:   Mon, 25 Jan 2021 04:55:27 +0000
+    >   Labels:       aglais.dataset=aglais-gaia-edr3
+    >                 aglais.name=aglais-gaia-edr3-testpod
+    >                 app.kubernetes.io/instance=aglais-gaia-edr3
+    >                 app.kubernetes.io/managed-by=Helm
+    >                 app.kubernetes.io/name=manila-share
+    >                 app.kubernetes.io/version=0.0.1
+    >                 helm.sh/chart=manila-share-0.0.1
+    >   Annotations:  meta.helm.sh/release-name: aglais-gaia-edr3
+    >                 meta.helm.sh/release-namespace: aglais-20210125
+    >   Status:       Pending
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age               From                                                  Message
+    >     ----     ------       ----              ----                                                  -------
+    >     Normal   Scheduled    <unknown>         default-scheduler                                     Successfully assigned aglais-20210125/aglais-gaia-edr3-testpod to aglais-20210125-cluster-rqiklyztkmq6-node-1
+    >     Warning  FailedMount  2s (x7 over 34s)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-1  MountVolume.MountDevice failed for volume "aglais-gaia-edr3-volume" : rpc error: code = InvalidArgument desc = stage secrets cannot be nil or empty
+
+
+    #
+    # DR2 is intermittent.
+    # Haven't seen eDR3 work at all.
+    # Try 2mass ...
+    #
+
+
+# -----------------------------------------------------
+# Try twomass
+#[root@kubernator]
+
+    helm --namespace ${namespace} uninstall aglais-twomass-allsky
+
+    >   release "aglais-twomass-allsky" uninstalled
+
+    #
+    # Wait until the pod, pv and pvc have all gone.
+    #
+
+    sharename=aglais-twomass-allsky
+    mountpath=/data/twomass/allsky
+    sharemode='rw'
+
+    '/kubernetes/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${namespace:?}" \
+        "${sharename:?}" \
+        "${mountpath:?}" \
+        "${sharemode:?}"
+
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/kubernetes/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Namespace  [aglais-20210125]
+    >   Share name [aglais-twomass-allsky]
+    >   Mount path [/data/twomass/allsky]
+    >   Share mode [rw]
+    >   ---- ---- ----
+    >   
+    >   ----
+    >   Share uuid [9dc3016a-f010-48bc-89fc-a9cbd688b7cc]
+    >   ----
+    >   Share size [40]
+    >   ----
+    >   Access rule [5647d075-83fb-4a60-b562-a5248da54ec7]
+    >   Release "aglais-twomass-allsky" does not exist. Installing it now.
+    >   NAME: aglais-twomass-allsky
+    >   LAST DEPLOYED: Mon Jan 25 04:59:54 2021
+    >   NAMESPACE: aglais-20210125
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   NOTES:
+    >   Use the testpod to check access to the mounted volume.
+
+
+    kubectl --namespace ${namespace} describe pod aglais-twomass-allsky-testpod
+
+    >   Name:         aglais-twomass-allsky-testpod
+    >   Namespace:    aglais-20210125
+    >   Node:         aglais-20210125-cluster-rqiklyztkmq6-node-0/10.0.0.74
+    >   Start Time:   Mon, 25 Jan 2021 04:59:55 +0000
+    >   Labels:       aglais.dataset=aglais-twomass-allsky
+    >                 aglais.name=aglais-twomass-allsky-testpod
+    >                 app.kubernetes.io/instance=aglais-twomass-allsky
+    >                 app.kubernetes.io/managed-by=Helm
+    >                 app.kubernetes.io/name=manila-share
+    >                 app.kubernetes.io/version=0.0.1
+    >                 helm.sh/chart=manila-share-0.0.1
+    >   Annotations:  meta.helm.sh/release-name: aglais-twomass-allsky
+    >                 meta.helm.sh/release-namespace: aglais-20210125
+    >   Status:       Pending
+    >   ....
+    >   ....
+    >   Events:
+    >     Type     Reason       Age                From                                                  Message
+    >     ----     ------       ----               ----                                                  -------
+    >     Normal   Scheduled    <unknown>          default-scheduler                                     Successfully assigned aglais-20210125/aglais-twomass-allsky-testpod to aglais-20210125-cluster-rqiklyztkmq6-node-0
+    >     Warning  FailedMount  11s (x7 over 43s)  kubelet, aglais-20210125-cluster-rqiklyztkmq6-node-0  MountVolume.MountDevice failed for volume "aglais-twomass-allsky-volume" : rpc error: code = Internal desc = chmod /var/lib/kubelet/plugins/kubernetes.io/csi/pv/aglais-twomass-allsky-volume/globalmount: permission denied
+
+
+    #
+    # DR2 works, some of the time.
+    # eDR3 fails with 'stage secrets cannot be nil'.
+    # twomass fails with 'permission denied'
+    #
+
+

@@ -1,0 +1,287 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Ansible script to create a SSH key that contains everyone's keys.
+        Solving https://github.com/wfau/aglais/issues/29
+
+    Result:
+
+        Works :-)
+        Working Ansible script to create and delete the team key.
+
+
+# -----------------------------------------------------
+# Create a SSH public key file with everyone's public keys.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd  "${AGLAIS_CODE:?}"
+
+        mkdir experiments/openstack/ssh
+        mkdir experiments/openstack/ssh/keys
+
+        pushd experiments/openstack/ssh
+            pushd keys
+
+                wget 'http://data.metagrid.co.uk/sshkeys/nch.roe.ac.uk.rsa.pub'
+                wget 'http://data.metagrid.co.uk/sshkeys/stv.roe.ac.uk.rsa.pub'
+                wget 'http://data.metagrid.co.uk/sshkeys/zrq.openstack.cam.ac.uk.rsa.pub'
+
+            popd
+
+            for keyfile in keys/*
+            do
+                echo "Key [${keyfile:?}]"
+                cat "${keyfile:?}" >> aglais-team-keys
+            done
+
+        popd
+    popd
+
+    cat  "${AGLAIS_CODE:?}/experiments/openstack/ssh/aglais-team-keys"
+
+    >   ssh-rsa AAAAB3Nza....R2qG9P+t nch@roe.ac.uk
+    >   ssh-rsa AAAAB3Nza....8m63QE03 stelios@stelios-pc
+    >   ssh-rsa AAAAB3Nza....02P+ubzT Cambridge HPC OpenStack
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Set our buildtag environment variable.
+#[root@ansibler]
+
+    buildtag="aglais-$(date '+%Y%m%d')"
+
+
+# -----------------------------------------------------
+# Create our Ansible include vars file.
+#[root@ansibler]
+
+    cat > /tmp/ansible-vars.yml << EOF
+buildtag:  '${buildtag:?}'
+cloudname: '${cloudname:?}'
+EOF
+
+
+# -----------------------------------------------------
+# Create a playbook to install an OpenStack SSH public key.
+# https://docs.ansible.com/ansible/latest/modules/list_of_cloud_modules.html#openstack
+#[root@ansibler]
+
+
+    cat > "/tmp/01-install-sshkey.yml" << EOF
+---
+- name: Create SSH keypair
+  hosts: localhost
+  vars_files:
+    - /tmp/ansible-vars.yml
+  tasks:
+    - name: create keypair
+      os_keypair:
+        cloud: "{{ cloudname }}"
+        state: present
+        name:  "{{ buildtag }}-keys"
+        public_key_file: '/openstack//ssh/aglais-team-keys'
+        wait: yes
+
+EOF
+
+    ansible-playbook "/tmp/01-install-sshkey.yml"
+
+    >   [WARNING]: provided hosts list is empty, only localhost is available. Note that the implicit localhost does not match 'all'
+    >
+    >   PLAY [Create SSH keypair] **************************************************************************
+    >
+    >   TASK [Gathering Facts] *****************************************************************************
+    >   ok: [localhost]
+    >
+    >   TASK [create keypair] ******************************************************************************
+    >   changed: [localhost]
+    >
+    >   PLAY RECAP *****************************************************************************************
+    >   localhost : ok=2    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+    #
+    # OK so far ... we end up with a public key file linked to my user account with the right contents.
+    #
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +----------------------+-------------------------------------------------+
+    >   | Name                 | Fingerprint                                     |
+    >   +----------------------+-------------------------------------------------+
+    >   | aglais-20210119-keys | 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16 |
+    >   | zrq-gaia-keypair     | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +----------------------+-------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Run the same playbook again and check the result.
+#[root@ansibler]
+
+    ansible-playbook "/tmp/01-install-sshkey.yml"
+
+
+    >   [WARNING]: provided hosts list is empty, only localhost is available. Note that the implicit localhost does not match 'all'
+    >
+    >   PLAY [Create SSH keypair] **************************************************************************
+    >
+    >   TASK [Gathering Facts] *****************************************************************************
+    >   ok: [localhost]
+    >
+    >   TASK [create keypair] ******************************************************************************
+    >   ok: [localhost]
+    >
+    >   PLAY RECAP *****************************************************************************************
+    >   localhost : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +------------------+-------------------------------------------------+
+    >   | Name             | Fingerprint                                     |
+    >   +------------------+-------------------------------------------------+
+    >   | aglais-team-keys | 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16 |
+    >   | zrq-gaia-keypair | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +------------------+-------------------------------------------------+
+
+
+    #
+    # OK - if doesn't fail and it doesn't create duplicates.
+    #
+
+
+# -----------------------------------------------------
+# Create a playbook to remove our SSH public key.
+#[root@ansibler]
+
+
+    cat > "/tmp/02-delete-sshkey.yml" << EOF
+---
+- name: Create SSH keypair
+  hosts: localhost
+  vars_files:
+    - /tmp/ansible-vars.yml
+  tasks:
+    - name: delete keypair
+      os_keypair:
+        cloud: "{{ cloudname }}"
+        state: absent
+        name:  "{{ buildtag }}-keys"
+        wait: yes
+
+EOF
+
+    ansible-playbook "/tmp/02-delete-sshkey.yml"
+
+    >   [WARNING]: provided hosts list is empty, only localhost is available. Note that the implicit localhost does not match 'all'
+    >
+    >   PLAY [Create SSH keypair] **************************************************************************
+    >
+    >   TASK [Gathering Facts] *****************************************************************************
+    >   ok: [localhost]
+    >
+    >   TASK [delete keypair] ******************************************************************************
+    >   changed: [localhost]
+    >
+    >   PLAY RECAP *****************************************************************************************
+    >   localhost : ok=2    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +------------------+-------------------------------------------------+
+    >   | Name             | Fingerprint                                     |
+    >   +------------------+-------------------------------------------------+
+    >   | zrq-gaia-keypair | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +------------------+-------------------------------------------------+
+
+
+    #
+    # OK that works.
+    # What if we run it again.
+    #
+
+    ansible-playbook "/tmp/02-delete-sshkey.yml"
+
+    >   [WARNING]: provided hosts list is empty, only localhost is available. Note that the implicit localhost does not match 'all'
+    >
+    >   PLAY [Create SSH keypair] **************************************************************************
+    >
+    >   TASK [Gathering Facts] *****************************************************************************
+    >   ok: [localhost]
+    >
+    >   TASK [delete keypair] ******************************************************************************
+    >   ok: [localhost]
+    >
+    >   PLAY RECAP *****************************************************************************************
+    >   localhost : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +------------------+-------------------------------------------------+
+    >   | Name             | Fingerprint                                     |
+    >   +------------------+-------------------------------------------------+
+    >   | zrq-gaia-keypair | a4:8b:f3:0a:31:eb:93:b2:98:62:c5:d2:02:31:0f:b4 |
+    >   +------------------+-------------------------------------------------+
+
+
+

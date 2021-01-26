@@ -1,0 +1,712 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Target :
+
+        Deploy Drupal and experiment.
+
+    Result :
+
+        Work in progress
+
+    References :
+
+        notes/zrq/20200924-01-drupal-test.txt
+        notes/zrq/20200928-01-drupal-notes.txt
+        notes/zrq/20201204-03-drupal-deploy.txt
+
+
+# -----------------------------------------------------
+# Check our Drupal Dockerfile ...
+#[user@desktoop]
+
+    source "${HOME}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+        pushd 'experiments/zrq/drupal/docker'
+
+            gedit Dockermod &
+
+                ....
+                ....
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Build our Docker image.
+#[user@desktoop]
+
+    buildtag=$(date '+%Y%m%d-%H%M%S')
+    buildtime=$(date '+%Y-%m-%dT%H:%M:%S')
+
+    source "${HOME}/aglais.env"
+    buildah bud \
+        --format docker \
+        --tag aglais/drupal-mod:${buildtag:?} \
+        --tag aglais/drupal-mod:latest \
+        --build-arg "buildtag=${buildtag:?}" \
+        --build-arg "buildtime=${buildtime:?}" \
+        --file "${AGLAIS_CODE}/experiments/zrq/drupal/docker/Dockermod" \
+        "${AGLAIS_CODE:?}/experiments/zrq/drupal/docker"
+
+    >   STEP 1: FROM drupal:8.9.6-apache-buster
+    >   STEP 2: MAINTAINER Dave Morris <docker-admin@metagrid.co.uk>
+    >   STEP 3: ARG buildtag
+    >   STEP 4: ARG buildtime
+    >   STEP 5: LABEL maintainer="Dave Morris <docker-admin@metagrid.co.uk>"
+    >   STEP 6: LABEL buildtag="${buildtag}"
+    >   STEP 7: LABEL buildtime="${buildtime}"
+    >   STEP 8: LABEL gitrepo="https://github.com/wfau/aglais"
+    >   STEP 9: RUN apt-get update && apt-get install unzip
+    >   ....
+    >   ....
+    >   STEP 13: COMMIT aglais/drupal-mod:20201207-115625
+    >   ....
+    >   ....
+    >   Writing manifest to image destination
+    >   Storing signatures
+    >   --> 8e4202e4b39
+    >   8e4202e4b399392159e16abe69afb00d33c0c3425c68c72ea1420f98943c867c
+
+
+# -----------------------------------------------------
+# Push our Drupal image to the registry.
+#[user@desktoop]
+
+
+    buildah login \
+        --username $(secret docker.io.user) \
+        --password $(secret docker.io.pass) \
+        registry-1.docker.io
+
+    >   Login Succeeded!
+
+    buildah push "aglais/drupal-mod:${buildtag:?}"
+
+    >   Getting image source signatures
+    >   ....
+    >   ....
+    >   Writing manifest to image destination
+    >   Storing signatures
+
+
+    buildah push "aglais/drupal-mod:latest"
+
+    >   ....
+    >   ....
+    >   Copying blob ff012274c45b [--------------------------------------] 0.0b / 0.0b
+    >   Copying config 8e4202e4b3 [--------------------------------------] 0.0b / 18.7KiB
+    >   Writing manifest to image destination
+    >   Storing signatures
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a container to work with (including buildtag).
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "buildtag=${buildtag:?}" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        atolmis/openstack-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# List the available clusters.
+#[root@kubernator]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        coe cluster list
+
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | uuid                                 | name                        | keypair          | node_count | master_count | status          | health_status |
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+    >   | e0323dad-1071-4815-8c64-9fe8079d2fe7 | aglais-k8s-20201202-cluster | zrq-gaia-keypair |          4 |            1 | CREATE_COMPLETE | HEALTHY       |
+    >   +--------------------------------------+-----------------------------+------------------+------------+--------------+-----------------+---------------+
+
+
+# -----------------------------------------------------
+# Get the connection details the first cluster in the list.
+#[root@kubernator]
+
+    clusterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            coe cluster list \
+                --format json \
+        | jq -r '.[0] | .uuid'
+        )
+
+    '/kubernetes/bin/cluster-config.sh' \
+        "${cloudname:?}" \
+        "${clusterid:?}"
+
+    kubectl \
+        cluster-info
+
+    >   Kubernetes master is running at https://128.232.227.148:6443
+    >   Heapster is running at https://128.232.227.148:6443/api/v1/namespaces/kube-system/services/heapster/proxy
+    >   CoreDNS is running at https://128.232.227.148:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Get our deployment namespace.
+#[root@kubernator]
+
+    namespace=$(
+        kubectl \
+            get namespace \
+                --output json \
+        | jq -r '.items[] | .metadata.name | select(. | startswith("aglais"))'
+        )
+
+    echo "Namespace [${namespace}]"
+
+    >   Namespace [aglais-k8s-20201202]
+
+
+# -----------------------------------------------------
+# List the installed components.
+#[user@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get all
+
+    >   NAME                                                READY   STATUS             RESTARTS   AGE
+    >   ....
+    >   pod/drupal-site-drupal-544d8c5bbd-fhvct             0/1     ImagePullBackOff   0          2d16h
+    >   pod/drupal-site-mariadb-6575ff988b-vtd8q            1/1     Running            0          2d16h
+    >   ....
+    >   
+    >   NAME                                                TYPE           CLUSTER-IP       EXTERNAL-IP       PORT(S)                                  AGE
+    >   ....
+    >   service/drupal-site                                 NodePort       10.254.239.83    <none>            80:31887/TCP                             2d16h
+    >   service/drupal-site-mariadb                         ClusterIP      10.254.234.211   <none>            3306/TCP                                 2d16h
+    >   ....
+    >   
+    >   NAME                                                READY   UP-TO-DATE   AVAILABLE   AGE
+    >   ....
+    >   deployment.apps/drupal-site-drupal                  0/1     1            0           2d16h
+    >   deployment.apps/drupal-site-mariadb                 1/1     1            1           2d16h
+    >   ....
+    >   
+    >   NAME                                                DESIRED   CURRENT   READY   AGE
+    >   ....
+    >   replicaset.apps/drupal-site-drupal-544d8c5bbd       1         1         0       2d16h
+    >   replicaset.apps/drupal-site-mariadb-6575ff988b      1         1         1       2d16h
+    >   ....
+    >   
+    >   
+    >   # -----------------------------------------------------
+    >   # List the installed Drupal deployments.
+    >   #[user@kubernator]
+    >   
+    >       kubectl \
+    >           --namespace "${namespace:?}" \
+    >           get drupal
+    >   
+    >   NAME          AGE
+    >   drupal-site   2d16h
+
+
+# -----------------------------------------------------
+# Delete our Drupal deployment.
+#[user@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        delete \
+            'drupal/drupal-site'
+
+    >   drupal.drupal.drupal.org "drupal-site" deleted
+
+
+# -----------------------------------------------------
+# List the installed components.
+#[user@kubernator]
+
+    kubectl \
+        --namespace "${namespace:?}" \
+        get all \
+    | grep drupal
+
+    >   pod/drupal-site-drupal-544d8c5bbd-fhvct                 0/1         ImagePullBackOff    0       2d16h
+    >   pod/drupal-site-mariadb-6575ff988b-vtd8q                1/1         Running             0       2d16h
+    >   service/drupal-site                                     NodePort    10.254.239.83       <none>  80:31887/TCP    2d16h
+    >   service/drupal-site-mariadb                             ClusterIP   10.254.234.211      <none>  3306/TCP        2d16h
+    >   deployment.apps/drupal-site-drupal                      0/1         1                   0       2d16h
+    >   deployment.apps/drupal-site-mariadb                     1/1         1                   1       2d16h
+    >   replicaset.apps/drupal-site-drupal-544d8c5bbd           1           1                   0       2d16h
+    >   replicaset.apps/drupal-site-mariadb-6575ff988b          1           1                   1       2d16h
+
+    #
+    # So the Drupal operator doesn't tidy up the unused resources :-(
+    # Which is less than useful.
+    # OK - perhaps it might if I read the dosumentation and used it correctly,
+    # but I was already thinkling it was a level of complexity we didn't need.
+    #
+
+    #
+    # Nice to see how an Operator works, but unless we do that with everything we use,
+    # it isn't worth the extra layers for only one of our components.
+    #
+
+    #
+    # Get the details of the Drupal components and see if we can come up with our own Heml chart for it.
+    #
+
+
+# -----------------------------------------------------
+# Get details of the Drupal components.
+#[user@kubernator]
+
+    kubectl get \
+        --output json \
+        --namespace "${namespace:?}" \
+        pod/drupal-site-drupal-544d8c5bbd-fhvct \
+    | tee /tmp/drupal-site-drupal-pod.json
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Pod",
+    >       "metadata": {
+    >           ....
+    >           "name": "drupal-site-drupal-544d8c5bbd-fhvct",
+    >           "namespace": "aglais-k8s-20201202",
+    >           ....
+    >           "uid": "52d29cc5-1351-4137-bf35-6cf5a7b8257f"
+    >       },
+    >       "spec": {
+    >           "containers": [
+    >               {
+    >                   "image": "aglais/drupal-mod:20201204-195217",
+    >                   "imagePullPolicy": "IfNotPresent",
+    >                   ....
+    >                   "name": "drupal",
+    >                   "ports": [
+    >                       {
+    >                           "containerPort": 80,
+    >                           "protocol": "TCP"
+    >                       }
+    >                   ],
+    >                   ....
+    >                   "volumeMounts": [
+    >                       {
+    >                           "mountPath": "/var/www/html/sites/default/",
+    >                           "name": "drupal-settings"
+    >                       },
+    >                       {
+    >                           "mountPath": "/var/www/html/sites/default/files/",
+    >                           "name": "drupal-files"
+    >                       },
+    >                       {
+    >                           "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+    >                           "name": "default-token-qwrvj",
+    >                           "readOnly": true
+    >                       }
+    >                   ]
+    >               }
+    >           ],
+    >           ....
+    >           "volumes": [
+    >               {
+    >                   "configMap": {
+    >                       "defaultMode": 420,
+    >                       "name": "drupal-site-drupal-config"
+    >                   },
+    >                   "name": "drupal-settings"
+    >               },
+    >               {
+    >                   "name": "drupal-files",
+    >                   "persistentVolumeClaim": {
+    >                       "claimName": "drupal-site-files-pvc"
+    >                   }
+    >               },
+    >               {
+    >                   "name": "default-token-qwrvj",
+    >                   "secret": {
+    >                       "defaultMode": 420,
+    >                       "secretName": "default-token-qwrvj"
+    >                   }
+    >               }
+    >           ]
+    >       },
+    >       "status": {
+    >           ....
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        --namespace "${namespace:?}" \
+        pod/drupal-site-mariadb-6575ff988b-vtd8q \
+    | tee /tmp/drupal-site-mariadb-pod.json
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Pod",
+    >       "metadata": {
+    >           ....
+    >           "name": "drupal-site-mariadb-6575ff988b-vtd8q",
+    >           "namespace": "aglais-k8s-20201202",
+    >           ....
+    >           ....
+    >           "uid": "2b28ec8c-b534-42eb-a981-7a54e3d36bfc"
+    >       },
+    >       "spec": {
+    >           "containers": [
+    >               {
+    >                   "env": [
+    >                       {
+    >                           "name": "MYSQL_DATABASE",
+    >                           "value": "drupal"
+    >                       },
+    >                       {
+    >                           "name": "MYSQL_USER",
+    >                           "value": "drupal"
+    >                       },
+    >                       {
+    >                           "name": "MYSQL_PASSWORD",
+    >                           "value": "Uw0Aochaejok6HeSho3O"
+    >                       },
+    >                       {
+    >                           "name": "MYSQL_RANDOM_ROOT_PASSWORD",
+    >                           "value": "yes"
+    >                       }
+    >                   ],
+    >                   "image": "mariadb:10",
+    >                   ....
+    >                   "name": "mariadb",
+    >                   "ports": [
+    >                       {
+    >                           "containerPort": 3306,
+    >                           "protocol": "TCP"
+    >                       }
+    >                   ],
+    >                   ....
+    >                   "volumeMounts": [
+    >                       {
+    >                           "mountPath": "/var/lib/mysql/",
+    >                           "name": "drupal-db"
+    >                       },
+    >                       {
+    >                           "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+    >                           "name": "default-token-qwrvj",
+    >                           "readOnly": true
+    >                       }
+    >                   ]
+    >               }
+    >           ],
+    >           ....
+    >           "volumes": [
+    >               {
+    >                   "name": "drupal-db",
+    >                   "persistentVolumeClaim": {
+    >                       "claimName": "drupal-site-db-pvc"
+    >                   }
+    >               },
+    >               {
+    >                   "name": "default-token-qwrvj",
+    >                   "secret": {
+    >                       "defaultMode": 420,
+    >                       "secretName": "default-token-qwrvj"
+    >                   }
+    >               }
+    >           ]
+    >       },
+    >       "status": {
+    >           ....
+    >       }
+    >   }
+    >   
+    >   
+
+
+    kubectl get \
+        --output json \
+        --namespace "${namespace:?}" \
+        service/drupal-site \
+    | tee /tmp/drupal-site-drupal-service.json
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Service",
+    >       "metadata": {
+    >           ....
+    >           "name": "drupal-site",
+    >           "namespace": "aglais-k8s-20201202",
+    >           ....
+    >           "uid": "ef40ec1a-b087-4f0e-81b8-f4ba14450cca"
+    >       },
+    >       "spec": {
+    >           "clusterIP": "10.254.239.83",
+    >           "externalTrafficPolicy": "Cluster",
+    >           "ports": [
+    >               {
+    >                   "nodePort": 31887,
+    >                   "port": 80,
+    >                   "protocol": "TCP",
+    >                   "targetPort": 80
+    >               }
+    >           ],
+    >           "selector": {
+    >               "app": "drupal"
+    >           },
+    >           "sessionAffinity": "None",
+    >           "type": "NodePort"
+    >       },
+    >       "status": {
+    >           ....
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        --namespace "${namespace:?}" \
+        service/drupal-site-mariadb \
+    | tee /tmp/drupal-site-mariadb-service.json
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "Service",
+    >       "metadata": {
+    >           ....
+    >           "name": "drupal-site-mariadb",
+    >           "namespace": "aglais-k8s-20201202",
+    >           ....
+    >           "uid": "985d1525-ece0-4afb-8316-a607d3ecea14"
+    >       },
+    >       "spec": {
+    >           "clusterIP": "10.254.234.211",
+    >           "ports": [
+    >               {
+    >                   "port": 3306,
+    >                   "protocol": "TCP",
+    >                   "targetPort": 3306
+    >               }
+    >           ],
+    >           "selector": {
+    >               "app": "mariadb"
+    >           },
+    >           "sessionAffinity": "None",
+    >           "type": "ClusterIP"
+    >       },
+    >       "status": {
+    >           ....
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        --namespace "${namespace:?}" \
+        PersistentVolumeClaim \
+            drupal-site-files-pvc \
+    | tee /tmp/drupal-site-files-pvc.json
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolumeClaim",
+    >       "metadata": {
+    >           ....
+    >           "name": "drupal-site-files-pvc",
+    >           "namespace": "aglais-k8s-20201202",
+    >           ....
+    >           "uid": "326c42fb-73bb-4789-80f9-4c38a8e44410"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteOnce"
+    >           ],
+    >           "resources": {
+    >               "requests": {
+    >                   "storage": "1Gi"
+    >               }
+    >           },
+    >           "storageClassName": "manila-trust-class",
+    >           "volumeMode": "Filesystem",
+    >           "volumeName": "pvc-326c42fb-73bb-4789-80f9-4c38a8e44410"
+    >       },
+    >       "status": {
+    >           ....
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        --namespace "${namespace:?}" \
+        PersistentVolume \
+            'pvc-326c42fb-73bb-4789-80f9-4c38a8e44410' \
+    | tee /tmp/drupal-site-files-volume.json
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolume",
+    >       "metadata": {
+    >           "annotations": {
+    >               "pv.kubernetes.io/provisioned-by": "cephfs.manila.csi.openstack.org"
+    >           },
+    >           ....
+    >           "name": "pvc-326c42fb-73bb-4789-80f9-4c38a8e44410",
+    >           ....
+    >           "uid": "1334421c-4710-4ec3-b59a-6fade5cd51ad"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteOnce"
+    >           ],
+    >           "capacity": {
+    >               "storage": "1Gi"
+    >           },
+    >           "claimRef": {
+    >               "apiVersion": "v1",
+    >               "kind": "PersistentVolumeClaim",
+    >               "name": "drupal-site-files-pvc",
+    >               "namespace": "aglais-k8s-20201202",
+    >               "resourceVersion": "979848",
+    >               "uid": "326c42fb-73bb-4789-80f9-4c38a8e44410"
+    >           },
+    >           "csi": {
+    >               ....
+    >           },
+    >           "persistentVolumeReclaimPolicy": "Retain",
+    >           "storageClassName": "manila-trust-class",
+    >           "volumeMode": "Filesystem"
+    >       },
+    >       "status": {
+    >           ....
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        --namespace "${namespace:?}" \
+        PersistentVolumeClaim \
+            drupal-site-db-pvc \
+    | tee /tmp/drupal-site-db-pvc.json
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolumeClaim",
+    >       "metadata": {
+    >           ....
+    >           "name": "drupal-site-db-pvc",
+    >           "namespace": "aglais-k8s-20201202",
+    >           ....
+    >           "uid": "e3707194-2036-4bbe-ba28-1e56c950d55e"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteOnce"
+    >           ],
+    >           "resources": {
+    >               "requests": {
+    >                   "storage": "1Gi"
+    >               }
+    >           },
+    >           "storageClassName": "manila-trust-class",
+    >           "volumeMode": "Filesystem",
+    >           "volumeName": "pvc-e3707194-2036-4bbe-ba28-1e56c950d55e"
+    >       },
+    >       "status": {
+    >           ....
+    >       }
+    >   }
+
+
+    kubectl get \
+        --output json \
+        --namespace "${namespace:?}" \
+        PersistentVolume \
+            'pvc-e3707194-2036-4bbe-ba28-1e56c950d55e' \
+    | tee /tmp/drupal-site-db-volume.json
+
+    >   {
+    >       "apiVersion": "v1",
+    >       "kind": "PersistentVolume",
+    >       "metadata": {
+    >           "annotations": {
+    >               "pv.kubernetes.io/provisioned-by": "cephfs.manila.csi.openstack.org"
+    >           },
+    >           ....
+    >           "name": "pvc-e3707194-2036-4bbe-ba28-1e56c950d55e",
+    >           ....
+    >           "uid": "bca288ba-3a1f-4042-a563-e97ecabe758a"
+    >       },
+    >       "spec": {
+    >           "accessModes": [
+    >               "ReadWriteOnce"
+    >           ],
+    >           "capacity": {
+    >               "storage": "1Gi"
+    >           },
+    >           "claimRef": {
+    >               "apiVersion": "v1",
+    >               "kind": "PersistentVolumeClaim",
+    >               "name": "drupal-site-db-pvc",
+    >               "namespace": "aglais-k8s-20201202",
+    >               "resourceVersion": "980633",
+    >               "uid": "e3707194-2036-4bbe-ba28-1e56c950d55e"
+    >           },
+    >           "csi": {
+    >               ....
+    >           },
+    >           "persistentVolumeReclaimPolicy": "Retain",
+    >           "storageClassName": "manila-trust-class",
+    >           "volumeMode": "Filesystem"
+    >       },
+    >       "status": {
+    >           ....
+    >       }
+    >   }
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Use this information to create our own Helm charts for Drupal
+#[user@desktop]
+
+    ....
+    ....
+
+
+
+

@@ -53,11 +53,13 @@
 # -----------------------------------------------------
 # Set the Manila API version.
 # https://stackoverflow.com/a/58806536
+# TODO Move this to an openstack script.
 
     export OS_SHARE_API_VERSION=2.51
 
 # -----------------------------------------------------
 # Identify the Manila share.
+# TODO Move this to an openstack script.
 
     echo "Target [${cloudname}][${sharename}]"
 
@@ -73,6 +75,7 @@
 
 # -----------------------------------------------------
 # Get details of the Ceph export location.
+# TODO Move this to an openstack script.
 
     openstack \
         --os-cloud "${cloudname:?}" \
@@ -120,6 +123,7 @@
 
 # -----------------------------------------------------
 # Get details of the access rule.
+# TODO Move this to an openstack script.
 
     accessrule=$(
         openstack \

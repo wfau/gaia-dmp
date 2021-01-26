@@ -1,0 +1,1110 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Create a test VM using the Ansible scripts to diagnose
+        the cause of Nigel's ssh access problems.
+
+        notes/zrq/20210115-01-service-debug.txt
+        notes/zrq/20210118-01-service-debug.txt
+
+    Result:
+
+        Work in progress ..
+        Lots of things needed to be hacked.
+        Scope for moving lots of things into parameters.
+
+        ** IMPORTANT **
+        These notes are good to commit, but the changes to the config files should NOT be merged into main.
+        ** IMPORTANT **
+
+
+# -----------------------------------------------------
+# Create a new branch in git.
+#[user@desktop]
+
+    #
+    # notes/zrq/20201112-01-git-newbranch.txt
+    #
+
+
+# -----------------------------------------------------
+# Edit our Ansible scripts to add another VM.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+    pushd  "${AGLAIS_CODE}"
+
+        pushd experiments/hadoop-yarn/ansible
+
+            # Set the hard-coded key name.
+            sed -i "
+                s/keypair: .*\$/keypair: 'zrq-gaia-keypair'/
+                " hosts.yml
+
+
+            # Add a new entry into the `hosts` file
+            gedit hosts.yml
+
+                all:
+                  vars:
+                    security:
+                        gateway: "{{ buildtag }}-gateway-security"
+                +       albert: "{{ buildtag }}-albert-security"
+                        zeppelin: "{{ buildtag }}-zeppelin-security"
+                        masters: "{{ buildtag }}-master-security"
+                        workers: "{{ buildtag }}-worker-security"
+
+            ....
+            ....
+              hosts:
+                gateway:
+                    login:  'fedora'
+                    image:  'Fedora-30-1.2'
+                    flavor: 'general.v1.tiny'
+            +   albert:
+            +       login:  'fedora'
+            +       image:  'Fedora-30-1.2'
+            +       flavor: 'general.v1.tiny'
+                zeppelin:
+                    login:  'fedora'
+                    image:  'Fedora-30-1.2'
+                    flavor: 'general.v1.small'
+
+
+            # Copy the gateway node scripts.
+            cp 02-create-gateway.yml \
+               02-create-albert.yml
+
+            # Change the create-albert script.
+            sed -i '
+                s/gateway/albert/
+                ' 02-create-albert.yml
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Edit our Ansible scripts to grant ssh access to our test node.
+#[root@ansibler]
+
+    source "${HOME}/aglais.env"
+    pushd  "${AGLAIS_CODE}"
+
+        pushd experiments/hadoop-yarn/ansible
+
+            gedit 05-config-ssh.yml
+
+                ....
+                ....
+                - name: "Discover our gateway nodes"
+                  os_server_info:
+                    cloud:  "{{ cloudname }}"
+                    server: "{{ buildtag }}-gateway"
+                  register:
+                    gatewaynodes
+
+            +   - name: "Discover our test node"
+            +     os_server_info:
+            +       cloud:  "{{ cloudname }}"
+            +       server: "{{ buildtag }}-albert"
+            +     register:
+            +       albertnode
+                ....
+                ....
+
+
+            gedit templates/ssh-ansible.j2
+
+                ....
+                ....
+                # Primary gateway node.
+                Host gateway
+                    User {{ hostvars['gateway'].login }}
+                    HostName {{ gatewaynodes.openstack_servers[0].accessIPv4 }}
+                    ControlPath ~/.ssh/%r@%h:%p
+                    ControlMaster auto
+                    ControlPersist 5m
+
+            +   # Test gateway node.
+            +   Host albert
+            +       User {{ hostvars['albert'].login }}
+            +       HostName {{ albertnode.openstack_servers[0].accessIPv4 }}
+            +       ControlPath ~/.ssh/%r@%h:%p
+            +       ControlMaster auto
+            +       ControlPersist 5m
+                ....
+                ....
+
+
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Change the mount script target.
+#[root@ansibler]
+
+    source "${HOME}/aglais.env"
+    pushd  "${AGLAIS_CODE}"
+
+        pushd experiments/hadoop-yarn/ansible
+
+            sed -i '
+                s/hosts: .*$/hosts: albert/
+                ' 51-cephfs-mount.yml
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:latest \
+        bash
+
+
+# -----------------------------------------------------
+# Set our environment variables.
+#[root@ansibler]
+
+    buildtag=aglais-20201130
+    cloudname=gaia-dev
+    clouduser=albert
+
+
+# -----------------------------------------------------
+# Create our Ansible include vars file.
+#[root@ansibler]
+
+    cat > /tmp/ansible-vars.yml << EOF
+buildtag:  '${buildtag:?}'
+cloudname: '${cloudname:?}'
+clouduser: '${clouduser:?}'
+EOF
+
+
+# -----------------------------------------------------
+# Create our new VM.
+#[root@ansibler]
+
+    pushd "/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "02-create-albert.yml"
+
+    popd
+
+
+    >   PLAY [Create our albert node] ***********************************************************************
+    >
+    >   TASK [Create a security group for our albert node] **************************************************
+    >   ok: [localhost]
+    >
+    >   TASK [Add a security rule for IPv4 SSH] *************************************************************
+    >   ok: [localhost]
+    >
+    >   TASK [Add a security rule for IPv6 SSH] *************************************************************
+    >   ok: [localhost]
+    >
+    >   TASK [Create our albert node] ***********************************************************************
+    >   changed: [localhost]
+    >
+    >   TASK [Assign a floating IP address to our albert node] **********************************************
+    >   changed: [localhost]
+    >
+    >   TASK [Apply the albert security group to our floating IP address] ***********************************
+    >   ok: [localhost]
+    >
+    >   PLAY RECAP ******************************************************************************************
+    >   localhost : ok=6    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Configure our ssh access.
+#[root@ansibler]
+
+    pushd "/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "05-config-ssh.yml"
+
+    popd
+
+
+    >   PLAY [Create SSH config for Ansible client] *********************************************************
+    >
+    >   TASK [Check our local SSH directory] ****************************************************************
+    >   changed: [localhost]
+    >
+    >   TASK [Discover our gateway nodes] *******************************************************************
+    >   ok: [localhost]
+    >
+    >   TASK [Discover our test node] ***********************************************************************
+    >   ok: [localhost]
+    >
+    >   TASK [Generate Ansible SSH config] ******************************************************************
+    >   changed: [localhost]
+    >
+    >   TASK [Check our local SSH config] *******************************************************************
+    >   ok: [localhost]
+    >
+    >   TASK [Link our Ansible SSH config] ******************************************************************
+    >   changed: [localhost]
+    >
+    >   PLAY RECAP ******************************************************************************************
+    >   localhost : ok=6    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+
+
+# -----------------------------------------------------
+# Get the test VM details.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+    >   +--------------------------------------+--------------------------+--------+---------------------------------------------------------------+---------------+------------------+
+    >   | ID                                   | Name                     | Status | Networks                                                      | Image         | Flavor           |
+    >   +--------------------------------------+--------------------------+--------+---------------------------------------------------------------+---------------+------------------+
+    >   | e8946cae-dc2b-4848-9a61-07d5bcc2576a | aglais-20201130-albert   | ACTIVE | aglais-20201130-internal-network=10.10.1.237, 128.232.227.248 | Fedora-30-1.2 | general.v1.tiny  |
+    >   | 56a21225-6a63-498f-933b-cafee5b500af | aglais-20201130-zeppelin | ACTIVE | aglais-20201130-internal-network=10.10.1.16, 128.232.227.165  | Fedora-30-1.2 | general.v1.small |
+    >   | 45e26f6a-39fd-4b24-8d58-d4a479df5e4a | aglais-20201130-worker06 | ACTIVE | aglais-20201130-internal-network=10.10.2.254                  | Fedora-30-1.2 | general.v1.small |
+    >   | 6ef202cf-001b-4f74-b73f-0ced3f23f9f4 | aglais-20201130-worker05 | ACTIVE | aglais-20201130-internal-network=10.10.0.189                  | Fedora-30-1.2 | general.v1.small |
+    >   | acf3abbf-3f34-4bbd-9efa-3e93ba80fa90 | aglais-20201130-worker04 | ACTIVE | aglais-20201130-internal-network=10.10.1.56                   | Fedora-30-1.2 | general.v1.small |
+    >   | 24cb1eef-b55d-4f9c-9f71-89ffc7806eab | aglais-20201130-worker03 | ACTIVE | aglais-20201130-internal-network=10.10.1.36                   | Fedora-30-1.2 | general.v1.small |
+    >   | 3ad3d8a4-255e-4ad2-a1fb-e8451777609e | aglais-20201130-worker02 | ACTIVE | aglais-20201130-internal-network=10.10.1.24                   | Fedora-30-1.2 | general.v1.small |
+    >   | e2a9759e-2e79-49a3-b772-03b354c80c77 | aglais-20201130-worker01 | ACTIVE | aglais-20201130-internal-network=10.10.0.51                   | Fedora-30-1.2 | general.v1.small |
+    >   | b5036439-646d-4de2-b10a-3d3e775bed0e | aglais-20201130-master02 | ACTIVE | aglais-20201130-internal-network=10.10.1.212                  | Fedora-30-1.2 | general.v1.small |
+    >   | 81aaf649-fe59-4f97-9b55-0ba85c42d533 | aglais-20201130-master01 | ACTIVE | aglais-20201130-internal-network=10.10.2.60                   | Fedora-30-1.2 | general.v1.small |
+    >   | ce09e070-814c-4e58-9cee-40943060d0b3 | aglais-20201130-gateway  | ACTIVE | aglais-20201130-internal-network=10.10.3.215, 128.232.227.134 | Fedora-30-1.2 | general.v1.tiny  |
+    >   +--------------------------------------+--------------------------+--------+---------------------------------------------------------------+---------------+------------------+
+
+
+    albertid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name | contains("albert")) | .ID'
+        )
+
+    echo "Albert ID [${albertid:?}]"
+
+    >   Albert ID [e8946cae-dc2b-4848-9a61-07d5bcc2576a]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server show \
+            --format json \
+            "${albertid:?}"
+
+    >   {
+    >     "OS-DCF:diskConfig": "MANUAL",
+    >     "OS-EXT-AZ:availability_zone": "nova",
+    >     "OS-EXT-STS:power_state": "Running",
+    >     "OS-EXT-STS:task_state": null,
+    >     "OS-EXT-STS:vm_state": "active",
+    >     "OS-SRV-USG:launched_at": "2021-01-18T15:43:43.000000",
+    >     "OS-SRV-USG:terminated_at": null,
+    >     "accessIPv4": "",
+    >     "accessIPv6": "",
+    >     "addresses": "aglais-20201130-internal-network=10.10.1.237, 128.232.227.248",
+    >     "config_drive": "",
+    >     "created": "2021-01-18T15:43:34Z",
+    >     "flavor": "general.v1.tiny (406a17e0-afd0-47d3-a6ad-8b19198bdd97)",
+    >     "hostId": "22af5477f781be434665682be2a399f8f6f43b8db2e2d00aef735df6",
+    >     "id": "e8946cae-dc2b-4848-9a61-07d5bcc2576a",
+    >     "image": "Fedora-30-1.2 (ade3a5aa-a6a3-4761-8eed-083e5ce1f117)",
+    >     "key_name": "zrq-gaia-keypair",
+    >     "name": "aglais-20201130-albert",
+    >     "progress": 0,
+    >     "project_id": "08e24c6d87f94740aa59c172462ed927",
+    >     "properties": {
+    >       "hostname": "albert"
+    >     },
+    >     "security_groups": [
+    >       {
+    >         "name": "aglais-20201130-albert-security"
+    >       }
+    >     ],
+    >     "status": "ACTIVE",
+    >     "updated": "2021-01-18T15:43:43Z",
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "volumes_attached": []
+    >   }
+
+
+# -----------------------------------------------------
+# Get the external IP address.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server show \
+            --format json \
+            "${albertid:?}" \
+    | jq -r '.addresses'
+
+    >   aglais-20201130-internal-network=10.10.1.237, 128.232.227.248
+
+
+    albertip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${albertid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+    echo "Albert IP [${albertip:?}]"
+
+    >   Albert IP [128.232.227.248]
+
+
+# -----------------------------------------------------
+# Login via ssh to check our access.
+#[root@ansibler]
+
+    ssh "fedora@${albertip:?}" \
+        '
+        date
+        hostname
+        '
+
+    >   Mon Jan 18 16:17:03 UTC 2021
+    >   aglais-20201130-albert.novalocal
+
+
+# -----------------------------------------------------
+# Add the science catalogs.
+#[root@ansibler]
+
+    cat > /tmp/datashares.yaml << EOF
+shares:
+
+  - name: "GDR2"
+    sharename: "aglais-gaia-dr2"
+    mountpath: "/data/gaia/dr2"
+
+  - name: "GEDR3"
+    sharename: "aglais-gaia-edr3"
+    mountpath: "/data/gaia/edr3"
+
+  - name: "ALLWISE"
+    sharename: "aglais-wise-allwise"
+    mountpath: "/data/wise/allwise"
+
+  - name: "PS1"
+    sharename: "aglais-panstarrs-dr1"
+    mountpath: "/data/panstarrs/dr1"
+
+  - name: "2MASS"
+    sharename: "aglais-twomass-allsky"
+    mountpath: "/data/twomass/allsky"
+EOF
+
+    for name in $(
+        yq read /tmp/datashares.yaml 'shares.[*].name'
+        )
+    do
+        echo ""
+        echo "Share [${name:?}]"
+
+        sharename=$(yq read /tmp/datashares.yaml "shares.(name==${name:?}).sharename")
+        mountpath=$(yq read /tmp/datashares.yaml "shares.(name==${name:?}).mountpath")
+
+        echo "  name [${sharename:?}]"
+        echo "  path [${mountpath:?}]"
+
+        '/hadoop-yarn/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${sharename:?}" \
+            "${mountpath:?}"
+
+    done
+
+    >   Share [GDR2]
+    >     name [aglais-gaia-dr2]
+    >     path [/data/gaia/dr2]
+    >
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/hadoop-yarn/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Share name [aglais-gaia-dr2]
+    >   Mount path [/data/gaia/dr2]
+    >   Share mode [ro]
+    >   ---- ---- ----
+    >
+    >   Target [gaia-prod][aglais-gaia-dr2]
+    >   Found  [2e46b5a5-c5d9-44c0-b11c-310c222f4818]
+    >   ----
+    >   Ceph path [/volumes/_nogroup/2cdefe41-6c04-4865-9144-c0a7a183b424]
+    >   Ceph size [512]
+    >   ----
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+    >   ----
+    >   Ceph user [aglais-gaia-dr2-ro]
+    >   Ceph key  [AQDnQpRf8Y3BCRAAEfhuiqKJPYYwCuslfn7sDQ==]
+    >
+    >   /hadoop-yarn/ansible /hadoop-yarn/ansible
+    >
+    >   PLAY [Install and mount a CephFS share] **********************************************************
+    >
+    >   TASK [Install CephFS Fuse client] ****************************************************************
+    >   ok: [albert]
+    >
+    >   TASK [Creating CephFS key file [/etc/ceph/aglais-gaia-dr2-ro.keyring]] ***************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS cfg file [/etc/ceph/aglais-gaia-dr2-ro.conf]] ******************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS fstab entry [/data/gaia/dr2]] **********************************************
+    >   changed: [albert]
+    >
+    >   PLAY RECAP ***************************************************************************************
+    >   albert : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+    >   Share [GEDR3]
+    >     name [aglais-gaia-edr3]
+    >     path [/data/gaia/edr3]
+    >
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/hadoop-yarn/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Share name [aglais-gaia-edr3]
+    >   Mount path [/data/gaia/edr3]
+    >   Share mode [ro]
+    >   ---- ---- ----
+    >
+    >   Target [gaia-prod][aglais-gaia-edr3]
+    >   Found  [ca8231c3-1f5c-4ebf-8ec0-d3cfe2629976]
+    >   ----
+    >   Ceph path [/volumes/_nogroup/15d34c17-bd89-453e-98b7-478f93d45620]
+    >   Ceph size [540]
+    >   ----
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+    >   ----
+    >   Ceph user [aglais-gaia-edr3-ro]
+    >   Ceph key  [AQDvaPxfj56qBxAAGDSrxR0Is/9sK2pISE5cXw==]
+    >
+    >   /hadoop-yarn/ansible /hadoop-yarn/ansible
+    >
+    >   PLAY [Install and mount a CephFS share] **********************************************************
+    >
+    >   TASK [Install CephFS Fuse client] ****************************************************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS key file [/etc/ceph/aglais-gaia-edr3-ro.keyring]] **************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS cfg file [/etc/ceph/aglais-gaia-edr3-ro.conf]] *****************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS fstab entry [/data/gaia/edr3]] *********************************************
+    >   changed: [albert]
+    >
+    >   PLAY RECAP ***************************************************************************************
+    >   albert : ok=4    changed=4    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+    >   Share [ALLWISE]
+    >     name [aglais-wise-allwise]
+    >     path [/data/wise/allwise]
+    >
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/hadoop-yarn/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Share name [aglais-wise-allwise]
+    >   Mount path [/data/wise/allwise]
+    >   Share mode [ro]
+    >   ---- ---- ----
+    >
+    >   Target [gaia-prod][aglais-wise-allwise]
+    >   Found  [8f0b3452-3c66-4e65-8815-15eb73988b3e]
+    >   ----
+    >   Ceph path [/volumes/_nogroup/364a179c-010f-47a3-8698-5a3b5fa8fe15]
+    >   Ceph size [350]
+    >   ----
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+    >   ----
+    >   Ceph user [aglais-wise-allwise-ro]
+    >   Ceph key  [AQAGafxfFChBKhAAJEhqsidEzxbNXD8tm/UtSA==]
+    >
+    >   /hadoop-yarn/ansible /hadoop-yarn/ansible
+    >
+    >   PLAY [Install and mount a CephFS share] **********************************************************
+    >
+    >   TASK [Install CephFS Fuse client] ****************************************************************
+    >   ok: [albert]
+    >
+    >   TASK [Creating CephFS key file [/etc/ceph/aglais-wise-allwise-ro.keyring]] ***********************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS cfg file [/etc/ceph/aglais-wise-allwise-ro.conf]] **************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS fstab entry [/data/wise/allwise]] ******************************************
+    >   changed: [albert]
+    >
+    >   PLAY RECAP ***************************************************************************************
+    >   albert : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+    >   Share [PS1]
+    >     name [aglais-panstarrs-dr1]
+    >     path [/data/panstarrs/dr1]
+    >
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/hadoop-yarn/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Share name [aglais-panstarrs-dr1]
+    >   Mount path [/data/panstarrs/dr1]
+    >   Share mode [ro]
+    >   ---- ---- ----
+    >
+    >   Target [gaia-prod][aglais-panstarrs-dr1]
+    >   Found  [ba66d6db-7d85-44c4-bb95-7410a000f6b7]
+    >   ----
+    >   Ceph path [/volumes/_nogroup/6e81787f-d07f-4f2e-b836-5d54a61955d8]
+    >   Ceph size [300]
+    >   ----
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+    >   ----
+    >   Ceph user [aglais-panstarrs-dr1-ro]
+    >   Ceph key  [AQAkafxfXfEbNBAAh7rQ43Fy0pk6Gvx9MffsKA==]
+    >
+    >   /hadoop-yarn/ansible /hadoop-yarn/ansible
+    >
+    >   PLAY [Install and mount a CephFS share] **********************************************************
+    >
+    >   TASK [Install CephFS Fuse client] ****************************************************************
+    >   ok: [albert]
+    >
+    >   TASK [Creating CephFS key file [/etc/ceph/aglais-panstarrs-dr1-ro.keyring]] **********************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS cfg file [/etc/ceph/aglais-panstarrs-dr1-ro.conf]] *************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS fstab entry [/data/panstarrs/dr1]] *****************************************
+    >   changed: [albert]
+    >
+    >   PLAY RECAP ***************************************************************************************
+    >   albert : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+    >   Share [2MASS]
+    >     name [aglais-twomass-allsky]
+    >     path [/data/twomass/allsky]
+    >
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/hadoop-yarn/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Share name [aglais-twomass-allsky]
+    >   Mount path [/data/twomass/allsky]
+    >   Share mode [ro]
+    >   ---- ---- ----
+    >
+    >   Target [gaia-prod][aglais-twomass-allsky]
+    >   Found  [9dc3016a-f010-48bc-89fc-a9cbd688b7cc]
+    >   ----
+    >   Ceph path [/volumes/_nogroup/fbfbaa88-01a4-4fc4-9ab2-3c70d67a6341]
+    >   Ceph size [40]
+    >   ----
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+    >   ----
+    >   Ceph user [aglais-twomass-allsky-ro]
+    >   Ceph key  [AQA+afxfelCZBBAAjU+foTce1idP8/2rMlr1nw==]
+    >
+    >   /hadoop-yarn/ansible /hadoop-yarn/ansible
+    >
+    >   PLAY [Install and mount a CephFS share] **********************************************************
+    >
+    >   TASK [Install CephFS Fuse client] ****************************************************************
+    >   ok: [albert]
+    >
+    >   TASK [Creating CephFS key file [/etc/ceph/aglais-twomass-allsky-ro.keyring]] *********************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS cfg file [/etc/ceph/aglais-twomass-allsky-ro.conf]] ************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS fstab entry [/data/twomass/allsky]] ****************************************
+    >   changed: [albert]
+    >
+    >   PLAY RECAP ***************************************************************************************
+    >   albert : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Add user space directories.
+#[root@ansibler]
+
+
+    cat > /tmp/usershares.yaml << EOF
+shares:
+  - name: "nch"
+    sharename: "aglais-user-nch"
+    mountpath: "/user/nch"
+
+  - name: "zrq"
+    sharename: "aglais-user-zrq"
+    mountpath: "/user/zrq"
+
+  - name: "stv"
+    sharename: "aglais-user-stv"
+    mountpath: "/user/stv"
+
+EOF
+
+    for name in $(
+        yq read /tmp/usershares.yaml 'shares.[*].name'
+        )
+    do
+        echo ""
+        echo "Share [${name:?}]"
+
+        sharename=$(yq read /tmp/usershares.yaml "shares.(name==${name:?}).sharename")
+        mountpath=$(yq read /tmp/usershares.yaml "shares.(name==${name:?}).mountpath")
+
+        echo "  name [${sharename:?}]"
+        echo "  path [${mountpath:?}]"
+
+        '/hadoop-yarn/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            'rw'
+
+    done
+
+
+    >   Share [nch]
+    >     name [aglais-user-nch]
+    >     path [/user/nch]
+    >
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/hadoop-yarn/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Share name [aglais-user-nch]
+    >   Mount path [/user/nch]
+    >   Share mode [rw]
+    >   ---- ---- ----
+    >
+    >   Target [gaia-prod][aglais-user-nch]
+    >   Found  [6852b819-7395-4786-80c0-06fa9cebcc65]
+    >   ----
+    >   Ceph path [/volumes/_nogroup/cfffdb2c-ceb4-4b1d-bf4a-01d6b9de73b1]
+    >   Ceph size [10240]
+    >   ----
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+    >   ----
+    >   Ceph user [userdata-nch-rw]
+    >   Ceph key  [AQBZS4hfMggADhAAvwfB47+u72BE3RCZWtRMsw==]
+    >
+    >   /hadoop-yarn/ansible /hadoop-yarn/ansible
+    >
+    >   PLAY [Install and mount a CephFS share] **********************************************************
+    >
+    >   TASK [Install CephFS Fuse client] ****************************************************************
+    >   ok: [albert]
+    >
+    >   TASK [Creating CephFS key file [/etc/ceph/userdata-nch-rw.keyring]] ******************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS cfg file [/etc/ceph/userdata-nch-rw.conf]] *********************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS fstab entry [/user/nch]] ***************************************************
+    >   changed: [albert]
+    >
+    >   PLAY RECAP ***************************************************************************************
+    >   albert : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >
+
+    >   Share [zrq]
+    >     name [aglais-user-zrq]
+    >     path [/user/zrq]
+    >
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/hadoop-yarn/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Share name [aglais-user-zrq]
+    >   Mount path [/user/zrq]
+    >   Share mode [rw]
+    >   ---- ---- ----
+    >
+    >   Target [gaia-prod][aglais-user-zrq]
+    >   Found  [ff351afd-1f06-4d02-9f53-cbe20b0676cc]
+    >   ----
+    >   Ceph path [/volumes/_nogroup/21f1eaa9-c259-4744-9189-c4feae88611a]
+    >   Ceph size [1024]
+    >   ----
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+    >   ----
+    >   Ceph user [userdata-zrq-rw]
+    >   Ceph key  [AQDnZshfJ8SxJRAAaiHp9Fjg0HnfW9emYPoPLA==]
+    >
+    >   /hadoop-yarn/ansible /hadoop-yarn/ansible
+    >
+    >   PLAY [Install and mount a CephFS share] **********************************************************
+    >
+    >   TASK [Install CephFS Fuse client] ****************************************************************
+    >   ok: [albert]
+    >
+    >   TASK [Creating CephFS key file [/etc/ceph/userdata-zrq-rw.keyring]] ******************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS cfg file [/etc/ceph/userdata-zrq-rw.conf]] *********************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS fstab entry [/user/zrq]] ***************************************************
+    >   changed: [albert]
+    >
+    >   PLAY RECAP ***************************************************************************************
+    >   albert : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+    >   Share [stv]
+    >     name [aglais-user-stv]
+    >     path [/user/stv]
+    >
+    >   ---- ---- ----
+    >   File [cephfs-mount.sh]
+    >   Path [/hadoop-yarn/bin]
+    >   ---- ---- ----
+    >   Cloud name [gaia-prod]
+    >   Share name [aglais-user-stv]
+    >   Mount path [/user/stv]
+    >   Share mode [rw]
+    >   ---- ---- ----
+    >
+    >   Target [gaia-prod][aglais-user-stv]
+    >   Found  [fe63568a-d90c-4fb0-8979-07504328809d]
+    >   ----
+    >   Ceph path [/volumes/_nogroup/38e37088-19a3-45f1-9a44-b6b2066b282d]
+    >   Ceph size [1024]
+    >   ----
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+    >   ----
+    >   Ceph user [aglais-user-stv-rw]
+    >   Ceph key  [AQA8bMhfiY0mHhAA88JjT/Uwt0yzPtNcBwrGUQ==]
+    >
+    >   /hadoop-yarn/ansible /hadoop-yarn/ansible
+    >
+    >   PLAY [Install and mount a CephFS share] **********************************************************
+    >
+    >   TASK [Install CephFS Fuse client] ****************************************************************
+    >   ok: [albert]
+    >
+    >   TASK [Creating CephFS key file [/etc/ceph/aglais-user-stv-rw.keyring]] ***************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS cfg file [/etc/ceph/aglais-user-stv-rw.conf]] ******************************
+    >   changed: [albert]
+    >
+    >   TASK [Creating CephFS fstab entry [/user/stv]] ***************************************************
+    >   changed: [albert]
+    >
+    >   PLAY RECAP ***************************************************************************************
+    >   albert : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Login to the test node to test the share mounts.
+#[root@ansibler]
+
+    ssh albert \
+        '
+        date
+        hostname
+        echo "----"
+        df -h  /data/gaia/dr2
+        echo "----"
+        df -h  /data/gaia/edr3
+        echo "----"
+        df -h  /data/wise/allwise
+        echo "----"
+        df -h  /data/panstarrs/dr1
+        echo "----"
+        df -h  /data/twomass/allsky
+        '
+
+    >   Mon Jan 18 17:39:54 UTC 2021
+    >   aglais-20201130-albert.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       512G  473G   40G  93% /data/gaia/dr2
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       540G  533G  7.9G  99% /data/gaia/edr3
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       350G  341G  9.9G  98% /data/wise/allwise
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       300G  270G   31G  90% /data/panstarrs/dr1
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        40G   37G  3.5G  92% /data/twomass/allsky
+
+
+    ssh albert \
+        '
+        date
+        hostname
+        echo "----"
+        df -h  /user/nch
+        echo "----"
+        df -h  /user/zrq
+        echo "----"
+        df -h  /user/stv
+        '
+
+    >   Mon Jan 18 17:41:10 UTC 2021
+    >   aglais-20201130-albert.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        10T  4.8T  5.3T  48% /user/nch
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T   30G  995G   3% /user/zrq
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T     0  1.0T   0% /user/stv
+
+
+# -----------------------------------------------------
+# Login to the test node and add Nigel's ssh key.
+#[root@ansibler]
+
+    wget -O /tmp/nch.roe.ac.uk.rsa.pub  'http://data.metagrid.co.uk/sshkeys/nch.roe.ac.uk.rsa.pub'
+
+    scp /tmp/nch.roe.ac.uk.rsa.pub \
+        albert:/tmp/nch.roe.ac.uk.rsa.pub
+
+    ssh albert \
+        '
+        date
+        hostname
+        sudo useradd -m -d /home/nch -s /bin/bash nch
+        sudo mkdir /home/nch/.ssh
+        sudo mv /tmp/nch.roe.ac.uk.rsa.pub \
+            /home/nch/.ssh/authorized_keys
+        sudo chown -R nch:nch /home/nch/.ssh/
+        '
+
+
+# -----------------------------------------------------
+# Login to the test node and add Stelios's ssh key.
+#[root@ansibler]
+
+    wget -O /tmp/stv.roe.ac.uk.rsa.pub  'http://data.metagrid.co.uk/sshkeys/stv.roe.ac.uk.rsa.pub'
+
+    scp /tmp/stv.roe.ac.uk.rsa.pub \
+        albert:/tmp/stv.roe.ac.uk.rsa.pub
+
+    ssh albert \
+        '
+        date
+        hostname
+        sudo useradd -m -d /home/stv -s /bin/bash stv
+        sudo mkdir /home/stv/.ssh
+        sudo mv /tmp/stv.roe.ac.uk.rsa.pub \
+            /home/stv/.ssh/authorized_keys
+        sudo chown -R stv:stv /home/stv/.ssh/
+        '
+
+
+# -----------------------------------------------------
+# Login to the test node and add Dave's ssh key.
+#[root@ansibler]
+
+    wget -O /tmp/dmr.roe.ac.uk.rsa.pub  'http://data.metagrid.co.uk/sshkeys/dmr.roe.ac.uk.rsa.pub'
+
+    scp /tmp/dmr.roe.ac.uk.rsa.pub \
+        albert:/tmp/dmr.roe.ac.uk.rsa.pub
+
+    ssh albert \
+        '
+        date
+        hostname
+        sudo useradd -m -d /home/dmr -s /bin/bash dmr
+        sudo mkdir /home/dmr/.ssh
+        sudo mv /tmp/dmr.roe.ac.uk.rsa.pub \
+            /home/dmr/.ssh/authorized_keys
+        sudo chown -R dmr:dmr /home/dmr/.ssh/
+        '
+
+    ssh dmr@albert \
+        '
+        date
+        hostname
+        '
+
+    >   Tue Jan 19 01:36:45 UTC 2021
+    >   aglais-20201130-albert.novalocal
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check to see if we can login via the public IP address.
+#[user@desktop]
+
+    sshuser=dmr
+    sshhost=128.232.227.248
+
+    ssh "${sshuser:?}@${sshhost:?}" \
+        '
+        date
+        hostname
+        '
+
+    >   Tue 19 Jan 01:42:15 UTC 2021
+    >   aglais-20201130-albert.novalocal
+
+    ssh "${sshuser:?}@${sshhost:?}" \
+        '
+        date
+        hostname
+        echo "----"
+        df -h  /data/gaia/dr2
+        echo "----"
+        df -h  /data/gaia/edr3
+        echo "----"
+        df -h  /data/wise/allwise
+        echo "----"
+        df -h  /data/panstarrs/dr1
+        echo "----"
+        df -h  /data/twomass/allsky
+        '
+
+    >   Tue 19 Jan 01:53:13 UTC 2021
+    >   aglais-20201130-albert.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       512G  473G   40G  93% /data/gaia/dr2
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       540G  533G  7.9G  99% /data/gaia/edr3
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       350G  341G  9.9G  98% /data/wise/allwise
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       300G  270G   31G  90% /data/panstarrs/dr1
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        40G   37G  3.5G  92% /data/twomass/allsky
+
+
+    ssh "${sshuser:?}@${sshhost:?}" \
+        '
+        date
+        hostname
+        echo "----"
+        df -h  /user/nch
+        echo "----"
+        df -h  /user/zrq
+        echo "----"
+        df -h  /user/stv
+        '
+
+    >   Tue 19 Jan 01:43:22 UTC 2021
+    >   aglais-20201130-albert.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        10T  4.8T  5.3T  48% /user/nch
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T   30G  995G   3% /user/zrq
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T     0  1.0T   0% /user/stv
+
+

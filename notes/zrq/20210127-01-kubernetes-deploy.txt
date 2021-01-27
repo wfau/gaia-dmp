@@ -1,0 +1,465 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Run the Kubernetes deployment.
+
+    Results:
+
+        Success.
+
+    TODO:
+
+        Store aglais-status in a persistent volume so it can be re-mounted.
+        Update our DNS records.
+
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+# (*) mount kubernetes directory as read/write
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@kubernator]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our Aglais configuration.
+#[root@kubernator]
+
+cat > '/tmp/aglais-config.yml' << EOF
+aglais:
+    version: 1.0
+    spec:
+        openstack:
+            cloudname: ${cloudname:?}
+        dashboard:
+            hostname: dashboard.metagrid.xyz
+        zeppelin:
+            hostname: zeppelin.metagrid.xyz
+        drupal:
+            hostname: drupal.metagrid.xyz
+EOF
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@kubernator]
+
+    /kubernetes/bin/create-all.sh
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the results.
+#[root@kubernator]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: kubernetes
+    >         name: aglais-20210127
+    >         date: 20210127:050320
+    >       openstack:
+    >         cloudname: gaia-dev
+    >         magnum:
+    >           uuid: 350c310b-f343-439f-b265-3b5ac7f9d903
+    >       kubernetes:
+    >         namespace: aglais-20210127
+    >         ingress:
+    >           dashboard:
+    >             hostname: dashboard.metagrid.xyz
+    >             ipv4: 128.232.227.236
+    >           zeppelin:
+    >             hostname: zeppelin.metagrid.xyz
+    >             ipv4: null
+
+
+# -----------------------------------------------------
+# Get the cluster ID and K8s namespace.
+#[root@kubernator]
+
+    magnumid=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.openstack.magnum.uuid'
+        )
+
+    namespace=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.kubernetes.namespace'
+        )
+
+cat << EOF
+Magnum uuid [${magnumid}]
+Name space  [${namespace}]
+EOF
+
+    >   Magnum uuid [350c310b-f343-439f-b265-3b5ac7f9d903]
+    >   Name space  [aglais-20210127]
+
+
+# -----------------------------------------------------
+# Check the CSI volumes, claims and testpods for the data volumes.
+#[root@kubernator]
+
+    sharelist='/common/manila/datashares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        podphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get pod \
+                    --output json \
+                    "${sharename:?}-testpod" \
+            | jq -r '.status.phase'
+            )
+
+        volphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get PersistentVolume \
+                    --output json \
+                        "${sharename:?}-volume" \
+            | jq -r '.status.phase'
+            )
+
+        claimphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get PersistentVolumeClaim \
+                    --output json \
+                        "${sharename:?}-claim" \
+            | jq -r '.status.phase'
+            )
+
+        echo "Testpod [${podphase}]"
+        echo "Volume  [${volphase}]"
+        echo "Claim   [${claimphase}]"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.testpod" \
+                "${podphase}"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.volume" \
+                "${volphase}"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.claim" \
+                "${claimphase}"
+
+        echo "----"
+        kubectl \
+            --namespace "${namespace:?}" \
+            exec \
+                --tty \
+                --stdin \
+                "${sharename:?}-testpod" \
+                    -- \
+                        /usr/bin/df -h "${mountpath:?}"
+        echo "----"
+
+    done
+
+    >   ---- ----
+    >   Share [GDR2]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       512G  473G   40G  93% /data/gaia/dr2
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [GEDR3]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       540G  533G  7.9G  99% /data/gaia/edr3
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [ALLWISE]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       350G  341G  9.9G  98% /data/wise/allwise
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [PS1]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       300G  270G   31G  90% /data/panstarrs/dr1
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [2MASS]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        40G   37G  3.5G  92% /data/twomass/allsky
+    >   ----
+
+
+# -----------------------------------------------------
+# Check the CSI volumes, claims and testpods for the user volumes.
+#[root@kubernator]
+
+    sharelist='/common/manila/usershares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        podphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get pod \
+                    --output json \
+                    "${sharename:?}-testpod" \
+            | jq -r '.status.phase'
+            )
+
+        volphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get PersistentVolume \
+                    --output json \
+                        "${sharename:?}-volume" \
+            | jq -r '.status.phase'
+            )
+
+        claimphase=$(
+            kubectl \
+                --namespace "${namespace:?}" \
+                get PersistentVolumeClaim \
+                    --output json \
+                        "${sharename:?}-claim" \
+            | jq -r '.status.phase'
+            )
+
+        echo "Testpod [${podphase}]"
+        echo "Volume  [${volphase}]"
+        echo "Claim   [${claimphase}]"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.testpod" \
+                "${podphase}"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.volume" \
+                "${volphase}"
+
+        yq write \
+            --inplace \
+            '/tmp/aglais-status.yml' \
+                "aglais.status.kubernetes.csi-manila.${sharename:?}.claim" \
+                "${claimphase}"
+
+        echo "----"
+        kubectl \
+            --namespace "${namespace:?}" \
+            exec \
+                --tty \
+                --stdin \
+                "${sharename:?}-testpod" \
+                    -- \
+                        /usr/bin/df -h "${mountpath:?}"
+        echo "----"
+
+    done
+
+    >   ---- ----
+    >   Share [nch]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        10T  4.9T  5.2T  49% /user/nch
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [zrq]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T   30G  995G   3% /user/zrq
+    >   ----
+    >   
+    >   ---- ----
+    >   Share [stv]
+    >   Testpod [Running]
+    >   Volume  [Bound]
+    >   Claim   [Bound]
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T     0  1.0T   0% /user/stv
+    >   ----
+
+
+# -----------------------------------------------------
+# Check our results
+#[root@kubernator]
+
+    cat /tmp/aglais-status.yml
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: kubernetes
+    >         name: aglais-20210127
+    >         date: 20210127:050320
+    >       openstack:
+    >         cloudname: gaia-dev
+    >         magnum:
+    >           uuid: 350c310b-f343-439f-b265-3b5ac7f9d903
+    >       kubernetes:
+    >         namespace: aglais-20210127
+    >         ingress:
+    >           dashboard:
+    >             hostname: dashboard.metagrid.xyz
+    >             ipv4: 128.232.227.236
+    >           zeppelin:
+    >             hostname: zeppelin.metagrid.xyz
+    >             ipv4: null
+    >         csi-manila:
+    >           aglais-gaia-dr2:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-gaia-edr3:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-wise-allwise:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-panstarrs-dr1:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-twomass-allsky:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-user-nch:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-user-zrq:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+    >           aglais-user-stv:
+    >             testpod: Running
+    >             volume: Bound
+    >             claim: Bound
+
+

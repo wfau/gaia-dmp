@@ -1,0 +1,414 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#  
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+    Target:
+
+        Run the Ansible deploy with Zeppelin included customized for AXS
+
+    Result:
+
+        Success
+
+# -----------------------------------------------------
+#[user@desktop]
+# Edit Ansible scripts to change spark location to an AXS distribution, and Hadoop to version 2.7.4
+
+# https://archive.apache.org/dist/hadoop/core/hadoop-2.7.4/hadoop-2.7.4.tar.gz
+# https://github.com/stevenstetzler/axs/releases/download/v3.0.0-preview/axs-distribution.tgz
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler27 \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "clouduser=${AGLAIS_USER:?}" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:latest \
+        bash
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+
+	> ---- ----
+	  Done
+
+# -----------------------------------------------------
+# Run the main Ansible deployment.
+#[root@ansibler]
+
+    /hadoop-yarn/bin/create-all.sh \
+        "${cloudname:?}"
+
+
+# Some exceptions:
+
+# In 09-worker-volumes.yml 
+
+TASK [Check btrfs tools are installed] **********************************************************************************************************************************************************************
+fatal: [worker01]: FAILED! => {"ansible_facts": {"discovered_interpreter_python": "/usr/bin/python3"}, "changed": false, "msg": "Failed to synchronize cache for repo 'fedora'", "rc": 1, "results": []}
+changed: [worker02]
+changed: [worker03]
+
+
+# -------------------------------------------------------------
+# Create Hadoop logs, and change ownership to fedora:root in all nodes
+# For some reasons scripts did not handle this
+
+#...
+
+
+
+# -----------------------------------------------------
+#[user@zeppelin]
+# Repeat for master01, & all workers
+# Edit the slaves file to the workers (workers->slaves in hadoop 2.4.7)
+
+cd /opt/hadoop/etc/hadoop/
+
+sudo rm slaves
+sudo touch slaves
+sudo chown fedora:root slaves 
+
+sudo cat <<EOF >> slaves
+worker01
+worker02
+EOF
+
+
+
+
+
+
+# -----------------------------------------------------
+# Build our own distribution from axs-spark source code
+#[fedora@master01]
+
+# For this to work I had to checkout a specific version of the axs-spark, otherwise the maven build did not work
+# Additionally because we need Scala 2.11
+
+
+sudo yum install -y maven
+
+git clone https://github.com/astronomy-commons/axs.git
+pushd axs
+  git checkout master
+popd
+
+
+git clone https://github.com/astronomy-commons/axs-spark
+pushd axs-spark
+    git checkout axs-2.4.3
+popd 
+
+pushd axs/AxsUtilities
+  mvn package # runs maven to compile the AxsUtilities project, pom.xml sets configuration for build
+popd
+
+cp -r ./axs/axs ./axs-spark/python/. # adds python components of axs to Spark's PYTHONPATH
+cp -r ./axs/AxsUtilities/target/*.jar ./axs-spark/python/axs/. # adds compiled  AXS Jar for use in Spark
+
+
+# Make distribution
+pushd axs-spark
+    ./dev/make-distribution.sh --name AXS-Custom-Build --tgz -Phadoop-2.7.4 -Pmesos -Pyarn -Phive -Phive-thriftserver -Pkubernetes
+popd
+
+
+# Create hive-site.xml
+
+cat > "axs-spark/dist/conf/hive-site.xml" << EOF 
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<configuration>
+  <property>
+    <name>javax.jdo.option.ConnectionURL</name>
+    <value>jdbc:derby:/opt/spark/metastore_db;create=true</value>
+  </property>
+  <property>
+    <name>javax.jdo.option.ConnectionDriverName</name>
+    <value>org.apache.derby.jdbc.EmbeddedDriver</value>
+  </property>
+</configuration>
+
+EOF
+
+
+cat > "axs-spark/dist/conf/spark-defaults.conf" << EOF 
+
+spark.master            yarn
+spark.driver.memory              8g
+spark.yarn.am.memory            8g
+spark.executor.memory          8g
+spark.eventLog.enabled  true
+spark.driver.maxResultSize	8192m
+spark.local.dir         /opt/spark/local
+spark.executor.cores            4
+spark.executor.instances    4
+spark.yarn.am.cores  4
+spark.eventLog.enabled  true
+spark.eventLog.dir	hdfs://master01:9000/spark-log
+# END Ansible managed Spark configuration
+# BEGIN Ansible managed Spark environment
+# https://spark.apache.org/docs/3.0.0-preview2/configuration.html#inheriting-hadoop-cluster-configuration
+spark.yarn.appMasterEnv.YARN_CONF_DIR=/opt/hadoop/etc/hadoop
+spark.yarn.appMasterEnv.HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+# END Ansible managed Spark environment
+spark.sql.warehouse.dir=/warehouse
+
+
+EOF
+
+
+# Copy new distribution to Spark directory and set permissions
+sudo rm -r /opt/spark-3.0.0-preview-bin-AXS-v3.0.0-preview/*
+sudo cp -r /home/fedora/axs-spark/dist/* /opt/spark-3.0.0-preview-bin-AXS-v3.0.0-preview/
+sudo chown -R fedora:root /opt/spark-3.0.0-preview-bin-AXS-v3.0.0-preview/*
+
+cp /home/fedora/axs/AxsUtilities/target/AxsUtilities-1.0-SNAPSHOT.jar /opt/spark-3.0.0-preview-bin-AXS-v3.0.0-preview/jars/
+scp /home/fedora/axs/AxsUtilities/target/AxsUtilities-1.0-SNAPSHOT.jar zeppelin:/opt/spark-3.0.0-preview-bin-AXS-v3.0.0-preview/jars/
+
+
+# ----------------------------------------------------
+# Copy Spark files to Zeppelin
+#[fedora@master01]
+# (Requires /opt/spark under zeppelin to have the same permissions)
+
+
+ssh zeppelin \
+	'
+	sudo rm -r /opt/spark-3.0.0-preview-bin-AXS-v3.0.0-preview/*	
+	sudo chown fedora:root /opt/spark-3.0.0-preview-bin-AXS-v3.0.0-preview/
+	'
+
+
+scp -r /opt/spark-3.0.0-preview-bin-AXS-v3.0.0-preview/* zeppelin:/opt/spark-3.0.0-preview-bin-AXS-v3.0.0-preview
+
+
+# Set the permissions to the spark directory in Zeppelin
+ssh zeppelin \
+	'
+	sudo chown -r fedora:root /opt/spark-3.0.0-preview-bin-AXS-v3.0.0-preview/
+	'
+
+
+# ----------------------------------------------------
+# Restart Zeppelin & Hadoop
+#[fedora@master01]
+
+
+
+# Restart Hadoop
+
+stop-all.sh
+start-all.sh
+
+
+
+# Restart Zeppelin
+
+ssh zeppelin \
+	'
+	/home/fedora/zeppelin-0.8.2-bin-all/bin/zeppelin-daemon.sh restart
+	'
+
+
+# -----------------------------------------------------
+# Setup Spark Master & Deploy modes in Zeppelin
+#[user@zeppelin]
+
+
+# There seems to be an issue with how we define the Spark master parameter when using Hadoop 2.7.4 with Spark 3.0.0
+# Fix:
+
+Change master=yarn in Zeppelin -> Interpreters -> Spark
+Change spark.submit.deployMode=client  in Zeppelin -> Interpreters -> Spark
+
+
+
+
+# -----------------------------------------------------
+# Run some AXS commands in Pyspark
+#[fedora@master01]
+
+
+pyspark
+
+from axs import AxsCatalog, Constants
+db = AxsCatalog(spark)
+
+# Read Gaia parquet sample into Dataframe
+df = spark.read.parquet("file:///data/gaia/dr2/*.parquet").where("dec>89")
+
+# Write gaia_source dataframe to Spark Warehouse & save as AXS Table
+# This will probably produce an exception, but looks like files are actually written to AXS and HDFS
+db.save_axs_table(df, "gaia_sourceB", repartition=False, calculate_zone=True)
+
+
+db.import_existing_table('gaia_source', '', num_buckets=500, zone_height=Constants.ONE_AMIN,
+    import_into_spark=False, update_spark_bucketing=True)
+
+for tname in db.list_tables():
+    print(tname)
+
+> gaia_source
+
+
+
+
+# Read 2mass parquet sample into Dataframe
+df = spark.read.parquet("file:////user/nch/PARQUET/TESTS/2MASS/*.parquet").where("dec>89")
+
+# Write 2mass dataframe to Spark Warehouse & save as AXS Table
+# This will probably produce an exception, but looks like files are actually written to AXS and HDFS
+db.save_axs_table(df, "twomass", repartition=False, calculate_zone=True)
+
+
+
+db.import_existing_table('twomass', '', num_buckets=500, zone_height=Constants.ONE_AMIN,
+    import_into_spark=False, update_spark_bucketing=True)
+
+
+
+gaia = db.load('gaia_source')
+twomass = db.load('twomass')
+
+gaia_sdss_cm = gaia.crossmatch(twomass, 2*Constants.ONE_ASEC, return_min=False, include_dist_col=True)
+gaia_sdss_cm.show()
+
+
+...
+
+
+|27.556915632513597|91.34579941533521|66.09906872054427|       null|     null|                 null|                 null|   null|                null|                null|           null|                        null|                        null|       null|      null|                   null|                   null|      null|                null|                null|  0|   0.33|   0.28|      4|09202539+8917217 |16.548|  0.128|    0.129|    9.3|15.682|  0.136|    0.136|    8.2|15.543|  0.209|    0.209|   5.7|    BBC|   222|   111|   000|060606|17.4| 287| 981836169|         0|     0| 981836159|    n|2000-03-12|  73| 123.57|27.557|  -8.1|2451615.8045|    0.94|    1.05|    1.04|   16.695|       0.223|   15.747|       0.256|   15.775|       0.387|        2602|         243|           ne|      1|      1|  0|    null|   null|   null|    null|        0|   null|   52445|  1206233|  244|   0|7.718371684148714E-7|140.10587219271596|89.28936251571761|10757|
++-------------------+--------------------+-------------------+------------+---------+--------------------+--------------------+-------------------+--------------------+-------------------+--------------------+--------------------+-------------------+--------------------+------------+----------------+------------+-------------+-----------------+-------------+--------------+------------------+-------------------+---------------+--------------------+--------------------+-------------------------+------------------------+------------------+-------------------+------------------------+----------------------------+-------------------------+------------------------+---------------------+-------------------------+-------------------------------+--------------------+--------------------------------+-----------------------+-----------------------+-------------------------+--------------------+-----------------+------------+------------------+----------------------+---------------------------+---------------+-------------+------------------+-----------------------+----------------------------+----------------+-------------+------------------+-----------------------+----------------------------+----------------+------------------------+--------------+---------+-----------+----------+-----------------+---------------------+--------------+----------------+----------------+----------------+------------------+------------------+------------------+-----------------+-----------------+-----------+---------+---------------------+---------------------+-------+--------------------+--------------------+---------------+----------------------------+----------------------------+-----------+----------+-----------------------+-----------------------+----------+--------------------+--------------------+---+-------+-------+-------+-----------------+------+-------+---------+-------+------+-------+---------+-------+------+-------+---------+------+-------+------+------+------+------+----+----+----------+----------+------+----------+-----+----------+----+-------+------+------+------------+--------+--------+--------+---------+------------+---------+------------+---------+------------+------------+------------+-------------+-------+-------+---+--------+-------+-------+--------+---------+-------+--------+---------+-----+----+--------------------+------------------+-----------------+-----+
+only showing top 20 rows
+
+
+gaia_sdss_cm.count()
+1091       
+
+
+# Success (Seemingly)
+
+
+
+# -------------------------------------------------
+# fedora@master01
+# Check Spark shell for contents of Hive DB
+
+spark-shell
+Class.forName("org.apache.derby.jdbc.EmbeddedDriver")
+val conn = java.sql.DriverManager.getConnection("jdbc:derby:metastore_db;create=true", "", "")
+val stmt = conn.createStatement()
+val rs = stmt.executeQuery("select s.SCHEMANAME, t.TABLENAME from SYS.SYSTABLES t, SYS.SYSSCHEMAS s where t.schemaid = s.schemaid")
+while(rs.next()) {
+println(rs.getString(1)+"."+rs.getString(2))
+}
+
+>
+
+APP.AXSTABLES
+APP.BUCKETING_COLS
+APP.CDS
+APP.COLUMNS_V2
+APP.DATABASE_PARAMS
+APP.DBS
+APP.FUNCS
+APP.FUNC_RU
+APP.GLOBAL_PRIVS
+APP.PARTITIONS
+APP.PARTITION_KEYS
+APP.PARTITION_KEY_VALS
+APP.PARTITION_PARAMS
+APP.PART_COL_STATS
+APP.ROLES
+APP.SDS
+APP.SD_PARAMS
+APP.SEQUENCE_TABLE
+APP.SERDES
+APP.SERDE_PARAMS
+APP.SKEWED_COL_NAMES
+APP.SKEWED_COL_VALUE_LOC_MAP
+APP.SKEWED_STRING_LIST
+APP.SKEWED_STRING_LIST_VALUES
+APP.SKEWED_VALUES
+APP.SORT_COLS
+SYS.SYSALIASES
+SYS.SYSCHECKS
+SYS.SYSCOLPERMS
+SYS.SYSCOLUMNS
+SYS.SYSCONGLOMERATES
+SYS.SYSCONSTRAINTS
+SYS.SYSDEPENDS
+SYSIBM.SYSDUMMY1
+SYS.SYSFILES
+SYS.SYSFOREIGNKEYS
+SYS.SYSKEYS
+SYS.SYSPERMS
+SYS.SYSROLES
+SYS.SYSROUTINEPERMS
+SYS.SYSSCHEMAS
+SYS.SYSSEQUENCES
+SYS.SYSSTATEMENTS
+SYS.SYSSTATISTICS
+SYS.SYSTABLEPERMS
+SYS.SYSTABLES
+SYS.SYSTRIGGERS
+SYS.SYSUSERS
+SYS.SYSVIEWS
+APP.TABLE_PARAMS
+APP.TAB_COL_STATS
+APP.TBLS
+APP.VERSION
+
+
+
+
+
+# -------------------------------------------------
+# fedora@master01
+# Dealing with DB locks in Hive/Derby database
+
+# After running Spark in either shell (pyspark/ spark-shell) or Zeppelin, there seem to be locks created in the Hive metastore DB directory
+# To get Spark working again, these have to be deleted, which can be done by running:
+
+rm /opt/spark/metastore_db/db.lck
+rm /opt/spark/metastore_db/dbex.lck

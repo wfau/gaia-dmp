@@ -1,0 +1,428 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Install and test OAuthProxy with IRIS IAM.
+
+    Results:
+
+        Success :-)
+
+    Source:
+
+        Automated K8s deployment.
+        notes/zrq/20210127-01-kubernetes-deploy.txt
+
+        OAuthProxy deployment
+        notes/zrq/20210127-02-oauth-proxy-google.txt
+
+
+# -----------------------------------------------------
+# Configure our OAuth settings.
+#[user@kubernator]
+
+    deployname=iris
+
+    deployhostname=claire.metagrid.xyz
+    deployauthpath=pidjert
+    deploycallback=https://${deployhostname:?}/${deployauthpath:?}/callback
+
+
+# -----------------------------------------------------
+# Create our SSL keys and store them in a Kubernetes secret.
+# https://github.com/kubernetes/ingress-nginx/blob/master/docs/examples/PREREQUISITES.md#tls-certificates
+#[user@kubernator]
+
+    dnf install -y openssl
+
+    openssl req \
+        -x509 \
+        -sha256 \
+        -nodes \
+        -days 365 \
+        -newkey rsa:2048 \
+        -keyout /tmp/tls.key \
+        -out    /tmp/tls.crt \
+        -subj "/CN=${deployhostname:?}/O=Aglais"
+
+    >   Generating a RSA private key
+    >   .........+++++
+    >   .............................+++++
+    >   writing new private key to '/tmp/tls.key'
+
+
+    kubectl create secret \
+        tls \
+        ${deployname:?}-tls-secret \
+            --key  /tmp/tls.key \
+            --cert /tmp/tls.crt
+
+    >   secret/iris-tls-secret created
+
+
+# -----------------------------------------------------
+# Deploy a TLS test Ingress
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#deployment
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#validation
+#[user@kubernator]
+
+    cat << EOF > /tmp/${deployname:?}-tls-test.yaml
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: ${deployname:?}-tls-test
+spec:
+  tls:
+    - hosts:
+      - ${deployhostname}
+      secretName: ${deployname:?}-tls-secret
+  rules:
+    - host: ${deployhostname}
+      http:
+        paths:
+        - path: /tls-test
+          backend:
+            serviceName: http-svc
+            servicePort: 80
+EOF
+
+    kubectl apply \
+        --filename /tmp/${deployname:?}-tls-test.yaml
+
+    >   ingress.networking.k8s.io/iris-tls-test created
+
+
+    kubectl describe \
+        Ingress ${deployname:?}-tls-test
+
+    >   Name:             iris-tls-test
+    >   Namespace:        default
+    >   Address:          128.232.227.227
+    >   Default backend:  default-http-backend:80 (<error: endpoints "default-http-backend" not found>)
+    >   TLS:
+    >     iris-tls-secret terminates claire.metagrid.xyz
+    >   Rules:
+    >     Host                 Path  Backends
+    >     ----                 ----  --------
+    >     claire.metagrid.xyz
+    >                          /tls-test   http-svc:80 (10.100.1.14:8080)
+    >   Annotations:           Events:
+    >     Type                 Reason  Age   From                      Message
+    >     ----                 ------  ----  ----                      -------
+    >     Normal               CREATE  63s   nginx-ingress-controller  Ingress default/iris-tls-test
+    >     Normal               UPDATE  11s   nginx-ingress-controller  Ingress default/iris-tls-test
+
+
+    ingressip=$(
+        kubectl get \
+            Ingress ${deployname:?}-tls-test \
+                --output json \
+        | jq -r '.status.loadBalancer.ingress[0].ip'
+        )
+
+    echo "Ingress [${ingressip:?}]"
+
+    >   Ingress [128.232.227.227]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Update our internal and external DNS
+#[user@dns-serer]
+
+    aglais-001.metagrid.xyz    A       128.232.227.236
+
+    claire.metagrid.xyz        CNAME   aglais-001.metagrid.xyz.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Test HTTP to HTTPS redirect and our TLS keys.
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#deployment
+# https://github.com/kubernetes/ingress-nginx/tree/master/docs/examples/tls-termination#validation
+#[user@kubernator]
+
+
+    curl --head "http://${ingressip:?}/tls-test"
+
+    >   HTTP/1.1 404 Not Found
+    >   Date: Wed, 27 Jan 2021 17:51:46 GMT
+    >   ....
+    >   ....
+
+
+    curl --head "http://${deployhostname:?}/tls-test"
+
+    >   HTTP/1.1 308 Permanent Redirect
+    >   Date: Wed, 27 Jan 2021 17:51:55 GMT
+    >   ....
+    >   ....
+    >   Location: https://claire.metagrid.xyz/tls-test
+
+
+    curl --head "https://${deployhostname:?}/tls-test"
+
+    >   curl: (60) SSL certificate problem: self signed certificate
+    >   More details here: https://curl.haxx.se/docs/sslcerts.html
+    >   ....
+    >   ....
+
+
+    curl --insecure --head "https://${deployhostname:?}/tls-test"
+
+    >   HTTP/2 200
+    >   date: Wed, 27 Jan 2021 17:52:24 GMT
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Configure our IRIS secrets.
+#[user@kubernator]
+
+    dnf install -y python
+
+    OAUTH2_CLIENT_IDENT=$(
+        secret iris-iam.oauth.client
+        )
+    OAUTH2_CLIENT_SECRET=$(
+        secret iris-iam.oauth.secret
+        )
+    OAUTH2_COOKIE_SECRET=$(
+        python -c 'import os,base64; print(base64.b64encode(os.urandom(16)).decode("ascii"))'
+        )
+
+    OAUTH2_SERVER_ISSUER=https://iris-iam.stfc.ac.uk/
+    OAUTH2_SERVER_AUTH=https://iris-iam.stfc.ac.uk/authorize
+    OAUTH2_SERVER_TOKEN=https://iris-iam.stfc.ac.uk/token
+    OAUTH2_SERVER_USER=https://iris-iam.stfc.ac.uk/userinfo
+    OAUTH2_SERVER_JWKS=https://iris-iam.stfc.ac.uk/.well-known/openid-jwks
+
+# -----------------------------------------------------
+# Configure our oauth2_proxy Service.
+#[user@kubernator]
+
+    cat > /tmp/${deployname:?}-oauth-proxy.yaml << EOF
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+ labels:
+   k8s-app: ${deployname:?}-oauth-proxy
+ name: ${deployname:?}-oauth-proxy
+ namespace: default
+spec:
+ replicas: 1
+ selector:
+   matchLabels:
+     k8s-app: ${deployname:?}-oauth-proxy
+ template:
+   metadata:
+     labels:
+       k8s-app: ${deployname:?}-oauth-proxy
+   spec:
+     containers:
+     - name: ${deployname:?}-oauth-proxy
+       image: quay.io/oauth2-proxy/oauth2-proxy:latest
+       imagePullPolicy: Always
+       ports:
+       - containerPort: 4180
+         protocol: TCP
+       args:
+         - --provider=oidc
+         - --email-domain=*
+         - --http-address=0.0.0.0:4180
+         - --proxy-prefix=/${deployauthpath:?}
+         - --redirect-url=${deploycallback:?}
+         - --set-xauthrequest=true
+         - --client-id=${OAUTH2_CLIENT_IDENT:?}
+         - --client-secret=${OAUTH2_CLIENT_SECRET:?}
+         - --oidc-issuer-url=${OAUTH2_SERVER_ISSUER:?}
+         - --login-url=${OAUTH2_SERVER_AUTH:?}
+         - --redeem-url=${OAUTH2_SERVER_TOKEN:?}
+         - --profile-url=${OAUTH2_SERVER_USER:?}
+         - --oidc-jwks-url=${OAUTH2_SERVER_JWKS:?}
+         - --cookie-secret=${OAUTH2_COOKIE_SECRET:?}
+         - --ssl-insecure-skip-verify
+         - --ssl-upstream-insecure-skip-verify
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+ labels:
+   k8s-app: ${deployname:?}-oauth-proxy
+ name: ${deployname:?}-oauth-proxy
+ namespace: default
+spec:
+ ports:
+ - name: http
+   port: 4180
+   protocol: TCP
+   targetPort: 4180
+ selector:
+   k8s-app: ${deployname:?}-oauth-proxy
+EOF
+
+
+# -----------------------------------------------------
+# Deploy the OAuth proxy.
+#[user@kubernator]
+
+    kubectl create \
+        --filename /tmp/${deployname:?}-oauth-proxy.yaml
+
+    >   deployment.apps/iris-oauth-proxy created
+    >   service/iris-oauth-proxy created
+
+
+# -----------------------------------------------------
+# Configure the oauth_proxy Ingress.
+#[user@kubernator]
+
+    #
+    # WARNING The auth-url and auth-signin URLs contain '$' values.
+    # WARNING If bash tries to fill them in, they will end up blank.
+    #   https:///oauth2/auth
+    #   https:///oauth2/start?rd
+    # WARNING This disables the authentication, leaving the protected resource exposed.
+    #
+
+    cat > /tmp/${deployname:?}-oauth-ingress.yaml << EOF
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+ annotations:
+   nginx.ingress.kubernetes.io/auth-url:    "https://\$host/${deployauthpath:?}/auth"
+   nginx.ingress.kubernetes.io/auth-signin: "https://\$host/${deployauthpath:?}/start?rd=\$escaped_request_uri"
+   nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user, x-auth-request-email"
+ name: ${deployname:?}-oauth-protected
+ namespace: default
+spec:
+ rules:
+ - host: ${deployhostname:?}
+   http:
+     paths:
+     - path: /
+       backend:
+         serviceName: http-svc
+         servicePort: 80
+ tls:
+ - hosts:
+   - ${deployhostname:?}
+   secretName: ${deployname:?}-tls-secret
+
+---
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+ name: ${deployname:?}-oauth-protector
+ namespace: default
+spec:
+ rules:
+ - host: ${deployhostname:?}
+   http:
+     paths:
+     - path: /${deployauthpath:?}
+       backend:
+         serviceName: ${deployname:?}-oauth-proxy
+         servicePort: 4180
+ tls:
+ - hosts:
+   - ${deployhostname:?}
+   secretName: ${deployname:?}-tls-secret
+EOF
+
+
+# -----------------------------------------------------
+# Deploy the OAuth Ingress connectors.
+#[user@kubernator]
+
+    kubectl apply \
+        --filename /tmp/${deployname:?}-oauth-ingress.yaml
+
+    >   ingress.networking.k8s.io/iris-oauth-protected created
+    >   ingress.networking.k8s.io/iris-oauth-protector created
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Test the deployment.
+#[user@desktop]
+
+    firefox "http://claire.metagrid.xyz/frog" &
+
+    >
+    >   Hostname: http-svc-66b7b8b4c6-9dgxg
+    >
+    >   Pod Information:
+    >   	node name:	aglais-20210127-cluster-bq7hhlqwjr57-node-3
+    >   	pod name:	http-svc-66b7b8b4c6-9dgxg
+    >   	pod namespace:	default
+    >   	pod IP:	10.100.1.14
+    >
+    >   Server values:
+    >   	server_version=nginx: 1.12.2 - lua: 10010
+    >
+    >   Request Information:
+    >   	client_address=10.100.3.3
+    >   	method=GET
+    >   	real path=/frog
+    >   	query=
+    >   	request_version=1.1
+    >   	request_scheme=http
+    >   	request_uri=http://claire.metagrid.xyz:8080/frog
+    >
+    >   Request Headers:
+    >   	accept=text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+    >   	accept-encoding=gzip, deflate, br
+    >   	accept-language=en-GB,en;q=0.5
+    >   	cookie=_oauth2_proxy=ivsL........PShs=
+    >   	dnt=1
+    >   	host=claire.metagrid.xyz
+    >   	upgrade-insecure-requests=1
+    >   	user-agent=Mozilla/5.0 (X11; Fedora; Linux x86_64; rv:84.0) Gecko/20100101 Firefox/84.0
+    >   	x-auth-request-email=........
+    >   	x-auth-request-user=........
+    >   	x-forwarded-for=10.100.4.0
+    >   	x-forwarded-host=claire.metagrid.xyz
+    >   	x-forwarded-port=443
+    >   	x-forwarded-proto=https
+    >   	x-real-ip=10.100.4.0
+    >   	x-request-id=f246........fd8d
+    >   	x-scheme=https
+    >
+    >   Request Body:
+    >   	-no body in request-
+    >
+
+
+
+

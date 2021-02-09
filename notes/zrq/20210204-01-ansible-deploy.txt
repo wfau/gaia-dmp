@@ -1,0 +1,235 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Update the Ansible deploy to test different topologies.
+
+    Results:
+
+        Work in progress ....
+
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Create our Aglais configuration.
+#[root@kubernator]
+
+cat > '/tmp/aglais-config.yml' << EOF
+aglais:
+    version: 1.0
+    spec:
+        openstack:
+            cloud: '${cloudname:?}'
+
+EOF
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   ....
+    >   ....
+    >   real    3m21.713s
+    >   user    1m10.454s
+    >   sys     0m10.161s
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    time \
+        /hadoop-yarn/bin/create-all.sh
+
+    >   ....
+    >   ....
+    >   TASK [Check btrfs tools are installed] *****************************************************************************************
+    >   fatal: [worker02]: FAILED! => {"changed": false, "msg": "Failed to synchronize cache for repo 'fedora'", "rc": 1, "results": []}
+    >   fatal: [worker04]: FAILED! => {"changed": false, "msg": "Failed to synchronize cache for repo 'fedora'", "rc": 1, "results": []}
+    >   changed: [worker03]
+    >   changed: [worker01]
+    >   ....
+    >   ....
+
+    >   real    29m4.501s
+    >   user    6m47.050s
+    >   sys     1m12.155s
+
+
+# -----------------------------------------------------
+# Check the results.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         name: gaia-dev-20210205
+    >         date: 20210205T132244
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    echo "Deployment [${deployname}]"
+
+    >   Deployment [gaia-dev-20210205]
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [79143a1b-4a77-4108-b1e2-58349031ee81]
+    >   Zeppelin IP [128.232.227.204]
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the data shares.
+#[root@ansibler]
+
+    sharelist='/common/manila/datashares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+        echo "----"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        ssh "fedora@${zeppelinip:?}" \
+            "
+            date
+            hostname
+            echo '----'
+            df -h  '${mountpath:?}'
+            echo '----'
+            ls -al '${mountpath:?}' | tail
+            "
+    done
+
+
+    >   Share [GDR2]
+    >   ----
+    >   Fri Feb  5 13:57:00 UTC 2021
+    >   gaia-dev-20210205-zeppelin.novalocal
+    >   ----
+    >   ----
+    >   df: /data/gaia/dr2: No such file or directory
+    >   ls: cannot access '/data/gaia/dr2': No such file or directory
+    >   
+    >   ....
+    >   ....
+
+    #
+    # The create-all script stopped because the main Ansible deployment failed.
+    # Issues resolving the fedora updates repository.
+    #
+
+
+
+

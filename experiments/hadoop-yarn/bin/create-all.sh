@@ -38,11 +38,22 @@
 
     configyml=${1:-'/tmp/aglais-config.yml'}
     statusyml=${2:-'/tmp/aglais-status.yml'}
-
-    buildname="aglais-$(date '+%Y%m%d')"
-    builddate="$(date '+%Y%m%d:%H%M%S')"
-
     touch "${statusyml:?}"
+
+    cloudname=$(
+        yq read \
+            "${configyml:?}" \
+                'aglais.spec.openstack.cloud'
+        )
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.spec.openstack.cloud' \
+            "${cloudname}"
+
+    deployname="${cloudname:?}-$(date '+%Y%m%d')"
+    deploydate=$(date '+%Y%m%dT%H%M%S')
+
     yq write \
         --inplace \
         "${statusyml:?}" \
@@ -52,38 +63,37 @@
         --inplace \
         "${statusyml:?}" \
             'aglais.status.deployment.name' \
-            "${buildname}"
+            "${deployname}"
     yq write \
         --inplace \
         "${statusyml:?}" \
             'aglais.status.deployment.date' \
-            "${builddate}"
+            "${deploydate}"
 
-    cloudname=$(
-        yq read \
-            "${configyml:?}" \
-                'aglais.spec.openstack.cloudname'
-        )
-    yq write \
-        --inplace \
-        "${statusyml:?}" \
-            'aglais.spec.openstack.cloudname' \
-            "${cloudname}"
 
     echo "---- ---- ----"
-    echo "Config yml [${configyml}]"
-    echo "Build name [${buildname}]"
     echo "Cloud name [${cloudname}]"
+    echo "Deployment [${deployname}]"
     echo "---- ---- ----"
 
 
 # -----------------------------------------------------
 # Create our Ansible include vars file.
 
-    cat > /tmp/ansible-vars.yml << EOF
-buildtag:  '${buildname:?}'
-cloudname: '${cloudname:?}'
-EOF
+    ln -sf "${statusyml}" '/tmp/ansible-vars.yml'
+
+#
+#    cat > /tmp/ansible-vars.yml << EOF
+#aglais:
+#  version: 1.0
+#  spec:
+#    deployment:
+#        name: '${deployname:?}'
+#    openstack:
+#        cloud: '${cloudname:?}'
+#
+#
+#EOF
 
 # -----------------------------------------------------
 # Create the machines, deploy Hadoop and Spark.
@@ -130,7 +140,7 @@ EOF
 
     '/hadoop-yarn/bin/cephfs-router.sh' \
         "${cloudname:?}" \
-        "${buildname:?}"
+        "${deployname:?}"
 
 
 # -----------------------------------------------------

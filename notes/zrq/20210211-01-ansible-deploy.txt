@@ -1,0 +1,771 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Get Spark to work with the new configuration.
+
+        Test config:
+            no gateway
+            medium zeppelin
+            6 small workers
+
+    Results:
+
+        Work in progress ....
+
+    TODO:
+
+        To keep consistent with the other deployments,
+        deploy Zeppelin in /opt rather than /home/fedora.
+
+        To keep consistent with the other deployments,
+        add a symlik for the Zeppelin deployment.
+
+            zeppelin -> zeppelin-0.8.2-bin-all
+
+        Move the zeppelin logs directory out of the
+        deployed source tree.
+
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Create our Aglais configuration.
+#[root@kubernator]
+
+cat > '/tmp/aglais-config.yml' << EOF
+aglais:
+    version: 1.0
+    spec:
+        openstack:
+            cloud: '${cloudname:?}'
+
+EOF
+
+
+# -----------------------------------------------------
+# Create everything from scratch.
+#[root@ansibler]
+
+    time \
+        /openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    rm -f ~/.ssh/*
+
+    time \
+        /hadoop-yarn/bin/create-all.sh
+
+
+    >   ....
+    >   ....
+    >   real    38m51.791s
+    >   user    10m10.096s
+    >   sys     3m6.966s
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [e4db55cb-2106-4f24-afe6-e335f98ecca1]
+    >   Zeppelin IP [128.232.227.230]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Update our DNS
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin ...
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.metagrid.xyz:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+    Import notebooks from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forrest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+# -----------------------------------------------------
+# Check the Zeppelin logs.
+#[user@zeppelin]
+
+    pushd /home/fedora
+
+        tail -f zeppelin-0.8.2-bin-all/logs/zeppelin-interpreter-spark-fedora-gaia-dev-20210210-zeppelin.novalocal.log
+
+
+    top on the worker nodes show 90% idle, then peaks of activity
+
+        50%cpu to cheph-fuse
+        10%cpu to java
+
+# -----------------------------------------------------
+# Check the Spark temp on Zeppelin.
+#[user@zeppelin]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        echo
+        ls -1 /var/spark/temp/
+        echo
+        du -h -d 1 /var/spark/temp/
+        '
+
+    >   Thu Feb 11 11:42:45 UTC 2021
+    >   gaia-dev-20210211-zeppelin.novalocal
+    >   
+    >   blockmgr-6e40f938-4cea-4e51-aa7d-7b8e8d957fd9
+    >   spark-02a20dcf-c44b-46fd-aba2-84dcd4092b77
+    >   
+    >   220K    /var/spark/temp/spark-02a20dcf-c44b-46fd-aba2-84dcd4092b77
+    >   168K    /var/spark/temp/blockmgr-6e40f938-4cea-4e51-aa7d-7b8e8d957fd9
+    >   392K    /var/spark/temp/
+
+
+# -----------------------------------------------------
+# Check the Spark temp on workers.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        ssh worker01 \
+            "
+            date
+            hostname
+            echo
+            ls -1 /var/spark/temp/
+            echo
+            du -h -d 1 /var/spark/temp/
+            "
+        '
+
+    >   Thu Feb 11 11:43:12 UTC 2021
+    >   gaia-dev-20210211-worker01.novalocal
+    >   
+    >   ls: cannot access '/var/spark/temp/': No such file or directory
+    >   
+    >   du: cannot access '/var/spark/temp/': No such file or directory
+
+
+
+# -----------------------------------------------------
+# Check /tmp on workers01.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        ssh worker01 \
+            "
+            date
+            hostname
+            echo
+            ls -1 /tmp/
+            echo
+            du -h -d 1 /tmp/
+            "
+        '
+
+    >   Thu Feb 11 11:44:10 UTC 2021
+    >   gaia-dev-20210211-worker01.novalocal
+    >   
+    >   hadoop-fedora
+    >   hadoop-fedora-datanode.pid
+    >   hadoop-fedora-nodemanager.pid
+    >   hsperfdata_fedora
+    >   hsperfdata_root
+    >   jetty-0.0.0.0-8042-node-_-any-222466267334014063.dir
+    >   jetty-localhost-41565-datanode-_-any-8693046579271702220.dir
+    >   systemd-private-25d0add6979849dcaa7ef3260c7db798-chronyd.service-WR7RUG
+    >   systemd-private-25d0add6979849dcaa7ef3260c7db798-dbus-broker.service-YbHwCr
+    >   
+    >   4.0K    /tmp/jetty-localhost-41565-datanode-_-any-8693046579271702220.dir
+    >   du: cannot read directory '/tmp/systemd-private-25d0add6979849dcaa7ef3260c7db798-chronyd.service-WR7RUG': Permission denied
+    >   4.0K    /tmp/systemd-private-25d0add6979849dcaa7ef3260c7db798-chronyd.service-WR7RUG
+    >   4.0K    /tmp/systemd-private-25d0add6979849dcaa7ef3260c7db798-dbus-broker.service-YbHwCr
+    >   4.0K    /tmp/.ICE-unix
+    >   4.0K    /tmp/.X11-unix
+    >   4.0K    /tmp/.Test-unix
+    >   8.0K    /tmp/jetty-0.0.0.0-8042-node-_-any-222466267334014063.dir
+    >   4.0K    /tmp/.font-unix
+    >   du: cannot read directory '/tmp/systemd-private-25d0add6979849dcaa7ef3260c7db798-dbus-broker.service-YbHwCr': Permission denied
+    >   100K    /tmp/hsperfdata_fedora
+    >   4.0K    /tmp/.XIM-unix
+    >   235M    /tmp/hadoop-fedora
+    >   36K     /tmp/hsperfdata_root
+    >   235M    /tmp/
+
+
+# -----------------------------------------------------
+# Check the Zeppelin machine
+#[user@zeppelin]
+
+    ls -1 /home/fedora
+
+    >   spark-warehouse
+    >   zeppelin-0.8.2-bin-all
+
+
+    ls -1 /home/fedora/spark-warehouse
+
+    >   -
+
+
+    ls -1 /home/fedora/zeppelin-0.8.2-bin-all
+
+    >   bin
+    >   conf
+    >   interpreter
+    >   lib
+    >   LICENSE
+    >   licenses
+    >   local-repo
+    >   logs
+    >   notebook
+    >   NOTICE
+    >   README.md
+    >   run
+    >   webapps
+    >   zeppelin-web-0.8.2.war
+
+
+    ls -1 /home/fedora/zeppelin-0.8.2-bin-all/logs
+
+    >   zeppelin-fedora-gaia-dev-20210211-zeppelin.novalocal.log
+    >   zeppelin-fedora-gaia-dev-20210211-zeppelin.novalocal.out
+    >   zeppelin-interpreter-md-fedora-gaia-dev-20210211-zeppelin.novalocal.log
+    >   zeppelin-interpreter-spark-fedora-gaia-dev-20210211-zeppelin.novalocal.log
+
+
+# -----------------------------------------------------
+# Check the Zeppelin log
+#[user@zeppelin]
+
+    pushd  /home/fedora/zeppelin-0.8.2-bin-all/logs
+
+        ls -1 .
+
+    >   zeppelin-fedora-gaia-dev-20210211-zeppelin.novalocal.log
+    >   zeppelin-fedora-gaia-dev-20210211-zeppelin.novalocal.out
+    >   zeppelin-interpreter-md-fedora-gaia-dev-20210211-zeppelin.novalocal.log
+    >   zeppelin-interpreter-spark-fedora-gaia-dev-20210211-zeppelin.novalocal.log
+
+
+        less zeppelin-fedora-gaia-dev-20210211-zeppelin.novalocal.log
+
+    >   INFO [2021-02-11 07:17:07,710] ({main} ZeppelinConfiguration.java[create]:121) - Load configuration from file:/home/fedora/zeppelin-0.8.2-bin-all/conf/zeppelin-site.xml
+    >    INFO [2021-02-11 07:17:07,750] ({main} ZeppelinConfiguration.java[create]:129) - Server Host: 10.10.0.88
+    >    INFO [2021-02-11 07:17:07,750] ({main} ZeppelinConfiguration.java[create]:131) - Server Port: 8080
+    >    INFO [2021-02-11 07:17:07,751] ({main} ZeppelinConfiguration.java[create]:135) - Context Path: /
+    >    INFO [2021-02-11 07:17:07,752] ({main} ZeppelinConfiguration.java[create]:136) - Zeppelin Version: 0.8.2
+    >   ....
+    >   ....
+    >    INFO [2021-02-11 10:31:27,611] ({pool-2-thread-2} SchedulerFactory.java[jobStarted]:114) - Job 20201013-131059_546082898 started by scheduler org.apache.zeppelin.interpreter.remote.RemoteInterpreter-md:shared_proces
+    >   s-shared_session
+    >    INFO [2021-02-11 10:31:27,612] ({pool-2-thread-2} Paragraph.java[jobRun]:381) - Run paragraph [paragraph_id: 20201013-131059_546082898, interpreter: md, note_id: 2FYW1HNED, user: gaiauser]
+    >    INFO [2021-02-11 10:31:27,612] ({pool-2-thread-2} ManagedInterpreterGroup.java[getOrCreateInterpreterProcess]:61) - Create InterpreterProcess for InterpreterGroup: md:shared_process
+    >    INFO [2021-02-11 10:31:27,612] ({pool-2-thread-2} ShellScriptLauncher.java[launch]:48) - Launching Interpreter: md
+    >    INFO [2021-02-11 10:31:27,623] ({pool-2-thread-2} RemoteInterpreterManagedProcess.java[start]:115) - Thrift server for callback will start. Port: 39353
+    >    INFO [2021-02-11 10:31:27,631] ({pool-2-thread-2} RemoteInterpreterManagedProcess.java[start]:190) - Run interpreter process [/home/fedora/zeppelin-0.8.2-bin-all/bin/interpreter.sh, -d, /home/fedora/zeppelin-0.8.2-b
+    >   in-all/interpreter/md, -c, 10.10.0.88, -p, 39353, -r, :, -l, /home/fedora/zeppelin-0.8.2-bin-all/local-repo/md, -g, md]
+    >    INFO [2021-02-11 10:31:27,890] ({pool-7-thread-1} RemoteInterpreterManagedProcess.java[callback]:123) - RemoteInterpreterServer Registered: CallbackInfo(host:10.10.0.88, port:33847)
+    >    INFO [2021-02-11 10:31:27,925] ({pool-2-thread-2} RemoteInterpreter.java[call]:168) - Create RemoteInterpreter org.apache.zeppelin.markdown.Markdown
+    >    INFO [2021-02-11 10:31:28,006] ({pool-2-thread-2} RemoteInterpreter.java[call]:142) - Open RemoteInterpreter org.apache.zeppelin.markdown.Markdown
+    >    INFO [2021-02-11 10:31:28,006] ({pool-2-thread-2} RemoteInterpreter.java[pushAngularObjectRegistryToRemote]:436) - Push local angular object registry from ZeppelinServer to remote interpreter group md:shared_process
+    >    INFO [2021-02-11 10:31:28,371] ({pool-2-thread-2} NotebookServer.java[afterStatusChange]:2314) - Job 20201013-131059_546082898 is finished successfully, status: FINISHED
+    >    INFO [2021-02-11 10:31:28,438] ({pool-2-thread-2} VFSNotebookRepo.java[save]:196) - Saving note:2FYW1HNED
+    >    INFO [2021-02-11 10:31:28,441] ({pool-2-thread-2} SchedulerFactory.java[jobFinished]:120) - Job 20201013-131059_546082898 finished by scheduler org.apache.zeppelin.interpreter.remote.RemoteInterpreter-md:shared_proc
+    >   ess-shared_session
+    >    INFO [2021-02-11 10:31:28,458] ({qtp1580893732-14} VFSNotebookRepo.java[save]:196) - Saving note:2FYW1HNED
+    >   ....
+    >   ....
+    >    INFO [2021-02-11 10:31:28,462] ({pool-2-thread-3} SchedulerFactory.java[jobStarted]:114) - Job 20201013-131649_1734629667 started by scheduler org.apache.zeppelin.interpreter.remote.RemoteInterpreter-spark:shared_pr
+    >   ocess-shared_session
+    >    INFO [2021-02-11 10:31:28,462] ({pool-2-thread-3} Paragraph.java[jobRun]:381) - Run paragraph [paragraph_id: 20201013-131649_1734629667, interpreter: spark.pyspark, note_id: 2FYW1HNED, user: gaiauser]
+    >    INFO [2021-02-11 10:31:28,462] ({pool-2-thread-3} ManagedInterpreterGroup.java[getOrCreateInterpreterProcess]:61) - Create InterpreterProcess for InterpreterGroup: spark:shared_process
+    >    INFO [2021-02-11 10:31:28,463] ({pool-2-thread-3} ShellScriptLauncher.java[launch]:48) - Launching Interpreter: spark
+    >    INFO [2021-02-11 10:31:28,464] ({pool-2-thread-3} SparkInterpreterLauncher.java[buildEnvFromProperties]:108) - Run Spark under non-secure mode as no keytab and principal is specified
+    >    INFO [2021-02-11 10:31:28,464] ({pool-2-thread-3} RemoteInterpreterManagedProcess.java[start]:115) - Thrift server for callback will start. Port: 39131
+    >    INFO [2021-02-11 10:31:28,965] ({pool-2-thread-3} RemoteInterpreterManagedProcess.java[start]:190) - Run interpreter process [/home/fedora/zeppelin-0.8.2-bin-all/bin/interpreter.sh, -d, /home/fedora/zeppelin-0.8.2-b
+    >   in-all/interpreter/spark, -c, 10.10.0.88, -p, 39131, -r, :, -l, /home/fedora/zeppelin-0.8.2-bin-all/local-repo/spark, -g, spark]
+    >    INFO [2021-02-11 10:31:30,280] ({pool-9-thread-1} RemoteInterpreterManagedProcess.java[callback]:123) - RemoteInterpreterServer Registered: CallbackInfo(host:10.10.0.88, port:39975)
+    >    INFO [2021-02-11 10:31:30,282] ({pool-2-thread-3} RemoteInterpreter.java[call]:168) - Create RemoteInterpreter org.apache.zeppelin.spark.SparkInterpreter
+    >    INFO [2021-02-11 10:31:30,336] ({pool-2-thread-3} RemoteInterpreter.java[call]:168) - Create RemoteInterpreter org.apache.zeppelin.spark.SparkSqlInterpreter
+    >    INFO [2021-02-11 10:31:30,337] ({pool-2-thread-3} RemoteInterpreter.java[call]:168) - Create RemoteInterpreter org.apache.zeppelin.spark.DepInterpreter
+    >    INFO [2021-02-11 10:31:30,342] ({pool-2-thread-3} RemoteInterpreter.java[call]:168) - Create RemoteInterpreter org.apache.zeppelin.spark.PySparkInterpreter
+    >    INFO [2021-02-11 10:31:30,346] ({pool-2-thread-3} RemoteInterpreter.java[call]:168) - Create RemoteInterpreter org.apache.zeppelin.spark.IPySparkInterpreter
+    >    INFO [2021-02-11 10:31:30,349] ({pool-2-thread-3} RemoteInterpreter.java[call]:168) - Create RemoteInterpreter org.apache.zeppelin.spark.SparkRInterpreter
+    >    INFO [2021-02-11 10:31:30,350] ({pool-2-thread-3} RemoteInterpreter.java[call]:142) - Open RemoteInterpreter org.apache.zeppelin.spark.PySparkInterpreter
+    >    INFO [2021-02-11 10:31:30,350] ({pool-2-thread-3} RemoteInterpreter.java[pushAngularObjectRegistryToRemote]:436) - Push local angular object registry from ZeppelinServer to remote interpreter group spark:shared_proc
+    >   ess
+    >    INFO [2021-02-11 10:32:38,857] ({pool-2-thread-3} NotebookServer.java[afterStatusChange]:2314) - Job 20201013-131649_1734629667 is finished successfully, status: FINISHED
+    >   ....
+    >   ....
+    >   ....
+    >   ....
+    >    INFO [2021-02-11 10:59:05,185] ({pool-2-thread-3} SchedulerFactory.java[jobStarted]:114) - Job 20201013-152110_1282917873 started by scheduler org.apache.zeppelin.interpreter.remote.RemoteInterpreter-spark:shared_process-shared_session
+    >    INFO [2021-02-11 10:59:05,186] ({pool-2-thread-3} Paragraph.java[jobRun]:381) - Run paragraph [paragraph_id: 20201013-152110_1282917873, interpreter: spark.pyspark, note_id: 2FYW1HNED, user: gaiauser]
+    >    WARN [2021-02-11 11:06:34,508] ({pool-2-thread-3} NotebookServer.java[afterStatusChange]:2316) - Job 20201013-152110_1282917873 is finished, status: ERROR, exception: null, result: %text ESC[0;31m---------------------------------------------------------------------------ESC[0m
+    >   ESC[0;31mPy4JJavaErrorESC[0m                             Traceback (most recent call last)
+    >   ESC[0;32m<ipython-input-14-d1302027d275>ESC[0m in ESC[0;36m<module>ESC[0;34mESC[0m
+    >   ESC[1;32m      6ESC[0m ESC[0;31m# instantiate a trained RF classifier, seeded for repeatability at this stage:ESC[0mESC[0;34mESC[0mESC[0;34mESC[0mESC[0;34mESC[0mESC[0m
+    >   ....
+    >   ....
+    >   ESC[0;32m/opt/spark/python/lib/py4j-0.10.7-src.zip/py4j/protocol.pyESC[0m in ESC[0;36mget_return_valueESC[0;34m(answer, gateway_client, target_id, name)ESC[0m
+    >   ESC[1;32m    326ESC[0m                 raise Py4JJavaError(
+    >   ESC[1;32m    327ESC[0m                     ESC[0;34m"An error occurred while calling {0}{1}{2}.\n"ESC[0mESC[0;34m.ESC[0mESC[0;34mESC[0mESC[0;34mESC[0mESC[0m
+    >   ESC[0;32m--> 328ESC[0;31m                     format(target_id, ".", name), value)
+    >   ESC[0mESC[1;32m    329ESC[0m             ESC[0;32melseESC[0mESC[0;34m:ESC[0mESC[0;34mESC[0mESC[0;34mESC[0mESC[0m
+    >   ESC[1;32m    330ESC[0m                 raise Py4JError(
+    >   
+    >   ESC[0;31mPy4JJavaErrorESC[0m: An error occurred while calling o191.fit.
+    >   : org.apache.spark.SparkException: Job aborted due to stage failure: Task 3226 in stage 35.0 failed 4 times, most recent failure: Lost task 3226.3 in stage 35.0 (TID 122005, worker05, executor 2): java.io.IOException: No space left on device
+    >           at java.io.FileOutputStream.writeBytes(Native Method)
+    >           at java.io.FileOutputStream.write(FileOutputStream.java:326)
+    >           at org.apache.spark.storage.TimeTrackingOutputStream.write(TimeTrackingOutputStream.java:58)
+    >           at java.io.BufferedOutputStream.flushBuffer(BufferedOutputStream.java:82)
+    >           at java.io.BufferedOutputStream.flush(BufferedOutputStream.java:140)
+    >           at net.jpountz.lz4.LZ4BlockOutputStream.finish(LZ4BlockOutputStream.java:260)
+    >           at net.jpountz.lz4.LZ4BlockOutputStream.close(LZ4BlockOutputStream.java:190)
+    >           at java.io.ObjectOutputStream$BlockDataOutputStream.close(ObjectOutputStream.java:1828)
+    >           at java.io.ObjectOutputStream.close(ObjectOutputStream.java:742)
+    >           at org.apache.spark.serializer.JavaSerializationStream.close(JavaSerializer.scala:57)
+    >           at org.apache.spark.storage.DiskBlockObjectWriter.commitAndGet(DiskBlockObjectWriter.scala:173)
+    >           at org.apache.spark.util.collection.ExternalSorter.writePartitionedFile(ExternalSorter.scala:701)
+    >           at org.apache.spark.shuffle.sort.SortShuffleWriter.write(SortShuffleWriter.scala:71)
+    >           at org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:99)
+    >           at org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:55)
+    >           at org.apache.spark.scheduler.Task.run(Task.scala:123)
+    >           at org.apache.spark.executor.Executor$TaskRunner$$anonfun$10.apply(Executor.scala:408)
+    >           at org.apache.spark.util.Utils$.tryWithSafeFinally(Utils.scala:1360)
+    >           at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:414)
+    >           at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    >           at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    >           at java.lang.Thread.run(Thread.java:748)
+    >   
+    >   Driver stacktrace:
+    >           at org.apache.spark.scheduler.DAGScheduler.org$apache$spark$scheduler$DAGScheduler$$failJobAndIndependentStages(DAGScheduler.scala:1925)
+    >           at org.apache.spark.scheduler.DAGScheduler$$anonfun$abortStage$1.apply(DAGScheduler.scala:1913)
+    >           at org.apache.spark.scheduler.DAGScheduler$$anonfun$abortStage$1.apply(DAGScheduler.scala:1912)
+    >           at scala.collection.mutable.ResizableArray$class.foreach(ResizableArray.scala:59)
+    >           at scala.collection.mutable.ArrayBuffer.foreach(ArrayBuffer.scala:48)
+    >           at org.apache.spark.scheduler.DAGScheduler.abortStage(DAGScheduler.scala:1912)
+    >           at org.apache.spark.scheduler.DAGScheduler$$anonfun$handleTaskSetFailed$1.apply(DAGScheduler.scala:948)
+    >           at org.apache.spark.scheduler.DAGScheduler$$anonfun$handleTaskSetFailed$1.apply(DAGScheduler.scala:948)
+    >           at scala.Option.foreach(Option.scala:257)
+    >           at org.apache.spark.scheduler.DAGScheduler.handleTaskSetFailed(DAGScheduler.scala:948)
+    >           at org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.doOnReceive(DAGScheduler.scala:2146)
+    >           at org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.onReceive(DAGScheduler.scala:2095)
+    >           at org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.onReceive(DAGScheduler.scala:2084)
+    >           at org.apache.spark.util.EventLoop$$anon$1.run(EventLoop.scala:49)
+    >           at org.apache.spark.scheduler.DAGScheduler.runJob(DAGScheduler.scala:759)
+    >           at org.apache.spark.SparkContext.runJob(SparkContext.scala:2061)
+    >           at org.apache.spark.SparkContext.runJob(SparkContext.scala:2082)
+    >           at org.apache.spark.SparkContext.runJob(SparkContext.scala:2101)
+    >           at org.apache.spark.SparkContext.runJob(SparkContext.scala:2126)
+    >           at org.apache.spark.rdd.RDD$$anonfun$collect$1.apply(RDD.scala:990)
+    >           at org.apache.spark.rdd.RDDOperationScope$.withScope(RDDOperationScope.scala:151)
+    >           at org.apache.spark.rdd.RDDOperationScope$.withScope(RDDOperationScope.scala:112)
+    >           at org.apache.spark.rdd.RDD.withScope(RDD.scala:385)
+    >           at org.apache.spark.rdd.RDD.collect(RDD.scala:989)
+    >           at org.apache.spark.rdd.PairRDDFunctions$$anonfun$collectAsMap$1.apply(PairRDDFunctions.scala:743)
+    >           at org.apache.spark.rdd.PairRDDFunctions$$anonfun$collectAsMap$1.apply(PairRDDFunctions.scala:742)
+    >           at org.apache.spark.rdd.RDDOperationScope$.withScope(RDDOperationScope.scala:151)
+    >           at org.apache.spark.rdd.RDDOperationScope$.withScope(RDDOperationScope.scala:112)
+    >           at org.apache.spark.rdd.RDD.withScope(RDD.scala:385)
+    >           at org.apache.spark.rdd.PairRDDFunctions.collectAsMap(PairRDDFunctions.scala:742)
+    >           at org.apache.spark.ml.tree.impl.RandomForest$.findBestSplits(RandomForest.scala:567)
+    >           at org.apache.spark.ml.tree.impl.RandomForest$.run(RandomForest.scala:201)
+    >           at org.apache.spark.ml.classification.RandomForestClassifier$$anonfun$train$1.apply(RandomForestClassifier.scala:142)
+    >           at org.apache.spark.ml.classification.RandomForestClassifier$$anonfun$train$1.apply(RandomForestClassifier.scala:120)
+    >           at org.apache.spark.ml.util.Instrumentation$$anonfun$11.apply(Instrumentation.scala:185)
+    >           at scala.util.Try$.apply(Try.scala:192)
+    >           at org.apache.spark.ml.util.Instrumentation$.instrumented(Instrumentation.scala:185)
+    >           at org.apache.spark.ml.classification.RandomForestClassifier.train(RandomForestClassifier.scala:120)
+    >           at org.apache.spark.ml.classification.RandomForestClassifier.train(RandomForestClassifier.scala:46)
+    >           at org.apache.spark.ml.Predictor.fit(Predictor.scala:118)
+    >           at org.apache.spark.ml.Predictor.fit(Predictor.scala:82)
+    >           at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+    >           at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+    >           at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    >           at java.lang.reflect.Method.invoke(Method.java:498)
+    >           at py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)
+    >           at py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:357)
+    >           at py4j.Gateway.invoke(Gateway.java:282)
+    >           at py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)
+    >           at py4j.commands.CallCommand.execute(CallCommand.java:79)
+    >           at py4j.GatewayConnection.run(GatewayConnection.java:238)
+    >           at java.lang.Thread.run(Thread.java:748)
+    >   
+    >   Caused by: java.io.IOException: No space left on device
+    >           at java.io.FileOutputStream.writeBytes(Native Method)
+    >           at java.io.FileOutputStream.write(FileOutputStream.java:326)
+    >           at org.apache.spark.storage.TimeTrackingOutputStream.write(TimeTrackingOutputStream.java:58)
+    >           at java.io.BufferedOutputStream.flushBuffer(BufferedOutputStream.java:82)
+    >           at java.io.BufferedOutputStream.flush(BufferedOutputStream.java:140)
+    >           at net.jpountz.lz4.LZ4BlockOutputStream.finish(LZ4BlockOutputStream.java:260)
+    >           at net.jpountz.lz4.LZ4BlockOutputStream.close(LZ4BlockOutputStream.java:190)
+    >           at java.io.ObjectOutputStream$BlockDataOutputStream.close(ObjectOutputStream.java:1828)
+    >           at java.io.ObjectOutputStream.close(ObjectOutputStream.java:742)
+    >           at org.apache.spark.serializer.JavaSerializationStream.close(JavaSerializer.scala:57)
+    >           at org.apache.spark.storage.DiskBlockObjectWriter.commitAndGet(DiskBlockObjectWriter.scala:173)
+    >           at org.apache.spark.util.collection.ExternalSorter.writePartitionedFile(ExternalSorter.scala:701)
+    >           at org.apache.spark.shuffle.sort.SortShuffleWriter.write(SortShuffleWriter.scala:71)
+    >           at org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:99)
+    >           at org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:55)
+    >           at org.apache.spark.scheduler.Task.run(Task.scala:123)
+    >           at org.apache.spark.executor.Executor$TaskRunner$$anonfun$10.apply(Executor.scala:408)
+    >           at org.apache.spark.util.Utils$.tryWithSafeFinally(Utils.scala:1360)
+    >           at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:414)
+    >           at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    >           at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    >           ... 1 more
+    >   
+    >    INFO [2021-02-11 11:06:34,565] ({pool-2-thread-3} VFSNotebookRepo.java[save]:196) - Saving note:2FYW1HNED
+    >    INFO [2021-02-11 11:06:34,572] ({pool-2-thread-3} SchedulerFactory.java[jobFinished]:120) - Job 20201013-152110_1282917873 finished by scheduler org.apache.zeppelin.interpreter.remote.RemoteInterpreter-spark:shared_process-shared_session
+    >    INFO [2021-02-11 11:30:45,031] ({SessionValidationThread-1} AbstractValidatingSessionManager.java[validateSessions]:275) - Validating all active sessions...
+    >    INFO [2021-02-11 11:30:45,032] ({SessionValidationThread-1} AbstractValidatingSessionManager.java[validateSessions]:308) - Finished session validation.  No sessions were stopped.
+
+
+    Lots of information in that ..
+
+    - The exception was reported by (TID 122005, worker05, executor 2)
+    - I think the out of space was on worker05, not the Zeppelin node.
+
+    - The stack trace suggests that RandomForestClassifier understands org.apache.spark.rdd.RDD
+    - Which means at least part of the RandomForestClassifier training is offloaded to the workers.
+
+    >           at scala.collection.mutable.ResizableArray$class.foreach(ResizableArray.scala:59)
+    >           at scala.collection.mutable.ArrayBuffer.foreach(ArrayBuffer.scala:48)
+    >           at org.apache.spark.scheduler.DAGScheduler.abortStage(DAGScheduler.scala:1912)
+    >           ....
+    >           at org.apache.spark.scheduler.DAGScheduler$$anonfun$handleTaskSetFailed$1.apply(DAGScheduler.scala:948)
+    >           at scala.Option.foreach(Option.scala:257)
+    >           at org.apache.spark.scheduler.DAGScheduler.handleTaskSetFailed(DAGScheduler.scala:948)
+    >           ....
+    >           at org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.onReceive(DAGScheduler.scala:2084)
+    >           at org.apache.spark.util.EventLoop$$anon$1.run(EventLoop.scala:49)
+    >           at org.apache.spark.scheduler.DAGScheduler.runJob(DAGScheduler.scala:759)
+    >           at org.apache.spark.SparkContext.runJob(SparkContext.scala:2061)
+    >           ....
+    >           at org.apache.spark.SparkContext.runJob(SparkContext.scala:2126)
+    >           ....
+    >           at org.apache.spark.rdd.RDD.withScope(RDD.scala:385)
+    >           at org.apache.spark.rdd.RDD.collect(RDD.scala:989)
+    >           ....
+    >           at org.apache.spark.ml.tree.impl.RandomForest$.findBestSplits(RandomForest.scala:567)
+    >           ....
+    >           at org.apache.spark.ml.util.Instrumentation$$anonfun$11.apply(Instrumentation.scala:185)
+    >           at scala.util.Try$.apply(Try.scala:192)
+    >           at org.apache.spark.ml.util.Instrumentation$.instrumented(Instrumentation.scala:185)
+    >           at org.apache.spark.ml.classification.RandomForestClassifier.train(RandomForestClassifier.scala:120)
+    >           at org.apache.spark.ml.classification.RandomForestClassifier.train(RandomForestClassifier.scala:46)
+    >           at org.apache.spark.ml.Predictor.fit(Predictor.scala:118)
+
+
+# -----------------------------------------------------
+# Check the disc space on zeppelin
+#[user@zeppelin]
+
+    ls -1 /var/spark/temp/
+
+    >   blockmgr-6e40f938-4cea-4e51-aa7d-7b8e8d957fd9
+    >   spark-02a20dcf-c44b-46fd-aba2-84dcd4092b77
+
+
+    du -h -d 1 /var/spark/temp/
+
+    >   220K    /var/spark/temp/spark-02a20dcf-c44b-46fd-aba2-84dcd4092b77
+    >   168K    /var/spark/temp/blockmgr-6e40f938-4cea-4e51-aa7d-7b8e8d957fd9
+    >   392K    /var/spark/temp/
+
+
+# -----------------------------------------------------
+# Check the disc space on worker05
+#[user@zeppelin]
+
+
+    ssh worker05 \
+        '
+        hostname
+        date
+        echo
+        ls -1 /var/spark/temp/
+        echo
+        du -h -d 1 /var/spark/temp/
+        '
+
+    >   gaia-dev-20210211-worker05.novalocal
+    >   Thu 11 Feb 12:16:18 UTC 2021
+    >   
+    >   ls: cannot access '/var/spark/temp/': No such file or directory
+    >   
+    >   du: cannot access '/var/spark/temp/': No such file or directory
+
+    #
+    # When we changed this back down to a small node we didn't create the spark temp directory.
+    #
+
+
+    ssh worker05 \
+        '
+        hostname
+        date
+        echo
+        ls -1 /tmp/
+        echo
+        du -h -d 1 /tmp/
+        '
+
+    >   gaia-dev-20210211-worker05.novalocal
+    >   Thu 11 Feb 12:16:49 UTC 2021
+    >   
+    >   hadoop-fedora
+    >   hadoop-fedora-datanode.pid
+    >   hadoop-fedora-nodemanager.pid
+    >   hsperfdata_fedora
+    >   hsperfdata_root
+    >   jetty-0.0.0.0-8042-node-_-any-5267485435957391381.dir
+    >   jetty-localhost-33243-datanode-_-any-3555236917512612600.dir
+    >   systemd-private-e9fcce57f1be40acb5b15c979c850494-chronyd.service-0AFL7F
+    >   systemd-private-e9fcce57f1be40acb5b15c979c850494-dbus-broker.service-ej71vh
+    >   
+    >   4.0K    /tmp/jetty-localhost-33243-datanode-_-any-3555236917512612600.dir
+    >   4.0K    /tmp/.ICE-unix
+    >   4.0K    /tmp/.X11-unix
+    >   4.0K    /tmp/.Test-unix
+    >   du: cannot read directory '/tmp/systemd-private-e9fcce57f1be40acb5b15c979c850494-chronyd.service-0AFL7F': Permission denied
+    >   4.0K    /tmp/systemd-private-e9fcce57f1be40acb5b15c979c850494-chronyd.service-0AFL7F
+    >   8.0K    /tmp/jetty-0.0.0.0-8042-node-_-any-5267485435957391381.dir
+    >   4.0K    /tmp/.font-unix
+    >   100K    /tmp/hsperfdata_fedora
+    >   4.0K    /tmp/.XIM-unix
+    >   14G     /tmp/hadoop-fedora
+    >   4.0K    /tmp/systemd-private-e9fcce57f1be40acb5b15c979c850494-dbus-broker.service-ej71vh
+    >   36K     /tmp/hsperfdata_root
+    >   14G     /tmp/
+    >   du: cannot read directory '/tmp/systemd-private-e9fcce57f1be40acb5b15c979c850494-dbus-broker.service-ej71vh': Permission denied
+
+
+    ssh worker05 \
+        '
+        hostname
+        date
+        echo
+        ls -1 /tmp/hadoop-fedora
+        echo
+        du -h -d 1 /tmp/hadoop-fedora
+        '
+
+    >   gaia-dev-20210211-worker05.novalocal
+    >   Thu 11 Feb 12:18:19 UTC 2021
+    >   
+    >   nm-local-dir
+    >   
+    >   14G    /tmp/hadoop-fedora/nm-local-dir
+    >   14G    /tmp/hadoop-fedora
+
+
+    ssh worker05 \
+        '
+        hostname
+        date
+        echo
+        du -h /tmp/hadoop-fedora
+        '
+
+    >   4.0K    /tmp/hadoop-fedora/nm-local-dir/nmPrivate/application_1613027823151_0001
+    >   8.0K    /tmp/hadoop-fedora/nm-local-dir/nmPrivate
+    >   ....    ....
+    >   284K    /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/filecache/12
+    >   592K    /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/filecache/11
+    >   231M    /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/filecache/13/__spark_libs__4343915086399681065.zip
+    >   231M    /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/filecache/13
+    >   ....    ....
+    >   2.9M    /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/filecache/10/sparkr.zip
+    >   2.9M    /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/filecache/10
+    >   52K     /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/filecache/14
+    >   235M    /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/filecache
+    >   ....    ....
+    >   51M     /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache/application_1613027823151_0001/blockmgr-690bd150-bff9-4542-8041-9f73d93d19dc/22
+    >   64M     /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache/application_1613027823151_0001/blockmgr-690bd150-bff9-4542-8041-9f73d93d19dc/1c
+    >   66M     /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache/application_1613027823151_0001/blockmgr-690bd150-bff9-4542-8041-9f73d93d19dc/24
+    >   414M    /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache/application_1613027823151_0001/blockmgr-690bd150-bff9-4542-8041-9f73d93d19dc/30
+    >   13G     /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache/application_1613027823151_0001/blockmgr-690bd150-bff9-4542-8041-9f73d93d19dc
+    >   4.0K    /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache/application_1613027823151_0001/filecache
+    >   13G     /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache/application_1613027823151_0001
+    >   13G     /tmp/hadoop-fedora/nm-local-dir/usercache/fedora/appcache
+    >   14G     /tmp/hadoop-fedora/nm-local-dir/usercache/fedora
+    >   14G     /tmp/hadoop-fedora/nm-local-dir/usercache
+    >   4.0K    /tmp/hadoop-fedora/nm-local-dir/filecache
+    >   14G     /tmp/hadoop-fedora/nm-local-dir
+    >   14G     /tmp/hadoop-fedora
+
+    Lots of information in that ..
+
+    - By the time the job gets here it it is a Hadoop job NOT a Spark job.
+    - The temp files are owned by Hadoop node-manager and Hadoop block-manager.
+    - To move them to another location we should use the Hadoop temp settings, not the Spark temp settings.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+    Things we have learned so far.
+
+    Even if we don't create the separate disc mounts, we should still create the spark and hadoop temp directories.
+
+    Move the mount paths from a global setting to a host specific setting.
+    Always create the same directories
+
+        /var/spark/temp
+        /var/spark/data
+
+        /var/hadoop/temp
+        /var/hadoop/data
+
+    If this is a medium node, then change some of them into links.
+    If the host config has mount paths for them.
+
+    The master node isn't doing much.
+    Possibly managing the HDFS namenode ?
+    Is it actually managing the Yarn scheduling ?
+    Could all this be done by a tiny VM ?
+
+    The Zeppelin node is running the Spark interpreter.
+    The Spark interpreter is scheduling the Spark jobs.
+    The Spark interpreter aggregates the notebook results.
+
+    The Spark interpreter uses 392K of space in /var/spark/temp.
+    This could still probably me a small node.
+    The main cpu use is the ipython server running one thread at 100%.
+    The rest of the cores are idle most of the time.
+
+
+
+
+
+
+
+
+
+

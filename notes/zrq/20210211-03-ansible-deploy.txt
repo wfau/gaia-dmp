@@ -1,0 +1,1016 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Get Spark to work with the new configuration.
+
+        Changes based on information from Stelio's notes.
+            notes/stv/20210210-Benchmarking-ML-Notebook-01.txt
+            notes/stv/20210211-ML-Notebook-Benchmarking.txt
+
+            Added hadoop.tmp.dir to the core config.
+            Added /var/hadoop/temp to the volume mounts.
+
+        Changed to 4 medium workers
+
+        Test config:
+            1 small master
+            1 medium zeppelin
+            4 medium workers
+
+        Variable results caused by problems withthe Ceph stprage system.
+        The whole notebook is IO limited, all of the calculations are starved of input data.
+        Even on a good run, the cpu use is around 1%.
+
+        Multiple disc failures were causing problems with the Ceph system.
+        John removed broken discs from the array and stayed late to finish rebuilding the array.
+        After that results were much better, but still starved of data.
+
+        Hadoop and Spark work best with local data.
+
+        The gaia machines sitting in the racks at ROE are a much better fit for the typer of load.
+        Spread the data across the workers, don't centralise it in one place.
+        Either HDFS or another form of local caching.
+
+    Links about file system optimisation
+
+        Best practices for caching in Spark SQL
+        https://towardsdatascience.com/best-practices-for-caching-in-spark-sql-b22fb0f02d34
+
+        RADOS (Reliable Autonomic Distributed Object Store)
+        https://searchstorage.techtarget.com/definition/RADOS-Reliable-Autonomic-Distributed-Object-Store
+
+        CephFS: a new generation storage platform for Australian High Energy Physics
+        https://indico.cern.ch/event/505613/contributions/2230911/attachments/1345227/2039428/Oral-v5-162.pdf
+
+        CephFS file layouts
+        https://docs.ceph.com/en/mimic/cephfs/file-layouts/
+
+        Detecting CPU steal time in guest virtual machines
+        https://opensource.com/article/20/1/cpu-steal-time
+
+    Results:
+
+        Notebook works with 100% of eDR3 and 500 trees.
+        Need to experiment with adding more trees.
+
+    TODO:
+
+
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Create our Aglais configuration.
+#[root@kubernator]
+
+cat > '/tmp/aglais-config.yml' << EOF
+aglais:
+    version: 1.0
+    spec:
+        openstack:
+            cloud: '${cloudname:?}'
+
+EOF
+
+
+# -----------------------------------------------------
+# Create everything from scratch.
+#[root@ansibler]
+
+    time \
+        /openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    rm -f ~/.ssh/*
+
+    time \
+        /hadoop-yarn/bin/create-all.sh
+
+
+    >   real    33m6.197s
+    >   user    8m17.797s
+    >   sys     2m33.633s
+
+    >   real    31m27.362s
+    >   user    7m41.976s
+    >   sys     2m27.153s
+
+    >   
+    >   real    32m40.876s
+    >   user    8m1.610s
+    >   sys     2m34.779s
+
+    >   real    31m42.765s
+    >   user    7m59.668s
+    >   sys     2m30.155s
+
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [ecbdba16-f723-4f5f-a5e8-e943f83f95bd]
+    >   Zeppelin IP [128.232.227.228]
+
+    >   Zeppelin ID [721e11ed-d1c5-4f7a-81fd-61dd87d4c13d]
+    >   Zeppelin IP [128.232.227.202]
+
+    >   Zeppelin ID [31bd4e5e-3ea0-4dd2-a08c-863b61d923ea]
+    >   Zeppelin IP [128.232.227.247]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Update our DNS
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin ...
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.metagrid.xyz:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Import notebooks from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forrest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+Stelio's test #1a
+20210211-ML-Notebook-Benchmarking.txt
+
+    Cinder Volumes for temp storage for Spark & Hadoop
+    500 trees
+
+    main select statement
+	>  Took 43 mins
+
+    RandomForestClassifier - 10% data 500 trees
+	> Took 17 mins
+
+Stelio's test #1b
+20210211-ML-Notebook-Benchmarking.txt
+
+    Cinder Volumes for temp storage for Spark & Hadoop
+    5000 trees
+
+    main select statement
+	> ???
+
+    RandomForestClassifier - 10% data 5000 trees
+	> ???
+
+	notebook took 3 hrs 23 min 28 sec ()
+
+Stelio's test #2
+20210211-ML-Notebook-Benchmarking.txt
+
+    Revert changes to Ansible scripts so that it matches what is currently deployed on zeppelin.aglais.uk
+
+    main select statement
+    > 28 min 10 sec.
+
+    RandomForestClassifier - (assume 10% data 500 trees, not stated)
+    > 15 min 28 sec.
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+Live deployment #1
+
+    quick_filter=' AND MOD(random_index, 10) = 0'
+    quick_plot_filter=' AND MOD(random_index, 25) = 0'
+
+    main select statement
+    Took 29 min 10 sec. Last updated by gaiauser at February 12 2021, 4:59:01 AM.
+
+    first plot
+    ....
+
+    good/bad select
+    ....
+
+    RandomForestClassifier - 10% data 500 trees
+    Took 12 min 4 sec. Last updated by gaiauser at February 12 2021, 5:11:23 AM.
+
+
+Live deployment #2
+
+    quick_filter=''
+    quick_plot_filter=' AND MOD(random_index, 25) = 0'
+
+    main select statement
+    1724028
+    Took 4 min 16 sec. Last updated by gaiauser at February 12 2021, 6:16:23 AM.
+
+    first plot
+    Took 14 min 46 sec. Last updated by gaiauser at February 12 2021, 6:31:09 AM.
+
+    good/bad select
+    Good training data size: 244740 rows
+    Bad  training data size: 244740 rows
+    Took 23 min 8 sec. Last updated by gaiauser at February 12 2021, 6:54:18 AM.
+
+    RandomForestClassifier - 100% data 500 trees
+    Started 3 hours ago .... 66%
+
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+How-to: Tune Your Apache Spark Jobs (Part 2)
+https://blog.cloudera.com/how-to-tune-your-apache-spark-jobs-part-2/
+
+    Imagine a cluster with six (4) nodes running NodeManagers, each equipped with 16 (14) cores and 64GB (45) of memory.
+    The NodeManager capacities, yarn.nodemanager.resource.memory-mb and yarn.nodemanager.resource.cpu-vcores, should probably be set to 63 * 1024 = 64512 (megabytes) and 15 respectively.
+
+    example
+        yarn.nodemanager.resource.memory-mb     63 * 1024 = 64512
+        yarn.nodemanager.resource.cpu-vcores    16 - 1 = 15
+
+    The NodeManager capacities, yarn.nodemanager.resource.memory-mb and yarn.nodemanager.resource.cpu-vcores, should probably be set to 44 * 1024 = 45056 (megabytes) and 13 respectively.
+
+    aglais
+        yarn.nodemanager.resource.memory-mb     44 * 1024 = 45056
+        yarn.nodemanager.resource.cpu-vcores    14 - 1 = 13
+
+    We avoid allocating 100% of the resources to YARN containers because the node needs some resources to run the OS and Hadoop daemons.
+    In this case, we leave a gigabyte and a core for these system processes. Cloudera Manager helps by accounting for these and configuring these YARN properties automatically.
+
+The likely first impulse would be to use --num-executors 6 --executor-cores 15 --executor-memory 63G. However, this is the wrong approach because:
+
+    63GB + the executor memory overhead won’t fit within the 63GB capacity of the NodeManagers.
+    The application master will take up a core on one of the nodes, meaning that there won’t be room for a 15-core executor on that node.
+    15 cores per executor can lead to bad HDFS I/O throughput.
+
+A better option would be to use --num-executors 17 --executor-cores 5 --executor-memory 19G. Why?
+
+    This config results in three executors on all nodes except for the one with the AM, which will have two executors.
+    --executor-memory was derived as (63/3 executors per node) = 21.  21 * 0.07 = 1.47.  21 – 1.47 ~ 19.
+
+
+    example
+        6 nodes
+        15 cores per node
+        63G per node
+        3 executors per node
+        executor-cores 15 / 3 = 5
+        num-executors (6*3)-1 = 17
+
+        executor-memory
+            63/3 = 21
+            21 * (1 - 0.07) = 19
+
+
+    alais
+        4 nodes
+        13 cores per node
+        44G per node
+        3 executors per node
+        executor-cores 13 / 3 = 4
+        num-executors (4*3)-1 = 11
+
+        executor-memory
+            44/3 = 14
+            14 * (1 - 0.07) = 13
+
+        ---- ----
+
+        yarn.nodemanager.resource.memory-mb     45056
+        yarn.nodemanager.resource.cpu-vcores    13
+
+        executor-cores   4
+        num-executors   11
+        executor-memory 13
+
+
+        spark-master
+        spark-defaults.conf
+
+            spark.driver.memory             13g
+            spark.yarn.am.memory            13g
+            spark.yarn.am.cores               4
+
+            spark.executor.memory           13g
+            spark.executor.cores              4
+            spark.executor.instances         11
+
+            spark.eventLog.enabled  true
+            spark.driver.maxResultSize	     8g
+
+
+        yarn-masters
+        yarn-site.xml
+            yarn.scheduler.maximum-allocation-mb 13312
+            yarn.scheduler.minimum-allocation-mb  2048
+                                                 14336
+
+
+        yarn-workers
+        yarn-site.xml
+
+            yarn.nodemanager.resource.memory-mb         ((45-1)*1024) = 45056
+            yarn.nodemanager.resource.cpu-vcores        13
+            yarn.scheduler.maximum-allocation-vcores    26
+            yarn.scheduler.minimum-allocation-vcores     1
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+    https://github.com/hortonworks/hdp-configuration-utils
+
+    hdp-configuration-utils.py -c 14 -m 45 -d 1 -k False
+
+    >   Using cores=14 memory=45GB disks=1 hbase=False
+    >   Profile: cores=14 memory=45056MB reserved=1GB usableMem=44GB disks=1
+    >   Num Container=3
+    >   Container Ram=14336MB
+    >   Used Ram=42GB
+    >   Unused Ram=1GB
+    >   ***** mapred-site.xml *****
+    >   mapreduce.map.memory.mb=14336
+    >   mapreduce.map.java.opts=-Xmx11264m
+    >   mapreduce.reduce.memory.mb=14336
+    >   mapreduce.reduce.java.opts=-Xmx11264m
+    >   mapreduce.task.io.sort.mb=1792
+    >   ***** yarn-site.xml *****
+    >   yarn.scheduler.minimum-allocation-mb=14336
+    >   yarn.scheduler.maximum-allocation-mb=43008
+    >   yarn.nodemanager.resource.memory-mb=43008
+    >   yarn.app.mapreduce.am.resource.mb=14336
+    >   yarn.app.mapreduce.am.command-opts=-Xmx11264m
+    >   ***** tez-site.xml *****
+    >   tez.am.resource.memory.mb=14336
+    >   tez.am.java.opts=-Xmx11264m
+    >   ***** hive-site.xml *****
+    >   hive.tez.container.size=14336
+    >   hive.tez.java.opts=-Xmx11264m
+    >   hive.auto.convert.join.noconditionaltask.size=3758096000
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+dev deployment #1
+
+    test #1.1
+
+        default settings, 10% data, 500 trees
+
+        main select statement
+        Took 28 min 32 sec. Last updated by gaiauser at February 12 2021, 4:03:51 AM.
+
+        RandomForestClassifier - 10% data 500 trees
+        Took 14 min 58 sec. Last updated by gaiauser at February 12 2021, 4:19:07 AM.
+
+    #
+    # Tweaked the Hadoop/Yarn settings ..
+    #
+
+dev deployment #2
+
+    test #2.1
+
+        default settings, 10% data, 500 trees
+
+        java.lang.IllegalArgumentException:
+            Required executor memory (13312), overhead (1331 MB), and PySpark memory (0 MB) is above the max threshold (13312 MB) of this cluster!
+            Please check the values of 'yarn.scheduler.maximum-allocation-mb' and/or 'yarn.nodemanager.resource.memory-mb'.
+
+    #
+    # Fixed the Hadoop/Yarn settings ..
+    #
+
+        yarn-masters
+        yarn-site.xml
+            yarn.scheduler.maximum-allocation-mb ((45-1)*1024) = 45056
+            yarn.scheduler.minimum-allocation-mb  2048
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+dev deployment #3
+
+    test #3.1
+
+        default settings, 10% data, 500 trees
+
+        main select statement
+        1724028
+        Took 25 min 45 sec. Last updated by gaiauser at February 12 2021, 11:02:10 AM.
+
+        first plot
+        Took 6 sec. Last updated by gaiauser at February 12 2021, 11:02:16 AM.
+
+        good/bad select - 10% data
+        Good training data size: 24225 rows
+        Bad  training data size: 24225 rows
+        Took 10 sec. Last updated by gaiauser at February 12 2021, 11:02:26 AM.
+
+        RandomForestClassifier - 10% data 500 trees
+        Took 14 min 56 sec. Last updated by gaiauser at February 12 2021, 11:17:23 AM.
+
+            Slack chat with Paul Browne, asked him if there were any issues.
+            Suddenly running much faster - worker has 4 java processes at 96% cpu.
+            Might be a coincidence, might be something he tweaked ...
+            I think it was coincidence, I don't think he is online at the moment.
+
+        Good sources plot
+        Took 35 sec. Last updated by gaiauser at February 12 2021, 11:19:52 AM.
+
+        Bad sources plot
+        Took 36 sec. Last updated by gaiauser at February 12 2021, 11:20:28 AM.
+
+        Results
+        No. of good sources:  11180
+        No. of bad sources:   13102
+        Took 38 sec. Last updated by gaiauser at February 12 2021, 11:21:06 AM.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Checking logs on worker04.
+#[fedora@gaia-dev-20210212-worker04]
+
+    # worker01,02 and 04 all have a lot of activity.
+
+    ls -al /var/hadoop/logs/
+
+    >   drwxrwsr-x. 1 fedora fedora   582 Feb 12 10:19 .
+    >   drwxrwsr-x. 1 root   root      16 Feb 12 10:08 ..
+    >   -rw-rw-r--. 1 fedora fedora 38792 Feb 12 11:19 hadoop-fedora-datanode-gaia-dev-20210212-worker04.novalocal.log
+    >   -rw-rw-r--. 1 fedora fedora   702 Feb 12 10:19 hadoop-fedora-datanode-gaia-dev-20210212-worker04.novalocal.out
+    >   -rw-rw-r--. 1 fedora fedora 37728 Feb 12 11:09 hadoop-fedora-nodemanager-gaia-dev-20210212-worker04.novalocal.log
+    >   -rw-rw-r--. 1 fedora fedora  2218 Feb 12 10:19 hadoop-fedora-nodemanager-gaia-dev-20210212-worker04.novalocal.out
+    >   -rw-rw-r--. 1 fedora fedora     0 Feb 12 10:19 SecurityAuth-fedora.audit
+    >   drwxr-xr-x. 1 fedora fedora    60 Feb 12 11:17 userlogs
+
+    tail -f /var/hadoop/logs/hadoop-fedora-datanode-gaia-dev-20210212-worker04.novalocal.log
+
+    >   ....
+    >   ....
+    >   2021-02-12 11:04:41,833 WARN org.apache.hadoop.hdfs.server.datanode.DataNode: Slow BlockReceiver write data to disk cost:313ms (threshold=300ms), volume=file:/var/hdfs/data/, blockId=1073741833
+    >   2021-02-12 11:05:23,204 WARN org.apache.hadoop.hdfs.server.datanode.DataNode: Slow BlockReceiver write data to disk cost:475ms (threshold=300ms), volume=file:/var/hdfs/data/, blockId=1073741833
+    >   2021-02-12 11:12:07,737 WARN org.apache.hadoop.hdfs.server.datanode.DataNode: Slow BlockReceiver write data to disk cost:712ms (threshold=300ms), volume=file:/var/hdfs/data/, blockId=1073741833
+    >   ....
+    >   ....
+
+
+    ls -al /var/hdfs/data
+
+    >   lrwxrwxrwx. 1 root root 25 Feb 12 10:11 /var/hdfs/data -> /mnt/cinder/vdc/hdfs/data
+
+
+    df -h /var/hdfs/data
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdc        512G  663M  510G   1% /mnt/cinder/vdc
+
+    #
+    # Writing to the Cinder volume is slower than Hadoop is expecting.
+    # cost:712ms (threshold=300ms)
+    #
+
+# -----------------------------------------------------
+# Checking logs on worker03.
+#[fedora@gaia-dev-20210212-worker04]
+
+    # worker03 has much less activity.
+
+    ls -al /var/hadoop/logs/
+
+    >   drwxrwsr-x. 1 fedora fedora   582 Feb 12 10:19 .
+    >   drwxrwsr-x. 1 root   root      16 Feb 12 10:08 ..
+    >   -rw-rw-r--. 1 fedora fedora 35013 Feb 12 11:19 hadoop-fedora-datanode-gaia-dev-20210212-worker03.novalocal.log
+    >   -rw-rw-r--. 1 fedora fedora   702 Feb 12 10:19 hadoop-fedora-datanode-gaia-dev-20210212-worker03.novalocal.out
+    >   -rw-rw-r--. 1 fedora fedora 37730 Feb 12 11:09 hadoop-fedora-nodemanager-gaia-dev-20210212-worker03.novalocal.log
+    >   -rw-rw-r--. 1 fedora fedora  2218 Feb 12 10:19 hadoop-fedora-nodemanager-gaia-dev-20210212-worker03.novalocal.out
+    >   -rw-rw-r--. 1 fedora fedora     0 Feb 12 10:19 SecurityAuth-fedora.audit
+    >   drwxr-xr-x. 1 fedora fedora    60 Feb 12 11:17 userlogs
+
+    tail -f /var/hadoop/logs/hadoop-fedora-datanode-gaia-dev-20210212-worker03.novalocal.log
+
+    >   ....
+    >   ....
+    >   2021-02-12 11:18:38,134 WARN org.apache.hadoop.hdfs.server.datanode.DataNode: Slow BlockReceiver write data to disk cost:493ms (threshold=300ms), volume=file:/var/hdfs/data/, blockId=1073741834
+    >   2021-02-12 11:19:04,401 WARN org.apache.hadoop.hdfs.server.datanode.DataNode: Slow BlockReceiver write data to disk cost:618ms (threshold=300ms), volume=file:/var/hdfs/data/, blockId=1073741834
+    >   2021-02-12 11:19:29,870 WARN org.apache.hadoop.hdfs.server.datanode.DataNode: Slow BlockReceiver write data to disk cost:486ms (threshold=300ms), volume=file:/var/hdfs/data/, blockId=1073741834
+    >   2021-02-12 11:19:44,349 INFO org.apache.hadoop.hdfs.server.datanode.DataNode.clienttrace: src: /10.10.3.76:39778, dest: /10.10.0.137:9866, bytes: 134217728, op: HDFS_WRITE, cliID: DFSClient_NONMAPREDUCE_-1806520083_23, offset: 0, srvID: e9c64f4b-966f-468c-af20-b6ae51d502de, blockid: BP-346622070-10.10.3.194-1613125180505:blk_1073741834_1010, duration(ns): 134185201769
+    >   2021-02-12 11:19:44,349 INFO org.apache.hadoop.hdfs.server.datanode.DataNode: PacketResponder: BP-346622070-10.10.3.194-1613125180505:blk_1073741834_1010, type=HAS_DOWNSTREAM_IN_PIPELINE, downstreams=1:[10.10.1.46:9866] terminating
+    >   2021-02-12 11:19:44,364 INFO org.apache.hadoop.hdfs.server.datanode.DataNode: Receiving BP-346622070-10.10.3.194-1613125180505:blk_1073741835_1011 src: /10.10.3.104:47116 dest: /10.10.0.137:9866
+    >   2021-02-12 11:19:44,365 INFO org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferClient: SASL encryption trust check: localHostTrusted = false, remoteHostTrusted = false
+    >   2021-02-12 11:20:16,593 WARN org.apache.hadoop.hdfs.server.datanode.DataNode: Slow BlockReceiver write data to disk cost:643ms (threshold=300ms), volume=file:/var/hdfs/data/, blockId=1073741835
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Test run #3.2 tailing Zeppelin log
+#[fedora@gaia-dev-20210212-zeppelin]
+
+    ls -al zeppelin-0.8.2-bin-all/logs
+
+    >   drwxrwxr-x.  2 fedora fedora      4096 Feb 12 10:34 .
+    >   drwxr-xr-x. 12 fedora fedora      4096 Feb 12 10:20 ..
+    >   -rw-rw-r--.  1 fedora fedora     55109 Feb 12 11:29 zeppelin-fedora-gaia-dev-20210212-zeppelin.novalocal.log
+    >   -rw-rw-r--.  1 fedora fedora      6194 Feb 12 10:34 zeppelin-fedora-gaia-dev-20210212-zeppelin.novalocal.out
+    >   -rw-rw-r--.  1 fedora fedora      2885 Feb 12 11:28 zeppelin-interpreter-md-fedora-gaia-dev-20210212-zeppelin.novalocal.log
+    >   -rw-rw-r--.  1 fedora fedora 122946934 Feb 12 11:31 zeppelin-interpreter-spark-fedora-gaia-dev-20210212-zeppelin.novalocal.log
+
+
+    tail -f zeppelin-0.8.2-bin-all/logs/zeppelin-interpreter-spark-fedora-gaia-dev-20210212-zeppelin.novalocal.log
+
+    >   ....
+    >   ....
+    >    INFO [2021-02-12 11:28:59,148] ({pool-2-thread-13} SchedulerFactory.java[jobStarted]:114) - Job 20201013-131649_1734629667 started by scheduler interpreter_2016348950
+    >   ....
+    >   ....
+    >    INFO [2021-02-12 11:37:38,123] ({dispatcher-event-loop-12} Logging.scala[logInfo]:54) - Starting task 2997.0 in stage 92.0 (TID 320495, worker02, executor 2, partition 2997, PROCESS_LOCAL, 8450 bytes)
+    >    INFO [2021-02-12 11:37:38,123] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 2996.0 in stage 92.0 (TID 320494) in 242 ms on worker02 (executor 2) (2986/5720)
+    >    INFO [2021-02-12 11:37:38,312] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Starting task 2998.0 in stage 92.0 (TID 320496, worker02, executor 2, partition 2998, PROCESS_LOCAL, 8450 bytes)
+    >    INFO [2021-02-12 11:37:38,312] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 2997.0 in stage 92.0 (TID 320495) in 189 ms on worker02 (executor 2) (2987/5720)
+    >    INFO [2021-02-12 11:37:38,546] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Starting task 2999.0 in stage 92.0 (TID 320497, worker02, executor 2, partition 2999, PROCESS_LOCAL, 8450 bytes)
+    >    INFO [2021-02-12 11:37:38,547] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 2998.0 in stage 92.0 (TID 320496) in 235 ms on worker02 (executor 2) (2988/5720)
+    >    INFO [2021-02-12 11:37:39,376] ({dispatcher-event-loop-11} Logging.scala[logInfo]:54) - Starting task 3000.0 in stage 92.0 (TID 320498, worker01, executor 1, partition 3000, PROCESS_LOCAL, 8450 bytes)
+    >    INFO [2021-02-12 11:37:39,376] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 2986.0 in stage 92.0 (TID 320484) in 4466 ms on worker01 (executor 1) (2989/5720)
+    >    INFO [2021-02-12 11:37:39,974] ({dispatcher-event-loop-1} Logging.scala[logInfo]:54) - Starting task 3001.0 in stage 92.0 (TID 320499, worker04, executor 3, partition 3001, PROCESS_LOCAL, 8450 bytes)
+    >    INFO [2021-02-12 11:37:39,974] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 2976.0 in stage 92.0 (TID 320474) in 7743 ms on worker04 (executor 3) (2990/5720)
+    >    INFO [2021-02-12 11:37:40,235] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Starting task 3002.0 in stage 92.0 (TID 320500, worker04, executor 3, partition 3002, PROCESS_LOCAL, 8450 bytes)
+    >    INFO [2021-02-12 11:37:40,235] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished
+    >   ....
+    >   ....
+
+    #
+    # Not sending much to worker03 for some reason ?
+    #
+
+# -----------------------------------------------------
+# Test run #3.2 disc use on worker02
+#[fedora@gaia-dev-20210212-worker01]
+
+
+    ls -al /var/hadoop/
+
+    >   total 8
+    >   drwxrwsr-x.  2 root root 4096 Feb 12 10:09 .
+    >   drwxr-xr-x. 20 root root 4096 Feb 12 10:11 ..
+    >   lrwxrwxrwx.  1 root root   27 Feb 12 10:08 data -> /mnt/cinder/vdc/hadoop/data
+    >   lrwxrwxrwx.  1 root root   27 Feb 12 10:09 logs -> /mnt/cinder/vdc/hadoop/logs
+    >   lrwxrwxrwx.  1 root root   26 Feb 12 10:09 temp -> /mnt/local/vdb/hadoop/temp
+
+
+    du -h -d 2 -L /var/hadoop/
+
+    >   91M	/var/hadoop/logs/userlogs
+    >   91M	/var/hadoop/logs
+    >   0	/var/hadoop/data
+    >   293M	/var/hadoop/temp/nm-local-dir
+    >   293M	/var/hadoop/temp
+    >   384M	/var/hadoop/
+
+
+
+    ls -al /var/hadoop/logs/
+
+    >   drwxrwsr-x. 1 fedora fedora   582 Feb 12 10:19 .
+    >   drwxrwsr-x. 1 root   root      16 Feb 12 10:08 ..
+    >   -rw-rw-r--. 1 fedora fedora 39272 Feb 12 11:42 hadoop-fedora-datanode-gaia-dev-20210212-worker02.novalocal.log
+    >   -rw-rw-r--. 1 fedora fedora   702 Feb 12 10:19 hadoop-fedora-datanode-gaia-dev-20210212-worker02.novalocal.out
+    >   -rw-rw-r--. 1 fedora fedora 38788 Feb 12 11:49 hadoop-fedora-nodemanager-gaia-dev-20210212-worker02.novalocal.log
+    >   -rw-rw-r--. 1 fedora fedora  2218 Feb 12 10:19 hadoop-fedora-nodemanager-gaia-dev-20210212-worker02.novalocal.out
+    >   -rw-rw-r--. 1 fedora fedora     0 Feb 12 10:19 SecurityAuth-fedora.audit
+    >   drwxr-xr-x. 1 fedora fedora    60 Feb 12 11:51 userlogs
+
+
+    du -h -d 2 /var/hadoop/logs/
+
+    >   88M	/var/hadoop/logs/userlogs/application_1613125194823_0001
+    >   88M	/var/hadoop/logs/userlogs
+    >   89M	/var/hadoop/logs/
+
+
+    ls -al /var/hadoop/data/
+
+    >   total 0
+    >   drwxrwsr-x. 1 fedora fedora  0 Feb 12 10:08 .
+    >   drwxrwsr-x. 1 root   root   16 Feb 12 10:08 ..
+
+
+    du -h -d 2 /var/hadoop/data/
+
+    >   0	/var/hadoop/data/
+
+
+    ls -al /var/hadoop/temp/
+
+    >   drwxrwsr-x. 3 fedora fedora 4096 Feb 12 10:19 .
+    >   drwxrwsr-x. 3 root   root   4096 Feb 12 10:09 ..
+    >   drwxr-xr-x. 5 fedora fedora 4096 Feb 12 11:55 nm-local-dir
+
+
+    du -h -d 2 /var/hadoop/temp/
+
+    >   292M	/var/hadoop/temp/nm-local-dir/usercache
+    >   4.0K	/var/hadoop/temp/nm-local-dir/filecache
+    >   36K	/var/hadoop/temp/nm-local-dir/nmPrivate
+    >   292M	/var/hadoop/temp/nm-local-dir
+    >   292M	/var/hadoop/temp/
+
+
+    ls -al /var/hdfs/
+
+    >   total 8
+    >   drwxrwsr-x.  2 root root 4096 Feb 12 10:11 .
+    >   drwxr-xr-x. 20 root root 4096 Feb 12 10:11 ..
+    >   lrwxrwxrwx.  1 root root   25 Feb 12 10:11 data -> /mnt/cinder/vdc/hdfs/data
+    >   lrwxrwxrwx.  1 root root   25 Feb 12 10:11 logs -> /mnt/cinder/vdc/hdfs/logs
+
+
+    ls -al /var/hdfs/data/
+
+    >   total 4
+    >   drwx------. 1 fedora fedora 36 Feb 12 10:19 .
+    >   drwxrwsr-x. 1 root   root   16 Feb 12 10:11 ..
+    >   drwxrwxr-x. 1 fedora fedora 90 Feb 12 10:19 current
+    >   -rw-rw-r--. 1 fedora fedora 14 Feb 12 10:19 in_use.lock
+
+
+    du -h -d 2 /var/hdfs/data/
+
+    >   928M	/var/hdfs/data/current/BP-346622070-10.10.3.194-1613125180505
+    >   928M	/var/hdfs/data/current
+    >   928M	/var/hdfs/data/
+
+
+    ls -al /var/hdfs/logs/
+
+    >   drwxrwsr-x. 1 fedora fedora  0 Feb 12 10:11 .
+    >   drwxrwsr-x. 1 root   root   16 Feb 12 10:11 ..
+
+
+    du -h -d 2 /var/hdfs/logs/
+
+    >   0	/var/hdfs/logs/
+
+
+# -----------------------------------------------------
+# Test run #3.2 disc use on zeppelin
+#[fedora@gaia-dev-20210212-zeppelin]
+
+    ls -al /var/spark/
+
+    >   total 8
+    >   drwxrwsr-x.  2 root root 4096 Feb 12 10:13 .
+    >   drwxr-xr-x. 20 root root 4096 Feb 12 10:13 ..
+    >   lrwxrwxrwx.  1 root root   25 Feb 12 10:13 temp -> /mnt/local/vdb/spark/temp
+
+
+    ls -al /var/spark/temp/
+
+    >   drwxrwsr-x.  4 fedora fedora 4096 Feb 12 10:35 .
+    >   drwxrwsr-x.  3 root   root   4096 Feb 12 10:13 ..
+    >   drwxrwsr-x. 51 fedora fedora 4096 Feb 12 11:29 blockmgr-2c154649-34c5-4eb0-b588-b08b5bceccda
+    >   drwx--S---.  4 fedora fedora 4096 Feb 12 10:35 spark-0f42b2cc-7042-48bd-992f-99d49cabd8d5
+
+
+    du -h -d 2 /var/spark/temp/
+
+    >   220K	/var/spark/temp/spark-0f42b2cc-7042-48bd-992f-99d49cabd8d5
+    >   200K	/var/spark/temp/blockmgr-2c154649-34c5-4eb0-b588-b08b5bceccda
+    >   424K	/var/spark/temp/
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+dev deployment #3
+
+    test #3.2
+
+        changed settings, 100% data, 500 trees
+        edit the notebook to remove quick_filter
+        clear output and run again
+
+        main select statement
+        1724028
+        Took 12 min 51 sec. Last updated by gaiauser at February 12 2021, 11:42:40 AM.
+
+        first plot
+        Took 16 min 21 sec. Last updated by gaiauser at February 12 2021, 11:59:01 AM.
+
+        good/bad select - 100% data
+        Good training data size: 244740 rows
+        Bad  training data size: 244740 rows
+        Took 19 min 16 sec. Last updated by gaiauser at February 12 2021, 12:18:17 PM.
+
+        RandomForestClassifier - 100% data 500 trees
+
+            Back to slow progress.
+            Several Java 30%cpu. lots of cephfuse at 2%cpu.
+
+        Reached 66% and then started to go backwards.
+        Reached 62% and decided to stop it.
+        Started 2 hours ago.
+
+        Clicked the [Cancel] button - no effect.
+        Log shows new tasks being issued.
+
+        Keyboard cancel, Ctrl-Atl-C - no effect.
+        Log shows new tasks being issued.
+
+        Restarted the intepreter - result.
+        Log shows tasks being cancelled.
+
+    >    INFO [2021-02-12 14:37:41,547] ({dispatcher-event-loop-10} Logging.scala[logInfo]:54) - Added rdd_419_2815 in memory on worker02:39835 (size: 16.0 B, free: 6.6 GB)
+    >    INFO [2021-02-12 14:37:41,582] ({dispatcher-event-loop-8} Logging.scala[logInfo]:54) - Starting task 2817.0 in stage 113.0 (TID 383260, worker02, executor 2, partition 2817, PROCESS_LOCAL, 8559 bytes)
+    >    INFO [2021-02-12 14:37:41,582] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 2815.0 in stage 113.0 (TID 383258) in 1246 ms on worker02 (executor 2) (2806/5721)
+    >    INFO [2021-02-12 14:37:52,456] ({dispatcher-event-loop-0} Logging.scala[logInfo]:54) - Added rdd_419_2817 in memory on worker02:39835 (size: 16.0 B, free: 6.6 GB)
+    >    INFO [2021-02-12 14:37:52,487] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Starting task 2818.0 in stage 113.0 (TID 383261, worker02, executor 2, partition 2818, PROCESS_LOCAL, 8559 bytes)
+    >    INFO [2021-02-12 14:37:52,487] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 2817.0 in stage 113.0 (TID 383260) in 10905 ms on worker02 (executor 2) (2807/5721)
+    >    INFO [2021-02-12 14:37:57,681] ({pool-1-thread-3} RemoteInterpreterServer.java[cancel]:681) - cancel org.apache.zeppelin.spark.PySparkInterpreter 20201013-152110_1282917873
+    >    INFO [2021-02-12 14:37:57,702] ({pool-1-thread-3} Logging.scala[logInfo]:54) - Asked to cancel job group zeppelin-gaiauser-2FX82FMTH-20201013-152110_1282917873
+    >    INFO [2021-02-12 14:37:57,706] ({dag-scheduler-event-loop} Logging.scala[logInfo]:54) - Cancelling stage 113
+    >    INFO [2021-02-12 14:37:57,707] ({dag-scheduler-event-loop} Logging.scala[logInfo]:54) - Killing all running tasks in stage 113: Stage cancelled
+    >    INFO [2021-02-12 14:37:57,711] ({dag-scheduler-event-loop} Logging.scala[logInfo]:54) - Stage 113 was cancelled
+    >    INFO [2021-02-12 14:37:57,712] ({dag-scheduler-event-loop} Logging.scala[logInfo]:54) - ShuffleMapStage 113 (mapPartitions at RandomForest.scala:538) failed in 1388.544 s due to Job 61 cancelled part of cancelled job group zeppelin-gaiauser-2FX82FMTH-20201013-152110_1282917873
+    >    INFO [2021-02-12 14:37:57,713] ({Thread-39} Logging.scala[logInfo]:54) - Job 61 failed: collectAsMap at RandomForest.scala:567, took 1388.585122 s
+    >   ERROR [2021-02-12 14:37:57,720] ({Thread-39} Logging.scala[logError]:70) - org.apache.spark.SparkException: Job 61 cancelled part of cancelled job group zeppelin-gaiauser-2FX82FMTH-20201013-152110_1282917873
+    >   	at org.apache.spark.scheduler.DAGScheduler.org$apache$spark$scheduler$DAGScheduler$$failJobAndIndependentStages(DAGScheduler.scala:1925)
+    >   	at org.apache.spark.scheduler.DAGScheduler.handleJobCancellation(DAGScheduler.scala:1860)
+    >   	at org.apache.spark.scheduler.DAGScheduler$$anonfun$handleJobGroupCancelled$1.apply$mcVI$sp(DAGScheduler.scala:928)
+    >   	at org.apache.spark.scheduler.DAGScheduler$$anonfun$handleJobGroupCancelled$1.apply(DAGScheduler.scala:928)
+    >   	at org.apache.spark.scheduler.DAGScheduler$$anonfun$handleJobGroupCancelled$1.apply(DAGScheduler.scala:928)
+    >   	at scala.collection.mutable.HashSet.foreach(HashSet.scala:78)
+    >   	at org.apache.spark.scheduler.DAGScheduler.handleJobGroupCancelled(DAGScheduler.scala:928)
+    >   	at org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.doOnReceive(DAGScheduler.scala:2115)
+    >   	at org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.onReceive(DAGScheduler.scala:2095)
+    >   	at org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.onReceive(DAGScheduler.scala:2084)
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+dev deployment #3
+
+    test #3.3
+
+        changed settings, 100% data, 500 trees, no cache
+
+        Caching may cause problems for datasets in Parquet files.
+        https://towardsdatascience.com/best-practices-for-caching-in-spark-sql-b22fb0f02d34
+
+        edit the notebook to remove quick_filter and caching
+
+        -   quick_filter = ' AND MOD(random_index, 10) = 0'
+        +   quick_filter = '' # AND MOD(random_index, 10) = 0'
+
+        -   raw_sources_df.cache()
+        +  #raw_sources_df.cache()
+
+        clear output and run again
+
+        main select statement
+        1724028
+        Took 10 min 39 sec. Last updated by gaiauser at February 12 2021, 2:57:19 PM.
+
+        first plot
+        Took 19 min 22 sec. Last updated by gaiauser at February 12 2021, 3:16:42 PM.
+
+        good/bad select - 100% data
+        Good training data size: 244740 rows
+        Bad  training data size: 244740 rows
+        Took 28 min 3 sec. Last updated by gaiauser at February 12 2021, 3:44:45 PM.
+
+        RandomForestClassifier - 100% data 500 trees
+        Killed at 80% to allow John to heal the Ceph system.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+dev deployment #3
+
+    test #3.4
+
+        100% data, 500 trees, no cache
+
+        ml intro
+        Took 0 sec. Last updated by gaiauser at February 12 2021, 8:18:31 PM.
+
+        temp view
+        Took 1 min 40 sec. Last updated by gaiauser at February 12 2021, 8:20:11 PM.
+
+        main select statement
+        1724028
+        Took 1 min 38 sec. Last updated by gaiauser at February 12 2021, 8:21:49 PM.
+
+            ceph-fuse at 80-90%
+            java at 20-50%
+
+        Hertzsprung-Russell
+        Took 4 min 39 sec. Last updated by gaiauser at February 12 2021, 8:26:28 PM.
+
+        good/bad select - 100% data
+        Good training data size: 244740 rows
+        Bad  training data size: 244740 rows
+        Took 7 min 13 sec. Last updated by gaiauser at February 12 2021, 8:33:41 PM.
+
+        RandomForestClassifier - 100% data 500 trees
+        Took 1 hrs 16 min 6 sec. Last updated by gaiauser at February 12 2021, 9:49:48 PM.
+
+        Misclassifications for the test set: 0.35 %
+        Took 18 min 35 sec. Last updated by gaiauser at February 12 2021, 10:08:23 PM.
+
+        Hertzsprung-Russell
+        Took 54 min 22 sec. Last updated by gaiauser at February 12 2021, 11:02:46 PM.
+
+        histogram
+        Took 14 min 58 sec. Last updated by gaiauser at February 12 2021, 11:17:44 PM.
+
+        Good sources plot
+        Took 27 min 12 sec. Last updated by gaiauser at February 12 2021, 11:44:56 PM.
+
+        Bad sources plot
+        Took 27 min 13 sec. Last updated by gaiauser at February 13 2021, 12:12:09 AM.
+
+        No. of good sources:  22254
+        No. of bad sources:   26170
+        Took 27 min 42 sec. Last updated by gaiauser at February 13 2021, 12:39:51 AM.
+
+        histogram
+        Took 19 min 10 sec. Last updated by gaiauser at February 13 2021, 12:59:01 AM.
+
+        Nulls
+        Took 15 min 48 sec. Last updated by gaiauser at February 13 2021, 1:14:49 AM.
+
+        ----
+
+dev deployment #3
+
+    test #3.5
+
+        repeat of the same
+        100% data, 500 trees, no cache
+
+        clear cells and run all
+
+        ml intro
+        Took 0 sec. Last updated by gaiauser at February 13 2021, 3:19:07 AM.
+
+        temp view
+        Took 50 sec. Last updated by gaiauser at February 13 2021, 3:19:57 AM.
+
+        main select statement
+        1724028
+        Took 38 sec. Last updated by gaiauser at February 13 2021, 3:20:35 AM.
+
+        Hertzsprung-Russell
+        Took 4 min 1 sec. Last updated by gaiauser at February 13 2021, 3:24:36 AM.
+
+        good/bad select - 100% data
+        Good training data size: 244740 rows
+        Bad  training data size: 244740 rows
+        Took 7 min 4 sec. Last updated by gaiauser at February 13 2021, 3:31:40 AM.
+
+        RandomForestClassifier - 100% data 500 trees
+        Took 1 hrs 19 min 39 sec. Last updated by gaiauser at February 13 2021, 4:51:20 AM.
+
+        Misclassifications for the test set: 0.35 %
+        Took 20 min 13 sec. Last updated by gaiauser at February 13 2021, 5:11:34 AM.
+
+        Hertzsprung-Russell
+        Took 55 min 7 sec. Last updated by gaiauser at February 13 2021, 6:06:42 AM.
+
+        histogram
+        Took 14 min 12 sec. Last updated by gaiauser at February 13 2021, 6:20:54 AM.
+
+        Good sources plot
+
+        Bad sources plot
+
+        good/bad count
+
+        histogram
+
+        Nulls
+
+

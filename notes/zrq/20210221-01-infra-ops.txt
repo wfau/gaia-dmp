@@ -1,0 +1,506 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/infra-ops:/infra-ops:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Test our Ansible scripts ...
+#[root@ansibler]
+
+    pushd "/infra-ops/ansible"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "01-ssh-config.yml"
+
+    >   ....
+    >   ....
+
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "02-ping-test.yml"
+
+    >   ....
+    >   ....
+
+    popd
+
+
+# -----------------------------------------------------
+# Install the Podman container plugin.
+# TODO - Add this to our ansible-client image.
+#[root@ansibler]
+
+    ansible-galaxy collection install containers.podman
+
+    >   Process install dependency map
+    >   Starting collection install process
+    >   Installing 'containers.podman:1.4.3' to '/root/.ansible/collections/ansible_collections/containers/podman'
+
+
+# -----------------------------------------------------
+# Install the Podman container plugin.
+# TODO - Add this to our ansible-client image.
+#[root@ansibler]
+
+    pushd "/infra-ops/ansible"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "03-apply-roles.yml"
+
+    popd
+
+    >   PLAY [Apply roles] *****************************************************************
+    >   
+    >   TASK [Gathering Facts] *************************************************************
+    >   ok: [Hizzoria]
+    >   
+    >   TASK [fedora-base : Update the DNF cache] ******************************************
+    >   changed: [Hizzoria]
+    >   
+    >   TASK [podman-host : Install Podman] ************************************************
+    >   changed: [Hizzoria]
+    >   
+    >   TASK [dns-server : Create DNSmasq config directory] ********************************
+    >   changed: [Hizzoria]
+    >   
+    >   TASK [dns-server : Deploy DNSmasq container] ***************************************
+    >   changed: [Hizzoria]
+    >   
+    >   PLAY RECAP *************************************************************************
+    >   Hizzoria : ok=5  changed=4  unreachable=0  failed=0  skipped=0  rescued=0  ignored=0
+
+
+# -----------------------------------------------------
+# Check the result
+#[root@ansibler]
+
+    ssh Hizzoria
+
+    >   Last login: Sun Feb 21 05:21:20 2021 from 81.187.247.196
+
+
+        podman ps -a
+
+    >   CONTAINER ID  IMAGE                              COMMAND  CREATED         STATUS                     PORTS   NAMES
+    >   1c28928f2d80  docker.io/storytel/dnsmasq:latest  dnsmasq  12 minutes ago  Exited (2) 12 minutes ago          dnsmasq
+
+
+    podman logs dnsmasq
+
+    >   dnsmasq: failed to create listening socket for port 53: Address in use
+    >   
+    >   dnsmasq: failed to create listening socket for port 53: Address in use
+    >   
+    >   dnsmasq: failed to create listening socket for port 53: Address in use
+    >   ....
+    >   ....
+
+    #
+    # OK - needs tweaking - but the roles thing worked :-)
+    #
+
+
+# -----------------------------------------------------
+# Check if anyone is listening on port 53.
+# https://www.cyberciti.biz/faq/unix-linux-check-if-port-is-in-use-command/
+#[root@Hizzoria]
+
+    dnf info lsof
+
+    >   ....
+    >   ....
+
+
+    lsof -i -P -n | grep LISTEN
+
+    >   systemd-r   444 systemd-resolve   11u  IPv4    17957      0t0  TCP *:5355 (LISTEN)
+    >   systemd-r   444 systemd-resolve   13u  IPv6    17960      0t0  TCP *:5355 (LISTEN)
+    >   systemd-r   444 systemd-resolve   16u  IPv4    17964      0t0  TCP 127.0.0.53:53 (LISTEN)
+    >   sshd        746            root    4u  IPv4    23626      0t0  TCP *:22 (LISTEN)
+    >   sshd        746            root    5u  IPv6    23635      0t0  TCP *:22 (LISTEN)
+
+    # systemd-resolve is listening on the internal localhost address.
+    # - which I think is OK
+
+
+    # We want dnsmasq to listen on the external (public) IP address.
+
+    # DigitalOcean website lists the IP address as 46.101.32.198
+
+
+# -----------------------------------------------------
+# List the IP interfaces.
+# https://access.redhat.com/sites/default/files/attachments/rh_ip_command_cheatsheet_1214_jcs_print.pdf
+#[root@Hizzoria]
+
+    ip addr
+
+    >   1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    >       link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    >       inet 127.0.0.1/8 scope host lo
+    >          valid_lft forever preferred_lft forever
+    >       inet6 ::1/128 scope host
+    >          valid_lft forever preferred_lft forever
+    >   2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    >       link/ether 86:ab:2d:00:cb:2a brd ff:ff:ff:ff:ff:ff
+    >       altname enp0s3
+    >       altname ens3
+    >       inet 46.101.32.198/18 brd 46.101.63.255 scope global noprefixroute eth0
+    >          valid_lft forever preferred_lft forever
+    >       inet 10.16.0.5/16 brd 10.16.255.255 scope global noprefixroute eth0
+    >          valid_lft forever preferred_lft forever
+    >       inet6 2a03:b0c0:1:d0::b53:6001/64 scope global noprefixroute
+    >          valid_lft forever preferred_lft forever
+    >       inet6 fe80::84ab:2dff:fe00:cb2a/64 scope link noprefixroute
+    >          valid_lft forever preferred_lft forever
+    >   3: eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP group default qlen 1000
+    >       link/ether be:ff:fc:81:f0:74 brd ff:ff:ff:ff:ff:ff
+    >       altname enp0s4
+    >       altname ens4
+    >       inet 10.106.0.2/20 brd 10.106.15.255 scope global noprefixroute eth1
+    >          valid_lft forever preferred_lft forever
+    >       inet6 fe80::bcff:fcff:fe81:f074/64 scope link
+    >          valid_lft forever preferred_lft forever
+
+    # Interesting, but hard to tell which is the external interface.
+
+
+# -----------------------------------------------------
+# List the IP routes.
+# https://access.redhat.com/sites/default/files/attachments/rh_ip_command_cheatsheet_1214_jcs_print.pdf
+#[root@Hizzoria]
+
+    ip route
+
+    >   default via 46.101.0.1 dev eth0 proto static metric 100
+    >   10.16.0.0/16 dev eth0 proto kernel scope link src 10.16.0.5 metric 100
+    >   10.106.0.0/20 dev eth1 proto kernel scope link src 10.106.0.2 metric 101
+    >   46.101.0.0/18 dev eth0 proto kernel scope link src 46.101.32.198 metric 100
+
+    # That looks more useful, the default route is linked to the external interface.
+    # Is that always a valid assumption to make ?
+
+
+    ip route list match default
+
+    >   default via 46.101.0.1 dev eth0 proto static metric 100
+
+
+# -----------------------------------------------------
+# Try extract the interface name for the default route.
+#[root@Hizzoria]
+
+    ip route
+
+    >   default via 46.101.0.1 dev eth0 proto static metric 100
+    >   10.16.0.0/16 dev eth0 proto kernel scope link src 10.16.0.5 metric 100
+    >   10.106.0.0/20 dev eth1 proto kernel scope link src 10.106.0.2 metric 101
+    >   46.101.0.0/18 dev eth0 proto kernel scope link src 46.101.32.198 metric 100
+
+
+    ip route | cut -d ' ' -f 1
+
+    >   default
+    >   10.16.0.0/16
+    >   10.106.0.0/20
+    >   46.101.0.0/18
+
+
+    ip route | cut -d ' ' -f 2
+
+    >   via
+    >   dev
+    >   dev
+    >   dev
+
+
+    ip route | cut -d ' ' -f 3
+
+    >   46.101.0.1
+    >   eth0
+    >   eth1
+    >   eth0
+
+
+    ip route | cut -d ' ' -f 4
+
+    >   dev
+    >   proto
+    >   proto
+    >   proto
+
+
+    # The default line is different because the destination is several words.
+    # The first term is 'default via 46.101.0.1'
+    # Equivalent to :
+
+    >   default-via-46.101.0.1 dev eth0 proto ....
+    >   10.16.0.0/16           dev eth0 proto ....
+    >   10.106.0.0/20          dev eth1 proto ....
+    >   46.101.0.0/18          dev eth0 proto ....
+
+
+    # We could use `ip` to select just the default route, and use `sed` to match the term we want.
+
+    ip route list match default
+
+    >   default via 46.101.0.1 dev eth0 proto static metric 100
+
+
+    ip route list match default \
+    | sed '
+        s/^.*dev[[:space:]]*\([[:alnum:]]*\)[[:space:]]*proto.*$/\1/
+        '
+
+    >   eth0
+
+    ifname=$(
+        ip route list match default \
+        | sed '
+            s/^.*dev[[:space:]]*\([[:alnum:]]*\)[[:space:]]*proto.*$/\1/
+            '
+        )
+
+
+# -----------------------------------------------------
+# Add a basic DNSmasq config file with the interface name.
+# (initial settings copied fro Esperia)
+# https://github.com/wfau/esperia/blob/master/src/ansible/dnsmasq/dnsmasq-esperia.conf
+#[root@Hizzoria]
+
+    configdir=/var/aglais/dnsmasq
+
+    cat > "${configdir:?}/aglais.conf" << EOF
+
+no-hosts
+no-resolv
+no-daemon
+bogus-priv
+domain-needed
+keep-in-foreground
+
+log-facility=-
+
+interface=${ifname:?}
+bind-interfaces
+
+EOF
+
+
+# -----------------------------------------------------
+# Restart the DNSmasq container see if that helps.
+#[root@Hizzoria]
+
+    podman restart dnsmasq
+
+    >   04b9f37c57872d54e9ad46f26c1d832cfb2c71f78222463725d69de950375e8e
+
+
+    podman ps -a
+
+    >   CONTAINER ID  IMAGE                              COMMAND  CREATED         STATUS            PORTS   NAMES
+    >   04b9f37c5787  docker.io/storytel/dnsmasq:latest  dnsmasq  44 minutes ago  Up 3 seconds ago          dnsmasq
+
+
+    podman logs dnsmasq
+
+    >   dnsmasq[1]: started, version 2.78 cachesize 150
+    >   dnsmasq[1]: compile time options: IPv6 GNU-getopt no-DBus no-i18n no-IDN DHCP DHCPv6 no-Lua TFTP no-conntrack ipset auth no-DNSSEC loop-detect inotify
+    >   dnsmasq[1]: LOUD WARNING: listening on 46.101.32.198 may accept requests via interfaces other than eth0
+    >   dnsmasq[1]: LOUD WARNING: use --bind-dynamic rather than --bind-interfaces to avoid DNS amplification attacks via these interface(s)
+    >   dnsmasq[1]: warning: no upstream servers configured
+    >   dnsmasq[1]: cleared cache
+
+    # Checks the DNSmasql manual ..
+    # http://www.thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html
+    # We could just use except-interface to preevent it listening on localhost ..
+
+# -----------------------------------------------------
+# Update the DNSmasq config file and try again.
+# http://www.thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html
+#[root@Hizzoria]
+
+    cat > "${configdir:?}/aglais.conf" << EOF
+
+no-hosts
+no-resolv
+no-daemon
+bogus-priv
+domain-needed
+keep-in-foreground
+
+log-facility=-
+
+except-interface=localhost
+
+EOF
+
+
+    podman restart dnsmasq
+
+    >   04b9f37c57872d54e9ad46f26c1d832cfb2c71f78222463725d69de950375e8e
+
+
+    podman logs --follow dnsmasq
+
+    >   dnsmasq: failed to create listening socket for port 53: Address in use
+    >   
+    >   dnsmasq: failed to create listening socket for port 53: Address in use
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Update the DNSmasq config file and try again.
+# http://www.thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html
+#[root@Hizzoria]
+
+    cat > "${configdir:?}/aglais.conf" << EOF
+
+no-hosts
+no-resolv
+no-daemon
+bogus-priv
+domain-needed
+keep-in-foreground
+
+log-facility=-
+
+except-interface=localhost
+bind-interface
+
+EOF
+
+
+    podman restart dnsmasq
+
+    >   04b9f37c57872d54e9ad46f26c1d832cfb2c71f78222463725d69de950375e8e
+
+
+    podman logs --follow dnsmasq
+
+    >   dnsmasq: bad option at line 12 of /etc/dnsmasq/aglais.conf
+
+
+# -----------------------------------------------------
+# Update the DNSmasq config file and try again.
+# http://www.thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html
+#[root@Hizzoria]
+
+    cat > "${configdir:?}/aglais.conf" << EOF
+
+no-hosts
+no-resolv
+no-daemon
+bogus-priv
+domain-needed
+keep-in-foreground
+
+log-facility=-
+
+except-interface=localhost
+bind-interfaces
+
+EOF
+
+
+    podman restart dnsmasq
+
+    >   04b9f37c57872d54e9ad46f26c1d832cfb2c71f78222463725d69de950375e8e
+
+
+    podman logs --follow dnsmasq
+
+    >   dnsmasq[1]: started, version 2.78 cachesize 150
+    >   dnsmasq[1]: compile time options: IPv6 GNU-getopt no-DBus no-i18n no-IDN DHCP DHCPv6 no-Lua TFTP no-conntrack ipset auth no-DNSSEC loop-detect inotify
+    >   dnsmasq[1]: LOUD WARNING: listening on 46.101.32.198 may accept requests via interfaces other than eth0
+    >   dnsmasq[1]: LOUD WARNING: use --bind-dynamic rather than --bind-interfaces to avoid DNS amplification attacks via these interface(s)
+    >   dnsmasq[1]: warning: no upstream servers configured
+    >   dnsmasq[1]: cleared cache
+
+
+# -----------------------------------------------------
+# Update the DNSmasq config file and try again.
+# http://www.thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html
+#[root@Hizzoria]
+
+    cat > "${configdir:?}/aglais.conf" << EOF
+
+no-hosts
+no-resolv
+no-daemon
+bogus-priv
+domain-needed
+keep-in-foreground
+
+log-facility=-
+
+except-interface=localhost
+bind-dynamic
+
+EOF
+
+
+    podman restart dnsmasq
+
+    >   04b9f37c57872d54e9ad46f26c1d832cfb2c71f78222463725d69de950375e8e
+
+
+    podman logs --follow dnsmasq
+
+    >   dnsmasq[1]: started, version 2.78 cachesize 150
+    >   dnsmasq[1]: compile time options: IPv6 GNU-getopt no-DBus no-i18n no-IDN DHCP DHCPv6 no-Lua TFTP no-conntrack ipset auth no-DNSSEC loop-detect inotify
+    >   dnsmasq[1]: warning: no upstream servers configured
+    >   dnsmasq[1]: cleared cache
+
+
+
+
+
+
+

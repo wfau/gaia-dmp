@@ -95,22 +95,22 @@
     popd
 
     >   PLAY [Apply roles] *****************************************************************
-    >   
+    >
     >   TASK [Gathering Facts] *************************************************************
     >   ok: [Hizzoria]
-    >   
+    >
     >   TASK [fedora-base : Update the DNF cache] ******************************************
     >   changed: [Hizzoria]
-    >   
+    >
     >   TASK [podman-host : Install Podman] ************************************************
     >   changed: [Hizzoria]
-    >   
+    >
     >   TASK [dns-server : Create DNSmasq config directory] ********************************
     >   changed: [Hizzoria]
-    >   
+    >
     >   TASK [dns-server : Deploy DNSmasq container] ***************************************
     >   changed: [Hizzoria]
-    >   
+    >
     >   PLAY RECAP *************************************************************************
     >   Hizzoria : ok=5  changed=4  unreachable=0  failed=0  skipped=0  rescued=0  ignored=0
 
@@ -133,9 +133,9 @@
     podman logs dnsmasq
 
     >   dnsmasq: failed to create listening socket for port 53: Address in use
-    >   
+    >
     >   dnsmasq: failed to create listening socket for port 53: Address in use
-    >   
+    >
     >   dnsmasq: failed to create listening socket for port 53: Address in use
     >   ....
     >   ....
@@ -389,7 +389,7 @@ EOF
     podman logs --follow dnsmasq
 
     >   dnsmasq: failed to create listening socket for port 53: Address in use
-    >   
+    >
     >   dnsmasq: failed to create listening socket for port 53: Address in use
     >   ....
     >   ....
@@ -499,7 +499,700 @@ EOF
     >   dnsmasq[1]: cleared cache
 
 
+# -----------------------------------------------------
+# To perevent DNSmasq from trying to resolve other addresses.
+# http://www.thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html
+# https://www.mail-archive.com/dnsmasq-discuss@lists.thekelleys.org.uk/msg14016.html
+#[root@Hizzoria]
 
+    # Not conclusive ..
+    # I think we have what we need.
+
+    # Q - why wrap DNSmasq in a container ?
+    # A - because that's the way Fedora is going in the future ?
+
+    # It comes installed in Fedora by default.
+
+    dnf info dnsmasq
+
+    >   Installed Packages
+    >   Name         : dnsmasq
+    >   Version      : 2.83
+    >   Release      : 1.fc33
+    >   Architecture : x86_64
+    >   Size         : 693 k
+    >   Source       : dnsmasq-2.83-1.fc33.src.rpm
+    >   Repository   : @System
+    >   From repo    : updates
+    >   Summary      : A lightweight DHCP/caching DNS server
+    >   URL          : http://www.thekelleys.org.uk/dnsmasq/
+    >   License      : GPLv2 or GPLv3
+    >   Description  : Dnsmasq is lightweight, easy to configure DNS forwarder and DHCP server.
+    >                : It is designed to provide DNS and, optionally, DHCP, to a small network.
+    >                : It can serve the names of local machines which are not in the global
+    >                : DNS. The DHCP server integrates with the DNS server and allows machines
+    >                : with DHCP-allocated addresses to appear in the DNS with names configured
+    >                : either in each host or in a central configuration file. Dnsmasq supports
+    >                : static and dynamic DHCP leases and BOOTP for network booting of diskless
+    >                : machines.
+
+
+    # All we would need to do is start it ...
+
+    systemctl status dnsmasq
+
+    >   ● dnsmasq.service - DNS caching server.
+    >        Loaded: loaded (/usr/lib/systemd/system/dnsmasq.service; disabled; vendor preset: disabled)
+    >        Active: inactive (dead)
+
+    # Because we want to have multiple services on the machine
+    # and we want each of them to be in separate containers
+
+
+# -----------------------------------------------------
+# Setup a second shell to tail the DNSmasq logs.
+#[user@desktop]
+
+    podman exec -it ansibler bash
+
+        ssh Hizzoria
+
+            podman logs --follow dnsmasq
+
+    >   dnsmasq[1]: started, version 2.78 cachesize 150
+    >   dnsmasq[1]: compile time options: IPv6 GNU-getopt no-DBus no-i18n no-IDN DHCP DHCPv6 no-Lua TFTP no-conntrack ipset auth no-DNSSEC loop-detect inotify
+    >   dnsmasq[1]: warning: no upstream servers configured
+    >   dnsmasq[1]: cleared cache
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Add a directory for host files.
+#[root@Hizzoria]
+
+    mkdir "${configdir:?}/hosts"
+
+    cat > "${configdir:?}/aglais.conf" << EOF
+
+no-hosts
+no-resolv
+no-daemon
+bogus-priv
+domain-needed
+keep-in-foreground
+
+log-facility=-
+
+except-interface=localhost
+bind-dynamic
+
+hostsdir=${configdir:?}/hosts
+
+EOF
+
+
+# -----------------------------------------------------
+# Send DNSmasq a SIGHUP signal to reload the config.
+# https://serverfault.com/questions/723292/dnsmasq-doesnt-automatically-reload-when-entry-is-added-to-etc-hosts
+# https://serverfault.com/a/934681
+# http://docs.podman.io/en/latest/markdown/podman-kill.1.html
+#[root@Hizzoria]
+
+    podman kill --signal SIGHUP dnsmasq
+
+    >   04b9f37c57872d54e9ad46f26c1d832cfb2c71f78222463725d69de950375e8e
+
+
+# -----------------------------------------------------
+# Add a hosts file for gaia-dev.
+#[root@Hizzoria]
+
+    cat > "${configdir:?}/gaia-dev.hosts" << EOF
+
+zeppelin.gaia-dev.aglais.uk,128.232.227.197
+
+EOF
+
+    #
+    # Useful to know - DNSmasq doesn't handle CNAMES to other domains.
+    # http://lists.thekelleys.org.uk/pipermail/dnsmasq-discuss/2006q1/000583.html
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Send a test query.
+#[user@desktop]
+
+    server=46.101.32.198
+
+    host 'zeppelin.gaia-dev.aglais.uk' "${server:?}"
+
+
+    >   Using domain server:
+    >   Name: 46.101.32.198
+    >   Address: 46.101.32.198#53
+    >   Aliases:
+    >   
+    >   Host zeppelin.gaia-dev.aglais.uk not found: 5(REFUSED)
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Add query logging.
+#[root@Hizzoria]
+
+    vi "${configdir:?}/aglais.conf"
+
+    +   log-queries
+
+
+    podman kill --signal SIGHUP dnsmasq
+
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Send a test query.
+#[user@desktop]
+
+    host 'zeppelin.gaia-dev.aglais.uk' "${server:?}"
+
+    >   Using domain server:
+    >   Name: 46.101.32.198
+    >   Address: 46.101.32.198#53
+    >   Aliases:
+    >   
+    >   Host zeppelin.gaia-dev.aglais.uk not found: 5(REFUSED)
+
+
+    # Is that request refused, or connection refused ?
+
+
+# -----------------------------------------------------
+# Try dig instead.
+#[user@desktop]
+
+    dig "@${server:?}" 'zeppelin.gaia-dev.aglais.uk' 'A'
+
+    >   ; <<>> DiG 9.11.26-RedHat-9.11.26-2.fc32 <<>> @46.101.32.198 zeppelin.gaia-dev.aglais.uk A
+    >   ; (1 server found)
+    >   ;; global options: +cmd
+    >   ;; Got answer:
+    >   ;; ->>HEADER<<- opcode: QUERY, status: REFUSED, id: 65372
+    >   ;; flags: qr rd ra ad; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0
+    >   
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.gaia-dev.aglais.uk.	IN	A
+    >   
+    >   ;; Query time: 15 msec
+    >   ;; SERVER: 46.101.32.198#53(46.101.32.198)
+    >   ;; WHEN: Sun Feb 21 13:06:16 GMT 2021
+    >   ;; MSG SIZE  rcvd: 45
+
+
+    # OK - looks like we got an answer ... that the query was refused.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Setup the NS address in our external DNS provider.
+# https://admin.lcn.com/
+
+    ....
+    ....
+
+
+# -----------------------------------------------------
+# Check the result.
+#[user@desktop]
+
+    host -a 'infra-ops.aglais.uk' 'ns1.lcn.com'
+
+    >   Trying "infra-ops.aglais.uk"
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 33136
+    >   ;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 3, ADDITIONAL: 3
+    >   
+    >   ;; QUESTION SECTION:
+    >   ;infra-ops.aglais.uk.		IN	ANY
+    >   
+    >   ;; ANSWER SECTION:
+    >   infra-ops.aglais.uk.	600	IN	A	46.101.32.198
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   aglais.uk.		172800	IN	NS	ns0.lcn.com.
+    >   aglais.uk.		172800	IN	NS	ns1.lcn.com.
+    >   aglais.uk.		172800	IN	NS	ns2.lcn.com.
+    >   
+    >   ;; ADDITIONAL SECTION:
+    >   ns1.lcn.com.		12497	IN	A	85.233.160.69
+    >   ns0.lcn.com.		12497	IN	A	195.110.124.234
+    >   ns2.lcn.com.		12497	IN	A	91.186.2.8
+    >   
+    >   Received 162 bytes from 195.194.120.1#53 in 85 ms
+
+
+    host -a 'gaia-dev.aglais.uk' 'ns1.lcn.com'
+
+    >   Trying "gaia-dev.aglais.uk"
+    >   ;; Truncated, retrying in TCP mode.
+    >   Trying "gaia-dev.aglais.uk"
+    >   Using domain server:
+    >   Name: ns1.lcn.com
+    >   Address: 85.233.160.69#53
+    >   Aliases:
+    >   
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 22311
+    >   ;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 1
+    >   
+    >   ;; QUESTION SECTION:
+    >   ;gaia-dev.aglais.uk.		IN	ANY
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   gaia-dev.aglais.uk.	600	IN	NS	infra-ops.aglais.uk.
+    >   
+    >   ;; ADDITIONAL SECTION:
+    >   infra-ops.aglais.uk.	600	IN	A	46.101.32.198
+    >   
+    >   Received 76 bytes from 85.233.160.69#53 in 15 ms
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Make DNSmasq an authoritative server.
+#[root@Hizzoria]
+
+    vi "${configdir:?}/aglais.conf"
+
+    +   auth-server=ns0.lcn.com
+    +   auth-zone=gaia-dev.aglais.uk
+
+    podman kill --signal SIGHUP dnsmasq
+
+    >   ....
+
+# -----------------------------------------------------
+# Check the result.
+#[user@desktop]
+
+    host -a 'zeppelin.gaia-dev.aglais.uk' 'infra-ops.aglais.uk'
+
+    >   Trying "zeppelin.gaia-dev.aglais.uk"
+    >   Using domain server:
+    >   Name: infra-ops.aglais.uk
+    >   Address: 46.101.32.198#53
+    >   Aliases:
+    >   
+    >   Host zeppelin.gaia-dev.aglais.uk not found: 5(REFUSED)
+    >   Received 45 bytes from 46.101.32.198#53 in 13 ms
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Explicity add the host address to our main config.
+#[root@Hizzoria]
+
+    vi "${configdir:?}/aglais.conf"
+
+    +   host-record=zeppelin,zeppelin.gaia-dev.aglais.uk,128.232.227.197
+
+
+    podman kill --signal SIGHUP dnsmasq
+
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the result.
+#[user@desktop]
+
+    host -a 'zeppelin.gaia-dev.aglais.uk' 'infra-ops.aglais.uk'
+
+    >   ....
+    >   ....
+    >   Host zeppelin.gaia-dev.aglais.uk not found: 5(REFUSED)
+    >   Received 45 bytes from 46.101.32.198#53 in 15 ms
+
+    # Still getting REFUSED response.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Stop the service ...
+#[root@Hizzoria]
+
+    podman stop dnsmasq
+
+    >   dnsmasq[1]: exiting on receipt of SIGTERM
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the result.
+#[user@desktop]
+
+    host -a 'zeppelin.gaia-dev.aglais.uk' 'infra-ops.aglais.uk'
+
+    >   host -a 'zeppelin.gaia-dev.aglais.uk' 'infra-ops.aglais.uk'
+    >   Trying "zeppelin.gaia-dev.aglais.uk"
+    >   ;; connection timed out; no servers could be reached
+
+    # So the REFUSED is coming from DNSmasq itself.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Start the service ...
+#[root@Hizzoria]
+
+    podman start dnsmasq
+
+    >   dnsmasq: error at line 17 of /etc/dnsmasq/aglais.conf
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    # Mistake #1
+    # Created a hosts directory and added it to the config.
+
+        mkdir "${configdir:?}/hosts"
+
+    # .. but put the hosts file in the top level
+
+        cat > "${configdir:?}/gaia-dev.hosts" << EOF
+
+    # Explicitly adding the host addres to the main config worked
+
+        host-record=zeppelin,zeppelin.gaia-dev.aglais.uk,128.232.227.197
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    # Mistake #2
+    # Created a hosts directory on the host VM
+
+        mkdir "${configdir:?}/hosts"
+
+    # and used the same path in the config file
+
+        hostsdir=/var/aglais/dnsmasq/hosts
+
+    # but the host VM path is mounted as something else inside the Pod
+
+        volumes:
+            - "{{dnsmasq.config_path}}:/etc/dnsmasq:ro"
+
+    # So the path _insied_ the Pod should be
+
+        /etc/dnsmasq/hosts
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    # Mistake #3
+    # The wrong syntax in the hosts file
+    # using the addresshost-record syntax from DNSmasq config
+
+        zeppelin.gaia-dev.aglais.uk,128.232.227.197
+
+    # Should be using the hosts file syntax
+
+        128.232.227.197 zeppelin.gaia-dev.aglais.uk
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    # Mistake #4
+    # Sending the SIGHUP signal to the Pod didn't reload the config file.
+    # Need to explicitly stop and start the Pod.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Putting it all together.
+
+    cat "${configdir:?}/aglais.conf"
+
+    >   no-hosts
+    >   no-resolv
+    >   no-daemon
+    >   bogus-priv
+    >   domain-needed
+    >   keep-in-foreground
+    >   
+    >   log-queries
+    >   log-facility=-
+    >   
+    >   except-interface=localhost
+    >   bind-dynamic
+    >   
+    >   hostsdir=/etc/dnsmasq/hosts
+    >   
+    >   #auth-server=ns0.lcn.com
+    >   #auth-server=infra-ops.aglais.uk
+    >   auth-zone=gaia-dev.aglais.uk
+
+
+    cat "${configdir:?}/hosts/gaia-dev.hosts"
+
+    >   # Host addresses for the gaia-dev cloud.
+    >   128.232.227.197 zeppelin.gaia-dev.aglais.uk
+    >   
+
+# -----------------------------------------------------
+# Stop and start the Pod ...
+#[root@Hizzoria]
+
+    podman stop dnsmasq
+
+    podman start dnsmasq
+
+
+# -----------------------------------------------------
+# Test from an external machine
+#[user@trop01]
+
+    host 'zeppelin.gaia-dev.aglais.uk'
+
+    >   zeppelin.gaia-dev.aglais.uk has address 128.232.227.197
+
+
+    host -a 'zeppelin.gaia-dev.aglais.uk'
+
+    >   Trying "zeppelin.gaia-dev.aglais.uk"
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 63506
+    >   ;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 1, ADDITIONAL: 1
+    >   
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.gaia-dev.aglais.uk.	IN	ANY
+    >   
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dev.aglais.uk. 558 IN	A	128.232.227.197
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   gaia-dev.aglais.uk.	431	IN	NS	infra-ops.aglais.uk.
+    >   
+    >   ;; ADDITIONAL SECTION:
+    >   infra-ops.aglais.uk.	431	IN	A	46.101.32.198
+    >   
+    >   Received 101 bytes from 195.194.120.2#53 in 13 ms
+
+
+    # The NS record for the sub-domain is wrong.
+
+    host -a 'gaia-dev.aglais.uk'
+
+    >   Trying "gaia-dev.aglais.uk"
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 50199
+    >   ;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 0
+    >   
+    >   ;; QUESTION SECTION:
+    >   ;gaia-dev.aglais.uk.		IN	ANY
+    >   
+    >   ;; ANSWER SECTION:
+    >   gaia-dev.aglais.uk.	243	IN	NS	.
+    >   
+    >   Received 49 bytes from 195.194.120.1#53 in 13 ms
+
+
+    host -t NS 'gaia-dev.aglais.uk'
+
+    >   gaia-dev.aglais.uk name server .
+
+
+    # Explicitly point at our server
+
+    host -a 'gaia-dev.aglais.uk' 'infra-ops.aglais.uk'
+
+    >   Trying "gaia-dev.aglais.uk"
+    >   Using domain server:
+    >   Name: infra-ops.aglais.uk
+    >   Address: 46.101.32.198#53
+    >   Aliases:
+    >   
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 12966
+    >   ;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 0, ADDITIONAL: 0
+    >   
+    >   ;; QUESTION SECTION:
+    >   ;gaia-dev.aglais.uk.		IN	ANY
+    >   
+    >   Received 36 bytes from 46.101.32.198#53 in 15 ms
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    # Lots of caching is getting in the way.
+    # I think we have the right configuration.
+
+    # We needed to specify the interface for the auth-server entry.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# List the configuration.
+#[root@Hizzoria]
+
+    cat "${configdir:?}/aglais.conf"
+
+    >   no-hosts
+    >   no-resolv
+    >   no-daemon
+    >   bogus-priv
+    >   domain-needed
+    >   keep-in-foreground
+    >   
+    >   local-ttl=60
+    >   
+    >   log-queries
+    >   log-facility=-
+    >   
+    >   except-interface=localhost
+    >   bind-dynamic
+    >   
+    >   hostsdir=/etc/dnsmasq/hosts
+    >   
+    >   auth-server=infra-ops.aglais.uk,eth0
+    >   auth-zone=gaia-dev.aglais.uk
+
+
+    cat "${configdir:?}/hosts/gaia-dev.hosts"
+
+    >   # Host addresses for the gaia-dev cloud.
+    >   128.232.227.197 zeppelin.gaia-dev.aglais.uk
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the results.
+#[user@desktop]
+
+    # Ask LCN's nameserver
+    dig '@ns0.lcn.com' 'zeppelin.gaia-dev.aglais.uk'
+
+    >   ; <<>> DiG 9.11.26-RedHat-9.11.26-2.fc32 <<>> @ns0.lcn.com zeppelin.gaia-dev.aglais.uk
+    >   ; (1 server found)
+    >   ;; global options: +cmd
+    >   ;; Got answer:
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 27658
+    >   ;; flags: qr rd; QUERY: 1, ANSWER: 0, AUTHORITY: 1, ADDITIONAL: 2
+    >   ;; WARNING: recursion requested but not available
+    >   
+    >   ;; OPT PSEUDOSECTION:
+    >   ; EDNS: version: 0, flags:; udp: 1232
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.gaia-dev.aglais.uk.	IN	A
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   gaia-dev.aglais.uk.	600	IN	NS	infra-ops.aglais.uk.
+    >   
+    >   ;; ADDITIONAL SECTION:
+    >   infra-ops.aglais.uk.	600	IN	A	46.101.32.198
+    >   
+    >   ;; Query time: 51 msec
+    >   ;; SERVER: 195.110.124.234#53(195.110.124.234)
+    >   ;; WHEN: Sun Feb 21 16:17:11 GMT 2021
+    >   ;; MSG SIZE  rcvd: 96
+
+
+    # Ask our nameserver
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-dev.aglais.uk'
+
+    >   ; <<>> DiG 9.11.26-RedHat-9.11.26-2.fc32 <<>> @infra-ops.aglais.uk zeppelin.gaia-dev.aglais.uk
+    >   ; (1 server found)
+    >   ;; global options: +cmd
+    >   ;; Got answer:
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 31016
+    >   ;; flags: qr aa rd ad; QUERY: 1, ANSWER: 1, AUTHORITY: 1, ADDITIONAL: 1
+    >   ;; WARNING: recursion requested but not available
+    >   
+    >   ;; OPT PSEUDOSECTION:
+    >   ; EDNS: version: 0, flags:; udp: 4096
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.gaia-dev.aglais.uk.	IN	A
+    >   
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dev.aglais.uk. 600 IN	A	128.232.227.197
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   gaia-dev.aglais.uk.	600	IN	NS	infra-ops.aglais.uk.
+    >   
+    >   ;; Query time: 16 msec
+    >   ;; SERVER: 46.101.32.198#53(46.101.32.198)
+    >   ;; WHEN: Sun Feb 21 16:17:51 GMT 2021
+    >   ;; MSG SIZE  rcvd: 123
+
+
+    # That all looks OK, apart from the 600s TTL.
+    # ... but we can live with that for now.
+
+    # Having to set the interface name in the auth-server entry is a hassle,
+    # but we work around it.
+
+    # We can use the interface name from the default route entry.
+
+# -----------------------------------------------------
+# Get the interface name from the default route entry.
+#[root@Hizzoria]
+
+    ifname=$(
+        ip route list match default \
+        | sed '
+            s/^.*dev[[:space:]]*\([[:alnum:]]*\)[[:space:]]*proto.*$/\1/
+            '
+        )
+
+    echo "Interface [${ifname:?}]"
+
+    >   Interface [eth0]
+
+
+# -----------------------------------------------------
+# Get the config files.
+#[root@Hizzoria]
+
+    ls -1 "${configdir}"
+
+    >   aglais.conf
+    >   hosts
+
+
+    "cat ${configdir}/aglais.conf"
+
+    >   no-hosts
+    >   no-resolv
+    >   no-daemon
+    >   bogus-priv
+    >   domain-needed
+    >   keep-in-foreground
+    >   
+    >   local-ttl=60
+    >   
+    >   log-queries
+    >   log-facility=-
+    >   
+    >   except-interface=localhost
+    >   bind-dynamic
+    >   
+    >   hostsdir=/etc/dnsmasq/hosts
+    >   
+    >   auth-server=infra-ops.aglais.uk,eth0
+    >   auth-zone=gaia-dev.aglais.uk
+
+
+    ls -1 "${configdir}/hosts"
+
+    >   gaia-dev.hosts
+
+
+    cat "${configdir}/hosts/gaia-dev.hosts"
+
+    >   # Host addresses for the gaia-dev cloud.
+    >   128.232.227.197 zeppelin.gaia-dev.aglais.uk
 
 
 

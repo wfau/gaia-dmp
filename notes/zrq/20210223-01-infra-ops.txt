@@ -1,0 +1,229 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Update DNSmasq hosts with new IP address.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Update the hosts file
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    pushd "${AGLAIS_CODE:?}"
+
+        pushd experiments/infra-ops/ansible
+
+            gedit hosts.yml
+
+                gaia-prod:
+                    zeppelin:
+            ~           publicip4: '128.232.227.212'
+
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name infra-ops \
+        --hostname infra-ops \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/infra-ops:/infra-ops:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+# -----------------------------------------------------
+# Install the Podman container plugin.
+# TODO - Add this to our ansible-client image.
+#[root@ansibler]
+
+    ansible-galaxy collection install containers.podman
+
+    >   Process install dependency map
+    >   Starting collection install process
+    >   Installing 'containers.podman:1.4.3' to '/root/.ansible/collections/ansible_collections/containers/podman'
+
+
+# -----------------------------------------------------
+# Run our Ansible scripts ...
+#[root@ansibler]
+
+    pushd "/infra-ops/ansible"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "01-ssh-config.yml"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "02-ping-test.yml"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "04-dns-hosts.yml"
+
+    popd
+
+
+    >   ....
+    >   TASK [Update DNSmasq host files] **************************************************************************
+    >   ok: [Hizzoria] => (item={'key': 'gaia-dev', 'value': {....}})
+    >   ok: [Hizzoria] => (item={'key': 'gaia-test', 'value': None})
+    >   changed: [Hizzoria] => (item={'key': 'gaia-prod', 'value': {'zeppelin': {'publicip4': '128.232.227.212'}}})
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to the Droplet and tail the DNSmasq log.
+#[root@ansibler]
+
+    ssh Hizzoria \
+        '
+        podman logs --follow dnsmasq
+        '
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Test queries direct to our DNS server.
+#[user@desktop]
+
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-prod.aglais.uk'
+
+
+    >   ; <<>> DiG 9.11.26-RedHat-9.11.26-2.fc32 <<>> @infra-ops.aglais.uk zeppelin.gaia-prod.aglais.uk
+    >   ; (1 server found)
+    >   ;; global options: +cmd
+    >   ;; Got answer:
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 10057
+    >   ;; flags: qr aa rd ad; QUERY: 1, ANSWER: 2, AUTHORITY: 1, ADDITIONAL: 1
+    >   ;; WARNING: recursion requested but not available
+    >   
+    >   ;; OPT PSEUDOSECTION:
+    >   ; EDNS: version: 0, flags:; udp: 4096
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.gaia-prod.aglais.uk.	IN	A
+    >   
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-prod.aglais.uk. 300 IN	A	128.232.227.212
+    >   zeppelin.gaia-prod.aglais.uk. 300 IN	A	128.232.227.197
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   gaia-prod.aglais.uk.	300	IN	NS	infra-ops.aglais.uk.
+    >   
+    >   ;; Query time: 15 msec
+    >   ;; SERVER: 46.101.32.198#53(46.101.32.198)
+    >   ;; WHEN: Tue Feb 23 06:54:35 GMT 2021
+    >   ;; MSG SIZE  rcvd: 141
+
+    #
+    # Two answers for the same host - one is from the cache.
+    # Need to send a SIGHUP signal to flush the cache.
+    #
+
+# -----------------------------------------------------
+# Try send a SIGHUP signal to flush the cache.
+#[root@ansibler]
+
+    ssh Hizzoria
+
+        podman kill --signal SIGHUP dnsmask
+
+
+# -----------------------------------------------------
+# Test queries direct to our DNS server.
+#[user@desktop]
+
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-prod.aglais.uk'
+
+    >   ....
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-prod.aglais.uk. 300 IN	A	128.232.227.212
+    >   zeppelin.gaia-prod.aglais.uk. 300 IN	A	128.232.227.197
+    >   ....
+
+
+# -----------------------------------------------------
+# Try restart DNSmasq to flush the cache.
+#[root@ansibler]
+
+    ssh Hizzoria
+
+        podman stop dnsmasq
+
+        sleep 1
+
+        podman start dnsmasq
+
+
+# -----------------------------------------------------
+# Test queries direct to our DNS server.
+#[user@desktop]
+
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-prod.aglais.uk'
+
+    >   ....
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-prod.aglais.uk. 300 IN	A	128.232.227.212
+    >   ....
+
+
+# -----------------------------------------------------
+# Query the public service name via our local DNS.
+#[user@desktop]
+
+    dig 'zeppelin.aglais.uk'
+
+    >   ....
+    >   ;; ANSWER SECTION:
+    >   zeppelin.aglais.uk.	600	IN	CNAME	zeppelin.gaia-prod.aglais.uk.
+    >   zeppelin.gaia-prod.aglais.uk. 300 IN	A	128.232.227.212
+    >   ....
+
+
+
+

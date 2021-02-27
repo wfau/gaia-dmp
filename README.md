@@ -1,5 +1,6 @@
 # aglais
 [![SWH](https://archive.softwareheritage.org/badge/origin/https://github.com/wfau/aglais/)](https://archive.softwareheritage.org/browse/origin/?origin_url=https://github.com/wfau/aglais)
+[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.0-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
 Gaia data analysis platform.
 

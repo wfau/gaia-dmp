@@ -62,9 +62,9 @@ representative at an online or offline event.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement by
 contacting one of the core development team:
-- [Nigel Hambly](nch@roe.ac.uk>)
-- [Dave Morris (Zarquan)](dmr@roe.ac.uk)
-- [Stelios Voutsinas](stv@roe.ac.uk>)
+- [Nigel Hambly](mailto:nch@roe.ac.uk>)
+- [Dave Morris (Zarquan)](mailto:dmr@roe.ac.uk)
+- [Stelios Voutsinas](mailto:stv@roe.ac.uk>)
 
 All complaints will be reviewed and investigated promptly and fairly.
 

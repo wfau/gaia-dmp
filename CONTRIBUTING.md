@@ -2,9 +2,11 @@
 
 All contributions to this project should include acceptance of the Developer Certificate of Origin (DCO).
 
-From [Wikipedia](https://en.wikipedia.org/wiki/Developer_Certificate_of_Origin)
-> _"The Developer Certificate of Origin (DCO) was introduced in 2004 by the [Linux Foundation](https://en.wikipedia.org/wiki/Linux_Foundation), to enhance the submission process for software used in the [Linux kernel](https://en.wikipedia.org/wiki/Linux_kernel), shortly after the [SCO–Linux disputes](https://en.wikipedia.org/wiki/SCO%E2%80%93Linux_disputes)."_
-> _"A DCO is an affirmation that the source code being submitted originated from the developer, or that the developer has permission to submit the code."_
+From [Wikipedia](https://en.wikipedia.org/wiki/Developer_Certificate_of_Origin):
+> _"The Developer Certificate of Origin (DCO) was introduced in 2004 by the [Linux Foundation](https://en.wikipedia.org/wiki/Linux_Foundation), to enhance the submission process for software used in the [Linux kernel](https://en.wikipedia.org/wiki/Linux_kernel), shortly after the [SCO–Linux disputes](https://en.wikipedia.org/wiki/SCO%E2%80%93Linux_disputes)._
+> _... a DCO is an affirmation that the source code being submitted originated from the developer, or that the developer has permission to submit the code."_
+
+----
 
 https://developercertificate.org/
 

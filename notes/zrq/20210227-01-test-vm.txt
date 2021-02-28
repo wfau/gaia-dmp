@@ -1,0 +1,397 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Create a test VM to work with ..
+
+    Result:
+
+        Success - VM created
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name openstacker \
+        --hostname openstacker \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+# -----------------------------------------------------
+# Select the dev cloud.
+#[user@openstacker]
+
+    cloudname=gaia-dev
+    buildname=s3test-$(date '+%Y%m%d')
+
+
+# -----------------------------------------------------
+# Get the name of our SSH keypair.
+#[user@openstacker]
+
+    keyname=$(
+        openstack \
+            --os-cloud "${cloudname}" \
+            keypair list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name | test("zrq")) | .Name
+            '
+        )
+
+    echo "Key name [${keyname:?}]"
+
+    >   Key name [zrq-gaia-keypair]
+
+
+# -----------------------------------------------------
+# Get the network id of the public internet.
+#[user@openstacker]
+
+    internet=$(
+        openstack \
+            --os-cloud "${cloudname}" \
+            network list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name == "internet") | .ID
+            '
+        )
+
+    echo "Internet [${internet:?}]"
+
+    >   Internet [a929e8db-1bf4-4a5f-a80c-fabd39d06a26]
+
+
+# -----------------------------------------------------
+# Create a new internal network, subnet and router.
+# https://docs.openstack.org/ocata/user-guide/cli-create-and-manage-networks.html
+#[user@openstacker]
+
+    # Create our network
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network create \
+            --format json \
+            "${buildname:?}-network" \
+    | jq '.' \
+    | tee '/tmp/network.json'
+
+    networkid=$(
+        jq -r '.id' '/tmp/network.json'
+        )
+
+    >   ....
+    >   ....
+
+    # Create our subnet
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet create \
+            --format json \
+            "${buildname:?}-subnet" \
+            --network "${networkid:?}" \
+            --subnet-range '10.55.0.0/16' \
+    | jq '.' \
+    | tee '/tmp/subnet.json'
+
+    subnetid=$(
+        jq -r '.id' '/tmp/subnet.json'
+        )
+
+    >   ....
+    >   ....
+
+    # Create our router
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router create \
+            --format json \
+            "${buildname:?}-router" \
+    | jq '.' \
+    | tee '/tmp/router.json'
+
+    routerid=$(
+        jq -r '.id' '/tmp/router.json'
+        )
+
+
+    # Link our router to the internet.
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            "${routerid:?}" \
+            --external-gateway \
+                "${internet:?}"
+
+
+    # Link our router to our subnet.
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router add subnet \
+            "${routerid:?}" \
+            "${subnetid:?}"
+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${routerid:?}" \
+    | jq '.' \
+    | tee '/tmp/router.json'
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2021-02-28T01:30:44Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "273123bb-70f6-4f51-a406-7fc4b446532d",
+    >           "ip_address": "128.232.227.232"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "16aff376-7221-424d-aa5f-e6eb4fbb6e6e",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "c86fd519-ff7a-4bf2-9159-619f6119f2b7",
+    >         "ip_address": "10.55.0.1",
+    >         "subnet_id": "093cfd15-0c3a-4951-934a-1df3c1f0e932"
+    >       }
+    >     ],
+    >     "name": "s3test-20210228-router",
+    >     "project_id": "08e24c6d87f94740aa59c172462ed927",
+    >     "revision_number": 9,
+    >     "routes": [],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2021-02-28T01:39:18Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Get the ID of the Fedora image.
+#[user@openstacker]
+
+    imageid=$(
+        openstack \
+            --os-cloud "${cloudname}" \
+            image list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("Fedora-30")) | .ID'
+        )
+
+    echo "Image ID [${imageid:?}]"
+
+    >   Image ID [ade3a5aa-a6a3-4761-8eed-083e5ce1f117]
+
+
+# -----------------------------------------------------
+# Get the ID of the tiny flavor.
+#[user@openstacker]
+
+    tnflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.tiny") | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Create our virtual machine.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname}" \
+        server create \
+            --format json \
+            --image "${imageid:?}" \
+            --flavor "${tnflavor:?}" \
+            --network "${networkid:?}" \
+            --key-name "${keyname:?}" \
+            "${buildname:?}-machine" \
+    | jq '.' \
+    | tee '/tmp/machine.json'
+
+    >   {
+    >     ....
+    >     ....
+    >     "id": "72134c02-7eb9-4f11-bbb9-3debbf34e86f",
+    >     "image": "Fedora-30-1.2 (ade3a5aa-a6a3-4761-8eed-083e5ce1f117)",
+    >     "key_name": "zrq-gaia-keypair",
+    >     "name": "s3test-20210228-machine",
+    >     "progress": 0,
+    >     ....
+    >     ....
+    >     "status": "BUILD",
+    >     "updated": "2021-02-28T01:46:57Z",
+    >     ....
+    >     ....
+    >   }
+
+
+    vmident=$(
+        jq -r '.id' '/tmp/machine.json'
+        )
+
+
+# -----------------------------------------------------
+# Create a public IP address.
+#[user@openstacker]
+
+    floatip=$(
+        openstack \
+            --os-cloud "${cloudname}" \
+            floating ip \
+            create \
+            --format json \
+            "${internet:?}" \
+        | jq -r '.floating_ip_address'
+        )
+
+    echo "Float IP [${floatip}]"
+
+    >   Float IP [128.232.227.226]
+
+
+# -----------------------------------------------------
+# Link the floating IP address to our VM.
+#[user@openstacker]
+
+    privateip=$(
+        openstack \
+            --os-cloud "${cloudname}" \
+            server show \
+                --format json \
+                "${vmident:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/^.*=\([0-9. ]*\).*/\1/
+            '
+        )
+
+    echo "Private IP [${privateip}]"
+
+    >   Private IP [10.55.3.13]
+
+
+    openstack \
+        --os-cloud "${cloudname}" \
+        server add \
+            floating ip \
+            --fixed-ip-address "${privateip:?}" \
+            "${vmident:?}" \
+            "${floatip:?}"
+
+
+# -----------------------------------------------------
+# Add a new security group to our VM.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname}" \
+        security group create \
+            --format json \
+            'External SSH' \
+    | jq '.' \
+    | tee /tmp/security.json
+
+    groupid=$(
+        jq -r '.id' /tmp/security.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname}" \
+        security group rule create \
+            --ingress \
+            --dst-port   22 \
+            --protocol  'tcp' \
+            --ethertype 'IPv4' \
+            "${groupid:?}"
+
+    portid=$(
+        openstack \
+            --os-cloud "${cloudname}" \
+            port list \
+                --format json \
+                --server "${vmident}" \
+        | jq -r '.[0] | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname}" \
+        port set \
+            --security-group "${groupid}" \
+            "${portid}"
+
+
+# -----------------------------------------------------
+# Login to our virtual machine.
+#[user@openstacker]
+
+    ssh "fedora@${floatip:?}"
+
+    >   The authenticity of host '128.232.227.226 (128.232.227.226)' can't be established.
+    >   ECDSA key fingerprint is SHA256:fMLdR71TTYVgIAYmMSAphfO1g75gv9TgM9I7Z2dNSAQ.
+    >   Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+    >   Warning: Permanently added '128.232.227.226' (ECDSA) to the list of known hosts.
+
+        hostname
+
+    >   s3test-20210228-machine.novalocal
+
+
+
+
+

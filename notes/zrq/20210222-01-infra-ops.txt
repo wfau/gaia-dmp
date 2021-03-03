@@ -1,0 +1,322 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Deploy DNSmasq to provide a DNS service for our deployments.
+
+        Solves issue #379
+        https://github.com/wfau/aglais/issues/379
+
+    Result:
+
+        Success - working DNS service hosted on DigitalOcean.
+
+
+# -----------------------------------------------------
+# Rebuild the DigitalOcean droplet
+
+    DigitalOcean website
+    ....
+
+        publicip4: '46.101.32.198'
+        publicip6: '2a03:b0c0:1:d0::b53:6001'
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name infra-ops \
+        --hostname infra-ops \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/infra-ops:/infra-ops:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+# -----------------------------------------------------
+# Install the Podman container plugin.
+# TODO - Add this to our ansible-client image.
+#[root@ansibler]
+
+    ansible-galaxy collection install containers.podman
+
+    >   Process install dependency map
+    >   Starting collection install process
+    >   Installing 'containers.podman:1.4.3' to '/root/.ansible/collections/ansible_collections/containers/podman'
+
+
+# -----------------------------------------------------
+# Run our Ansible scripts ...
+#[root@ansibler]
+
+    pushd "/infra-ops/ansible"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "01-ssh-config.yml"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "02-ping-test.yml"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "03-dns-server.yml"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "04-dns-hosts.yml"
+
+    popd
+
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to the Droplet and tail the DNSmasq log.
+#[root@ansibler]
+
+    ssh Hizzoria \
+        '
+        podman logs --follow dnsmasq
+        '
+
+    >   dnsmasq: failed to create listening socket for port 53: Address in use
+    >
+    >   dnsmasq: failed to create listening socket for port 53: Address in use
+    >
+    >   dnsmasq: failed to create listening socket for port 53: Address in use
+    >
+    >   dnsmasq: failed to create listening socket for port 53: Address in use
+    >
+    >   dnsmasq: failed to create listening socket for port 53: Address in use
+    >   dnsmasq[1]: started, version 2.78 cachesize 150
+    >   dnsmasq[1]: compile time options: IPv6 GNU-getopt no-DBus no-i18n no-IDN DHCP DHCPv6 no-Lua TFTP no-conntrack ipset auth no-DNSSEC loop-detect inotify
+    >   dnsmasq[1]: warning: no upstream servers configured
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: inotify, new or changed file /etc/dnsmasq/hosts/gaia-dev.hosts
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 2 addresses
+    >   dnsmasq[1]: inotify, new or changed file /etc/dnsmasq/hosts/gaia-test.hosts
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 0 addresses
+    >   dnsmasq[1]: inotify, new or changed file /etc/dnsmasq/hosts/gaia-prod.hosts
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Test queries direct to our DNS server.
+#[user@desktop]
+
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-dev.aglais.uk'
+
+    >   ; <<>> DiG 9.11.26-RedHat-9.11.26-2.fc32 <<>> @infra-ops.aglais.uk zeppelin.gaia-dev.aglais.uk
+    >   ; (1 server found)
+    >   ;; global options: +cmd
+    >   ;; Got answer:
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 39531
+    >   ;; flags: qr aa rd ad; QUERY: 1, ANSWER: 1, AUTHORITY: 1, ADDITIONAL: 1
+    >   ;; WARNING: recursion requested but not available
+    >
+    >   ;; OPT PSEUDOSECTION:
+    >   ; EDNS: version: 0, flags:; udp: 4096
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.gaia-dev.aglais.uk.	IN	A
+    >
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dev.aglais.uk. 300 IN	A	128.232.227.197
+    >
+    >   ;; AUTHORITY SECTION:
+    >   gaia-dev.aglais.uk.	300	IN	NS	infra-ops.aglais.uk.
+    >
+    >   ;; Query time: 15 msec
+    >   ;; SERVER: 46.101.32.198#53(46.101.32.198)
+    >   ;; WHEN: Tue Feb 23 01:43:23 GMT 2021
+    >   ;; MSG SIZE  rcvd: 123
+
+
+    >   ....
+    >   dnsmasq[1]: auth[A] zeppelin.gaia-dev.aglais.uk from 81.187.247.196
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.197 is zeppelin.gaia-dev.aglais.uk
+    >   ....
+
+
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-prod.aglais.uk'
+
+    >   ; <<>> DiG 9.11.26-RedHat-9.11.26-2.fc32 <<>> @infra-ops.aglais.uk zeppelin.gaia-prod.aglais.uk
+    >   ; (1 server found)
+    >   ;; global options: +cmd
+    >   ;; Got answer:
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 46737
+    >   ;; flags: qr aa rd ad; QUERY: 1, ANSWER: 1, AUTHORITY: 1, ADDITIONAL: 1
+    >   ;; WARNING: recursion requested but not available
+    >
+    >   ;; OPT PSEUDOSECTION:
+    >   ; EDNS: version: 0, flags:; udp: 4096
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.gaia-prod.aglais.uk.	IN	A
+    >
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-prod.aglais.uk. 300 IN	A	128.232.227.197
+    >
+    >   ;; AUTHORITY SECTION:
+    >   gaia-prod.aglais.uk.	300	IN	NS	infra-ops.aglais.uk.
+    >
+    >   ;; Query time: 15 msec
+    >   ;; SERVER: 46.101.32.198#53(46.101.32.198)
+    >   ;; WHEN: Tue Feb 23 01:43:51 GMT 2021
+    >   ;; MSG SIZE  rcvd: 125
+
+
+    >   ....
+    >   dnsmasq[1]: auth[A] zeppelin.gaia-prod.aglais.uk from 81.187.247.196
+    >   dnsmasq[1]: /etc/dnsmasq/hosts zeppelin.gaia-prod.aglais.uk is 128.232.227.197
+    >   ....
+
+
+
+# -----------------------------------------------------
+# Update our LCN nameserver records.
+#[root@ansibler]
+
+    infra-ops   A       46.101.32.198
+    www         CNAME   zeppelin.gaia-prod.aglais.uk
+    zeppelin    CNAME   zeppelin.gaia-prod.aglais.uk
+    gaia-dev    NS      infra-ops.aglais.uk
+    gaia-test   NS      infra-ops.aglais.uk
+    gaia-prod   NS      infra-ops.aglais.uk
+
+
+# -----------------------------------------------------
+# Query the dev hostname via our local DNS.
+#[user@desktop]
+
+    dig 'zeppelin.gaia-dev.aglais.uk'
+
+    >
+    >   ; <<>> DiG 9.11.26-RedHat-9.11.26-2.fc32 <<>> zeppelin.gaia-dev.aglais.uk
+    >   ;; global options: +cmd
+    >   ;; Got answer:
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 63618
+    >   ;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 13, ADDITIONAL: 1
+    >
+    >   ;; OPT PSEUDOSECTION:
+    >   ; EDNS: version: 0, flags:; udp: 4096
+    >   ; COOKIE: 786bc567224a9e6584e88f4c603460c0d5dc757d25f6d17a (good)
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.gaia-dev.aglais.uk.	IN	A
+    >
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dev.aglais.uk. 300 IN	A	128.232.227.197
+    >
+    >   ;; AUTHORITY SECTION:
+    >   .			79428	IN	NS	d.root-servers.net.
+    >   .			79428	IN	NS	i.root-servers.net.
+    >   .			79428	IN	NS	k.root-servers.net.
+    >   .			79428	IN	NS	c.root-servers.net.
+    >   .			79428	IN	NS	l.root-servers.net.
+    >   .			79428	IN	NS	h.root-servers.net.
+    >   .			79428	IN	NS	a.root-servers.net.
+    >   .			79428	IN	NS	b.root-servers.net.
+    >   .			79428	IN	NS	f.root-servers.net.
+    >   .			79428	IN	NS	m.root-servers.net.
+    >   .			79428	IN	NS	g.root-servers.net.
+    >   .			79428	IN	NS	j.root-servers.net.
+    >   .			79428	IN	NS	e.root-servers.net.
+    >
+    >   ;; Query time: 62 msec
+    >   ;; SERVER: 10.4.0.2#53(10.4.0.2)
+    >   ;; WHEN: Tue Feb 23 01:56:16 GMT 2021
+    >   ;; MSG SIZE  rcvd: 311
+
+    >   ....
+    >   dnsmasq[1]: auth[A] zeppelin.gaia-dev.aglais.uk from 90.155.53.34
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.197 is zeppelin.gaia-dev.aglais.uk
+    >   ....
+
+
+    # Query originates from our ISP.
+
+    host 90.155.53.34
+
+    >   34.53.155.90.in-addr.arpa domain name pointer b-dns-thn.aa.net.uk.
+
+
+# -----------------------------------------------------
+# Query the public service name via our local DNS.
+#[user@desktop]
+
+    dig 'zeppelin.aglais.uk'
+
+    >   ; <<>> DiG 9.11.26-RedHat-9.11.26-2.fc32 <<>> zeppelin.aglais.uk
+    >   ;; global options: +cmd
+    >   ;; Got answer:
+    >   ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 4530
+    >   ;; flags: qr rd ra; QUERY: 1, ANSWER: 2, AUTHORITY: 13, ADDITIONAL: 1
+    >
+    >   ;; OPT PSEUDOSECTION:
+    >   ; EDNS: version: 0, flags:; udp: 4096
+    >   ; COOKIE: 9fd63624d4944e80a40705ca60346180714b55bdf57e9829 (good)
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.aglais.uk.		IN	A
+    >
+    >   ;; ANSWER SECTION:
+    >   zeppelin.aglais.uk.	600	IN	CNAME	zeppelin.gaia-prod.aglais.uk.
+    >   zeppelin.gaia-prod.aglais.uk. 300 IN	A	128.232.227.197
+    >
+    >   ;; AUTHORITY SECTION:
+    >   .			79236	IN	NS	i.root-servers.net.
+    >   .			79236	IN	NS	c.root-servers.net.
+    >   .			79236	IN	NS	j.root-servers.net.
+    >   .			79236	IN	NS	a.root-servers.net.
+    >   .			79236	IN	NS	g.root-servers.net.
+    >   .			79236	IN	NS	l.root-servers.net.
+    >   .			79236	IN	NS	m.root-servers.net.
+    >   .			79236	IN	NS	b.root-servers.net.
+    >   .			79236	IN	NS	h.root-servers.net.
+    >   .			79236	IN	NS	d.root-servers.net.
+    >   .			79236	IN	NS	k.root-servers.net.
+    >   .			79236	IN	NS	e.root-servers.net.
+    >   .			79236	IN	NS	f.root-servers.net.
+    >
+    >   ;; Query time: 67 msec
+    >   ;; SERVER: 10.4.0.2#53(10.4.0.2)
+    >   ;; WHEN: Tue Feb 23 01:59:28 GMT 2021
+    >   ;; MSG SIZE  rcvd: 335
+
+

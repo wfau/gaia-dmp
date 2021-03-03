@@ -1,0 +1,1574 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+# -----------------------------------------------------
+# Create a new branch for the resource tests.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+    pushd  "${AGLAIS_CODE}"
+
+        nextbranch=$(date '+%Y%m%d')-zrq-resources
+
+        git checkout master
+
+        git checkout -b "${nextbranch:?}"
+
+        git push --set-upstream origin "${nextbranch:?}"
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything from all three clouds.
+#[root@ansibler]
+
+    time \
+        /openstack/bin/delete-all.sh \
+            'gaia-dev'
+
+    >   real    1m15.690s
+    >   user    0m32.201s
+    >   sys     0m4.479s
+
+
+    time \
+        /openstack/bin/delete-all.sh \
+            'gaia-test'
+
+    >   real    3m49.066s
+    >   user    1m21.807s
+    >   sys     0m11.339s
+
+
+    time \
+        /openstack/bin/delete-all.sh \
+            'gaia-prod'
+
+    >   real	3m2.291s
+    >   user	1m5.236s
+    >   sys	0m9.066s
+
+    # Almost everything gone.
+    # One undeletable stack and cluster stuck reporting errors for 'Unknown reason' in the gaia-test cloud.
+    # No compute resources associated with it so we should be OK.
+
+
+# -----------------------------------------------------
+# Get the name of our keypair.
+#[user@openstacker]
+
+    cloudname=gaia-dev
+
+    keyname=$(
+        openstack \
+            --os-cloud "${cloudname}" \
+            keypair list \
+                --format json \
+        | jq -r '.[0] | .Name'
+        )
+
+    echo "Key name [${keyname:?}]"
+
+    >   Key name [zrq-gaia-keypair]
+
+
+# -----------------------------------------------------
+# Find the subnet and network ID for the default network.
+#[user@terraformer]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+------------------+--------------------------------------+---------------+
+    >   | ID                                   | Name             | Network                              | Subnet        |
+    >   +--------------------------------------+------------------+--------------------------------------+---------------+
+    >   | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290 | cumulus-internal | ecb791d5-1022-447a-a79c-8f38a0f5c990 | 10.218.0.0/16 |
+    >   +--------------------------------------+------------------+--------------------------------------+---------------+
+
+
+    subnetid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet list \
+                --format json \
+        | jq -r '.[] | select(.Name == "cumulus-internal") | .ID'
+        )
+
+    networkid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet show \
+                --format json \
+                "${subnetid:?}" \
+        | jq -r '.network_id'
+        )
+
+cat << EOF
+Subnet  [${subnetid:?}]
+Network [${networkid:?}]
+EOF
+
+    >   Subnet  [01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290]
+    >   Network [ecb791d5-1022-447a-a79c-8f38a0f5c990]
+
+
+# -----------------------------------------------------
+# Get the ID of the Fedora image.
+#[user@openstacker]
+
+    imageid=$(
+        openstack \
+            --os-cloud "${cloudname}" \
+            image list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("Fedora-30")) | .ID'
+        )
+
+    echo "Image ID [${imageid:?}]"
+
+    >   Image ID [ade3a5aa-a6a3-4761-8eed-083e5ce1f117]
+
+
+# -----------------------------------------------------
+# List all the flavors.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list
+
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | ID                                   | Name              |    RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | 20061eba-9e88-494c-95a3-41ed77721244 | general.v1.small  |  22528 |   20 |         0 |     6 | True      |
+    >   | 406a17e0-afd0-47d3-a6ad-8b19198bdd97 | general.v1.tiny   |   6144 |   12 |         0 |     2 | True      |
+    >   | 8a821ef8-20b8-4bbb-990b-91198745e7a7 | general.v1.xlarge | 184320 |   20 |       340 |    28 | True      |
+    >   | 996c1c8c-c934-411c-9631-b74eb2829631 | general.v1.medium |  46080 |   20 |        60 |    14 | True      |
+    >   | c4c07f5a-260a-4f22-9530-a09a19aa490a | general.v1.large  |  92160 |   20 |       160 |    28 | True      |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+
+
+# -----------------------------------------------------
+# Get the ID of the tiny, small, medium and large flavors.
+#[user@openstacker]
+
+    tnflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.tiny") | .ID'
+        )
+
+    smflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.small") | .ID'
+        )
+
+    mdflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.medium") | .ID'
+        )
+
+    lgflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.large") | .ID'
+        )
+
+    xlflavor=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "general.v1.xlarge") | .ID'
+        )
+
+# -----------------------------------------------------
+# Create 25 tiny servers in the gaia-dev cloud.
+#[user@openstacker]
+
+    cloudname=gaia-dev
+
+    for i in {0..25}
+        do
+            vmname=test-node-${i}
+            echo "Node [${vmname}]"
+
+            openstack \
+                --os-cloud "${cloudname}" \
+                server create \
+                    --format json \
+                    --image "${imageid:?}" \
+                    --flavor "${tnflavor:?}" \
+                    --network "${networkid:?}" \
+                    --key-name "${keyname:?}" \
+                    "${vmname:?}" \
+            | jq '.' \
+            > '/tmp/${vmname:?}.json'
+
+        done
+
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   ....
+    >   ....
+    >   Node [test-node-19]
+    >   Node [test-node-20]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-9969fd36-503d-4c57-88a8-337067563e3d)
+    >   ....
+    >   ....
+    >   Node [test-node-25]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-0ec5e9b6-19e3-48f8-a137-24ffdafc376d)
+
+
+# -----------------------------------------------------
+# List the servers in the gaia-dev cloud.
+#[user@openstacker]
+
+    cloudname=gaia-dev
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-----------------+
+    >   | ID                                   | Name         | Status | Networks                      | Image         | Flavor          |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-----------------+
+    >   | 0bf29ee2-b62a-4fb9-a31c-5eae84e8581b | test-node-19 | ACTIVE | cumulus-internal=10.218.1.197 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 5bec09c9-2f7c-45b4-8440-0eb375f1dec5 | test-node-18 | ACTIVE | cumulus-internal=10.218.4.235 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 668f42c6-aea4-4150-a45f-5381efefce83 | test-node-17 | ACTIVE | cumulus-internal=10.218.3.126 | Fedora-30-1.2 | general.v1.tiny |
+    >   | da375eab-3ffd-406e-b7b8-7a3d598136b9 | test-node-16 | ACTIVE | cumulus-internal=10.218.2.105 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 389b34fc-846d-4317-93d9-62f280fba2fc | test-node-15 | ACTIVE | cumulus-internal=10.218.4.154 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 144e0a1f-ea1f-45e9-8858-f3b04c64d1f8 | test-node-14 | ACTIVE | cumulus-internal=10.218.2.85  | Fedora-30-1.2 | general.v1.tiny |
+    >   | de4d39da-d051-468b-840e-e0b7e27c2948 | test-node-13 | ACTIVE | cumulus-internal=10.218.4.203 | Fedora-30-1.2 | general.v1.tiny |
+    >   | eaa43188-e1c8-4ce9-bcd7-667aad3810b3 | test-node-12 | ACTIVE | cumulus-internal=10.218.2.17  | Fedora-30-1.2 | general.v1.tiny |
+    >   | 09d0ead7-db83-44fc-a25e-6bd6229c95b6 | test-node-11 | ACTIVE | cumulus-internal=10.218.1.120 | Fedora-30-1.2 | general.v1.tiny |
+    >   | d1f50305-4a9d-41ff-bd7b-2ce537fe0861 | test-node-10 | ACTIVE | cumulus-internal=10.218.4.16  | Fedora-30-1.2 | general.v1.tiny |
+    >   | 30039c06-5616-44d7-b09b-1751680f9e90 | test-node-9  | ACTIVE | cumulus-internal=10.218.3.19  | Fedora-30-1.2 | general.v1.tiny |
+    >   | a25cea6f-a081-4025-bf0d-dac75867b8fd | test-node-8  | ACTIVE | cumulus-internal=10.218.1.60  | Fedora-30-1.2 | general.v1.tiny |
+    >   | 7febe35e-5aab-4d86-97d4-5bff5efffef5 | test-node-7  | ACTIVE | cumulus-internal=10.218.4.141 | Fedora-30-1.2 | general.v1.tiny |
+    >   | bcc8019b-8305-4820-9df4-d91f9dc3ef42 | test-node-6  | ACTIVE | cumulus-internal=10.218.1.211 | Fedora-30-1.2 | general.v1.tiny |
+    >   | b88c3027-80a2-4ecc-b62b-b9cce91bb80d | test-node-5  | ACTIVE | cumulus-internal=10.218.2.171 | Fedora-30-1.2 | general.v1.tiny |
+    >   | fafe2c50-d56f-4454-a079-179a8bb7f7b9 | test-node-4  | ACTIVE | cumulus-internal=10.218.4.217 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 3e240dbc-8957-415d-890a-3a7789748aad | test-node-3  | ACTIVE | cumulus-internal=10.218.3.242 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 8a9986e0-1d9c-49ca-9b52-e5b172c5cb03 | test-node-2  | ACTIVE | cumulus-internal=10.218.1.218 | Fedora-30-1.2 | general.v1.tiny |
+    >   | c5953123-0870-4bbd-9a54-44ab9992646d | test-node-1  | ACTIVE | cumulus-internal=10.218.1.254 | Fedora-30-1.2 | general.v1.tiny |
+    >   | c6e5682c-237c-44e6-8748-7ec2546fa6c5 | test-node-0  | ACTIVE | cumulus-internal=10.218.4.45  | Fedora-30-1.2 | general.v1.tiny |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-----------------+
+
+
+# -----------------------------------------------------
+# Resource quotas shown in the Horizon UI.
+#[user@openstacker]
+
+    gaia-dev:
+
+        Instances
+        Used 20 of 20
+
+        VCPUs
+        Used 40 of 400
+
+        RAM
+        Used 120GB of 768GB
+
+
+# -----------------------------------------------------
+# Create 25 tiny servers in the gaia-test cloud.
+#[user@openstacker]
+
+    cloudname=gaia-test
+
+    for i in {0..25}
+        do
+            vmname=test-node-${i}
+            echo "Node [${vmname}]"
+
+            openstack \
+                --os-cloud "${cloudname}" \
+                server create \
+                    --format json \
+                    --image "${imageid:?}" \
+                    --flavor "${tnflavor:?}" \
+                    --network "${networkid:?}" \
+                    --key-name "${keyname:?}" \
+                    "${vmname:?}" \
+            | jq '.' \
+            > '/tmp/${vmname:?}.json'
+
+        done
+
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   ....
+    >   ....
+    >   Node [test-node-19]
+    >   Node [test-node-20]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-09e97546-d95b-4c7b-943c-af0f08a743ee)
+    >   ....
+    >   ....
+    >   Node [test-node-25]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-f600aa7c-1325-42cf-b123-ca019b63b7cf)
+
+
+# -----------------------------------------------------
+# List the servers in the gaia-test cloud.
+#[user@openstacker]
+
+    cloudname=gaia-test
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-----------------+
+    >   | ID                                   | Name         | Status | Networks                      | Image         | Flavor          |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-----------------+
+    >   | 87fbd48a-3051-42c6-b75a-d6db74d66c33 | test-node-19 | ACTIVE | cumulus-internal=10.218.3.239 | Fedora-30-1.2 | general.v1.tiny |
+    >   | c5ea00a9-499d-4500-8d85-f87b41ecb16f | test-node-18 | ACTIVE | cumulus-internal=10.218.2.64  | Fedora-30-1.2 | general.v1.tiny |
+    >   | 7e3d30f9-b07d-43f5-81e2-b3fac6e61851 | test-node-17 | ACTIVE | cumulus-internal=10.218.2.179 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 34a0e17f-136e-4612-bcf1-0db76ad75529 | test-node-16 | ACTIVE | cumulus-internal=10.218.2.178 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 8564d353-9882-434c-9bc2-7648c1b032a9 | test-node-15 | ACTIVE | cumulus-internal=10.218.1.155 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 32e0938f-7538-4715-87ab-60de99d1cc1c | test-node-14 | ACTIVE | cumulus-internal=10.218.3.84  | Fedora-30-1.2 | general.v1.tiny |
+    >   | ba217002-27a1-40b0-b8aa-07c90f273025 | test-node-13 | ACTIVE | cumulus-internal=10.218.1.59  | Fedora-30-1.2 | general.v1.tiny |
+    >   | beb24f3b-f85f-49e5-b2b7-470677bd10db | test-node-12 | ACTIVE | cumulus-internal=10.218.2.185 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 2edb53e5-60c8-4b1c-ab29-4763107c5be4 | test-node-11 | ACTIVE | cumulus-internal=10.218.2.118 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 51775ba6-e57d-4995-aa06-a6daac4f034c | test-node-10 | ACTIVE | cumulus-internal=10.218.1.65  | Fedora-30-1.2 | general.v1.tiny |
+    >   | 1ecfbbf2-c209-43a6-81f9-7ac4025b123e | test-node-9  | ACTIVE | cumulus-internal=10.218.4.201 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 743142c8-95f8-42ba-abfe-3fae6e063471 | test-node-8  | ACTIVE | cumulus-internal=10.218.1.189 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 838d306e-cadc-4a97-a43f-a3cd5baaeaa2 | test-node-7  | ACTIVE | cumulus-internal=10.218.2.19  | Fedora-30-1.2 | general.v1.tiny |
+    >   | f0f3b361-564a-4dd6-9677-a799997d1c06 | test-node-6  | ACTIVE | cumulus-internal=10.218.4.189 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 1d873ac8-4875-426d-8d1c-013a95668867 | test-node-5  | ACTIVE | cumulus-internal=10.218.3.82  | Fedora-30-1.2 | general.v1.tiny |
+    >   | 7a08f3c0-5809-4f74-aae4-1616c450e85e | test-node-4  | ACTIVE | cumulus-internal=10.218.3.131 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 5f19644e-be1d-47c6-ac20-38e5b09b6fda | test-node-3  | ACTIVE | cumulus-internal=10.218.3.201 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 8e5fa091-b02a-40bc-8ab3-12e7c6c2149c | test-node-2  | ACTIVE | cumulus-internal=10.218.1.230 | Fedora-30-1.2 | general.v1.tiny |
+    >   | a24ec8ea-41fc-4a5a-a217-6c8e616caebc | test-node-1  | ACTIVE | cumulus-internal=10.218.4.9   | Fedora-30-1.2 | general.v1.tiny |
+    >   | 73007a73-77c1-40b4-8233-f47b14298568 | test-node-0  | ACTIVE | cumulus-internal=10.218.3.86  | Fedora-30-1.2 | general.v1.tiny |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-----------------+
+
+
+# -----------------------------------------------------
+# Resource quotas shown in the Horizon UI.
+#[user@openstacker]
+
+    gaia-test:
+
+        Instances
+        Used 20 of 20
+
+        VCPUs
+        Used 40 of 400
+
+        RAM
+        Used 120GB of 768GB
+
+
+# -----------------------------------------------------
+# Create 25 tiny servers in the gaia-prod cloud.
+#[user@openstacker]
+
+    cloudname=gaia-prod
+
+    for i in {0..25}
+        do
+            vmname=test-node-${i}
+            echo "Node [${vmname}]"
+
+            openstack \
+                --os-cloud "${cloudname}" \
+                server create \
+                    --format json \
+                    --image "${imageid:?}" \
+                    --flavor "${tnflavor:?}" \
+                    --network "${networkid:?}" \
+                    --key-name "${keyname:?}" \
+                    "${vmname:?}" \
+            | jq '.' \
+            > '/tmp/${vmname:?}.json'
+
+        done
+
+
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   ....
+    >   ....
+    >   Node [test-node-19]
+    >   Node [test-node-20]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-80cc5939-d2ff-4128-882a-abc6b21c725e)
+    >   ....
+    >   ....
+    >   Node [test-node-25]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-96e98a8a-f50c-4440-bfc2-06825b15c7c7)
+
+
+# -----------------------------------------------------
+# List the servers in the gaia-prod cloud.
+#[user@openstacker]
+
+    cloudname=gaia-prod
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-----------------+
+    >   | ID                                   | Name         | Status | Networks                      | Image         | Flavor          |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-----------------+
+    >   | c27449b9-fac8-41cd-a67d-ae8b47b703e4 | test-node-19 | ACTIVE | cumulus-internal=10.218.1.174 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 80a56bdf-6c85-42a3-91ed-1ada31940c8e | test-node-18 | ACTIVE | cumulus-internal=10.218.2.191 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 08204ad7-a7fc-4fcf-8b7f-9435e131e53a | test-node-17 | ACTIVE | cumulus-internal=10.218.4.157 | Fedora-30-1.2 | general.v1.tiny |
+    >   | a82f3271-aa9c-4802-afba-a473685429de | test-node-16 | ACTIVE | cumulus-internal=10.218.1.33  | Fedora-30-1.2 | general.v1.tiny |
+    >   | 69244a95-5b2a-4f13-b9cf-5e56860cb40f | test-node-15 | ACTIVE | cumulus-internal=10.218.3.37  | Fedora-30-1.2 | general.v1.tiny |
+    >   | 7347b350-0f1f-4c13-9951-f603035691d5 | test-node-14 | ACTIVE | cumulus-internal=10.218.1.198 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 9b191dd8-b82b-4022-96fe-41bef030db74 | test-node-13 | ACTIVE | cumulus-internal=10.218.1.169 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 56b8a888-9968-40ea-b633-4e2dd891b745 | test-node-12 | ACTIVE | cumulus-internal=10.218.3.47  | Fedora-30-1.2 | general.v1.tiny |
+    >   | 191953eb-2297-4c86-b777-64b7a2bde42b | test-node-11 | ACTIVE | cumulus-internal=10.218.3.234 | Fedora-30-1.2 | general.v1.tiny |
+    >   | e8d884eb-2afe-45c7-99bb-d73640ef92b5 | test-node-10 | ACTIVE | cumulus-internal=10.218.3.199 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 86fc8219-f14a-49d5-a84c-33c778bf251c | test-node-9  | ACTIVE | cumulus-internal=10.218.4.248 | Fedora-30-1.2 | general.v1.tiny |
+    >   | ade30f85-1287-495c-9dba-3060dffbce42 | test-node-8  | ACTIVE | cumulus-internal=10.218.3.249 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 7714ce5f-01d1-453e-af83-7ed5a4d9cdb9 | test-node-7  | ACTIVE | cumulus-internal=10.218.4.115 | Fedora-30-1.2 | general.v1.tiny |
+    >   | e8815b71-87e9-4595-851e-40168f394692 | test-node-6  | ACTIVE | cumulus-internal=10.218.2.161 | Fedora-30-1.2 | general.v1.tiny |
+    >   | c3c14094-0504-4c7d-8c15-13a52a1510e6 | test-node-5  | ACTIVE | cumulus-internal=10.218.4.50  | Fedora-30-1.2 | general.v1.tiny |
+    >   | 66803da9-a562-4c9a-a0c2-1dad70f28157 | test-node-4  | ACTIVE | cumulus-internal=10.218.3.123 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 4bf3f047-4b03-43d1-a421-25efa4d1f9ff | test-node-3  | ACTIVE | cumulus-internal=10.218.4.159 | Fedora-30-1.2 | general.v1.tiny |
+    >   | aa58d144-a142-488e-8a2f-f61ae07bd99c | test-node-2  | ACTIVE | cumulus-internal=10.218.3.191 | Fedora-30-1.2 | general.v1.tiny |
+    >   | e8c0c27b-d9ca-4d21-aa39-1e0f8027aa28 | test-node-1  | ACTIVE | cumulus-internal=10.218.2.128 | Fedora-30-1.2 | general.v1.tiny |
+    >   | 87c43422-7fad-426c-842b-19bf3da0e384 | test-node-0  | ACTIVE | cumulus-internal=10.218.1.190 | Fedora-30-1.2 | general.v1.tiny |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-----------------+
+
+
+# -----------------------------------------------------
+# Resource quotas shown in the Horizon UI.
+#[user@openstacker]
+
+    gaia-prod:
+
+        Instances
+        Used 20 of 20
+
+        VCPUs
+        Used 40 of 400
+
+        RAM
+        Used 120GB of 768GB
+
+
+# -----------------------------------------------------
+# Total resource use.
+
+    # Managed to creatye 20 tiny VMs in gaia-dev, gaia-test and gaia-prod.
+    # Total of 60 ACTIVE tiny VMs.
+
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | ID                                   | Name              |    RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | 406a17e0-afd0-47d3-a6ad-8b19198bdd97 | general.v1.tiny   |   6144 |   12 |         0 |     2 | True      |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+
+    CPU  60 * 2     = 120
+    RAM  60 * 6144  = 368640M = 360G
+    DISC 60 * 12    = 720G
+
+
+# -----------------------------------------------------
+# Delete all the servers from all the clouds.
+#[user@openstacker]
+
+    clouds=(
+        gaia-dev
+        gaia-test
+        gaia-prod
+        )
+
+    for cloudname in ${clouds[*]}
+    do
+        echo "---- ----"
+        echo "Cloud [${cloudname:?}]"
+        for serverid in $(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                server list \
+                    --format json \
+            | jq -r '.[] | .ID'
+            )
+        do
+            echo "- Deleting server [${serverid}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                server delete \
+                    "${serverid:?}"
+        done
+    done
+
+
+    >   Cloud [gaia-dev]
+    >   - Deleting server [0bf29ee2-b62a-4fb9-a31c-5eae84e8581b]
+    >   ....
+    >   ....
+    >   - Deleting server [c6e5682c-237c-44e6-8748-7ec2546fa6c5]
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   - Deleting server [87fbd48a-3051-42c6-b75a-d6db74d66c33]
+    >   ....
+    >   ....
+    >   - Deleting server [73007a73-77c1-40b4-8233-f47b14298568]
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   - Deleting server [c27449b9-fac8-41cd-a67d-ae8b47b703e4]
+    >   ....
+    >   ....
+    >   - Deleting server [87c43422-7fad-426c-842b-19bf3da0e384]
+
+
+# -----------------------------------------------------
+# Create 25 small servers in each of the clouds.
+#[user@openstacker]
+
+    vmflavor=${smflavor:?}
+
+    for cloudname in ${clouds[*]}
+    do
+        echo "---- ----"
+        echo "Cloud [${cloudname:?}]"
+        for i in {0..25}
+        do
+            vmname=test-node-${i}
+            echo "Node [${vmname}]"
+            openstack \
+                --os-cloud "${cloudname}" \
+                server create \
+                    --format json \
+                    --image "${imageid:?}" \
+                    --flavor "${vmflavor:?}" \
+                    --network "${networkid:?}" \
+                    --key-name "${keyname:?}" \
+                    "${vmname:?}" \
+            | jq '.' \
+            > '/tmp/${cloudname:?}-${vmname:?}.json'
+        done
+    done
+
+
+    >   Cloud [gaia-dev]
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   ....
+    >   ....
+    >   Node [test-node-19]
+    >   Node [test-node-20]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-c17dc5e6-4646-40d8-8f34-57d1f327a9bd)
+    >   ....
+    >   ....
+    >   Node [test-node-25]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-89f69cbe-3319-4624-853b-6125c6190d8c)
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   ....
+    >   ....
+    >   Node [test-node-19]
+    >   Node [test-node-20]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-86ab4c10-7de2-4e2c-9e9d-e8638d61ed19)
+    >   ....
+    >   ....
+    >   Node [test-node-25]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-ca7411af-7fb1-4d86-8331-560359ec46a8)
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   ....
+    >   ....
+    >   Node [test-node-19]
+    >   Node [test-node-20]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-933348b1-4a7f-4f51-a541-add926a43b46)
+    >   ....
+    >   ....
+    >   Node [test-node-25]
+    >   Quota exceeded for instances: Requested 1, but already used 20 of 20 instances (HTTP 403) (Request-ID: req-88e8a31b-d6d2-4e9c-bb7d-6b0e2fcaab28)
+
+
+# -----------------------------------------------------
+# Resource quotas shown in the Horizon UI.
+#[user@openstacker]
+
+    gaia-dev:
+
+        Instances
+        Used 20 of 20
+
+        VCPUs
+        Used 120 of 400
+
+        RAM
+        Used 440GB of 768GB
+
+
+    gaia-test:
+
+        Instances
+        Used 20 of 20
+
+        VCPUs
+        Used 120 of 400
+
+        RAM
+        Used 440GB of 768GB
+
+    gaia-prod:
+
+        Instances
+        Used 20 of 20
+
+        VCPUs
+        Used 120 of 400
+
+        RAM
+        Used 440GB of 768GB
+
+
+# -----------------------------------------------------
+# List all the servers in all the clouds.
+#[user@openstacker]
+
+    clouds=(
+        gaia-dev
+        gaia-test
+        gaia-prod
+        )
+
+    for cloudname in ${clouds[*]}
+    do
+        echo "---- ----"
+        echo "Cloud [${cloudname:?}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list
+    done
+
+    >   Cloud [gaia-dev]
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+------------------+
+    >   | ID                                   | Name         | Status | Networks                      | Image         | Flavor           |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+------------------+
+    >   | ed35689f-8540-4752-bacb-7e9bd99e75f1 | test-node-19 | ACTIVE | cumulus-internal=10.218.3.155 | Fedora-30-1.2 | general.v1.small |
+    >   | 5f8b7b43-5240-4ce3-8902-670b96c61ee2 | test-node-18 | ACTIVE | cumulus-internal=10.218.2.211 | Fedora-30-1.2 | general.v1.small |
+    >   | a3300446-f19c-47db-ad1b-555a66954db7 | test-node-17 | ACTIVE | cumulus-internal=10.218.3.202 | Fedora-30-1.2 | general.v1.small |
+    >   | 20266f50-59e1-429a-9fd6-e26503a1453d | test-node-16 | ACTIVE | cumulus-internal=10.218.4.128 | Fedora-30-1.2 | general.v1.small |
+    >   | 0481af0c-9fca-4b55-b626-d4c2f93f94b2 | test-node-15 | ACTIVE | cumulus-internal=10.218.2.252 | Fedora-30-1.2 | general.v1.small |
+    >   | 74e6bad2-1312-4cfb-868f-dfcac11ffde1 | test-node-14 | ACTIVE | cumulus-internal=10.218.3.130 | Fedora-30-1.2 | general.v1.small |
+    >   | 05970d95-575b-4368-80bb-ce518727a7c3 | test-node-13 | ACTIVE | cumulus-internal=10.218.1.115 | Fedora-30-1.2 | general.v1.small |
+    >   | 938debe4-aa6e-4430-af2f-3b96a88d0701 | test-node-12 | ACTIVE | cumulus-internal=10.218.2.218 | Fedora-30-1.2 | general.v1.small |
+    >   | a87d6106-ede9-46db-ac9d-3bdffdae3b6f | test-node-11 | ACTIVE | cumulus-internal=10.218.4.70  | Fedora-30-1.2 | general.v1.small |
+    >   | c26da9aa-8806-4fa4-bb25-1aa7f06fb1c2 | test-node-10 | ACTIVE | cumulus-internal=10.218.2.67  | Fedora-30-1.2 | general.v1.small |
+    >   | 86da6766-b3b3-4a6a-acbe-479206f82752 | test-node-9  | ACTIVE | cumulus-internal=10.218.1.225 | Fedora-30-1.2 | general.v1.small |
+    >   | a60d0401-7ee9-4771-a40a-ddecd1d768f3 | test-node-8  | ACTIVE | cumulus-internal=10.218.4.206 | Fedora-30-1.2 | general.v1.small |
+    >   | ad77460c-a128-4f42-829f-4fa819ae5f99 | test-node-7  | ACTIVE | cumulus-internal=10.218.4.198 | Fedora-30-1.2 | general.v1.small |
+    >   | 12172439-4188-403f-9ccb-0d4eeeab35b2 | test-node-6  | ACTIVE | cumulus-internal=10.218.2.145 | Fedora-30-1.2 | general.v1.small |
+    >   | f7f15964-5fc0-434e-be49-7245c610e0c2 | test-node-5  | ACTIVE | cumulus-internal=10.218.1.172 | Fedora-30-1.2 | general.v1.small |
+    >   | a1644418-3c82-409c-ab24-68ccee31f39d | test-node-4  | ACTIVE | cumulus-internal=10.218.1.117 | Fedora-30-1.2 | general.v1.small |
+    >   | 764ef6f4-6e92-4850-a097-9e59da595a62 | test-node-3  | ACTIVE | cumulus-internal=10.218.3.239 | Fedora-30-1.2 | general.v1.small |
+    >   | 1799371f-398e-48a3-a3d6-c3343742380a | test-node-2  | ACTIVE | cumulus-internal=10.218.2.42  | Fedora-30-1.2 | general.v1.small |
+    >   | 05a2b997-e297-47ac-9a07-422878978e8a | test-node-1  | ACTIVE | cumulus-internal=10.218.2.142 | Fedora-30-1.2 | general.v1.small |
+    >   | 7dba07e1-8faa-4dc2-9dd3-ba9dd3da6a8e | test-node-0  | ACTIVE | cumulus-internal=10.218.3.111 | Fedora-30-1.2 | general.v1.small |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+------------------+
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+------------------+
+    >   | ID                                   | Name         | Status | Networks                      | Image         | Flavor           |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+------------------+
+    >   | 930fc35b-80cd-43d2-acf3-4a0ea28dca0a | test-node-19 | ERROR  |                               | Fedora-30-1.2 | general.v1.small |
+    >   | d94ca555-f62f-468a-8f49-d8c1a44b30ae | test-node-18 | ERROR  |                               | Fedora-30-1.2 | general.v1.small |
+    >   | d289d8f6-1fef-4a8b-a037-75951afdce87 | test-node-17 | ERROR  |                               | Fedora-30-1.2 | general.v1.small |
+    >   | c994bbef-fc1a-4f42-8123-23af7e202ac8 | test-node-16 | ERROR  |                               | Fedora-30-1.2 | general.v1.small |
+    >   | a784053b-e9c7-4fe5-a37c-d85db314a77c | test-node-15 | ERROR  |                               | Fedora-30-1.2 | general.v1.small |
+    >   | 7b5b603d-5653-4475-8728-e106e2d9228a | test-node-14 | ERROR  |                               | Fedora-30-1.2 | general.v1.small |
+    >   | ef1c1b41-735e-4e7b-9c96-f0fd78a43678 | test-node-13 | ERROR  |                               | Fedora-30-1.2 | general.v1.small |
+    >   | 226916ab-28c7-48a2-a442-8cb68e9d836e | test-node-12 | ERROR  |                               | Fedora-30-1.2 | general.v1.small |
+    >   | 2c181fb0-7f99-4aab-9733-96f5ca871949 | test-node-11 | ERROR  |                               | Fedora-30-1.2 | general.v1.small |
+    >   | 3857b915-c9de-4035-b756-d378837fcfad | test-node-10 | ACTIVE | cumulus-internal=10.218.1.178 | Fedora-30-1.2 | general.v1.small |
+    >   | a64578b0-d3fc-45c5-984b-f7353de536b8 | test-node-9  | ACTIVE | cumulus-internal=10.218.1.233 | Fedora-30-1.2 | general.v1.small |
+    >   | f33ae171-58a7-4ed1-8c21-13c470fd3e2d | test-node-8  | ACTIVE | cumulus-internal=10.218.2.35  | Fedora-30-1.2 | general.v1.small |
+    >   | c783b06b-5dfe-44a5-99d6-ccb7f1db3bff | test-node-7  | ACTIVE | cumulus-internal=10.218.3.8   | Fedora-30-1.2 | general.v1.small |
+    >   | 02d9e88c-0e84-4584-a594-b33d28d18870 | test-node-6  | ACTIVE | cumulus-internal=10.218.3.75  | Fedora-30-1.2 | general.v1.small |
+    >   | f0187a21-7102-47e2-a74a-9288f928a965 | test-node-5  | ACTIVE | cumulus-internal=10.218.4.155 | Fedora-30-1.2 | general.v1.small |
+    >   | a9f5132e-cc13-479a-b2d0-6bbeba30b29c | test-node-4  | ACTIVE | cumulus-internal=10.218.3.14  | Fedora-30-1.2 | general.v1.small |
+    >   | 2ebf46cc-017c-431e-93ac-13360cdb0290 | test-node-3  | ACTIVE | cumulus-internal=10.218.4.83  | Fedora-30-1.2 | general.v1.small |
+    >   | 1cd29a1d-0aa0-469b-a3c2-e7fc5c0efeda | test-node-2  | ACTIVE | cumulus-internal=10.218.3.186 | Fedora-30-1.2 | general.v1.small |
+    >   | 8c172200-cea6-471b-8c61-8dec86294626 | test-node-1  | ACTIVE | cumulus-internal=10.218.3.228 | Fedora-30-1.2 | general.v1.small |
+    >   | b3e0fd17-e7fb-4d89-92c4-e6d130ce0a9d | test-node-0  | ACTIVE | cumulus-internal=10.218.4.109 | Fedora-30-1.2 | general.v1.small |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+------------------+
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   +--------------------------------------+--------------+--------+----------+---------------+------------------+
+    >   | ID                                   | Name         | Status | Networks | Image         | Flavor           |
+    >   +--------------------------------------+--------------+--------+----------+---------------+------------------+
+    >   | 17c10be9-1e74-46fe-b057-f70472de57b6 | test-node-19 | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | 951e33b1-5a52-4b19-85a4-4021f860b76d | test-node-18 | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | def1c0ca-0c65-447c-80be-f6b3a94e4c32 | test-node-17 | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | bb50d3ab-c296-47b5-91be-09b27c34dcf5 | test-node-16 | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | a9e4dc60-773b-46f0-91b6-ba9d5bb2e9a9 | test-node-15 | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | 8bf7cd56-350e-4f48-886f-711a1c94c2d6 | test-node-14 | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | a6e807c4-941c-41ef-931a-671182d8f547 | test-node-13 | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | 512f71cd-3ec8-459b-bcca-68abdc4b9158 | test-node-12 | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | f073b432-797b-4530-bf55-da1165f76665 | test-node-11 | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | 9b5b3885-5f70-477c-b14c-2c29d6c2e09b | test-node-10 | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | 40775edf-8413-45dd-a4ae-58986ea3e5ef | test-node-9  | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | 444043fd-c7a9-4306-851b-9d2d9996042c | test-node-8  | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | eee2e5e5-6415-4389-92d0-3cb71211d700 | test-node-7  | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | 7a7eb611-8eb7-4607-b9ed-722689929c05 | test-node-6  | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | f576041c-5e12-4dd0-b9bb-c41a189278af | test-node-5  | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | c21ec0d5-5178-4cf1-b512-2029a582ca44 | test-node-4  | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | b24365e6-869d-4a3c-808c-86c53616c0c1 | test-node-3  | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | 3bec2610-b2fd-4247-b1c1-bc8559064cf7 | test-node-2  | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | b62f1872-ce94-4297-a0e7-3aebdb4e3917 | test-node-1  | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   | 60c2cfbd-d24e-4aaa-8026-56fa157ff626 | test-node-0  | ERROR  |          | Fedora-30-1.2 | general.v1.small |
+    >   +--------------------------------------+--------------+--------+----------+---------------+------------------+
+
+
+# -----------------------------------------------------
+# Total resource use.
+
+    # Managed to create 20 in gaia-dev, 11 in gaia-test and none in gaia-prod.
+    # Total of 31 ACTIVE small VMs.
+
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | ID                                   | Name              |    RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | 20061eba-9e88-494c-95a3-41ed77721244 | general.v1.small  |  22528 |   20 |         0 |     6 | True      |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+
+    CPU  31 * 6     = 186
+    RAM  31 * 22528 = 698368M = 682G
+    DISC 31 * 20    = 620G
+
+
+# -----------------------------------------------------
+# Get the fault message for all the servers that failed.
+#[user@openstacker]
+
+    clouds=(
+        gaia-dev
+        gaia-test
+        gaia-prod
+        )
+
+    for cloudname in ${clouds[*]}
+    do
+        echo "---- ----"
+        echo "Cloud [${cloudname:?}]"
+
+        for serverid in $(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                server list \
+                    --format json \
+            | jq -r '.[] | select(.Status != "ACTIVE") | .ID'
+            )
+        do
+            echo "- Server [${serverid:?}]"
+            message=$(
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    server show \
+                        --format json \
+                        "${serverid:?}" \
+                | jq -r '.fault.message'
+                )
+            echo "-- Fault [${message:?}]"
+        done
+    done
+
+
+    >   ---- ----
+    >   Cloud [gaia-dev]
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   - Server [930fc35b-80cd-43d2-acf3-4a0ea28dca0a]
+    >   -- Fault [No valid host was found. ]
+    >   ....
+    >   ....
+    >   - Server [2c181fb0-7f99-4aab-9733-96f5ca871949]
+    >   -- Fault [No valid host was found. ]
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   - Server [17c10be9-1e74-46fe-b057-f70472de57b6]
+    >   -- Fault [No valid host was found. ]
+    >   ....
+    >   ....
+    >   - Server [60c2cfbd-d24e-4aaa-8026-56fa157ff626]
+    >   -- Fault [No valid host was found. ]
+
+
+# -----------------------------------------------------
+# Delete all the servers from all the clouds.
+#[user@openstacker]
+
+    clouds=(
+        gaia-dev
+        gaia-test
+        gaia-prod
+        )
+
+    delete-all()
+        {
+        for cloudname in ${clouds[*]}
+        do
+            echo "---- ----"
+            echo "Cloud [${cloudname:?}]"
+            for serverid in $(
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    server list \
+                        --format json \
+                | jq -r '.[] | .ID'
+                )
+            do
+                echo "- Deleting server [${serverid}]"
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    server delete \
+                        "${serverid:?}"
+            done
+        done
+        }
+
+    delete-all
+
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create 25 medium servers in each of the clouds.
+#[user@openstacker]
+
+    create-all()
+        {
+        local vmflavor=${1:?}
+        for cloudname in ${clouds[*]}
+        do
+            echo "---- ----"
+            echo "Cloud [${cloudname:?}]"
+            for i in {0..25}
+            do
+                vmname=test-node-${i}
+                echo "Node [${vmname}]"
+                openstack \
+                    --os-cloud "${cloudname}" \
+                    server create \
+                        --format json \
+                        --image "${imageid:?}" \
+                        --flavor "${vmflavor:?}" \
+                        --network "${networkid:?}" \
+                        --key-name "${keyname:?}" \
+                        "${vmname:?}" \
+                | jq '.' \
+                > '/tmp/${cloudname:?}-${vmname:?}.json'
+            done
+        done
+        }
+
+    create-all "${mdflavor:?}"
+
+    >   ---- ----
+    >   Cloud [gaia-dev]
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   ....
+    >   ....
+    >   Node [test-node-16]
+    >   Node [test-node-17]
+    >   Quota exceeded for ram: Requested 46080, but already used 783360 of 786432 ram (HTTP 403) (Request-ID: req-ccf3002c-48ac-4b01-b523-ad007514c8df)
+    >   ....
+    >   ....
+    >   Node [test-node-25]
+    >   Quota exceeded for ram: Requested 46080, but already used 783360 of 786432 ram (HTTP 403) (Request-ID: req-bf8b4291-f1fc-4d01-a402-6ba849c58510)
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   ....
+    >   ....
+    >   Node [test-node-16]
+    >   Node [test-node-17]
+    >   Quota exceeded for ram: Requested 46080, but already used 783360 of 786432 ram (HTTP 403) (Request-ID: req-05ef4c2b-121e-4181-ad53-f5f0ec99945b)
+    >   ....
+    >   ....
+    >   Node [test-node-25]
+    >   Quota exceeded for ram: Requested 46080, but already used 783360 of 786432 ram (HTTP 403) (Request-ID: req-b24d532d-cc2b-4243-ac65-22aad51409ac)
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   ....
+    >   ....
+    >   Node [test-node-16]
+    >   Node [test-node-17]
+    >   Quota exceeded for ram: Requested 46080, but already used 783360 of 786432 ram (HTTP 403) (Request-ID: req-2bd95416-9a39-4f71-aebb-4dc0159776f1)
+    >   ....
+    >   ....
+    >   Node [test-node-25]
+    >   Quota exceeded for ram: Requested 46080, but already used 783360 of 786432 ram (HTTP 403) (Request-ID: req-26ff6994-2e08-493e-b175-6ba995115d72)
+
+# -----------------------------------------------------
+# List all the servers in all the clouds.
+#[user@openstacker]
+
+    list-all()
+        {
+        for cloudname in ${clouds[*]}
+        do
+            echo "---- ----"
+            echo "Cloud [${cloudname:?}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                server list
+        done
+        }
+
+    list-all
+
+    >   ---- ----
+    >   Cloud [gaia-dev]
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-------------------+
+    >   | ID                                   | Name         | Status | Networks                      | Image         | Flavor            |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-------------------+
+    >   | bf6033cc-376f-4fd1-ae89-8b998d935635 | test-node-16 | ERROR  |                               | Fedora-30-1.2 | general.v1.medium |
+    >   | d69120ae-9fee-4ba1-8d37-f84670c0aaf3 | test-node-15 | ERROR  |                               | Fedora-30-1.2 | general.v1.medium |
+    >   | 846acbd6-cabd-44c4-8a52-13e1ecfab58e | test-node-14 | ERROR  |                               | Fedora-30-1.2 | general.v1.medium |
+    >   | d4fe3a85-e99c-4deb-afc5-3fa930c85291 | test-node-13 | ERROR  |                               | Fedora-30-1.2 | general.v1.medium |
+    >   | a67f2294-ffe1-4448-92b2-d52920eea862 | test-node-12 | ERROR  |                               | Fedora-30-1.2 | general.v1.medium |
+    >   | 5a771907-6094-4276-9637-53da1fb9476f | test-node-11 | ACTIVE | cumulus-internal=10.218.3.21  | Fedora-30-1.2 | general.v1.medium |
+    >   | 272ed5e6-a4e4-4477-8cb1-9a1ee3d5b92a | test-node-10 | ACTIVE | cumulus-internal=10.218.1.196 | Fedora-30-1.2 | general.v1.medium |
+    >   | 3b3900cd-4500-4501-aef0-356731c80c4b | test-node-9  | ACTIVE | cumulus-internal=10.218.4.1   | Fedora-30-1.2 | general.v1.medium |
+    >   | 5db6f85a-f2dd-4bab-8cc0-7c787684865f | test-node-8  | ACTIVE | cumulus-internal=10.218.1.126 | Fedora-30-1.2 | general.v1.medium |
+    >   | d2a274d0-e41a-437c-bc5c-54d752cd01a3 | test-node-7  | ACTIVE | cumulus-internal=10.218.1.167 | Fedora-30-1.2 | general.v1.medium |
+    >   | 701d9c9d-1c9f-47cf-8603-cc8897e91c72 | test-node-6  | ACTIVE | cumulus-internal=10.218.1.186 | Fedora-30-1.2 | general.v1.medium |
+    >   | 3e421604-defb-4870-9cd9-0d5480269b6d | test-node-5  | ACTIVE | cumulus-internal=10.218.4.78  | Fedora-30-1.2 | general.v1.medium |
+    >   | 4eca5e30-05dc-4360-b8e9-e74acef2c2e8 | test-node-4  | ACTIVE | cumulus-internal=10.218.1.200 | Fedora-30-1.2 | general.v1.medium |
+    >   | 34997678-a26c-4c67-8ab9-3b6fe891c0b9 | test-node-3  | ACTIVE | cumulus-internal=10.218.2.156 | Fedora-30-1.2 | general.v1.medium |
+    >   | 74d87a64-9c91-4db4-96c9-eef0c8ac753f | test-node-2  | ACTIVE | cumulus-internal=10.218.3.133 | Fedora-30-1.2 | general.v1.medium |
+    >   | 222e7307-1335-4554-8047-92d3ea6bf70e | test-node-1  | ACTIVE | cumulus-internal=10.218.2.9   | Fedora-30-1.2 | general.v1.medium |
+    >   | b6a23cea-75ed-4f4e-a8d1-652e5e99d34b | test-node-0  | ACTIVE | cumulus-internal=10.218.1.44  | Fedora-30-1.2 | general.v1.medium |
+    >   +--------------------------------------+--------------+--------+-------------------------------+---------------+-------------------+
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   +--------------------------------------+--------------+--------+----------+---------------+-------------------+
+    >   | ID                                   | Name         | Status | Networks | Image         | Flavor            |
+    >   +--------------------------------------+--------------+--------+----------+---------------+-------------------+
+    >   | c5c129c1-4cbf-4284-9c98-10a0fe34063e | test-node-16 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 4a3ee9b6-cac0-4b2f-9672-c7c06c5b1099 | test-node-15 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 8718de9c-5826-43d8-840a-8dcba8ff9d1c | test-node-14 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 8b319869-64be-49b7-8262-85f4cf9ddf39 | test-node-13 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | c31784a6-8ccb-4be3-a308-812c7a9ac7cc | test-node-12 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 39b1cae1-e4f5-495a-b358-f2cdd5a33c24 | test-node-11 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 4305dc56-579e-4818-aae2-bca81868e5c0 | test-node-10 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 05e0b46b-bae7-46ac-b112-9d13a71cbf17 | test-node-9  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 42b4e8b8-ddcc-491b-87dc-604b632b7a8b | test-node-8  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 4dd91905-c0fc-4270-a8be-99547bf3be5c | test-node-7  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 3be1598f-df2d-4d2e-82cf-0c2714c40d29 | test-node-6  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | ed874b9b-b315-48ef-94b2-4d8e73d78494 | test-node-5  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 5576f606-a29d-45b3-96ea-e026f7918017 | test-node-4  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 60c87109-0f3a-4544-85dd-c9be86ce455e | test-node-3  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 509077eb-62eb-4da9-98ef-aafaf61efc33 | test-node-2  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 71e70551-4876-4e7e-8f07-ed72806dab12 | test-node-1  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 807f04ea-cc17-4792-9cd7-a6b955447a4f | test-node-0  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   +--------------------------------------+--------------+--------+----------+---------------+-------------------+
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   +--------------------------------------+--------------+--------+----------+---------------+-------------------+
+    >   | ID                                   | Name         | Status | Networks | Image         | Flavor            |
+    >   +--------------------------------------+--------------+--------+----------+---------------+-------------------+
+    >   | 937878e9-1433-4eb7-8564-ad217330e880 | test-node-16 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 864106d2-7b12-4e36-b11a-5b3326ab3878 | test-node-15 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | ab4dd758-12c5-418b-9ed1-ffba10b1e4bc | test-node-14 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 10279361-53ad-4f6d-9234-0f85c6f10791 | test-node-13 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | e8a7a09e-4d08-478d-8e60-a17a48569166 | test-node-12 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | bbdfe4aa-5e6f-4c73-9272-44d218c0fe19 | test-node-11 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | f6016da6-72d0-4851-ba3b-a54156bbe15d | test-node-10 | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | dbb0b953-0225-43e1-b22a-6e048ba6e298 | test-node-9  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | a9f28285-e92e-4bd6-851e-5d28b81a5ca5 | test-node-8  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 4b891970-954c-4c43-858d-4c81c5901c84 | test-node-7  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 1fced9eb-c17b-4dcd-86d9-61829f380efd | test-node-6  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 41f1df36-ca1e-4408-8da3-b872ef35f05f | test-node-5  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 04f448ac-b6d2-4ad0-819d-9704e556a6a8 | test-node-4  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | ea5b9076-7f0c-478f-9d09-08d0c07e071c | test-node-3  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 96c3aadd-4906-48de-9ea0-7db9f02251de | test-node-2  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | 009e591a-25bb-4c1c-ac0a-6d05ecffec89 | test-node-1  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   | e79717bf-7909-438c-9866-b97f15055e36 | test-node-0  | ERROR  |          | Fedora-30-1.2 | general.v1.medium |
+    >   +--------------------------------------+--------------+--------+----------+---------------+-------------------+
+
+
+# -----------------------------------------------------
+# Get the fault message for all the servers that failed.
+#[user@openstacker]
+
+    list-faults()
+        {
+        for cloudname in ${clouds[*]}
+        do
+            echo "---- ----"
+            echo "Cloud [${cloudname:?}]"
+
+            for serverid in $(
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    server list \
+                        --format json \
+                | jq -r '.[] | select(.Status != "ACTIVE") | .ID'
+                )
+            do
+                echo "- Server [${serverid:?}]"
+                message=$(
+                    openstack \
+                        --os-cloud "${cloudname:?}" \
+                        server show \
+                            --format json \
+                            "${serverid:?}" \
+                    | jq -r '.fault.message'
+                    )
+                echo "-- Fault [${message:?}]"
+            done
+        done
+        }
+
+    list-faults
+
+
+    >   ---- ----
+    >   Cloud [gaia-dev]
+    >   - Server [bf6033cc-376f-4fd1-ae89-8b998d935635]
+    >   -- Fault [No valid host was found. ]
+    >   ....
+    >   ....
+    >   - Server [a67f2294-ffe1-4448-92b2-d52920eea862]
+    >   -- Fault [No valid host was found. ]
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   - Server [c5c129c1-4cbf-4284-9c98-10a0fe34063e]
+    >   -- Fault [No valid host was found. ]
+    >   ....
+    >   ....
+    >   - Server [807f04ea-cc17-4792-9cd7-a6b955447a4f]
+    >   -- Fault [No valid host was found. ]
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   - Server [937878e9-1433-4eb7-8564-ad217330e880]
+    >   -- Fault [No valid host was found. ]
+    >   ....
+    >   ....
+    >   - Server [e79717bf-7909-438c-9866-b97f15055e36]
+    >   -- Fault [No valid host was found. ]
+
+# -----------------------------------------------------
+# Resource quotas shown in the Horizon UI.
+#[user@openstacker]
+
+    gaia-dev:
+
+        Instances
+        Used 17 of 20
+
+        VCPUs
+        Used 238 of 400
+
+        RAM
+        Used 765GB of 768GB
+
+    gaia-test:
+
+        Instances
+        Used 17 of 20
+
+        VCPUs
+        Used 238 of 400
+
+        RAM
+        Used 765GB of 768GB
+
+    gaia-prod:
+
+        Instances
+        Used 17 of 20
+
+        VCPUs
+        Used 238 of 400
+
+        RAM
+        Used 765GB of 768GB
+
+
+# -----------------------------------------------------
+# Total resource use.
+
+    # Managed to create 12 in gaia-dev.
+    # Total of 12 ACTIVE medium VMs.
+
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | ID                                   | Name              |    RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | 996c1c8c-c934-411c-9631-b74eb2829631 | general.v1.medium |  46080 |   20 |        60 |    14 | True      |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+
+    CPU  12 * 14        = 168
+    RAM  12 * 46080     = 552960M = 540G
+    DISC 12 * (20 + 60) = 960G
+
+
+# -----------------------------------------------------
+# Delete all the servers from all the clouds.
+#[user@openstacker]
+
+    delete-all
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create 10 large servers in each of the clouds.
+#[user@openstacker]
+
+    create-all()
+        {
+        local vmcount=${1:?}
+        local vmflavor=${2:?}
+        for cloudname in ${clouds[*]}
+        do
+            echo "---- ----"
+            echo "Cloud [${cloudname:?}]"
+            for ((i=0 ; i<=vmcount ; i++))
+            do
+                vmname=test-node-${i}
+                echo "Node [${vmname}]"
+                openstack \
+                    --os-cloud "${cloudname}" \
+                    server create \
+                        --format json \
+                        --image "${imageid:?}" \
+                        --flavor "${vmflavor:?}" \
+                        --network "${networkid:?}" \
+                        --key-name "${keyname:?}" \
+                        "${vmname:?}" \
+                | jq '.' \
+                > '/tmp/${cloudname:?}-${vmname:?}.json'
+            done
+        done
+        }
+
+    create-all 10 "${lgflavor:?}"
+
+    >   ---- ----
+    >   Cloud [gaia-dev]
+    >   Node [test-node-0]
+    >   ....
+    >   ....
+    >   Node [test-node-7]
+    >   Node [test-node-8]
+    >   Quota exceeded for ram: Requested 92160, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-e68c39cd-0cad-4b07-8d37-01373aac22ec)
+    >   ....
+    >   Node [test-node-10]
+    >   Quota exceeded for ram: Requested 92160, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-476e3ef2-e345-426b-9818-e7ee59a6f328)
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   Node [test-node-0]
+    >   ....
+    >   ....
+    >   Node [test-node-7]
+    >   Node [test-node-8]
+    >   Quota exceeded for ram: Requested 92160, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-d5ecb024-3d53-4774-9f0d-41afa1a2ea97)
+    >   ....
+    >   Node [test-node-10]
+    >   Quota exceeded for ram: Requested 92160, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-f787226c-cf2b-4de1-a03d-5a92845eb42d)
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   Node [test-node-0]
+    >   ....
+    >   ....
+    >   Node [test-node-7]
+    >   Node [test-node-8]
+    >   Quota exceeded for ram: Requested 92160, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-5dc46de0-272e-462b-be78-5ccb9ab366c1)
+    >   ....
+    >   Node [test-node-10]
+    >   Quota exceeded for ram: Requested 92160, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-d8b3e9b5-840d-453e-a30c-be3d6fc8ebcf)
+
+
+# -----------------------------------------------------
+# List all the servers in all the clouds.
+#[user@openstacker]
+
+    list-all
+
+    >   ---- ----
+    >   Cloud [gaia-dev]
+    >   +--------------------------------------+-------------+--------+-------------------------------+---------------+------------------+
+    >   | ID                                   | Name        | Status | Networks                      | Image         | Flavor           |
+    >   +--------------------------------------+-------------+--------+-------------------------------+---------------+------------------+
+    >   | d8b4adf3-2750-4689-a970-6aea7e5d2d8b | test-node-7 | ERROR  |                               | Fedora-30-1.2 | general.v1.large |
+    >   | 8ad336b6-7c03-4d37-844d-f2bf11e77d17 | test-node-6 | ERROR  |                               | Fedora-30-1.2 | general.v1.large |
+    >   | bbdb738c-ccbe-48d8-a81e-ad0a1ca18845 | test-node-5 | ERROR  |                               | Fedora-30-1.2 | general.v1.large |
+    >   | 9704af15-e483-40c3-8a51-d4d8dc7b613f | test-node-4 | ERROR  |                               | Fedora-30-1.2 | general.v1.large |
+    >   | 7997da3a-7243-4599-bc7b-97f2daa8df81 | test-node-3 | ACTIVE | cumulus-internal=10.218.4.209 | Fedora-30-1.2 | general.v1.large |
+    >   | 68c82636-0835-4444-ad1f-74c64aa2580b | test-node-2 | ACTIVE | cumulus-internal=10.218.2.192 | Fedora-30-1.2 | general.v1.large |
+    >   | 073d8570-6731-43a9-80d2-5cfe4701ae4b | test-node-1 | ACTIVE | cumulus-internal=10.218.2.47  | Fedora-30-1.2 | general.v1.large |
+    >   | 2b949330-f49c-43eb-b5a2-6bdaf404f73b | test-node-0 | ACTIVE | cumulus-internal=10.218.3.139 | Fedora-30-1.2 | general.v1.large |
+    >   +--------------------------------------+-------------+--------+-------------------------------+---------------+------------------+
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   +--------------------------------------+-------------+--------+----------+---------------+------------------+
+    >   | ID                                   | Name        | Status | Networks | Image         | Flavor           |
+    >   +--------------------------------------+-------------+--------+----------+---------------+------------------+
+    >   | 6488c547-91d0-42e5-8f66-122af4c93ff6 | test-node-7 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | 2574677c-08c9-4450-8479-12fd85bb5df3 | test-node-6 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | ee9757ac-5c1b-489f-a0cb-43bb443d7db5 | test-node-5 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | 1f4d1572-adb9-42f0-9697-57a561466804 | test-node-4 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | 44d14c71-d23a-4e8e-a6ae-a51cea489f54 | test-node-3 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | 4ea46ce1-e4e0-41d0-b6d8-78a972e43f7a | test-node-2 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | 80733603-e0af-4492-82b4-d229992b0356 | test-node-1 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | 23095a06-dfed-4794-ab20-d84f87d1030a | test-node-0 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   +--------------------------------------+-------------+--------+----------+---------------+------------------+
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   +--------------------------------------+-------------+--------+----------+---------------+------------------+
+    >   | ID                                   | Name        | Status | Networks | Image         | Flavor           |
+    >   +--------------------------------------+-------------+--------+----------+---------------+------------------+
+    >   | e5847580-1406-4974-a520-f7ed86e13ce4 | test-node-7 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | 3e0f08c7-82a2-4c83-993f-a83d09807446 | test-node-6 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | 57dd625a-c753-4167-bbf8-d2a5ba1f7f4e | test-node-5 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | 14872171-6049-4a1b-b9da-6f97efd0cb2a | test-node-4 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | 0e71e7be-c9bb-45c0-a6d2-0e620c2afeab | test-node-3 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | dbcf47d7-3788-4316-ab52-7f19727972cd | test-node-2 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | e2816170-a66b-4cca-b967-2062e960bfe2 | test-node-1 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   | a1da9327-a2e8-47a3-a722-244bccfcde31 | test-node-0 | ERROR  |          | Fedora-30-1.2 | general.v1.large |
+    >   +--------------------------------------+-------------+--------+----------+---------------+------------------+
+
+
+# -----------------------------------------------------
+# Get the fault message for all the servers that failed.
+#[user@openstacker]
+
+    list-faults
+
+    >   ---- ----
+    >   Cloud [gaia-dev]
+    >   - Server [d8b4adf3-2750-4689-a970-6aea7e5d2d8b]
+    >   -- Fault [No valid host was found. ]
+    >   ....
+    >   ....
+    >   - Server [9704af15-e483-40c3-8a51-d4d8dc7b613f]
+    >   -- Fault [No valid host was found. ]
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   - Server [6488c547-91d0-42e5-8f66-122af4c93ff6]
+    >   -- Fault [No valid host was found. ]
+    >   ....
+    >   ....
+    >   - Server [23095a06-dfed-4794-ab20-d84f87d1030a]
+    >   -- Fault [No valid host was found. ]
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   - Server [e5847580-1406-4974-a520-f7ed86e13ce4]
+    >   -- Fault [No valid host was found. ]
+    >   ....
+    >   ....
+    >   - Server [a1da9327-a2e8-47a3-a722-244bccfcde31]
+    >   -- Fault [No valid host was found. ]
+
+
+# -----------------------------------------------------
+# Resource quotas shown in the Horizon UI.
+#[user@openstacker]
+
+    gaia-dev:
+
+        Instances
+        Used 8 of 20
+
+        VCPUs
+        Used 224 of 400
+
+        RAM
+        Used 720GB of 768GB
+
+    gaia-test:
+
+        Instances
+        Used 8 of 20
+
+        VCPUs
+        Used 224 of 400
+
+        RAM
+        Used 720GB of 768GB
+
+    gaia-prod:
+
+        Instances
+        Used 8 of 20
+
+        VCPUs
+        Used 224 of 400
+
+        RAM
+        Used 720GB of 768GB
+
+
+# -----------------------------------------------------
+# Total resource use.
+
+    # Managed to create 4 in gaia-dev.
+    # Total of 4 ACTIVE large VMs.
+
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | ID                                   | Name              |    RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+    >   | c4c07f5a-260a-4f22-9530-a09a19aa490a | general.v1.large  |  92160 |   20 |       160 |    28 | True      |
+    >   +--------------------------------------+-------------------+--------+------+-----------+-------+-----------+
+
+    CPU  4 * 28         = 112
+    RAM  4 * 92160      = 368640M = 360G
+    DISC 4 * (20 + 160) = 720G
+
+
+# -----------------------------------------------------
+# Delete all the servers from all the clouds.
+#[user@openstacker]
+
+    delete-all
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create 5 xlarge servers in each of the clouds.
+#[user@openstacker]
+
+    create-all 5 "${xlflavor:?}"
+
+    >   ---- ----
+    >   Cloud [gaia-dev]
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   Node [test-node-2]
+    >   Node [test-node-3]
+    >   Node [test-node-4]
+    >   Quota exceeded for ram: Requested 184320, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-4d559770-4c3b-4020-b0fc-ceaf4872cc29)
+    >   Node [test-node-5]
+    >   Quota exceeded for ram: Requested 184320, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-64a6e7d9-650a-4c02-8dc7-b04f47115dad)
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   Node [test-node-2]
+    >   Node [test-node-3]
+    >   Node [test-node-4]
+    >   Quota exceeded for ram: Requested 184320, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-e7670725-f4c6-4594-9b78-90dbb20edc23)
+    >   Node [test-node-5]
+    >   Quota exceeded for ram: Requested 184320, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-ca72cd78-0d12-4193-bd96-cb5e5b3006a7)
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   Node [test-node-0]
+    >   Node [test-node-1]
+    >   Node [test-node-2]
+    >   Node [test-node-3]
+    >   Node [test-node-4]
+    >   Quota exceeded for ram: Requested 184320, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-5af21700-5c76-4a2d-9db4-8a770994ef19)
+    >   Node [test-node-5]
+    >   Quota exceeded for ram: Requested 184320, but already used 737280 of 786432 ram (HTTP 403) (Request-ID: req-b0b3ba20-c2be-49b0-8069-989005f5b94e)
+
+
+# -----------------------------------------------------
+# List all the servers in all the clouds.
+#[user@openstacker]
+
+    list-all
+
+    >   ---- ----
+    >   Cloud [gaia-dev]
+    >   +--------------------------------------+-------------+--------+----------+---------------+-------------------+
+    >   | ID                                   | Name        | Status | Networks | Image         | Flavor            |
+    >   +--------------------------------------+-------------+--------+----------+---------------+-------------------+
+    >   | ee29c060-7da0-4103-b109-ecf334a3ba5b | test-node-3 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   | 0611197f-50bb-4200-bad2-657489ff1c0e | test-node-2 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   | 5054c666-74b4-4f8a-a349-0a6dbc7424ad | test-node-1 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   | dc0931f9-4f34-441e-bab1-c2a4f06ec050 | test-node-0 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   +--------------------------------------+-------------+--------+----------+---------------+-------------------+
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   +--------------------------------------+-------------+--------+----------+---------------+-------------------+
+    >   | ID                                   | Name        | Status | Networks | Image         | Flavor            |
+    >   +--------------------------------------+-------------+--------+----------+---------------+-------------------+
+    >   | c4d50226-149e-4dcf-817b-edcdcd03a2d9 | test-node-3 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   | a8f8cf8c-5e68-437c-b4c1-a7e68cccb686 | test-node-2 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   | 4ceb561e-fed3-47f7-a18b-a6805d388341 | test-node-1 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   | 5524428d-90fe-4f97-89f4-b9d18b3841ee | test-node-0 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   +--------------------------------------+-------------+--------+----------+---------------+-------------------+
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   +--------------------------------------+-------------+--------+----------+---------------+-------------------+
+    >   | ID                                   | Name        | Status | Networks | Image         | Flavor            |
+    >   +--------------------------------------+-------------+--------+----------+---------------+-------------------+
+    >   | 1f1a20d9-1203-4b0d-9f0d-2264e7b7a8a6 | test-node-3 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   | ff53799f-3eaa-4c98-a290-b065ae78ae89 | test-node-2 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   | 3dbb89b3-283d-4ddc-b8f9-689303db8327 | test-node-1 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   | bddfe620-16a8-4393-b615-da83b0c62487 | test-node-0 | ERROR  |          | Fedora-30-1.2 | general.v1.xlarge |
+    >   +--------------------------------------+-------------+--------+----------+---------------+-------------------+
+
+
+# -----------------------------------------------------
+# Get the fault message for all the servers that failed.
+#[user@openstacker]
+
+    list-faults
+
+    >   ---- ----
+    >   Cloud [gaia-dev]
+    >   - Server [ee29c060-7da0-4103-b109-ecf334a3ba5b]
+    >   -- Fault [No valid host was found. ]
+    >   - Server [0611197f-50bb-4200-bad2-657489ff1c0e]
+    >   -- Fault [No valid host was found. ]
+    >   - Server [5054c666-74b4-4f8a-a349-0a6dbc7424ad]
+    >   -- Fault [No valid host was found. ]
+    >   - Server [dc0931f9-4f34-441e-bab1-c2a4f06ec050]
+    >   -- Fault [No valid host was found. ]
+    >   ---- ----
+    >   Cloud [gaia-test]
+    >   - Server [c4d50226-149e-4dcf-817b-edcdcd03a2d9]
+    >   -- Fault [No valid host was found. ]
+    >   - Server [a8f8cf8c-5e68-437c-b4c1-a7e68cccb686]
+    >   -- Fault [No valid host was found. ]
+    >   - Server [4ceb561e-fed3-47f7-a18b-a6805d388341]
+    >   -- Fault [No valid host was found. ]
+    >   - Server [5524428d-90fe-4f97-89f4-b9d18b3841ee]
+    >   -- Fault [No valid host was found. ]
+    >   ---- ----
+    >   Cloud [gaia-prod]
+    >   - Server [1f1a20d9-1203-4b0d-9f0d-2264e7b7a8a6]
+    >   -- Fault [No valid host was found. ]
+    >   - Server [ff53799f-3eaa-4c98-a290-b065ae78ae89]
+    >   -- Fault [No valid host was found. ]
+    >   - Server [3dbb89b3-283d-4ddc-b8f9-689303db8327]
+    >   -- Fault [No valid host was found. ]
+    >   - Server [bddfe620-16a8-4393-b615-da83b0c62487]
+    >   -- Fault [No valid host was found. ]
+
+
+# -----------------------------------------------------
+# Resource quotas shown in the Horizon UI.
+#[user@openstacker]
+
+    gaia-dev:
+
+        Instances
+        Used 4 of 20
+
+        VCPUs
+        Used 112 of 400
+
+        RAM
+        Used 720GB of 768GB
+
+
+    gaia-test:
+
+        Instances
+        Used 4 of 20
+
+        VCPUs
+        Used 112 of 400
+
+        RAM
+        Used 720GB of 768GB
+
+    gaia-prod:
+
+        Instances
+        Used 4 of 20
+
+        VCPUs
+        Used 112 of 400
+
+        RAM
+        Used 720GB of 768GB
+
+
+# -----------------------------------------------------
+# Total resource use.
+
+    # Didn't manage to create ANY.
+
+
+# -----------------------------------------------------
+# Delete all the servers from all the clouds.
+#[user@openstacker]
+
+    delete-all
+
+    >   ....
+    >   ....
+
+

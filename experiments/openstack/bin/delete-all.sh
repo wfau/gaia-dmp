@@ -354,7 +354,7 @@
             --os-cloud "${cloudname:?}" \
             keypair list \
                 --format json \
-        | jq -r '.[] | select(.Name | startswith("aglais")) | .Name'
+        | jq -r '.[] | select(.Name | startswith("'${cloudname:?}'")) | .Name'
         )
     do
         echo "- Deleting key [${keyname:?}]"

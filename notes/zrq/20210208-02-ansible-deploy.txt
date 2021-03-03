@@ -1,0 +1,238 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Add support for different types of disc ...
+
+    Results:
+
+        Work in progress ....
+
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Create our Aglais configuration.
+#[root@kubernator]
+
+cat > '/tmp/aglais-config.yml' << EOF
+aglais:
+    version: 1.0
+    spec:
+        openstack:
+            cloud: '${cloudname:?}'
+
+EOF
+
+
+# -----------------------------------------------------
+# Create everything from scratch.
+#[root@ansibler]
+
+    time \
+        /openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    rm -f ~/.ssh/*
+
+    time \
+        /hadoop-yarn/bin/create-all.sh
+
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the data directories.
+#[root@ansibler]
+
+
+    ssh worker01 \
+        '
+        date
+        hostname
+        echo  "----"
+        echo  "/var/spark"
+        ls -l "/var/spark"
+        df -h "/var/spark/temp"
+
+        echo  "----"
+        echo  "/var/hdfs"
+        ls -l "/var/hdfs"
+        df -h "/var/hdfs/data"
+
+        echo  "----"
+        echo  "/var/hadoop"
+        ls -l "/var/hadoop"
+        df -h "/var/hadoop/data"
+        '
+
+    >   Tue Feb  9 15:46:45 UTC 2021
+    >   gaia-dev-20210209-worker01.novalocal
+    >   ----
+    >   /var/spark
+    >   total 0
+    >   lrwxrwxrwx. 1 root root 25 Feb  9 15:41 temp -> /mnt/local/vdb/spark/temp
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb         59G   53M   56G   1% /mnt/local/vdb
+    >   ----
+    >   /var/hdfs
+    >   total 0
+    >   lrwxrwxrwx. 1 root root 25 Feb  9 15:38 data -> /mnt/cinder/vdc/hdfs/data
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdc        512G   17M  510G   1% /mnt/cinder/vdc
+    >   ----
+    >   /var/hadoop
+    >   total 0
+    >   lrwxrwxrwx. 1 root root 27 Feb  9 15:36 data -> /mnt/cinder/vdc/hadoop/data
+    >   lrwxrwxrwx. 1 root root 27 Feb  9 15:36 logs -> /mnt/cinder/vdc/hadoop/logs
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdc        512G   17M  510G   1% /mnt/cinder/vdc
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         name: gaia-dev-20210209
+    >         date: 20210209T194001
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    echo "Deployment [${deployname}]"
+
+    >   Deployment [gaia-dev-20210209]
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [a10a9b20-812a-4cab-ae97-efb2ccaddc0f]
+    >   Zeppelin IP [128.232.227.229]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Update our DNS
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin ...
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.metagrid.xyz:8080/" &
+
+
+# -----------------------------------------------------
+# Run test notebooks ..
+#[user@zeppelin]
+
+
+    Import notebooks from GitHu, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forrest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+

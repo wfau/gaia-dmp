@@ -29,12 +29,13 @@
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
-    echo "File  [${binfile}]"
-    echo "Path  [${binpath}]"
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
     cloudname=${1:?}
     buildname=${2:?}
@@ -108,7 +109,6 @@
     echo "---- ----"
     echo "Template name [${templatename}]"
     echo "Template uuid [${templateuuid}]"
-
 
 # -----------------------------------------------------
 # Create a new cluster.
@@ -187,15 +187,20 @@
 
 
 # -----------------------------------------------------
+# Get the cluster details.
+
+    openstack\
+        --os-cloud "${cloudname:?}" \
+        coe cluster show \
+            --format json \
+            "${clusteruuid:?}" \
+        > '/tmp/cluster.json'
+
+# -----------------------------------------------------
 # Get the stack details.
 
     stackuuid=$(
-        openstack\
-            --os-cloud "${cloudname:?}" \
-            coe cluster show \
-                --format json \
-                "${clusteruuid:?}" \
-        | jq -r '.stack_id'
+        jq -r '.stack_id' '/tmp/cluster.json'
         )
 
     openstack\

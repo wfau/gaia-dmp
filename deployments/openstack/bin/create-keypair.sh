@@ -26,12 +26,13 @@
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
-    echo "File  [${binfile}]"
-    echo "Path  [${binpath}]"
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
     cloudname=${1:?}
     buildname=${2:?}
@@ -66,7 +67,7 @@
         openstack \
             --os-cloud "${cloudname:?}" \
             keypair create \
-                --public-key "/common/ssh/aglais-team-keys" \
+                --public-key "${treetop:?}/common/ssh/aglais-team-keys" \
                 "${newname:?}"
     fi
 

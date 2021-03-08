@@ -24,23 +24,25 @@
 # -----------------------------------------------------
 # Settings ...
 
-    set -eu
-    set -o pipefail
+#   set -eu
+#   set -o pipefail
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
-    configyml=${1:-'/tmp/aglais-config.yml'}
-    statusyml=${2:-'/tmp/aglais-status.yml'}
-
+    cloudname=${1:?}
     buildname="aglais-$(date '+%Y%m%d')"
     builddate="$(date '+%Y%m%d:%H%M%S')"
+
+    configyml='/tmp/aglais-config.yml'
+    statusyml='/tmp/aglais-status.yml'
 
     touch "${statusyml:?}"
     yq write \
@@ -58,16 +60,10 @@
         "${statusyml:?}" \
             'aglais.status.deployment.date' \
             "${builddate}"
-
-    cloudname=$(
-        yq read \
-            "${configyml:?}" \
-                'aglais.spec.openstack.cloudname'
-        )
     yq write \
         --inplace \
         "${statusyml:?}" \
-            'aglais.status.openstack.cloudname' \
+            'aglais.status.openstack.cloud' \
             "${cloudname}"
 
     echo "---- ---- ----"
@@ -77,11 +73,26 @@
     echo "---- ---- ----"
 
 
+    hemlpath='/tmp/helm'
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.kubernetes.helm.path' \
+            "${hemlpath}"
+
+    namespace=${buildname,,}
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.kubernetes.namespace' \
+            "${namespace}"
+
+
 # -----------------------------------------------------
 # Create our SSH keypair.
 # Do we need this here, or does it go inside magnum-create ?
 
-    '/openstack/bin/create-keypair.sh' \
+    "${treetop:?}/openstack/bin/create-keypair.sh" \
         "${cloudname:?}" \
         "${buildname:?}"
 
@@ -89,9 +100,13 @@
 # -----------------------------------------------------
 # Create our Magnum cluster.
 
-    '/kubernetes/bin/magnum-create.sh' \
+    "${treetop:?}/kubernetes/bin/magnum-create.sh" \
         "${cloudname:?}" \
         "${buildname:?}"
+
+
+# -----------------------------------------------------
+# Get the cluster details.
 
     clusterid=$(
         jq -r '.uuid' '/tmp/cluster-status.json'
@@ -99,13 +114,44 @@
     yq write \
         --inplace \
         "${statusyml:?}" \
-            'aglais.status.openstack.magnum.uuid' \
+            'aglais.status.openstack.magnum.cluster.uuid' \
             "${clusterid}"
+
+
+# -----------------------------------------------------
+# Get the temnplate details.
+
+    templateuuid=$(
+        jq -r '.cluster_template_id' '/tmp/cluster-status.json'
+        )
+
+    openstack\
+        --os-cloud "${cloudname:?}" \
+        coe cluster template show \
+            --format json \
+            "${templateuuid:?}" \
+        > '/tmp/cluster-template.json'
+
+    templatename=$(
+        jq -r '.name' '/tmp/cluster-template.json'
+        )
+
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.openstack.magnum.template.uuid' \
+            "${templateuuid}"
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.openstack.magnum.template.name' \
+            "${templatename}"
+
 
 # -----------------------------------------------------
 # Create our CephFS router.
 
-    '/kubernetes/bin/cephfs-router.sh' \
+    "${treetop:?}/kubernetes/bin/cephfs-router.sh" \
         "${cloudname:?}" \
         "${buildname:?}"
 
@@ -113,7 +159,7 @@
 # -----------------------------------------------------
 # Get the connection details for our cluster.
 
-    '/kubernetes/bin/cluster-config.sh' \
+    "${treetop:?}/kubernetes/bin/cluster-config.sh" \
         "${cloudname:?}" \
         "${clusterid:?}"
 
@@ -125,16 +171,21 @@
 
 
 # -----------------------------------------------------
+# Create a local copy of our Helm charts.
+
+    echo ""
+    echo "----"
+    echo "Copying Aglais Helm charts"
+    echo "  [${treetop:?}/kubernetes/helm] -> [${hemlpath:?}]"
+
+    cp -a "${treetop:?}/kubernetes/helm" \
+          "${hemlpath:?}"
+
+
+# -----------------------------------------------------
 # Install our main Helm chart.
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
-
-    namespace=${buildname,,}
-    yq write \
-        --inplace \
-        "${statusyml:?}" \
-            'aglais.status.kubernetes.namespace' \
-            "${namespace}"
 
     echo ""
     echo "----"
@@ -142,14 +193,14 @@
     echo "Namespace [${namespace}]"
 
     helm dependency update \
-        "/kubernetes/helm"
+        "${hemlpath:?}"
 
     helm upgrade \
         --install \
         --create-namespace \
         --namespace "${namespace:?}" \
         'aglais' \
-        "/kubernetes/helm"
+        "${hemlpath:?}"
 
 
 # -----------------------------------------------------
@@ -157,20 +208,21 @@
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
 
-    dashhost=$(
-        yq read \
-            "${configyml:?}" \
-                'aglais.spec.dashboard.hostname'
-        )
+#   dashhost=$(
+#       yq read \
+#           "${configyml:?}" \
+#               'aglais.spec.dashboard.hostname'
+#       )
+    dashhost="dashboard.${cloudname:?}.aglais.uk"
 
     echo ""
     echo "----"
     echo "Installing dashboard Helm chart"
     echo "Namespace [${namespace}]"
-    echo "Dash host [${dashhost}]"
+    echo "Hostname  [${dashhost}]"
 
     helm dependency update \
-        "/kubernetes/helm/tools/dashboard"
+        "${hemlpath:?}/tools/dashboard"
 
     cat > "/tmp/dashboard-values.yaml" << EOF
 kubernetes-dashboard:
@@ -187,7 +239,7 @@ EOF
         --create-namespace \
         --namespace "${namespace:?}" \
         'aglais-dashboard' \
-        "/kubernetes/helm/tools/dashboard" \
+        "${hemlpath:?}/tools/dashboard" \
         --values "/tmp/dashboard-values.yaml"
 
 #TODO Patch the k8s metrics
@@ -206,7 +258,7 @@ EOF
 # Using a hard coded cloud name to make it portable.
 # Hard coded mode to 'rw' due to problems with ReadOnlyMany
 
-    sharelist='/common/manila/datashares.yaml'
+    sharelist="${treetop:?}/common/manila/datashares.yaml"
     sharemode='rw'
 
     for shareid in $(
@@ -221,7 +273,7 @@ EOF
         sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
         mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
 
-        '/kubernetes/bin/cephfs-mount.sh' \
+        "${treetop:?}/kubernetes/bin/cephfs-mount.sh" \
             'gaia-prod' \
             "${namespace:?}" \
             "${sharename:?}" \
@@ -235,7 +287,7 @@ EOF
 # Mount the user shares.
 # Using a hard coded cloud name to make it portable.
 
-    sharelist='/common/manila/usershares.yaml'
+    sharelist="${treetop:?}/common/manila/usershares.yaml"
     sharemode='rw'
 
     for shareid in $(
@@ -250,7 +302,7 @@ EOF
         sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
         mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
 
-        '/kubernetes/bin/cephfs-mount.sh' \
+        "${treetop:?}/kubernetes/bin/cephfs-mount.sh" \
             'gaia-prod' \
             "${namespace:?}" \
             "${sharename:?}" \
@@ -265,11 +317,12 @@ EOF
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
 
-    zepphost=$(
-        yq read \
-            "${configyml:?}" \
-                'aglais.spec.zeppelin.hostname'
-        )
+#   zepphost=$(
+#       yq read \
+#           "${configyml:?}" \
+#               'aglais.spec.zeppelin.hostname'
+#       )
+    zepphost="zeppelin.${cloudname:?}.aglais.uk"
 
     echo ""
     echo "----"
@@ -278,7 +331,7 @@ EOF
     echo "Hostname  [${zepphost}]"
 
     helm dependency update \
-        "/kubernetes/helm/tools/zeppelin"
+        "${hemlpath:?}/tools/zeppelin"
 
     cat > "/tmp/zeppelin-values.yaml" << EOF
 zeppelin_server_hostname: "${zepphost:?}"
@@ -289,7 +342,7 @@ EOF
         --create-namespace \
         --namespace "${namespace:?}" \
         'aglais-zeppelin' \
-        "/kubernetes/helm/tools/zeppelin" \
+        "${hemlpath:?}/tools/zeppelin" \
         --values "/tmp/zeppelin-values.yaml"
 
     # We can't capture the IP address here because it won't be ready yet.
@@ -306,11 +359,12 @@ EOF
 # Using 'upgrade --install' to make the command idempotent
 # https://github.com/helm/helm/issues/3134
 
-    drupalhost=$(
-        yq read \
-            "${configyml:?}" \
-                'aglais.spec.drupal.hostname'
-        )
+#   drupalhost=$(
+#       yq read \
+#           "${configyml:?}" \
+#               'aglais.spec.drupal.hostname'
+#       )
+    drupalhost="drupal.${cloudname:?}.aglais.uk"
 
     echo ""
     echo "----"
@@ -319,7 +373,7 @@ EOF
     echo "Hostname  [${drupalhost}]"
 
     helm dependency update \
-        "/kubernetes/helm/tools/drupal"
+        "${hemlpath:?}/tools/drupal"
 
     cat > "/tmp/drupal-values.yaml" << EOF
 drupal_server_hostname: "${drupalhost:?}"

@@ -28,12 +28,13 @@
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
     cloudname=${1:?}
     namespace=${2:?}
@@ -138,7 +139,7 @@ EOF
         --create-namespace \
         --namespace "${namespace:?}" \
         "${sharename,,}" \
-        "/kubernetes/helm/tools/manila-share" \
+        "${treetop:?}/kubernetes/helm/tools/manila-share" \
         --values "/tmp/${sharename:?}-values.yaml"
 
 

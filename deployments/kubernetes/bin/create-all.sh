@@ -41,10 +41,13 @@
     buildname="aglais-$(date '+%Y%m%d')"
     builddate="$(date '+%Y%m%d:%H%M%S')"
 
+    deployname="${cloudname:?}-$(date '+%Y%m%d')"
+    deploydate=$(date '+%Y%m%dT%H%M%S')
+
     configyml='/tmp/aglais-config.yml'
     statusyml='/tmp/aglais-status.yml'
-
     touch "${statusyml:?}"
+
     yq write \
         --inplace \
         "${statusyml:?}" \
@@ -68,10 +71,10 @@
 
     echo "---- ---- ----"
     echo "Config yml [${configyml}]"
-    echo "Build name [${buildname}]"
     echo "Cloud name [${cloudname}]"
+    echo "Build name [${buildname}]"
+    echo "Deployment [${deployname}]"
     echo "---- ---- ----"
-
 
     hemlpath='/tmp/helm'
     yq write \
@@ -249,7 +252,7 @@ EOF
     yq write \
         --inplace \
         "${statusyml:?}" \
-            'aglais.status.kubernetes.ingress.dashboard.hostname' \
+            'aglais.status.dashboard.hostname' \
             "${dashhost}"
 
 
@@ -350,7 +353,7 @@ EOF
     yq write \
         --inplace \
         "${statusyml:?}" \
-            'aglais.status.kubernetes.ingress.zeppelin.hostname' \
+            'aglais.status.zeppelin.hostname' \
             "${zepphost}"
 
 
@@ -403,7 +406,7 @@ EOF
     yq write \
         --inplace \
         '/tmp/aglais-status.yml' \
-            'aglais.status.kubernetes.ingress.dashboard.ipv4' \
+            'aglais.status.dashboard.publicipv4' \
             "${daship}"
 
 
@@ -428,7 +431,7 @@ EOF
     yq write \
         --inplace \
         "${statusyml:?}" \
-            'aglais.status.kubernetes.ingress.zeppelin.ipv4' \
+            'aglais.status.zeppelin.publicipv4' \
             "${zeppip}"
 
 

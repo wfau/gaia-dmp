@@ -175,7 +175,7 @@ EOF
 # -----------------------------------------------------
 # Run the Ansible deplyment.
 
-    pushd "${srcpath:?}/ansible"
+    pushd "${treetop:?}/hadoop-yarn/ansible"
 
         ansible-playbook \
             --inventory 'hosts.yml' \

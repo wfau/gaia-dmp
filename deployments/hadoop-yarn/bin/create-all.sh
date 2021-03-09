@@ -96,13 +96,20 @@
 #EOF
 
 # -----------------------------------------------------
+# Delete any existing known hosts file..
+# Temp fix until we get a better solution.
+# https://github.com/wfau/aglais/issues/401
+
+    rm -f "${HOME}/.ssh/known_hosts"
+
+# -----------------------------------------------------
 # Create the machines, deploy Hadoop and Spark.
 
     echo ""
     echo "---- ----"
     echo "Running Ansible deploy"
 
-    pushd "${treetop:?}/hadoop-yarn/ansible"
+   pushd "${treetop:?}/hadoop-yarn/ansible"
 
         ansible-playbook \
             --inventory "hosts.yml" \

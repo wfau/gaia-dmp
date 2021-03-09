@@ -3,12 +3,13 @@
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
     cloudname=${1:?}
     buildname=${2:?}
@@ -54,7 +55,7 @@
 # -----------------------------------------------------
 # Create the CephFS router.
 
-    '/openstack/bin/cephfs-router.sh' \
+    "${treetop:?}/openstack/bin/cephfs-router.sh" \
         "${cloudname:?}" \
         "${buildname:?}"
 

@@ -26,49 +26,48 @@
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
-# -----------------------------------------------------
-# Format the HDFS NameNode on master01.
+    cloudname=${1:?}
+    buildname=${2:?}
 
-    echo ""
-    echo "---- ----"
-    echo "Formatting HDFS"
-
-    ssh master01 \
-        '
-        hdfs namenode -format
-        '
+    echo "---- ---- ----"
+    echo "Cloud name   [${cloudname}]"
+    echo "Build name   [${buildname}]"
+    echo "---- ---- ----"
 
 
 # -----------------------------------------------------
-# Start the HDFS services on master01.
+# Check for existing keypair.
 
-    echo ""
-    echo "---- ----"
-    echo "Starting HDFS"
-
-    ssh master01 \
-        '
-        start-dfs.sh
-        '
-
+    echo "Checking for key [${buildname}]"
+    keyname=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair list \
+                --format json \
+        | jq -r '.[] | select(.Name | startswith("'${buildname:?}'")) | .Name'
+        )
 
 # -----------------------------------------------------
-# Check the HDFS status.
+# Create a new keypair if needed.
 
-    echo ""
-    echo "---- ----"
-    echo "HDFS status"
-
-    ssh master01 \
-        '
-        hdfs dfsadmin -report
-        '
-
+    if [ -n "${keyname}" ]
+    then
+        echo "Found [${keyname}]"
+    else
+        newname=${buildname:?}-keypair
+        echo "Creating keypair [${newname}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair create \
+                --public-key "${treetop:?}/common/ssh/aglais-team-keys" \
+                "${newname:?}"
+    fi
 

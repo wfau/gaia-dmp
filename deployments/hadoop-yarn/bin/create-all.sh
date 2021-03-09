@@ -29,30 +29,24 @@
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
-    configyml=${1:-'/tmp/aglais-config.yml'}
-    statusyml=${2:-'/tmp/aglais-status.yml'}
-    touch "${statusyml:?}"
-
-    cloudname=$(
-        yq read \
-            "${configyml:?}" \
-                'aglais.spec.openstack.cloud'
-        )
-    yq write \
-        --inplace \
-        "${statusyml:?}" \
-            'aglais.spec.openstack.cloud' \
-            "${cloudname}"
+    cloudname=${1:?}
+    buildname="aglais-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
 
     deployname="${cloudname:?}-$(date '+%Y%m%d')"
     deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    configyml='/tmp/aglais-config.yml'
+    statusyml='/tmp/aglais-status.yml'
+    touch "${statusyml:?}"
 
     yq write \
         --inplace \
@@ -69,10 +63,16 @@
         "${statusyml:?}" \
             'aglais.status.deployment.date' \
             "${deploydate}"
-
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.spec.openstack.cloud' \
+            "${cloudname}"
 
     echo "---- ---- ----"
+    echo "Config yml [${configyml}]"
     echo "Cloud name [${cloudname}]"
+    echo "Build name [${buildname}]"
     echo "Deployment [${deployname}]"
     echo "---- ---- ----"
 
@@ -102,7 +102,7 @@
     echo "---- ----"
     echo "Running Ansible deploy"
 
-    pushd "/hadoop-yarn/ansible"
+    pushd "${treetop:?}/hadoop-yarn/ansible"
 
         ansible-playbook \
             --inventory "hosts.yml" \
@@ -114,31 +114,31 @@
 # -----------------------------------------------------
 # Start the HDFS services.
 
-    '/hadoop-yarn/bin/start-hdfs.sh'
+    "${treetop:?}/hadoop-yarn/bin/start-hdfs.sh"
 
 
 # -----------------------------------------------------
 # Start the Yarn services.
 
-    '/hadoop-yarn/bin/start-yarn.sh'
+    "${treetop:?}/hadoop-yarn/bin/start-yarn.sh"
 
 
 # -----------------------------------------------------
 # Initialise the Spark services.
 
-    '/hadoop-yarn/bin/init-spark.sh'
+    "${treetop:?}/hadoop-yarn/bin/init-spark.sh"
 
 
 # -----------------------------------------------------
 # Initialise the Zeppelin service.
 
-    '/hadoop-yarn/bin/start-zeppelin.sh'
+    "${treetop:?}/hadoop-yarn/bin/start-zeppelin.sh"
 
 
 # -----------------------------------------------------
 # Create our CephFS router.
 
-    '/hadoop-yarn/bin/cephfs-router.sh' \
+    "${treetop:?}/hadoop-yarn/bin/cephfs-router.sh" \
         "${cloudname:?}" \
         "${deployname:?}"
 
@@ -147,7 +147,7 @@
 # Mount the data shares.
 # Using a hard coded cloud name to make it portable.
 
-    sharelist='/common/manila/datashares.yaml'
+    sharelist="${treetop:?}/common/manila/datashares.yaml"
     sharemode='ro'
 
     for shareid in $(
@@ -160,7 +160,7 @@
         sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
         mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
 
-        '/hadoop-yarn/bin/cephfs-mount.sh' \
+        "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
             'gaia-prod' \
             "${sharename:?}" \
             "${mountpath:?}" \
@@ -173,7 +173,7 @@
 # Mount the user shares.
 # Using a hard coded cloud name to make it portable.
 
-    sharelist='/common/manila/usershares.yaml'
+    sharelist="${treetop:?}/common/manila/usershares.yaml"
     sharemode='rw'
 
     for shareid in $(
@@ -186,7 +186,7 @@
         sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
         mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
 
-        '/hadoop-yarn/bin/cephfs-mount.sh' \
+        "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
             'gaia-prod' \
             "${sharename:?}" \
             "${mountpath:?}" \

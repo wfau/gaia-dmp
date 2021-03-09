@@ -26,38 +26,52 @@
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
-    echo "File  [${binfile}]"
-    echo "Path  [${binpath}]"
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
     cloudname=${1:?}
-    clusterid=${2:?}
+    buildname=${2:?}
 
     echo "---- ---- ----"
-    echo "Cloud name  [${cloudname}]"
-    echo "Cluster ID  [${clusterid}]"
+    echo "Cloud name [${cloudname}]"
+    echo "Build name [${buildname}]"
     echo "---- ---- ----"
-
 
 # -----------------------------------------------------
-# Get the connection details for our cluster.
-
-    configdir=${HOME}/.kube
-
-    mkdir -p "${configdir:?}"
-    chmod 'u=rwx,g=,o=' "${configdir:?}"
+# Identify our cluster router.
 
     openstack \
         --os-cloud "${cloudname:?}" \
-        coe cluster config \
-            "${clusterid:?}" \
-                --force \
-                --dir "${configdir:?}" \
-    > '/dev/null' 2>&1
+        router list \
+            --format json \
+    | jq '.[] | select(.Name == "'${buildname}'-internal-network-router")' \
+    > '/tmp/cluster-router.json'
 
-    chmod 'u=rw,g=,o=' "${configdir:?}/config"
+
+# -----------------------------------------------------
+# Identify our cluster subnet.
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list \
+            --format json \
+    | jq '.[] | select(.Name == "'${buildname}'-internal-network-subnet")' \
+    > '/tmp/cluster-subnet.json'
+
+
+# -----------------------------------------------------
+# Create the CephFS router.
+
+    "${treetop:?}/openstack/bin/cephfs-router.sh" \
+        "${cloudname:?}" \
+        "${buildname:?}"
+
+
+
 
 

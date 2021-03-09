@@ -26,22 +26,50 @@
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
 # -----------------------------------------------------
-# Start the YARN services on master01.
+# Format the HDFS NameNode on master01.
 
     echo ""
     echo "---- ----"
-    echo "Starting Yarn"
+    echo "Formatting HDFS"
 
     ssh master01 \
         '
-        start-yarn.sh
+        hdfs namenode -format
         '
+
+
+# -----------------------------------------------------
+# Start the HDFS services on master01.
+
+    echo ""
+    echo "---- ----"
+    echo "Starting HDFS"
+
+    ssh master01 \
+        '
+        start-dfs.sh
+        '
+
+
+# -----------------------------------------------------
+# Check the HDFS status.
+
+    echo ""
+    echo "---- ----"
+    echo "HDFS status"
+
+    ssh master01 \
+        '
+        hdfs dfsadmin -report
+        '
+
 

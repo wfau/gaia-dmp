@@ -26,23 +26,23 @@
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
     echo "File [${binfile}]"
     echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
 # -----------------------------------------------------
-# Create our Spark log directory.
+# Start the YARN services on master01.
 
     echo ""
     echo "---- ----"
-    echo "Creating Spark log directory"
+    echo "Starting Yarn"
 
     ssh master01 \
         '
-        hdfs dfs -mkdir /spark-log
+        start-yarn.sh
         '
-
 

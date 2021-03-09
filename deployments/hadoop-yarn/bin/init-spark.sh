@@ -26,47 +26,24 @@
 
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
-    srcpath="$(dirname ${binpath})"
+    treetop="$(dirname $(dirname ${binpath}))"
 
     echo ""
     echo "---- ---- ----"
-    echo "File  [${binfile}]"
-    echo "Path  [${binpath}]"
-
-    cloudname=${1:?}
-    buildname=${2:?}
-
-    echo "---- ---- ----"
-    echo "Cloud name   [${cloudname}]"
-    echo "Build name   [${buildname}]"
-    echo "---- ---- ----"
-
+    echo "File [${binfile}]"
+    echo "Path [${binpath}]"
+    echo "Tree [${treetop}]"
 
 # -----------------------------------------------------
-# Check for existing keypair.
+# Create our Spark log directory.
 
-    echo "Checking for key [${buildname}]"
-    keyname=$(
-        openstack \
-            --os-cloud "${cloudname:?}" \
-            keypair list \
-                --format json \
-        | jq -r '.[] | select(.Name | startswith("'${buildname:?}'")) | .Name'
-        )
+    echo ""
+    echo "---- ----"
+    echo "Creating Spark log directory"
 
-# -----------------------------------------------------
-# Create a new keypair if needed.
+    ssh master01 \
+        '
+        hdfs dfs -mkdir /spark-log
+        '
 
-    if [ -n "${keyname}" ]
-    then
-        echo "Found [${keyname}]"
-    else
-        newname=${buildname:?}-keypair
-        echo "Creating keypair [${newname}]"
-        openstack \
-            --os-cloud "${cloudname:?}" \
-            keypair create \
-                --public-key "/common/ssh/aglais-team-keys" \
-                "${newname:?}"
-    fi
 

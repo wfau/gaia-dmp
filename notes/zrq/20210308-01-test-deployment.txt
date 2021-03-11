@@ -1,0 +1,216 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Deploy the Ansible configuration to the test system.
+
+    Results:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything ....
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    2m34.098s
+    >   user    0m52.311s
+    >   sys     0m7.556s
+
+
+# -----------------------------------------------------
+# Create evertything ....
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}"
+
+    >   real	32m14.046s
+    >   user	7m53.416s
+    >   sys	2m30.009s
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+    yq write \
+        --inplace \
+        '/tmp/aglais-status.yml' \
+            'aglais.status.zeppelin.hostname' \
+            "zeppelin.${cloudname:?}.aglais.uk"
+
+    yq write \
+        --inplace \
+        '/tmp/aglais-status.yml' \
+            'aglais.status.zeppelin.publicipv4' \
+            "${zeppelinip}"
+
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [1a22d96d-8367-46b5-8d01-ef12a0e39231]
+    >   Zeppelin IP [128.232.227.134]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.134  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 0 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Check our DNS entries.
+#[root@ansibler]
+
+    sudo dnf install -y bind-utils
+
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-dev.aglais.uk'
+
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dev.aglais.uk. 300 IN	A	128.232.227.134
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   gaia-dev.aglais.uk.	300	IN	NS	infra-ops.aglais.uk.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window 'http://zeppelin.gaia-dev.aglais.uk:8080/' &
+
+# -----------------------------------------------------
+# Run a test notebook ..
+#[user@zeppelin]
+
+    Good astrometric solutions via ML Random Forrest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+        Works
+
+        Initial select
+        Took 15 min 41 sec. Last updated by gaiauser at March 08 2021, 9:41:00 AM.
+
+        HR diagram
+        Took 7 sec. Last updated by gaiauser at March 08 2021, 9:41:17 AM.
+
+        Training sets
+        Took 13 sec. Last updated by gaiauser at March 08 2021, 9:42:17 AM.
+
+        stopped ...
+
+
+
+

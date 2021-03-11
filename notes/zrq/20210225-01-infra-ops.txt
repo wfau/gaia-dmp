@@ -1,0 +1,1128 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Investigate errors with DNS resolution.
+        Email from Dennis
+
+            Just letting you know the IRIS system isn’t accessible at the minute.
+            It appears the login page doesn’t exist and/or the server can’t be found?
+            No pressure, I know there are issue at the minute, but wasn’t sure if you were aware of this.
+
+
+    Result:
+
+        Restarting the Pod got the service working again,
+        but no clue as to why it failed and if/when it will happen again.
+
+
+
+# -----------------------------------------------------
+# Check the name resolves.
+#[user@desktop]
+
+     host zeppelin.aglais.uk
+
+    >   ;; connection timed out; no servers could be reached
+
+
+     host -a zeppelin.aglais.uk
+
+    >   ....
+    >   ....
+    >   ;; ANSWER SECTION:
+    >   zeppelin.aglais.uk.	372	IN	CNAME	zeppelin.gaia-prod.aglais.uk.
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   aglais.uk.		171966	IN	NS	ns2.lcn.com.
+    >   aglais.uk.		171966	IN	NS	ns1.lcn.com.
+    >   aglais.uk.		171966	IN	NS	ns0.lcn.com.
+
+
+    host zeppelin.gaia-prod.aglais.uk.
+
+
+    >   ;; connection timed out; no servers could be reached
+
+
+    #
+    # Suggests that our DNS service isn't working.
+    #
+
+# -----------------------------------------------------
+# Test query direct to our DNS server.
+#[user@desktop]
+
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-prod.aglais.uk'
+
+    >   ; (1 server found)
+    >   ;; global options: +cmd
+    >   ;; connection timed out; no servers could be reached
+
+
+# -----------------------------------------------------
+# Test query direct to the LCN server.
+#[user@desktop]
+
+    dig '@ns2.lcn.com' 'gaia-prod.aglais.uk'
+
+    >   ....
+    >   ;; QUESTION SECTION:
+    >   ;gaia-prod.aglais.uk.		IN	A
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   gaia-prod.aglais.uk.	600	IN	NS	infra-ops.aglais.uk.
+    >   
+    >   ;; ADDITIONAL SECTION:
+    >   infra-ops.aglais.uk.	600	IN	A	46.101.32.198
+    >   ....
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name infra-ops \
+        --hostname infra-ops \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/infra-ops:/infra-ops:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Run the Ansible script to generate our local SSH config.
+#[root@ansibler]
+
+    pushd "/infra-ops/ansible"
+
+        ansible-playbook \
+            --inventory "hosts.yml" \
+            "01-ssh-config.yml"
+
+    popd
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to the DNS server and see what we can find ..
+#[root@ansibler]
+
+    ssh Hizzoria
+
+
+# -----------------------------------------------------
+# Check the Pod is still running
+#[root@Hizzoria]
+
+    podman ps -a
+
+    >   podman ps -a
+    >   CONTAINER ID  IMAGE                              COMMAND  CREATED     STATUS         PORTS   NAMES
+    >   314312dfde70  docker.io/storytel/dnsmasq:latest  dnsmasq  2 days ago  Up 2 days ago          dnsmasq
+
+
+# -----------------------------------------------------
+# Check the logs.
+#[root@Hizzoria]
+
+    podman logs --follow dnsmasq
+
+    >   ....
+    >   ....
+    >   dnsmasq[1]: auth[A] zeppelin.gaia-prod.aglais.uk from 90.155.53.33
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.212 is zeppelin.gaia-prod.aglais.uk
+    >   dnsmasq[1]: auth[RRSIG] pizzaseo.com from 5.157.62.2
+    >   dnsmasq[1]: auth[A] zeppelin.gaia-prod.aglais.uk from 129.215.17.202
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.212 is zeppelin.gaia-prod.aglais.uk
+    >   dnsmasq[1]: auth[TXT] VERSION.BIND from 185.173.35.25
+    >   dnsmasq[1]: auth[A] zeppelin.gaia-prod.aglais.uk from 129.215.16.12
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.212 is zeppelin.gaia-prod.aglais.uk
+    >   dnsmasq[1]: auth[RRSIG] pizzaseo.com from 188.166.8.202
+    >   dnsmasq[1]: auth[RRSIG] pizzaseo.com from 188.166.8.202
+    >   dnsmasq[1]: auth[ANY] mz.gov.pl from 178.79.138.36
+    >   dnsmasq[1]: auth[A] zeppelin.gaia-prod.aglais.uk from 81.97.95.154
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.212 is zeppelin.gaia-prod.aglais.uk
+    >   dnsmasq[1]: auth[A] 2e6520c6.asert-dns-research.com from 146.88.240.4
+    >   dnsmasq[1]: auth[A] ya.ru from 209.188.7.170
+    >   dnsmasq[1]: auth[A] www.wikipedia.org from 146.88.240.12
+    >   dnsmasq[1]: auth[AAAA] 67b.org from 80.82.65.90
+    >   dnsmasq[1]: auth[A] zeppelin.gaia-prod.aglais.uk from 199.30.231.12
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.212 is zeppelin.gaia-prod.aglais.uk
+    >   dnsmasq[1]: auth[TXT] hp.com from 123.58.180.77
+    >   dnsmasq[1]: auth[TXT] hp.com from 123.58.180.77
+    >   dnsmasq[1]: auth[TXT] hp.com from 123.58.180.77
+    >   dnsmasq[1]: auth[TXT] version.bind from 104.140.188.22
+    >   dnsmasq[1]: auth[A] zePpeLIN.gaiA-prOD.aglAIs.Uk from 35.172.165.0
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.212 is zePpeLIN.gaiA-prOD.aglAIs.Uk
+    >   dnsmasq[1]: auth[AAAA] ZEPpEliN.GaiA-PRod.aGlAIS.UK from 35.172.165.0
+    >   dnsmasq[1]: auth[TXT] dns-test.research.a10protects.com from 45.79.54.171
+    >   dnsmasq[1]: auth[TXT] ebay.com from 123.58.180.77
+    >   dnsmasq[1]: auth[ANY] com from 185.94.111.1
+    >   dnsmasq[1]: auth[A] researchscan541.eecs.umich.edu from 141.212.123.34
+    >   dnsmasq[1]: auth[A] dnsscan.shadowserver.org from 74.82.47.6
+    >   dnsmasq[1]: auth[PTR] 213.1.168.192.in-addr.arpa from 167.248.133.27
+    >   dnsmasq[1]: auth[A] invalid.parrotdns.com from 167.248.133.53
+    >   dnsmasq[1]: auth[A] ip.parrotdns.com from 167.248.133.53
+    >   dnsmasq[1]: auth[TXT] version.bind from 167.248.133.53
+    >   dnsmasq[1]: auth[A] zeppelin.gaia-prod.aglais.uk from 207.102.138.19
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.212 is zeppelin.gaia-prod.aglais.uk
+    >   dnsmasq[1]: auth[AAAA] zeppelin.gaia-prod.aglais.uk from 207.102.138.19
+    >   dnsmasq[1]: auth[A] zeppelin.gaia-prod.aglais.uk from 66.249.66.203
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.212 is zeppelin.gaia-prod.aglais.uk
+    >   dnsmasq[1]: auth[A] ZEPPELin.GAiA-prOd.aGLAis.uK from 3.233.239.118
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.212 is ZEPPELin.GAiA-prOd.aGLAis.uK
+    >   dnsmasq[1]: auth[AAAA] ZEppelIN.GAiA-PRod.aGLaIS.uk from 3.233.239.118
+    >   dnsmasq[1]: auth[A] researchscan541.eecs.umich.edu from 141.212.123.25
+    >   dnsmasq[1]: auth[TXT] tmz.com from 123.58.180.77
+    >   dnsmasq[1]: auth[TXT] tmz.com from 123.58.180.77
+
+    # TODO See if we can get a data stamp on these entries ?
+
+    # Looks like a mixture of genuine requests and malicious poking.
+
+    # This is an interesting one ...
+
+    >   dnsmasq[1]: auth[A] ZEPPELin.GAiA-prOd.aGLAis.uK from 3.233.239.118
+    >   dnsmasq[1]: /etc/dnsmasq/hosts 128.232.227.212 is ZEPPELin.GAiA-prOd.aGLAis.uK
+
+
+# -----------------------------------------------------
+# Check the disc space on the VM.
+#[root@Hizzoria]
+
+    df -h
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   devtmpfs        470M     0  470M   0% /dev
+    >   tmpfs           487M   84K  487M   1% /dev/shm
+    >   tmpfs           195M  616K  195M   1% /run
+    >   /dev/vda1        25G  1.7G   22G   8% /
+    >   tmpfs           487M     0  487M   0% /tmp
+    >   shm              63M     0   63M   0% /var/lib/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/shm
+    >   overlay          25G  1.7G   22G   8% /var/lib/containers/storage/overlay/9661016980dfe5613577610f8ede05969f5cc360f08b12548c5f35a7df160184/merged
+    >   tmpfs            98M     0   98M   0% /run/user/0
+
+
+# -----------------------------------------------------
+# Check the disc space inside the Pod.
+#[root@Hizzoria]
+
+    podman exec -it dnsmasq df -h
+
+    >   Filesystem                Size      Used Available Use% Mounted on
+    >   overlay                  24.5G      1.7G     21.8G   7% /
+    >   tmpfs                    64.0M         0     64.0M   0% /dev
+    >   shm                      62.5M         0     62.5M   0% /dev/shm
+    >   /dev/vda1                24.5G      1.7G     21.8G   7% /etc/dnsmasq
+    >   tmpfs                   194.7M    620.0K    194.1M   0% /etc/hostname
+    >   tmpfs                   194.7M    620.0K    194.1M   0% /etc/resolv.conf
+    >   tmpfs                   194.7M    620.0K    194.1M   0% /etc/hosts
+    >   tmpfs                   194.7M    620.0K    194.1M   0% /run/.containerenv
+    >   tmpfs                   194.7M    620.0K    194.1M   0% /run/secrets
+
+
+# -----------------------------------------------------
+# Inspect the Pod.
+#[root@Hizzoria]
+
+    podman inspect dnsmasq
+
+    >   [
+    >       {
+    >           "Id": "314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb",
+    >           "Created": "2021-02-23T01:38:43.1790103Z",
+    >           "Path": "dnsmasq",
+    >           "Args": [
+    >               "dnsmasq"
+    >           ],
+    >           "State": {
+    >               "OciVersion": "1.0.2-dev",
+    >               "Status": "running",
+    >               "Running": true,
+    >               "Paused": false,
+    >               "Restarting": false,
+    >               "OOMKilled": false,
+    >               "Dead": false,
+    >               "Pid": 20076,
+    >               "ConmonPid": 20073,
+    >               "ExitCode": 0,
+    >               "Error": "",
+    >               "StartedAt": "2021-02-23T07:06:43.426937776Z",
+    >               "FinishedAt": "2021-02-23T07:06:41.970034999Z",
+    >               "Healthcheck": {
+    >                   "Status": "",
+    >                   "FailingStreak": 0,
+    >                   "Log": null
+    >               }
+    >           },
+    >           "Image": "a12355af408b83950f803716de133c0440c54c5808125044d6b71898bfb5bdf3",
+    >           "ImageName": "docker.io/storytel/dnsmasq:latest",
+    >           "Rootfs": "",
+    >           "Pod": "",
+    >           "ResolvConfPath": "/var/run/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/resolv.conf",
+    >           "HostnamePath": "/var/run/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/hostname",
+    >           "HostsPath": "/var/run/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/hosts",
+    >           "StaticDir": "/var/lib/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata",
+    >           "OCIConfigPath": "/var/lib/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/config.json",
+    >           "OCIRuntime": "crun",
+    >           "LogPath": "/var/lib/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/ctr.log",
+    >           "LogTag": "",
+    >           "ConmonPidFile": "/var/run/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/conmon.pid",
+    >           "Name": "dnsmasq",
+    >           "RestartCount": 0,
+    >           "Driver": "overlay",
+    >           "MountLabel": "system_u:object_r:container_file_t:s0:c385,c403",
+    >           "ProcessLabel": "",
+    >           "AppArmorProfile": "",
+    >           "EffectiveCaps": [
+    >               "CAP_CHOWN",
+    >               "CAP_DAC_OVERRIDE",
+    >               "CAP_DAC_READ_SEARCH",
+    >               "CAP_FOWNER",
+    >               "CAP_FSETID",
+    >               "CAP_KILL",
+    >               "CAP_SETGID",
+    >               "CAP_SETUID",
+    >               "CAP_SETPCAP",
+    >               "CAP_LINUX_IMMUTABLE",
+    >               "CAP_NET_BIND_SERVICE",
+    >               "CAP_NET_BROADCAST",
+    >               "CAP_NET_ADMIN",
+    >               "CAP_NET_RAW",
+    >               "CAP_IPC_LOCK",
+    >               "CAP_IPC_OWNER",
+    >               "CAP_SYS_MODULE",
+    >               "CAP_SYS_RAWIO",
+    >               "CAP_SYS_CHROOT",
+    >               "CAP_SYS_PTRACE",
+    >               "CAP_SYS_PACCT",
+    >               "CAP_SYS_ADMIN",
+    >               "CAP_SYS_BOOT",
+    >               "CAP_SYS_NICE",
+    >               "CAP_SYS_RESOURCE",
+    >               "CAP_SYS_TIME",
+    >               "CAP_SYS_TTY_CONFIG",
+    >               "CAP_MKNOD",
+    >               "CAP_LEASE",
+    >               "CAP_AUDIT_WRITE",
+    >               "CAP_AUDIT_CONTROL",
+    >               "CAP_SETFCAP",
+    >               "CAP_MAC_OVERRIDE",
+    >               "CAP_MAC_ADMIN",
+    >               "CAP_SYSLOG",
+    >               "CAP_WAKE_ALARM",
+    >               "CAP_BLOCK_SUSPEND",
+    >               "CAP_AUDIT_READ"
+    >           ],
+    >           "BoundingCaps": [
+    >               "CAP_CHOWN",
+    >               "CAP_DAC_OVERRIDE",
+    >               "CAP_DAC_READ_SEARCH",
+    >               "CAP_FOWNER",
+    >               "CAP_FSETID",
+    >               "CAP_KILL",
+    >               "CAP_SETGID",
+    >               "CAP_SETUID",
+    >               "CAP_SETPCAP",
+    >               "CAP_LINUX_IMMUTABLE",
+    >               "CAP_NET_BIND_SERVICE",
+    >               "CAP_NET_BROADCAST",
+    >               "CAP_NET_ADMIN",
+    >               "CAP_NET_RAW",
+    >               "CAP_IPC_LOCK",
+    >               "CAP_IPC_OWNER",
+    >               "CAP_SYS_MODULE",
+    >               "CAP_SYS_RAWIO",
+    >               "CAP_SYS_CHROOT",
+    >               "CAP_SYS_PTRACE",
+    >               "CAP_SYS_PACCT",
+    >               "CAP_SYS_ADMIN",
+    >               "CAP_SYS_BOOT",
+    >               "CAP_SYS_NICE",
+    >               "CAP_SYS_RESOURCE",
+    >               "CAP_SYS_TIME",
+    >               "CAP_SYS_TTY_CONFIG",
+    >               "CAP_MKNOD",
+    >               "CAP_LEASE",
+    >               "CAP_AUDIT_WRITE",
+    >               "CAP_AUDIT_CONTROL",
+    >               "CAP_SETFCAP",
+    >               "CAP_MAC_OVERRIDE",
+    >               "CAP_MAC_ADMIN",
+    >               "CAP_SYSLOG",
+    >               "CAP_WAKE_ALARM",
+    >               "CAP_BLOCK_SUSPEND",
+    >               "CAP_AUDIT_READ"
+    >           ],
+    >           "ExecIDs": [],
+    >           "GraphDriver": {
+    >               "Name": "overlay",
+    >               "Data": {
+    >                   "LowerDir": "/var/lib/containers/storage/overlay/7bb8a4351055007d2f87cb9bb2902da18fd7c410f9da470b4ef56e78b94080a3/diff:/var/lib/containers/storage/overlay/cd7100a72410606589a54b932cabd804a17f9ae5b42a1882bd56d263e02b6215/diff",
+    >                   "MergedDir": "/var/lib/containers/storage/overlay/9661016980dfe5613577610f8ede05969f5cc360f08b12548c5f35a7df160184/merged",
+    >                   "UpperDir": "/var/lib/containers/storage/overlay/9661016980dfe5613577610f8ede05969f5cc360f08b12548c5f35a7df160184/diff",
+    >                   "WorkDir": "/var/lib/containers/storage/overlay/9661016980dfe5613577610f8ede05969f5cc360f08b12548c5f35a7df160184/work"
+    >               }
+    >           },
+    >           "Mounts": [
+    >               {
+    >                   "Type": "bind",
+    >                   "Name": "",
+    >                   "Source": "/var/aglais/dnsmasq",
+    >                   "Destination": "/etc/dnsmasq",
+    >                   "Driver": "",
+    >                   "Mode": "",
+    >                   "Options": [
+    >                       "rbind"
+    >                   ],
+    >                   "RW": false,
+    >                   "Propagation": "rprivate"
+    >               }
+    >           ],
+    >           "Dependencies": [],
+    >           "NetworkSettings": {
+    >               "EndpointID": "",
+    >               "Gateway": "",
+    >               "IPAddress": "",
+    >               "IPPrefixLen": 0,
+    >               "IPv6Gateway": "",
+    >               "GlobalIPv6Address": "",
+    >               "GlobalIPv6PrefixLen": 0,
+    >               "MacAddress": "",
+    >               "Bridge": "",
+    >               "SandboxID": "",
+    >               "HairpinMode": false,
+    >               "LinkLocalIPv6Address": "",
+    >               "LinkLocalIPv6PrefixLen": 0,
+    >               "Ports": {},
+    >               "SandboxKey": ""
+    >           },
+    >           "ExitCommand": [
+    >               "/usr/bin/podman",
+    >               "--root",
+    >               "/var/lib/containers/storage",
+    >               "--runroot",
+    >               "/var/run/containers/storage",
+    >               "--log-level",
+    >               "error",
+    >               "--cgroup-manager",
+    >               "systemd",
+    >               "--tmpdir",
+    >               "/var/run/libpod",
+    >               "--runtime",
+    >               "crun",
+    >               "--storage-driver",
+    >               "overlay",
+    >               "--storage-opt",
+    >               "overlay.mountopt=nodev,metacopy=on",
+    >               "--events-backend",
+    >               "journald",
+    >               "container",
+    >               "cleanup",
+    >               "314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb"
+    >           ],
+    >           "Namespace": "",
+    >           "IsInfra": false,
+    >           "Config": {
+    >               "Hostname": "Hizzoria",
+    >               "Domainname": "",
+    >               "User": "",
+    >               "AttachStdin": false,
+    >               "AttachStdout": false,
+    >               "AttachStderr": false,
+    >               "Tty": false,
+    >               "OpenStdin": false,
+    >               "StdinOnce": false,
+    >               "Env": [
+    >                   "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    >                   "TERM=xterm",
+    >                   "container=podman",
+    >                   "HOSTNAME=Hizzoria",
+    >                   "HOME=/root"
+    >               ],
+    >               "Cmd": [
+    >                   "dnsmasq"
+    >               ],
+    >               "Image": "docker.io/storytel/dnsmasq:latest",
+    >               "Volumes": null,
+    >               "WorkingDir": "/",
+    >               "Entrypoint": "",
+    >               "OnBuild": null,
+    >               "Labels": null,
+    >               "Annotations": {
+    >                   "io.container.manager": "libpod",
+    >                   "io.kubernetes.cri-o.Created": "2021-02-23T01:38:43.1790103Z",
+    >                   "io.kubernetes.cri-o.TTY": "false",
+    >                   "io.podman.annotations.autoremove": "FALSE",
+    >                   "io.podman.annotations.init": "FALSE",
+    >                   "io.podman.annotations.privileged": "TRUE",
+    >                   "io.podman.annotations.publish-all": "FALSE",
+    >                   "org.opencontainers.image.stopSignal": "15"
+    >               },
+    >               "StopSignal": 15,
+    >               "CreateCommand": [
+    >                   "podman",
+    >                   "container",
+    >                   "run",
+    >                   "--name",
+    >                   "dnsmasq",
+    >                   "--detach=True",
+    >                   "--privileged=True",
+    >                   "--network",
+    >                   "host",
+    >                   "--restart=on-failure:10",
+    >                   "--publish",
+    >                   "53:53/tcp",
+    >                   "--volume",
+    >                   "/var/aglais/dnsmasq:/etc/dnsmasq:ro",
+    >                   "storytel/dnsmasq"
+    >               ],
+    >               "Umask": "0022"
+    >           },
+    >           "HostConfig": {
+    >               "Binds": [
+    >                   "/var/aglais/dnsmasq:/etc/dnsmasq:ro,rprivate,rbind"
+    >               ],
+    >               "CgroupManager": "systemd",
+    >               "CgroupMode": "private",
+    >               "ContainerIDFile": "",
+    >               "LogConfig": {
+    >                   "Type": "k8s-file",
+    >                   "Config": null
+    >               },
+    >               "NetworkMode": "host",
+    >               "PortBindings": {},
+    >               "RestartPolicy": {
+    >                   "Name": "on-failure",
+    >                   "MaximumRetryCount": 10
+    >               },
+    >               "AutoRemove": false,
+    >               "VolumeDriver": "",
+    >               "VolumesFrom": null,
+    >               "CapAdd": [],
+    >               "CapDrop": [],
+    >               "Dns": [],
+    >               "DnsOptions": [],
+    >               "DnsSearch": [],
+    >               "ExtraHosts": [],
+    >               "GroupAdd": [],
+    >               "IpcMode": "private",
+    >               "Cgroup": "",
+    >               "Cgroups": "default",
+    >               "Links": null,
+    >               "OomScoreAdj": 0,
+    >               "PidMode": "private",
+    >               "Privileged": true,
+    >               "PublishAllPorts": false,
+    >               "ReadonlyRootfs": false,
+    >               "SecurityOpt": [],
+    >               "Tmpfs": {},
+    >               "UTSMode": "private",
+    >               "UsernsMode": "",
+    >               "ShmSize": 65536000,
+    >               "Runtime": "oci",
+    >               "ConsoleSize": [
+    >                   0,
+    >                   0
+    >               ],
+    >               "Isolation": "",
+    >               "CpuShares": 0,
+    >               "Memory": 0,
+    >               "NanoCpus": 0,
+    >               "CgroupParent": "",
+    >               "BlkioWeight": 0,
+    >               "BlkioWeightDevice": null,
+    >               "BlkioDeviceReadBps": null,
+    >               "BlkioDeviceWriteBps": null,
+    >               "BlkioDeviceReadIOps": null,
+    >               "BlkioDeviceWriteIOps": null,
+    >               "CpuPeriod": 0,
+    >               "CpuQuota": 0,
+    >               "CpuRealtimePeriod": 0,
+    >               "CpuRealtimeRuntime": 0,
+    >               "CpusetCpus": "",
+    >               "CpusetMems": "",
+    >               "Devices": [],
+    >               "DiskQuota": 0,
+    >               "KernelMemory": 0,
+    >               "MemoryReservation": 0,
+    >               "MemorySwap": 0,
+    >               "MemorySwappiness": 0,
+    >               "OomKillDisable": false,
+    >               "PidsLimit": 2048,
+    >               "Ulimits": [
+    >                   {
+    >                       "Name": "RLIMIT_NOFILE",
+    >                       "Soft": 1048576,
+    >                       "Hard": 1048576
+    >                   },
+    >                   {
+    >                       "Name": "RLIMIT_NPROC",
+    >                       "Soft": 4194304,
+    >                       "Hard": 4194304
+    >                   }
+    >               ],
+    >               "CpuCount": 0,
+    >               "CpuPercent": 0,
+    >               "IOMaximumIOps": 0,
+    >               "IOMaximumBandwidth": 0,
+    >               "CgroupConf": null
+    >           }
+    >       }
+    >   ]
+
+    # I can't remember if the NetworkSettings block should be empty ?
+
+    >       ....
+    >       "NetworkSettings": {
+    >           "EndpointID": "",
+    >           "Gateway": "",
+    >           "IPAddress": "",
+    >           "IPPrefixLen": 0,
+    >           "IPv6Gateway": "",
+    >           "GlobalIPv6Address": "",
+    >           "GlobalIPv6PrefixLen": 0,
+    >           "MacAddress": "",
+    >           "Bridge": "",
+    >           "SandboxID": "",
+    >           "HairpinMode": false,
+    >           "LinkLocalIPv6Address": "",
+    >           "LinkLocalIPv6PrefixLen": 0,
+    >           "Ports": {},
+    >           "SandboxKey": ""
+    >       },
+    >       ....
+
+
+# -----------------------------------------------------
+# Login to the Pod and check the filesystem is OK.
+#[root@Hizzoria]
+
+    podman exec -it dnsmasq /bin/sh
+
+
+# -----------------------------------------------------
+# ....
+#[root@dnsmasq]
+
+    ls /etc/dnsmasq
+
+    >   aglais.conf
+    >   hosts
+
+
+    cat /etc/dnsmasq/aglais.conf
+
+    >   ....
+    >   ....
+    >   no-hosts
+    >   no-resolv
+    >   no-daemon
+    >   bogus-priv
+    >   domain-needed
+    >   keep-in-foreground
+    >   
+    >   auth-ttl=300
+    >   local-ttl=300
+    >   
+    >   log-queries
+    >   log-facility=-
+    >   
+    >   bind-dynamic
+    >   except-interface=localhost
+    >   
+    >   hostsdir=/etc/dnsmasq/hosts
+    >   
+    >   auth-server=infra-ops.aglais.uk,eth0
+    >   
+    >   auth-zone=gaia-dev.aglais.uk
+    >   auth-zone=gaia-test.aglais.uk
+    >   auth-zone=gaia-prod.aglais.uk
+
+
+    cat /etc/dnsmasq/hosts/gaia-prod.hosts
+
+    >   ....
+    >   ....
+    >   128.232.227.212  zeppelin.gaia-prod.aglais.uk
+
+
+
+# -----------------------------------------------------
+# ....
+#[root@dnsmasq]
+
+    ifconfig
+
+    >   ....
+    >   eth0      Link encap:Ethernet  HWaddr 86:AB:2D:00:CB:2A
+    >             inet addr:46.101.32.198  Bcast:46.101.63.255  Mask:255.255.192.0
+    >             inet6 addr: 2a03:b0c0:1:d0::b53:6001/64 Scope:Global
+    >             inet6 addr: fe80::84ab:2dff:fe00:cb2a/64 Scope:Link
+    >             UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+    >             RX packets:300997 errors:0 dropped:0 overruns:0 frame:0
+    >             TX packets:78428 errors:0 dropped:0 overruns:0 carrier:0
+    >             collisions:0 txqueuelen:1000
+    >             RX bytes:373962484 (356.6 MiB)  TX bytes:7941941 (7.5 MiB)
+    >   
+    >   eth1      Link encap:Ethernet  HWaddr BE:FF:FC:81:F0:74
+    >             inet addr:10.106.0.2  Bcast:10.106.15.255  Mask:255.255.240.0
+    >             inet6 addr: fe80::bcff:fcff:fe81:f074/64 Scope:Link
+    >             UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+    >             RX packets:75 errors:0 dropped:0 overruns:0 frame:0
+    >             TX packets:83 errors:0 dropped:0 overruns:0 carrier:0
+    >             collisions:0 txqueuelen:1000
+    >             RX bytes:5326 (5.2 KiB)  TX bytes:5850 (5.7 KiB)
+    >   ....
+
+
+
+# -----------------------------------------------------
+# Out of ideas .. try restarting the Pod ?
+#[root@Hizzoria]
+
+    podman stop dnsmasq
+    sleep 5
+    podman start dnsmasq
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Test query direct to our DNS server.
+#[user@desktop]
+
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-prod.aglais.uk'
+
+    >   ....
+    >   ....
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.gaia-prod.aglais.uk.	IN	A
+    >   
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-prod.aglais.uk. 300 IN	A	128.232.227.212
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   gaia-prod.aglais.uk.	300	IN	NS	infra-ops.aglais.uk.
+    >   
+    >   ;; Query time: 14 msec
+    >   ;; SERVER: 46.101.32.198#53(46.101.32.198)
+    >   ;; WHEN: Thu Feb 25 17:23:48 GMT 2021
+    >   ;; MSG SIZE  rcvd: 125
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Inspect the Pod now it is working ....
+#[root@Hizzoria]
+
+    podman inspect dnsmasq
+
+    >   [
+    >       {
+    >           "Id": "314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb",
+    >           "Created": "2021-02-23T01:38:43.1790103Z",
+    >           "Path": "dnsmasq",
+    >           "Args": [
+    >               "dnsmasq"
+    >           ],
+    >           "State": {
+    >               "OciVersion": "1.0.2-dev",
+    >               "Status": "running",
+    >               "Running": true,
+    >               "Paused": false,
+    >               "Restarting": false,
+    >               "OOMKilled": false,
+    >               "Dead": false,
+    >               "Pid": 25313,
+    >               "ConmonPid": 25310,
+    >               "ExitCode": 0,
+    >               "Error": "",
+    >               "StartedAt": "2021-02-25T17:23:10.323794038Z",
+    >               "FinishedAt": "2021-02-25T17:23:04.795965881Z",
+    >               "Healthcheck": {
+    >                   "Status": "",
+    >                   "FailingStreak": 0,
+    >                   "Log": null
+    >               }
+    >           },
+    >           "Image": "a12355af408b83950f803716de133c0440c54c5808125044d6b71898bfb5bdf3",
+    >           "ImageName": "docker.io/storytel/dnsmasq:latest",
+    >           "Rootfs": "",
+    >           "Pod": "",
+    >           "ResolvConfPath": "/var/run/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/resolv.conf",
+    >           "HostnamePath": "/var/run/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/hostname",
+    >           "HostsPath": "/var/run/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/hosts",
+    >           "StaticDir": "/var/lib/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata",
+    >           "OCIConfigPath": "/var/lib/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/config.json",
+    >           "OCIRuntime": "crun",
+    >           "LogPath": "/var/lib/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/ctr.log",
+    >           "LogTag": "",
+    >           "ConmonPidFile": "/var/run/containers/storage/overlay-containers/314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb/userdata/conmon.pid",
+    >           "Name": "dnsmasq",
+    >           "RestartCount": 0,
+    >           "Driver": "overlay",
+    >           "MountLabel": "system_u:object_r:container_file_t:s0:c385,c403",
+    >           "ProcessLabel": "",
+    >           "AppArmorProfile": "",
+    >           "EffectiveCaps": [
+    >               "CAP_CHOWN",
+    >               "CAP_DAC_OVERRIDE",
+    >               "CAP_DAC_READ_SEARCH",
+    >               "CAP_FOWNER",
+    >               "CAP_FSETID",
+    >               "CAP_KILL",
+    >               "CAP_SETGID",
+    >               "CAP_SETUID",
+    >               "CAP_SETPCAP",
+    >               "CAP_LINUX_IMMUTABLE",
+    >               "CAP_NET_BIND_SERVICE",
+    >               "CAP_NET_BROADCAST",
+    >               "CAP_NET_ADMIN",
+    >               "CAP_NET_RAW",
+    >               "CAP_IPC_LOCK",
+    >               "CAP_IPC_OWNER",
+    >               "CAP_SYS_MODULE",
+    >               "CAP_SYS_RAWIO",
+    >               "CAP_SYS_CHROOT",
+    >               "CAP_SYS_PTRACE",
+    >               "CAP_SYS_PACCT",
+    >               "CAP_SYS_ADMIN",
+    >               "CAP_SYS_BOOT",
+    >               "CAP_SYS_NICE",
+    >               "CAP_SYS_RESOURCE",
+    >               "CAP_SYS_TIME",
+    >               "CAP_SYS_TTY_CONFIG",
+    >               "CAP_MKNOD",
+    >               "CAP_LEASE",
+    >               "CAP_AUDIT_WRITE",
+    >               "CAP_AUDIT_CONTROL",
+    >               "CAP_SETFCAP",
+    >               "CAP_MAC_OVERRIDE",
+    >               "CAP_MAC_ADMIN",
+    >               "CAP_SYSLOG",
+    >               "CAP_WAKE_ALARM",
+    >               "CAP_BLOCK_SUSPEND",
+    >               "CAP_AUDIT_READ"
+    >           ],
+    >           "BoundingCaps": [
+    >               "CAP_CHOWN",
+    >               "CAP_DAC_OVERRIDE",
+    >               "CAP_DAC_READ_SEARCH",
+    >               "CAP_FOWNER",
+    >               "CAP_FSETID",
+    >               "CAP_KILL",
+    >               "CAP_SETGID",
+    >               "CAP_SETUID",
+    >               "CAP_SETPCAP",
+    >               "CAP_LINUX_IMMUTABLE",
+    >               "CAP_NET_BIND_SERVICE",
+    >               "CAP_NET_BROADCAST",
+    >               "CAP_NET_ADMIN",
+    >               "CAP_NET_RAW",
+    >               "CAP_IPC_LOCK",
+    >               "CAP_IPC_OWNER",
+    >               "CAP_SYS_MODULE",
+    >               "CAP_SYS_RAWIO",
+    >               "CAP_SYS_CHROOT",
+    >               "CAP_SYS_PTRACE",
+    >               "CAP_SYS_PACCT",
+    >               "CAP_SYS_ADMIN",
+    >               "CAP_SYS_BOOT",
+    >               "CAP_SYS_NICE",
+    >               "CAP_SYS_RESOURCE",
+    >               "CAP_SYS_TIME",
+    >               "CAP_SYS_TTY_CONFIG",
+    >               "CAP_MKNOD",
+    >               "CAP_LEASE",
+    >               "CAP_AUDIT_WRITE",
+    >               "CAP_AUDIT_CONTROL",
+    >               "CAP_SETFCAP",
+    >               "CAP_MAC_OVERRIDE",
+    >               "CAP_MAC_ADMIN",
+    >               "CAP_SYSLOG",
+    >               "CAP_WAKE_ALARM",
+    >               "CAP_BLOCK_SUSPEND",
+    >               "CAP_AUDIT_READ"
+    >           ],
+    >           "ExecIDs": [],
+    >           "GraphDriver": {
+    >               "Name": "overlay",
+    >               "Data": {
+    >                   "LowerDir": "/var/lib/containers/storage/overlay/7bb8a4351055007d2f87cb9bb2902da18fd7c410f9da470b4ef56e78b94080a3/diff:/var/lib/containers/storage/overlay/cd7100a72410606589a54b932cabd804a17f9ae5b42a1882bd56d263e02b6215/diff",
+    >                   "MergedDir": "/var/lib/containers/storage/overlay/9661016980dfe5613577610f8ede05969f5cc360f08b12548c5f35a7df160184/merged",
+    >                   "UpperDir": "/var/lib/containers/storage/overlay/9661016980dfe5613577610f8ede05969f5cc360f08b12548c5f35a7df160184/diff",
+    >                   "WorkDir": "/var/lib/containers/storage/overlay/9661016980dfe5613577610f8ede05969f5cc360f08b12548c5f35a7df160184/work"
+    >               }
+    >           },
+    >           "Mounts": [
+    >               {
+    >                   "Type": "bind",
+    >                   "Name": "",
+    >                   "Source": "/var/aglais/dnsmasq",
+    >                   "Destination": "/etc/dnsmasq",
+    >                   "Driver": "",
+    >                   "Mode": "",
+    >                   "Options": [
+    >                       "rbind"
+    >                   ],
+    >                   "RW": false,
+    >                   "Propagation": "rprivate"
+    >               }
+    >           ],
+    >           "Dependencies": [],
+    >           "NetworkSettings": {
+    >               "EndpointID": "",
+    >               "Gateway": "",
+    >               "IPAddress": "",
+    >               "IPPrefixLen": 0,
+    >               "IPv6Gateway": "",
+    >               "GlobalIPv6Address": "",
+    >               "GlobalIPv6PrefixLen": 0,
+    >               "MacAddress": "",
+    >               "Bridge": "",
+    >               "SandboxID": "",
+    >               "HairpinMode": false,
+    >               "LinkLocalIPv6Address": "",
+    >               "LinkLocalIPv6PrefixLen": 0,
+    >               "Ports": {},
+    >               "SandboxKey": ""
+    >           },
+    >           "ExitCommand": [
+    >               "/usr/bin/podman",
+    >               "--root",
+    >               "/var/lib/containers/storage",
+    >               "--runroot",
+    >               "/var/run/containers/storage",
+    >               "--log-level",
+    >               "error",
+    >               "--cgroup-manager",
+    >               "systemd",
+    >               "--tmpdir",
+    >               "/var/run/libpod",
+    >               "--runtime",
+    >               "crun",
+    >               "--storage-driver",
+    >               "overlay",
+    >               "--storage-opt",
+    >               "overlay.mountopt=nodev,metacopy=on",
+    >               "--events-backend",
+    >               "journald",
+    >               "container",
+    >               "cleanup",
+    >               "314312dfde7016a8ba0cebd36b752a5a9971e6f9523998dad025d5d0aedd5bcb"
+    >           ],
+    >           "Namespace": "",
+    >           "IsInfra": false,
+    >           "Config": {
+    >               "Hostname": "Hizzoria",
+    >               "Domainname": "",
+    >               "User": "",
+    >               "AttachStdin": false,
+    >               "AttachStdout": false,
+    >               "AttachStderr": false,
+    >               "Tty": false,
+    >               "OpenStdin": false,
+    >               "StdinOnce": false,
+    >               "Env": [
+    >                   "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    >                   "TERM=xterm",
+    >                   "container=podman",
+    >                   "HOSTNAME=Hizzoria",
+    >                   "HOME=/root"
+    >               ],
+    >               "Cmd": [
+    >                   "dnsmasq"
+    >               ],
+    >               "Image": "docker.io/storytel/dnsmasq:latest",
+    >               "Volumes": null,
+    >               "WorkingDir": "/",
+    >               "Entrypoint": "",
+    >               "OnBuild": null,
+    >               "Labels": null,
+    >               "Annotations": {
+    >                   "io.container.manager": "libpod",
+    >                   "io.kubernetes.cri-o.Created": "2021-02-23T01:38:43.1790103Z",
+    >                   "io.kubernetes.cri-o.TTY": "false",
+    >                   "io.podman.annotations.autoremove": "FALSE",
+    >                   "io.podman.annotations.init": "FALSE",
+    >                   "io.podman.annotations.privileged": "TRUE",
+    >                   "io.podman.annotations.publish-all": "FALSE",
+    >                   "org.opencontainers.image.stopSignal": "15"
+    >               },
+    >               "StopSignal": 15,
+    >               "CreateCommand": [
+    >                   "podman",
+    >                   "container",
+    >                   "run",
+    >                   "--name",
+    >                   "dnsmasq",
+    >                   "--detach=True",
+    >                   "--privileged=True",
+    >                   "--network",
+    >                   "host",
+    >                   "--restart=on-failure:10",
+    >                   "--publish",
+    >                   "53:53/tcp",
+    >                   "--volume",
+    >                   "/var/aglais/dnsmasq:/etc/dnsmasq:ro",
+    >                   "storytel/dnsmasq"
+    >               ],
+    >               "Umask": "0022"
+    >           },
+    >           "HostConfig": {
+    >               "Binds": [
+    >                   "/var/aglais/dnsmasq:/etc/dnsmasq:ro,rprivate,rbind"
+    >               ],
+    >               "CgroupManager": "systemd",
+    >               "CgroupMode": "private",
+    >               "ContainerIDFile": "",
+    >               "LogConfig": {
+    >                   "Type": "k8s-file",
+    >                   "Config": null
+    >               },
+    >               "NetworkMode": "host",
+    >               "PortBindings": {},
+    >               "RestartPolicy": {
+    >                   "Name": "on-failure",
+    >                   "MaximumRetryCount": 10
+    >               },
+    >               "AutoRemove": false,
+    >               "VolumeDriver": "",
+    >               "VolumesFrom": null,
+    >               "CapAdd": [],
+    >               "CapDrop": [],
+    >               "Dns": [],
+    >               "DnsOptions": [],
+    >               "DnsSearch": [],
+    >               "ExtraHosts": [],
+    >               "GroupAdd": [],
+    >               "IpcMode": "private",
+    >               "Cgroup": "",
+    >               "Cgroups": "default",
+    >               "Links": null,
+    >               "OomScoreAdj": 0,
+    >               "PidMode": "private",
+    >               "Privileged": true,
+    >               "PublishAllPorts": false,
+    >               "ReadonlyRootfs": false,
+    >               "SecurityOpt": [],
+    >               "Tmpfs": {},
+    >               "UTSMode": "private",
+    >               "UsernsMode": "",
+    >               "ShmSize": 65536000,
+    >               "Runtime": "oci",
+    >               "ConsoleSize": [
+    >                   0,
+    >                   0
+    >               ],
+    >               "Isolation": "",
+    >               "CpuShares": 0,
+    >               "Memory": 0,
+    >               "NanoCpus": 0,
+    >               "CgroupParent": "",
+    >               "BlkioWeight": 0,
+    >               "BlkioWeightDevice": null,
+    >               "BlkioDeviceReadBps": null,
+    >               "BlkioDeviceWriteBps": null,
+    >               "BlkioDeviceReadIOps": null,
+    >               "BlkioDeviceWriteIOps": null,
+    >               "CpuPeriod": 0,
+    >               "CpuQuota": 0,
+    >               "CpuRealtimePeriod": 0,
+    >               "CpuRealtimeRuntime": 0,
+    >               "CpusetCpus": "",
+    >               "CpusetMems": "",
+    >               "Devices": [],
+    >               "DiskQuota": 0,
+    >               "KernelMemory": 0,
+    >               "MemoryReservation": 0,
+    >               "MemorySwap": 0,
+    >               "MemorySwappiness": 0,
+    >               "OomKillDisable": false,
+    >               "PidsLimit": 2048,
+    >               "Ulimits": [
+    >                   {
+    >                       "Name": "RLIMIT_NOFILE",
+    >                       "Soft": 1048576,
+    >                       "Hard": 1048576
+    >                   },
+    >                   {
+    >                       "Name": "RLIMIT_NPROC",
+    >                       "Soft": 4194304,
+    >                       "Hard": 4194304
+    >                   }
+    >               ],
+    >               "CpuCount": 0,
+    >               "CpuPercent": 0,
+    >               "IOMaximumIOps": 0,
+    >               "IOMaximumBandwidth": 0,
+    >               "CgroupConf": null
+    >           }
+    >       }
+    >   ]
+
+    # We can compare these later to see if there is any difference.
+
+    # Note the NetworkSettings block is indeed full of blanks.
+
+    >       ....
+    >       "NetworkSettings": {
+    >           "EndpointID": "",
+    >           "Gateway": "",
+    >           "IPAddress": "",
+    >           "IPPrefixLen": 0,
+    >           "IPv6Gateway": "",
+    >           "GlobalIPv6Address": "",
+    >           "GlobalIPv6PrefixLen": 0,
+    >           "MacAddress": "",
+    >           "Bridge": "",
+    >           "SandboxID": "",
+    >           "HairpinMode": false,
+    >           "LinkLocalIPv6Address": "",
+    >           "LinkLocalIPv6PrefixLen": 0,
+    >           "Ports": {},
+    >           "SandboxKey": ""
+    >       },
+    >       ....
+
+

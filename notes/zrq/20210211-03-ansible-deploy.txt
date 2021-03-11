@@ -1,0 +1,237 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Get Spark to work with the new configuration.
+
+        Changes based on information from Stelio's notes.
+            notes/stv/20210210-Benchmarking-ML-Notebook-01.txt
+            notes/stv/20210211-ML-Notebook-Benchmarking.txt
+
+            Added hadoop.tmp.dir to the core config.
+            Added /var/hadoop/temp to the volume mounts.
+
+        Changed to 4 medium workers
+
+        Test config:
+            1 small master
+            1 medium zeppelin
+            4 medium workers
+
+        Variable results caused by problems withthe Ceph stprage system.
+        The whole notebook is IO limited, all of the calculations are starved of input data.
+        Even on a good run, the cpu use is around 1%.
+
+        Multiple disc failures were causing problems with the Ceph system.
+        John removed broken discs from the array and stayed late to finish rebuilding the array.
+        After that results were much better, but still starved of data.
+
+        Hadoop and Spark work best with local data.
+
+        The gaia machines sitting in the racks at ROE are a better fit for this type of load.
+        Spread the data across the workers, don't centralise it in one place.
+        Either HDFS or another form of local caching.
+
+    Links about file system optimisation
+
+        Best practices for caching in Spark SQL
+        https://towardsdatascience.com/best-practices-for-caching-in-spark-sql-b22fb0f02d34
+
+        RADOS (Reliable Autonomic Distributed Object Store)
+        https://searchstorage.techtarget.com/definition/RADOS-Reliable-Autonomic-Distributed-Object-Store
+
+        CephFS: a new generation storage platform for Australian High Energy Physics
+        https://indico.cern.ch/event/505613/contributions/2230911/attachments/1345227/2039428/Oral-v5-162.pdf
+
+        CephFS file layouts
+        https://docs.ceph.com/en/mimic/cephfs/file-layouts/
+
+        Detecting CPU steal time in guest virtual machines
+        https://opensource.com/article/20/1/cpu-steal-time
+
+    Results:
+
+        Notebook works with 100% of eDR3 and 500 trees.
+        Need to experiment with adding more trees.
+
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/hadoop-yarn:/hadoop-yarn:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Create our Aglais configuration.
+#[root@kubernator]
+
+cat > '/tmp/aglais-config.yml' << EOF
+aglais:
+    version: 1.0
+    spec:
+        openstack:
+            cloud: '${cloudname:?}'
+
+EOF
+
+
+# -----------------------------------------------------
+# Create everything from scratch.
+#[root@ansibler]
+
+    time \
+        /openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    rm -f ~/.ssh/*
+
+    time \
+        /hadoop-yarn/bin/create-all.sh
+
+
+    >   real    33m6.197s
+    >   user    8m17.797s
+    >   sys     2m33.633s
+
+    >   real    31m27.362s
+    >   user    7m41.976s
+    >   sys     2m27.153s
+
+    >
+    >   real    32m40.876s
+    >   user    8m1.610s
+    >   sys     2m34.779s
+
+    >   real    31m42.765s
+    >   user    7m59.668s
+    >   sys     2m30.155s
+
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [ecbdba16-f723-4f5f-a5e8-e943f83f95bd]
+    >   Zeppelin IP [128.232.227.228]
+
+    >   Zeppelin ID [721e11ed-d1c5-4f7a-81fd-61dd87d4c13d]
+    >   Zeppelin IP [128.232.227.202]
+
+    >   Zeppelin ID [31bd4e5e-3ea0-4dd2-a08c-863b61d923ea]
+    >   Zeppelin IP [128.232.227.247]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Update our DNS
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin ...
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.metagrid.xyz:8080/" &
+
+
+

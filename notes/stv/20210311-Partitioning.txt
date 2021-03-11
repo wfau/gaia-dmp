@@ -1,0 +1,289 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+
+    Target:
+
+       Run the Partitioning job on anAglais Cluster that uses Cinder for tmp storage
+
+    Result:
+
+        Completed
+
+
+
+# See 20210310-issue-288-Cinder.txt on notes for how this was deployed
+
+
+
+# -----------------------------------------------------
+# Create the target data directories.
+#[user@zeppelin]
+
+    ssh master01 \
+        '
+        hdfs dfs -mkdir /partitioned
+        hdfs dfs -mkdir /partitioned/gaia
+        hdfs dfs -mkdir /partitioned/gaia/edr3
+        '
+
+
+
+# --------------------------------------------------------------------
+# Zeppelin Service running at:
+
+    http://128.232.227.173:8080/
+
+
+
+
+
+# -----------------------------------------------------
+# Create a new notebook and add the paritioning code
+#[user@zeppelin]
+
+
+%pyspark
+
+# schemas defined from WFAU MS SQL schema files, excluding the spatial indexing attributes (which are not included in the original CSVs distributed by the respective Data Centres of course)
+
+from pyspark.sql.types import *
+
+gaia_source_schema = StructType([
+    StructField('solution_id', LongType(), True),
+    StructField('designation', StringType(), True),
+    StructField('source_id', LongType(), True),
+    StructField('random_index', LongT
+
+
+   ....
+
+
+
+%pyspark
+
+
+# number of buckets for our platform
+NUM_BUCKETS = 2048
+
+# the following based on example code kindly supplied by Enrique Utrilla:
+
+# Save a dataframe to a set of bucketed parquet files, repartitioning beforehand and sorting by source UID within the buckets:
+def saveToBinnedParquet(df, outputParquetPath, name, mode = "error", nBuckets = NUM_BUCKETS):
+    df = df.repartition(nBuckets, "source_id")
+    df.write.format("parquet") \
+            .mode(mode) \
+            .bucketBy(nBuckets, "source_id") \
+            .sortBy("source_id") \
+            .option("path", outputParquetPath) \
+            .saveAsTable(name)
+
+
+# Run #1
+# --------
+
+%pyspark
+
+import sys
+
+# 1%:
+#gaia_source_df = sqlContext.read.option('mode','failfast').option('header', 'true').schema(gaia_source_schema).csv('file:////user/nch/CSV/GEDR3/*11.csv')
+# 10%:
+gaia_source_df = sqlContext.read.option('mode','failfast').option('header', 'true').schema(gaia_source_schema).csv('file:////user/nch/CSV/GEDR3/*1.csv')
+# 100%:
+#gaia_source_df = sqlContext.read.option('mode','failfast').option('header', 'true').schema(gaia_source_schema).csv('file:////user/nch/CSV/GEDR3/*.csv')
+
+# 100% using Parquet files from Ceph:
+gaia_source_df = sqlContext.read.parquet('file:////data/gaia/edr3')
+
+saveToBinnedParquet(
+    gaia_source_df,
+    'hdfs://master01:9000/partitioned/gaia/edr3',
+    name = 'gaia_source_bucketed_by_source_id',
+    mode = 'overwrite'
+    )
+
+
+Took 3 hrs 30 min 54 sec. Last updated by gaiauser at March 11 2021, 1:07:37 AM.
+
+
+
+# Run #2
+# --------
+
+%pyspark
+
+import sys
+
+# 1%:
+#gaia_source_df = sqlContext.read.option('mode','failfast').option('header', 'true').schema(gaia_source_schema).csv('file:////user/nch/CSV/GEDR3/*11.csv')
+# 10%:
+#gaia_source_df = sqlContext.read.option('mode','failfast').option('header', 'true').schema(gaia_source_schema).csv('file:////user/nch/CSV/GEDR3/*1.csv')
+# 100%:
+gaia_source_df = sqlContext.read.option('mode','failfast').option('header', 'true').schema(gaia_source_schema).csv('file:////user/nch/CSV/GEDR3/*.csv')
+
+# 100% using Parquet files from Ceph:
+gaia_source_df = sqlContext.read.parquet('file:////data/gaia/edr3')
+
+saveToBinnedParquet(
+    gaia_source_df,
+    'hdfs://master01:9000/partitioned/gaia/edr3',
+    name = 'gaia_source_bucketed_by_source_id',
+    mode = 'overwrite'
+    )
+
+
+Took 4 hrs 29 min 31 sec. Last updated by gaiauser at March 11 2021, 4:38:07 AM.
+
+
+
+# Uncommented the line that sets gaia_source_df to the full dataset in the first run, so essentially we ran the full partitioning twice
+# In any case, looks like it worked successfully
+
+
+	
+
+# -----------------------------------------------------
+# Access the Admin UI & Note resource usage
+#[user@desktop]
+
+    # Tunnel connection to Master via Zeppelin IP
+    
+    ssh -L '8088:master01:8088' fedora@128.232.227.173
+    firefox http://localhost:8088/cluster &
+
+
+
+# -----------------------------------------------------
+# Check tmp storage on Cinder mount (worker01)
+#[fedora@worker01]
+
+
+ls -al /mnt/cinder/vdc/hadoop/temp/
+total 0
+drwxrwsr-x. 1 fedora fedora 24 Mar 10 12:24 .
+drwxrwsr-x. 1 root   root   24 Mar 10 12:13 ..
+drwxr-xr-x. 1 fedora fedora 54 Mar 10 13:10 nm-local-dir
+
+
+
+
+
+# -----------------------------------------------------
+# Check Disk usage on all worker nodes
+#[user@zeppelin]
+
+ssh worker01 \
+         '
+         df -h 
+         '
+
+Filesystem      Size  Used Avail Use% Mounted on
+devtmpfs         23G     0   23G   0% /dev
+tmpfs            23G     0   23G   0% /dev/shm
+tmpfs            23G  576K   23G   1% /run
+tmpfs            23G     0   23G   0% /sys/fs/cgroup
+/dev/vda1        20G  3.7G   16G  20% /
+/dev/vdb         59G   53M   56G   1% /mnt/local/vdb
+/dev/vdc        1.0T  442G  581G  44% /mnt/cinder/vdc
+tmpfs           4.5G     0  4.5G   0% /run/user/1000
+ceph-fuse       512G  473G   40G  93% /data/gaia/dr2
+ceph-fuse       540G  533G  7.9G  99% /data/gaia/edr3
+ceph-fuse       350G  341G  9.9G  98% /data/wise/allwise
+ceph-fuse       300G  270G   31G  90% /data/panstarrs/dr1
+ceph-fuse        40G   37G  3.5G  92% /data/twomass/allsky
+ceph-fuse        10T  5.5T  4.6T  55% /user/nch
+ceph-fuse       1.0T   30G  995G   3% /user/zrq
+ceph-fuse       1.0T     0  1.0T   0% /user/stv
+
+ssh worker02 \
+         '
+         df -h 
+         '
+
+Filesystem      Size  Used Avail Use% Mounted on
+devtmpfs         23G     0   23G   0% /dev
+tmpfs            23G     0   23G   0% /dev/shm
+tmpfs            23G  576K   23G   1% /run
+tmpfs            23G     0   23G   0% /sys/fs/cgroup
+/dev/vda1        20G  3.7G   16G  20% /
+/dev/vdb         59G   53M   56G   1% /mnt/local/vdb
+/dev/vdc        1.0T  441G  581G  44% /mnt/cinder/vdc
+tmpfs           4.5G     0  4.5G   0% /run/user/1000
+ceph-fuse       512G  473G   40G  93% /data/gaia/dr2
+ceph-fuse       540G  533G  7.9G  99% /data/gaia/edr3
+ceph-fuse       350G  341G  9.9G  98% /data/wise/allwise
+ceph-fuse       300G  270G   31G  90% /data/panstarrs/dr1
+ceph-fuse        40G   37G  3.5G  92% /data/twomass/allsky
+ceph-fuse        10T  5.5T  4.6T  55% /user/nch
+ceph-fuse       1.0T   30G  995G   3% /user/zrq
+ceph-fuse       1.0T     0  1.0T   0% /user/stv
+
+ssh worker03 \
+         '
+         df -h 
+         '
+Filesystem      Size  Used Avail Use% Mounted on
+devtmpfs         23G     0   23G   0% /dev
+tmpfs            23G     0   23G   0% /dev/shm
+tmpfs            23G  576K   23G   1% /run
+tmpfs            23G     0   23G   0% /sys/fs/cgroup
+/dev/vda1        20G  3.2G   16G  17% /
+/dev/vdb         59G   53M   56G   1% /mnt/local/vdb
+/dev/vdc        1.0T  383G  642G  38% /mnt/cinder/vdc
+tmpfs           4.5G     0  4.5G   0% /run/user/1000
+ceph-fuse       512G  473G   40G  93% /data/gaia/dr2
+ceph-fuse       540G  533G  7.9G  99% /data/gaia/edr3
+ceph-fuse       350G  341G  9.9G  98% /data/wise/allwise
+ceph-fuse       300G  270G   31G  90% /data/panstarrs/dr1
+ceph-fuse        40G   37G  3.5G  92% /data/twomass/allsky
+ceph-fuse        10T  5.5T  4.6T  55% /user/nch
+ceph-fuse       1.0T   30G  995G   3% /user/zrq
+ceph-fuse       1.0T     0  1.0T   0% /user/stv
+
+ssh worker04   \
+        '
+        df -h 
+        '
+Filesystem      Size  Used Avail Use% Mounted on
+devtmpfs         23G     0   23G   0% /dev
+tmpfs            23G     0   23G   0% /dev/shm
+tmpfs            23G  576K   23G   1% /run
+tmpfs            23G     0   23G   0% /sys/fs/cgroup
+/dev/vda1        20G  3.7G   16G  20% /
+/dev/vdb         59G   53M   56G   1% /mnt/local/vdb
+/dev/vdc        1.0T  445G  577G  44% /mnt/cinder/vdc
+tmpfs           4.5G     0  4.5G   0% /run/user/1000
+ceph-fuse       512G  473G   40G  93% /data/gaia/dr2
+ceph-fuse       540G  533G  7.9G  99% /data/gaia/edr3
+ceph-fuse       350G  341G  9.9G  98% /data/wise/allwise
+ceph-fuse       300G  270G   31G  90% /data/panstarrs/dr1
+ceph-fuse        40G   37G  3.5G  92% /data/twomass/allsky
+ceph-fuse        10T  5.5T  4.6T  55% /user/nch
+ceph-fuse       1.0T   30G  995G   3% /user/zrq
+ceph-fuse       1.0T     0  1.0T   0% /user/stv
+
+
+
+
+
+# We observe that all worker nodes have about 383-445 GB usage on /mnt/cinder/vdc

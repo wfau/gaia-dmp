@@ -1,0 +1,408 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Test the Echo S3 storage service.
+
+    Follow on from previous notes:
+
+        notes/zrq/20210227-02-s3-echo.txt
+        notes/zrq/20210303-02-s3-echo.txt
+
+    Result:
+
+        Success .. kind of.
+        Transferring data to the S3 storage - worked.
+        RandomForest notebook using S3 storage - worked.
+        Total fail in terms of performance.
+
+    TODO
+
+        Code is in Canbridge S3 store is in RAL.
+        Add diagnostics to determine if network is the prolem.
+        Move the code to an external cloud - DO?
+        Move the storage to external cloud - DO?
+
+        Move the code to RAL (requires Rancher).
+
+
+# -----------------------------------------------------
+# Update the Openstack cloud name.
+#[user@desktop]
+
+    cloudname=gaia-dev
+
+    sed -i '
+        s/^\(AGLAIS_CLOUD\)=.*$/\1='${cloudname:?}'/
+        ' "${HOME}/aglais.env"
+
+# -----------------------------------------------------
+# Create a container to work with.
+# (*) extra volume mount for /common
+# (*) mount kubernetes directory as read/write
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name kubernator \
+        --hostname kubernator \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/common:/common:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/openstack:/openstack:ro,z" \
+        --volume "${AGLAIS_CODE:?}/experiments/kubernetes:/kubernetes:rw,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@kubernator]
+
+    /openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our Aglais configuration.
+#[root@kubernator]
+
+cat > '/tmp/aglais-config.yml' << EOF
+aglais:
+    version: 1.0
+    spec:
+        openstack:
+            cloudname: ${cloudname:?}
+        dashboard:
+            hostname: dashboard.gaia-dev.aglais.uk
+        zeppelin:
+            hostname: zeppelin.gaia-dev.aglais.uk
+        drupal:
+            hostname: drupal.gaia-dev.aglais.uk
+EOF
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@kubernator]
+
+    /kubernetes/bin/create-all.sh
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the Ingress IP addresses.
+#[root@kubernator]
+
+    /kubernetes/bin/get-addresses.sh
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the results.
+#[root@kubernator]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: kubernetes
+    >         name: aglais-20210305
+    >         date: 20210305:112353
+    >       openstack:
+    >         cloudname: gaia-dev
+    >         magnum:
+    >           uuid: 4ff56469-66a5-4e0d-95d5-cb1eb468cf2f
+    >       kubernetes:
+    >         namespace: aglais-20210305
+    >         ingress:
+    >           dashboard:
+    >             hostname: dashboard.gaia-dev.aglais.uk
+    >             ipv4: 128.232.227.195
+    >           zeppelin:
+    >             hostname: zeppelin.gaia-dev.aglais.uk
+    >             ipv4: 128.232.227.195
+
+
+# -----------------------------------------------------
+# Get the cluster ID and K8s namespace.
+#[root@kubernator]
+
+    magnumid=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.openstack.magnum.uuid'
+        )
+
+    namespace=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.kubernetes.namespace'
+        )
+
+cat << EOF
+Magnum uuid [${magnumid}]
+Name space  [${namespace}]
+EOF
+
+    >   Magnum uuid [4ff56469-66a5-4e0d-95d5-cb1eb468cf2f]
+    >   Name space  [aglais-20210305]
+
+
+# -----------------------------------------------------
+# Get the service Ingress addresses.
+#[root@kubernator]
+
+    /kubernetes/bin/get-addresses.sh
+
+    zepphost=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.kubernetes.ingress.zeppelin.hostname'
+        )
+
+    zeppipv4=$(
+        yq read '/tmp/aglais-status.yml' 'aglais.status.kubernetes.ingress.zeppelin.ipv4'
+        )
+
+cat << EOF
+Hostname [${zepphost}]
+Address  [${zeppipv4}]
+EOF
+
+    >   Hostname [zeppelin.gaia-dev.aglais.uk]
+    >   Address  [128.232.227.195]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@kubernator]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        +   128.232.227.195  zeppelin.gaia-dev.aglais.uk
+        +   128.232.227.195  dashboard.gaia-dev.aglais.uk
+
+
+        podman logs dnsmasq
+
+    >   ....
+    >   ....
+    >   dnsmasq[1]: inotify, new or changed file /etc/dnsmasq/hosts/gaia-dev.hosts
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 2 addresses
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check our DNS entries.
+#[root@kubernator]
+
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-dev.aglais.uk'
+
+
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dev.aglais.uk. 300 IN	A	128.232.227.197
+    >   zeppelin.gaia-dev.aglais.uk. 300 IN	A	128.232.227.195
+    >   zeppelin.gaia-dev.aglais.uk. 300 IN	A	128.232.227.195
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   gaia-dev.aglais.uk.	300	IN	NS	infra-ops.aglais.uk.
+
+    #
+    # We still get the old address from the cache.
+    #   Set the cache-size option to zero ?
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Try send a SIGHUP to flush the cache ?
+#[root@kubernator]
+
+    ssh root@infra-ops.aglais.uk
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq
+
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 0 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 2 addresses
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check our DNS entries.
+#[root@kubernator]
+
+    dig '@infra-ops.aglais.uk' 'zeppelin.gaia-dev.aglais.uk'
+
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dev.aglais.uk. 300 IN	A	128.232.227.195
+    >   
+    >   ;; AUTHORITY SECTION:
+    >   gaia-dev.aglais.uk.	300	IN	NS	infra-ops.aglais.uk.
+
+    #
+    # OK - that works.
+    # We need to edit the hosts file and then send a SIGHUP signal.
+    # Next steps will be to wrap that in a shell script
+    # and then add ssh keys and actions to trigger it.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window 'https://zeppelin.gaia-dev.aglais.uk/' &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a new notebook to test the S3 access.
+#[user@zeppelin]
+
+    %spark.pyspark
+
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.endpoint", "s3.echo.stfc.ac.uk"
+        )
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.path.style.access", "true"
+        )
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.list.version", "2"
+        )
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.access.key", "........"
+        )
+    sc._jsc.hadoopConfiguration().set(
+        "fs.s3a.secret.key", "........"
+        )
+
+
+    %spark.pyspark
+
+    df_one = sqlContext.read.parquet(
+        "s3a://gaia-edr3/part-00000-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet"
+        )
+
+    print("One count: ", df_one.count())
+    print("One partitions: ", df_one.rdd.getNumPartitions())
+
+
+    >   DF count:  169748
+    >   DF partitions:  2
+
+    >   Took 2 sec. Last updated by user1 at March 05 2021, 5:36:18 PM.
+
+
+    %spark.pyspark
+
+    df_all = sqlContext.read.parquet(
+        "s3a://gaia-edr3/"
+        )
+
+    print("All count: ", df_all.count())
+    print("All partitions: ", df_all.rdd.getNumPartitions())
+
+    >   All count:  1811709771
+    >   All partitions:  5720
+
+    >   Took 40 min 32 sec. Last updated by user1 at March 05 2021, 6:17:25 PM.
+
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Run the RandomForest ML notebook.
+#[user@zeppelin]
+
+
+    MD intro
+    Took 3 sec. Last updated by user1 at March 05 2021, 6:25:14 PM. (outdated)
+
+    Filters
+    Took 2 sec. Last updated by user1 at March 05 2021, 6:25:21 PM.
+
+    Initial select
+    Took 5 hrs 9 min 52 sec. Last updated by user1 at March 05 2021, 11:35:22 PM.
+
+    HR diagram (no display)
+    Took 24 sec. Last updated by user1 at March 05 2021, 11:37:08 PM.
+
+    MD text
+    Took 0 sec. Last updated by user1 at March 05 2021, 11:37:26 PM. (outdated)
+
+    Good/bad data select
+    Took 38 sec. Last updated by user1 at March 05 2021, 11:39:48 PM.
+
+    Training data union
+    Took 1 sec. Last updated by user1 at March 05 2021, 11:40:02 PM.
+
+    RandomForestClassifier step
+    31% after 11hrs - stopped at 10:55 Sat
+    Took 11 hrs 15 min 51 sec. Last updated by user1 at March 06 2021, 10:56:02 AM.
+
+    #
+    # Fairly conclusive - this is not faster.
+    #
+
+
+
+
+
+
+
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a gateway
+#[root@kubernator]
+
+
+
+
+

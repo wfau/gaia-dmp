@@ -1,0 +1,144 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+# -----------------------------------------------------
+
+    %sh
+    # Create the target directories in Hadoop HDFS
+    hadoop fs -mkdir 'hdfs://master01:9000/hdfs'
+    hadoop fs -mkdir 'hdfs://master01:9000/hdfs/partitioned'
+    hadoop fs -mkdir 'hdfs://master01:9000/hdfs/partitioned/gaia'
+
+
+# -----------------------------------------------------
+
+    %pyspark
+    # Load the test data.
+    from pyspark.sql.types import *
+    from pyspark.sql import *
+
+    gaia_source_df = sqlContext.read.parquet(
+        'file:///data/gaia/edr3'
+        )
+
+    gaia_source_df.createOrReplaceTempView('gaia_source')
+
+    gaia_subset_df = spark.sql(
+        'SELECT * FROM gaia_source WHERE (random_index & 255 = 0)'
+        )
+
+    gaia_subset_df.createOrReplaceTempView('gaia_subset')
+
+    print("Gaia source : ", gaia_source_df.count())
+    print("Gaia subset : ", gaia_subset_df.count())
+
+    >   Gaia source :  1811709771
+    >   Gaia subset :  7076992
+
+    >   Took 1 min 22 sec. Last updated by zrq at March 25 2021, 3:15:50 AM.
+
+
+# -----------------------------------------------------
+
+    %pyspark
+    # Define our partitioning function
+    NUM_BUCKETS = 2048
+
+    # Based on example code kindly supplied by Enrique Utrilla:
+    # Save a dataframe to a set of bucketed parquet files, repartitioning beforehand and sorting by source UID within the buckets:
+    def saveToBinnedParquet(df, outputParquetPath, name, mode = "error", nBuckets = NUM_BUCKETS):
+        df = df.repartition(nBuckets, "source_id")
+        df.write.format("parquet") \
+                .mode(mode) \
+                .bucketBy(nBuckets, "source_id") \
+                .sortBy("source_id") \
+                .option("path", outputParquetPath) \
+                .saveAsTable(name)
+
+
+# -----------------------------------------------------
+
+    %pyspark
+    # Run the partitioning test
+    saveToBinnedParquet(
+        gaia_subset_df,
+        'hdfs://master01:9000/hdfs/partitioned/gaia/edr3',
+        name = 'gaia_source_bucketed_by_source_id',
+        mode = 'overwrite'
+        )
+
+    >   Took 14 min 20 sec. Last updated by zrq at March 25 2021, 3:30:10 AM.
+
+
+# -----------------------------------------------------
+
+    %sh
+    # Check the results
+    hadoop fs -ls 'hdfs://master01:9000/hdfs/partitioned/gaia/edr3' | head -n 4
+    echo "...."
+    hadoop fs -ls 'hdfs://master01:9000/hdfs/partitioned/gaia/edr3' | tail -n 4
+
+    >   Found 2049 items
+    >   -rw-r--r--   3 fedora supergroup          0 2021-03-25 03:30 hdfs://master01:9000/hdfs/partitioned/gaia/edr3/_SUCCESS
+    >   -rw-r--r--   3 fedora supergroup    1178654 2021-03-25 03:29 hdfs://master01:9000/hdfs/partitioned/gaia/edr3/part-00000-91ca843b-2e02-4eff-afee-6730f9dd4e56_00000.c000.snappy.parquet
+    >   -rw-r--r--   3 fedora supergroup    1143871 2021-03-25 03:29 hdfs://master01:9000/hdfs/partitioned/gaia/edr3/part-00001-91ca843b-2e02-4eff-afee-6730f9dd4e56_00001.c000.snappy.parquet
+    >   ....
+    >   -rw-r--r--   3 fedora supergroup    1154536 2021-03-25 03:30 hdfs://master01:9000/hdfs/partitioned/gaia/edr3/part-02044-91ca843b-2e02-4eff-afee-6730f9dd4e56_02044.c000.snappy.parquet
+    >   -rw-r--r--   3 fedora supergroup    1182546 2021-03-25 03:30 hdfs://master01:9000/hdfs/partitioned/gaia/edr3/part-02045-91ca843b-2e02-4eff-afee-6730f9dd4e56_02045.c000.snappy.parquet
+    >   -rw-r--r--   3 fedora supergroup    1170886 2021-03-25 03:30 hdfs://master01:9000/hdfs/partitioned/gaia/edr3/part-02046-91ca843b-2e02-4eff-afee-6730f9dd4e56_02046.c000.snappy.parquet
+    >   -rw-r--r--   3 fedora supergroup    1170739 2021-03-25 03:30 hdfs://master01:9000/hdfs/partitioned/gaia/edr3/part-02047-91ca843b-2e02-4eff-afee-6730f9dd4e56_02047.c000.snappy.parquet
+
+
+# -----------------------------------------------------
+
+    %sh
+    # Check the disc space
+    hadoop fs -df -h 'hdfs://master01:9000/hdfs/partitioned/gaia'
+
+    >   Filesystem            Size    Used  Available  Use%
+    >   hdfs://master01:9000   4 T  11.0 G      4.0 T    0%
+
+
+# -----------------------------------------------------
+
+    %sh
+    # Check the disc use
+    hadoop fs -du -h 'hdfs://master01:9000/hdfs'
+
+    >   2.2 G  6.7 G  hdfs://master01:9000/hdfs/partitioned
+
+
+# -----------------------------------------------------
+
+    %sh
+    # Delete the target directory
+    hadoop fs -rm -r 'hdfs://master01:9000/hdfs/partitioned'
+
+    >   Deleted hdfs://master01:9000/hdfs/partitioned
+

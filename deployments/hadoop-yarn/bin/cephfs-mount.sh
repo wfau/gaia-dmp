@@ -35,12 +35,14 @@
     echo "Tree [${treetop}]"
 
     cloudname=${1:?}
-    sharename=${2:?}
-    mountpath=${3:?}
-    sharemode=${4:-'ro'}
+    hostsfile=${2:?}
+    sharename=${3:?}
+    mountpath=${4:?}
+    sharemode=${5:-'ro'}
 
     echo "---- ---- ----"
     echo "Cloud name [${cloudname}]"
+    echo "Hosts file [${hostsfile}]"
     echo "Share name [${sharename}]"
     echo "Mount path [${mountpath}]"
     echo "Share mode [${sharemode}]"
@@ -178,7 +180,7 @@ EOF
     pushd "${treetop:?}/hadoop-yarn/ansible"
 
         ansible-playbook \
-            --inventory 'hosts.yml' \
+            --inventory "${hostsfile:?}" \
             --extra-vars '@/tmp/ceph-vars.yml' \
             '51-cephfs-mount.yml'
 

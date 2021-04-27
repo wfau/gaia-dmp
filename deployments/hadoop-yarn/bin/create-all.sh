@@ -123,6 +123,7 @@
     pushd "${treetop:?}/hadoop-yarn/ansible"
 
         ansible-playbook \
+            --verbose \
             --inventory "${hostsfile:?}" \
             "create-all.yml"
 

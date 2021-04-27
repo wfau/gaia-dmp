@@ -118,13 +118,13 @@
     echo "---- ----"
     echo "Running Ansible deploy"
 
-    hostsfile="${deployconf}.yml"
+    inventory="config/${deployconf}.yml"
 
     pushd "${treetop:?}/hadoop-yarn/ansible"
 
         ansible-playbook \
             --verbose \
-            --inventory "${hostsfile:?}" \
+            --inventory "${inventory:?}" \
             "create-all.yml"
 
     popd
@@ -181,7 +181,7 @@
 
         "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
             'gaia-prod' \
-            "${hostsfile:?}" \
+            "${inventory:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
             "${sharemode:?}"
@@ -208,7 +208,7 @@
 
         "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
             'gaia-prod' \
-            "${hostsfile:?}" \
+            "${inventory:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
             "${sharemode:?}"

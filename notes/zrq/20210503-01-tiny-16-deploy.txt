@@ -1,0 +1,350 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Test the latest settings for the tiny-16 deployment
+
+    Result:
+
+        Work in progress
+
+
+# -----------------------------------------------------
+# Checkout the deployment branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210428-zrq-spark-conf'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-dev
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+
+    >   real    5m3.779s
+    >   user    1m47.233s
+    >   sys     0m15.612s
+
+
+# -----------------------------------------------------
+# Create everything, using the tiny-16 config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'tiny-16'
+
+    >   real    73m0.329s
+    >   user    16m58.303s
+    >   sys     6m45.760s
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}/zeppelin-0.8.2-bin-all"
+
+            # Manual edit to add names and passwords
+            vi conf/shiro.ini
+
+            # Restart Zeppelin for the changes to take.
+            ./bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: tiny-16
+    >         name: gaia-dev-20210503
+    >         date: 20210503T133004
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [9b341bfc-bf4b-492d-aac3-d392efb67ffe]
+    >   Zeppelin IP [128.232.227.235]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.235  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Check our Spark config.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        cat /opt/spark/conf/spark-defaults.conf
+
+    >   # BEGIN Ansible managed Spark configuration
+    >   
+    >   
+    >   # https://spark.apache.org/docs/latest/configuration.html
+    >   # https://spark.apache.org/docs/latest/running-on-yarn.html
+    >   # https://stackoverflow.com/questions/37871194/how-to-tune-spark-executor-number-cores-and-executor-memory
+    >   
+    >   # Amount of memory to use for the driver process (where SparkContext is initialized).
+    >   # (small zeppelin node has 22G memory)
+    >   spark.driver.memory           10g
+    >   # Limit of total size of serialized results of all partitions for each Spark action.
+    >   # Setting a proper limit can protect the driver from out-of-memory errors.
+    >   spark.driver.maxResultSize     8g
+    >   
+    >   # Amount of memory to use for the YARN Application Master
+    >   # (default 512m)
+    >   #spark.yarn.am.memory        512m
+    >   # Number of cores to use for the YARN Application Master in client mode.
+    >   # (default 1)
+    >   #spark.yarn.am.cores            1
+    >   
+    >   # The number of cores to use on each executor.
+    >   # (tiny worker node has 2 cores)
+    >   spark.executor.cores            1
+    >   # Amount of memory to use per executor process.
+    >   # (tiny worker node has 6G memory and 2 cores)
+    >   # (6G - 512M)/2
+    >   # ((6 * 1024)-512)/2
+    >   spark.executor.memory       2816m
+    >   
+    >   # The number of executors for static allocation.
+    >   # 16w * 2
+    >   spark.executor.instances       32
+    >   
+    >   
+    >   spark.local.dir            /var/spark/temp
+    >   spark.eventLog.dir         hdfs://master01:9000/spark-log
+    >   # END Ansible managed Spark configuration
+    >   # BEGIN Ansible managed Spark environment
+    >   # https://spark.apache.org/docs/3.0.0-preview2/configuration.html#inheriting-hadoop-cluster-configuration
+    >   spark.yarn.appMasterEnv.YARN_CONF_DIR=/opt/hadoop/etc/hadoop
+    >   spark.yarn.appMasterEnv.HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+    >   # END Ansible managed Spark environment
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.gaia-dev.aglais.uk:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Import our Random Forest notebook from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+    #
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 03 2021, 4:17:23 PM
+    Last cell  - May 03 2021, 4:36:51 PM
+
+    19 min
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 03 2021, 4:47:05 PM
+    Last cell  - May 03 2021, 5:06:33 PM.
+
+    19 min
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Watch the zeppelin logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            pushd "${HOME}/zeppelin-0.8.2-bin-all/logs"
+
+                tail -f "zeppelin-interpreter-spark-fedora-$(hostname -f).log"
+
+
+# -----------------------------------------------------
+# Monitor the zeppelin node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            htop
+
+
+# -----------------------------------------------------
+# Watch the worker logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            tail -f "/var/hadoop/logs/hadoop-fedora-nodemanager-$(hostname -f).log"
+
+
+# -----------------------------------------------------
+# Monitor the worker node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            htop
+
+
+# -----------------------------------------------------
+# Watch the application logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            tail -f "/var/hadoop/logs/userlogs/application_1620051958039_0001/container_1620051958039_0001_01_000019/stderr"
+
+
+
+

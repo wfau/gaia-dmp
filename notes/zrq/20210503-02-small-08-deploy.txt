@@ -1,0 +1,446 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Test the latest settings for the small-08 deployment
+
+    Result:
+
+        Work in progress
+
+
+# -----------------------------------------------------
+# Checkout the deployment branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210428-zrq-spark-conf'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-dev
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   
+    >   real    4m38.643s
+    >   user    1m42.350s
+    >   sys     0m14.652s
+
+
+# -----------------------------------------------------
+# Create everything, using the small-08 config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'small-08'
+
+    >   real    48m59.529s
+    >   user    11m27.083s
+    >   sys     3m38.678s
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}/zeppelin-0.8.2-bin-all"
+
+            # Manual edit to add names and passwords
+            vi conf/shiro.ini
+
+            # Restart Zeppelin for the changes to take.
+            ./bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: small-08
+    >         name: gaia-dev-20210503
+    >         date: 20210503T162644
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [8e293181-01b0-44a6-b7d9-e2741be5edd9]
+    >   Zeppelin IP [128.232.227.194]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.194  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Check our Spark config.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        cat /opt/spark/conf/spark-defaults.conf
+
+    >   # BEGIN Ansible managed Spark configuration
+    >   
+    >   
+    >   # https://spark.apache.org/docs/latest/configuration.html
+    >   # https://spark.apache.org/docs/latest/running-on-yarn.html
+    >   # https://stackoverflow.com/questions/37871194/how-to-tune-spark-executor-number-cores-and-executor-memory
+    >   
+    >   # Amount of memory to use for the driver process (where SparkContext is initialized).
+    >   # (small zeppelin node has 22G memory)
+    >   spark.driver.memory           10g
+    >   # Limit of total size of serialized results of all partitions for each Spark action.
+    >   # Setting a proper limit can protect the driver from out-of-memory errors.
+    >   spark.driver.maxResultSize     8g
+    >   
+    >   # Amount of memory to use for the YARN Application Master
+    >   # (default 512m)
+    >   #spark.yarn.am.memory        512m
+    >   # Number of cores to use for the YARN Application Master in client mode.
+    >   # (default 1)
+    >   #spark.yarn.am.cores            1
+    >   
+    >   # The number of cores to use on each executor.
+    >   # (tiny worker node has 2 cores)
+    >   spark.executor.cores            3
+    >   # Amount of memory to use per executor process.
+    >   # (small worker node has 22G memory and 6 cores)
+    >   # (22G - 512M)/2
+    >   # ((22 * 1024)-512)/2
+    >   spark.executor.memory      11008m
+    >   
+    >   # The number of executors for static allocation.
+    >   # 8w * 2
+    >   spark.executor.instances       16
+    >   
+    >   
+    >   spark.local.dir            /var/spark/temp
+    >   spark.eventLog.dir         hdfs://master01:9000/spark-log
+    >   # END Ansible managed Spark configuration
+    >   # BEGIN Ansible managed Spark environment
+    >   # https://spark.apache.org/docs/3.0.0-preview2/configuration.html#inheriting-hadoop-cluster-configuration
+    >   spark.yarn.appMasterEnv.YARN_CONF_DIR=/opt/hadoop/etc/hadoop
+    >   spark.yarn.appMasterEnv.HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+    >   # END Ansible managed Spark environment
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.gaia-dev.aglais.uk:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Import our Random Forest notebook from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+    #
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 03 2021, 8:05:04 PM.
+    Last cell  - May 03 2021, 8:21:00 PM.
+
+    16 min
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 04 2021, 12:07:13 AM.
+    Last cell  - May 04 2021, 12:23:17 AM.
+
+    16 min
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Watch the zeppelin logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            pushd "${HOME}/zeppelin-0.8.2-bin-all/logs"
+
+                tail -f "zeppelin-interpreter-spark-fedora-$(hostname -f).log"
+
+
+# -----------------------------------------------------
+# Monitor the zeppelin node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            htop
+
+
+# -----------------------------------------------------
+# Monitor the worker node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            htop -d 100
+
+
+# -----------------------------------------------------
+# Watch the application logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            tail -f "/var/hadoop/logs/userlogs/application_1620051958039_0001/container_1620051958039_0001_01_000019/stderr"
+
+
+    #
+    # Reading raw_sources_df query from parquet
+    #
+
+    >     1  [||||||                   16.7%]   4  [||||                     11.6%]
+    >     2  [||||                      9.2%]   5  [||||                      8.2%]
+    >     3  [||||                      9.1%]   6  [|||||                    12.9%]
+    >     Mem[|||||||||||||||||||6.51G/21.6G]   Tasks: 42, 442 thr; 3 running
+    >     Swp[                         0K/0K]   Load average: 5.96 2.59 0.99
+    >                                           Uptime: 02:39:04
+    >   
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   29138 root       20   0 2209M  370M 14076 S 24.7  1.7  0:35.91 ceph-fuse --id=us
+    >   30610 fedora     20   0 12.8G 2639M 43276 S 18.9 12.0  0:41.79 /etc/alternatives
+    >   30609 fedora     20   0 12.9G 2701M 43312 S 16.5 12.2  0:39.22 /etc/alternatives
+    >   29146 root       20   0 2209M  370M 14076 R  5.3  1.7  0:06.77 ceph-fuse --id=us
+    >   30701 fedora     20   0 12.8G 2639M 43276 D  4.8 12.0  0:07.86 /etc/alternatives
+    >   30702 fedora     20   0 12.8G 2639M 43276 D  4.7 12.0  0:07.46 /etc/alternatives
+    >   30703 fedora     20   0 12.9G 2701M 43312 R  4.5 12.2  0:07.28 /etc/alternatives
+    >   30699 fedora     20   0 12.9G 2701M 43312 D  4.4 12.2  0:07.87 /etc/alternatives
+    >   30700 fedora     20   0 12.9G 2701M 43312 D  4.3 12.2  0:07.06 /etc/alternatives
+    >   30704 fedora     20   0 12.8G 2639M 43276 D  4.3 12.0  0:06.98 /etc/alternatives
+    >   29145 root       20   0 2209M  370M 14076 S  4.3  1.7  0:06.17 ceph-fuse --id=us
+    >   29144 root       20   0 2209M  370M 14076 S  3.6  1.7  0:05.90 ceph-fuse --id=us
+    >   30637 fedora     20   0 12.8G 2639M 43276 S  1.6 12.0  0:05.78 /etc/alternatives
+    >   30633 fedora     20   0 12.9G 2701M 43312 S  1.4 12.2  0:04.62 /etc/alternatives
+
+
+    >   ....
+    >   2021-05-03 19:08:05,533 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 1912
+    >   2021-05-03 19:08:05,533 INFO executor.Executor: Running task 1911.0 in stage 1.0 (TID 1912)
+    >   2021-05-03 19:08:05,541 INFO datasources.FileScanRDD: Reading File path: file:///user/nch/PARQUET/REPARTITIONED/GEDR3/part-01665-be088e36-e954-4015-8f65-422df2aae82d_01665.c000.snappy.parquet, range: 134217728-268435456, partition values: [empty row]
+    >   2021-05-03 19:08:05,617 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-03 19:08:05,626 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-03 19:08:05,635 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-03 19:08:06,052 INFO memory.MemoryStore: Block rdd_4_1864 stored as values in memory (estimated size 83.5 KB, free 5.5 GB)
+    >   2021-05-03 19:08:06,055 INFO executor.Executor: Finished task 1864.0 in stage 1.0 (TID 1865). 2299 bytes result sent to driver
+    >   2021-05-03 19:08:06,057 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 1927
+    >   2021-05-03 19:08:06,057 INFO executor.Executor: Running task 1926.0 in stage 1.0 (TID 1927)
+    >   2021-05-03 19:08:06,062 INFO datasources.FileScanRDD: Reading File path: file:///user/nch/PARQUET/REPARTITIONED/GEDR3/part-00808-be088e36-e954-4015-8f65-422df2aae82d_00808.c000.snappy.parquet, range: 0-134217728, partition values: [empty row]
+    >   2021-05-03 19:08:06,094 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-03 19:08:06,104 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-03 19:08:06,110 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-03 19:08:09,196 INFO memory.MemoryStore: Block rdd_4_1911 stored as values in memory (estimated size 49.5 KB, free 5.5 GB)
+    >   2021-05-03 19:08:09,199 INFO executor.Executor: Finished task 1911.0 in stage 1.0 (TID 1912). 2299 bytes result sent to driver
+    >   ....
+
+
+    #
+    # Processing local data
+    #
+
+    >   ....
+    >   2021-05-03 19:16:40,642 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 91504
+    >   2021-05-03 19:16:40,642 INFO executor.Executor: Running task 3766.0 in stage 34.0 (TID 91504)
+    >   2021-05-03 19:16:40,655 INFO storage.BlockManager: Found block rdd_103_3761 locally
+    >   2021-05-03 19:16:40,677 INFO storage.BlockManager: Found block rdd_103_3766 locally
+    >   2021-05-03 19:16:40,871 INFO executor.Executor: Finished task 3742.0 in stage 34.0 (TID 91492). 3053 bytes result sent to driver
+    >   2021-05-03 19:16:40,872 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 91533
+    >   2021-05-03 19:16:40,872 INFO executor.Executor: Running task 3783.0 in stage 34.0 (TID 91533)
+    >   2021-05-03 19:16:40,888 INFO executor.Executor: Finished task 3761.0 in stage 34.0 (TID 91493). 3053 bytes result sent to driver
+    >   2021-05-03 19:16:40,889 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 91537
+    >   2021-05-03 19:16:40,889 INFO executor.Executor: Running task 3790.0 in stage 34.0 (TID 91537)
+    >   2021-05-03 19:16:40,908 INFO storage.BlockManager: Found block rdd_103_3783 locally
+    >   2021-05-03 19:16:40,919 INFO executor.Executor: Finished task 3766.0 in stage 34.0 (TID 91504). 3053 bytes result sent to driver
+    >   2021-05-03 19:16:40,921 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 91547
+    >   2021-05-03 19:16:40,921 INFO executor.Executor: Running task 3823.0 in stage 34.0 (TID 91547)
+    >   2021-05-03 19:16:40,925 INFO storage.BlockManager: Found block rdd_103_3790 locally
+    >   2021-05-03 19:16:40,956 INFO storage.BlockManager: Found block rdd_103_3823 locally
+    >   2021-05-03 19:16:41,186 INFO executor.Executor: Finished task 3783.0 in stage 34.0 (TID 91533). 3096 bytes result sent to driver
+    >   2021-05-03 19:16:41,187 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 91587
+    >   2021-05-03 19:16:41,187 INFO executor.Executor: Running task 3825.0 in stage 34.0 (TID 91587)
+    >   2021-05-03 19:16:41,218 INFO executor.Executor: Finished task 3790.0 in stage 34.0 (TID 91537). 3096 bytes result sent to driver
+    >   2021-05-03 19:16:41,220 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 91591
+    >   2021-05-03 19:16:41,220 INFO executor.Executor: Running task 3828.0 in stage 34.0 (TID 91591)
+    >   2021-05-03 19:16:41,221 INFO storage.BlockManager: Found block rdd_103_3825 locally
+    >   2021-05-03 19:16:41,243 INFO executor.Executor: Finished task 3823.0 in stage 34.0 (TID 91547). 3096 bytes result sent to driver
+    >   2021-05-03 19:16:41,244 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 91595
+    >   2021-05-03 19:16:41,245 INFO executor.Executor: Running task 3856.0 in stage 34.0 (TID 91595)
+    >   2021-05-03 19:16:41,256 INFO storage.BlockManager: Found block rdd_103_3828 locally
+    >   2021-05-03 19:16:41,279 INFO storage.BlockManager: Found block rdd_103_3856 locally
+    >   2021-05-03 19:16:41,444 INFO executor.Executor: Finished task 3825.0 in stage 34.0 (TID 91587). 3053 bytes result sent to driver
+    >   ....
+
+
+    >     1  [|||||||||||||||||||||||||91.1%]   4  [|||||||||||||||||||||||||94.1%]
+    >     2  [|||||||||||||||||||||||||96.2%]   5  [|||||||||||||||||||||||||96.9%]
+    >     3  [|||||||||||||||||||||||||95.4%]   6  [|||||||||||||||||||||||||93.2%]
+    >     Mem[|||||||||||||||||||10.5G/21.6G]   Tasks: 42, 452 thr; 6 running
+    >     Swp[                         0K/0K]   Load average: 6.80 5.43 3.09
+    >                                           Uptime: 02:47:25
+    >   
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   29138 root       20   0 2253M  397M 13844 S  0.0  1.8  1:23.55 ceph-fuse --id=us
+    >   30610 fedora     20   0 13.0G 4649M 41556 S 276. 21.1 10:40.20 /etc/alternatives
+    >   30609 fedora     20   0 13.0G 4661M 41548 S 268. 21.1 10:23.47 /etc/alternatives
+    >   30704 fedora     20   0 13.0G 4649M 41556 R 83.8 21.1  2:39.87 /etc/alternatives
+    >   30699 fedora     20   0 13.0G 4661M 41548 R 83.1 21.1  2:36.83 /etc/alternatives
+    >   30700 fedora     20   0 13.0G 4661M 41548 R 80.1 21.1  2:36.70 /etc/alternatives
+    >   29145 root       20   0 2253M  397M 13844 S  0.0  1.8  0:13.79 ceph-fuse --id=us
+    >   30701 fedora     20   0 13.0G 4649M 41556 R 87.7 21.1  2:41.29 /etc/alternatives
+    >   29146 root       20   0 2253M  397M 13844 S  0.0  1.8  0:15.78 ceph-fuse --id=us
+    >   30702 fedora     20   0 13.0G 4649M 41556 R 87.5 21.1  2:40.22 /etc/alternatives
+    >   29144 root       20   0 2253M  397M 13844 S  0.0  1.8  0:13.56 ceph-fuse --id=us
+    >   24039 fedora     20   0 7434M  549M 26336 S  1.6  2.5  0:29.36 /etc/alternatives
+    >   30740 root       20   0 2253M  397M 13844 S  0.0  1.8  0:02.58 ceph-fuse --id=us
+    >   29162 root       20   0 2253M  397M 13844 S  0.0  1.8  0:02.63 ceph-fuse --id=us
+
+

@@ -1,0 +1,1266 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Test the latest settings for the medium-04 deployment
+
+    Result:
+
+        Work in progress
+
+        Almost got it working ... and then the front fell off
+        IOException: No space left on device
+
+
+# -----------------------------------------------------
+# Checkout the deployment branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210428-zrq-spark-conf'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-dev
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m48.287s
+    >   user    1m21.436s
+    >   sys     0m11.505s
+
+
+# -----------------------------------------------------
+# Create everything, using the small-08 config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'medium-04'
+
+    >   real    34m6.856s
+    >   user    8m17.846s
+    >   sys     2m34.364s
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}/zeppelin-0.8.2-bin-all"
+
+            # Manual edit to add names and passwords
+            vi conf/shiro.ini
+
+            # Restart Zeppelin for the changes to take.
+            ./bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: medium-04
+    >         name: gaia-dev-20210504
+    >         date: 20210504T000421
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [9cee951d-90f8-49b9-b157-954ad60e6d5e]
+    >   Zeppelin IP [128.232.227.223]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.194  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Check our Spark config.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        cat /opt/spark/conf/spark-defaults.conf
+
+    >   # BEGIN Ansible managed Spark configuration
+    >
+    >
+    >   # https://spark.apache.org/docs/latest/configuration.html
+    >   # https://spark.apache.org/docs/latest/running-on-yarn.html
+    >   # https://stackoverflow.com/questions/37871194/how-to-tune-spark-executor-number-cores-and-executor-memory
+    >
+    >   # Amount of memory to use for the driver process (where SparkContext is initialized).
+    >   # (small zeppelin node has 22G memory)
+    >   spark.driver.memory           10g
+    >   # Limit of total size of serialized results of all partitions for each Spark action.
+    >   # Setting a proper limit can protect the driver from out-of-memory errors.
+    >   spark.driver.maxResultSize     8g
+    >
+    >   # Amount of memory to use for the YARN Application Master
+    >   # (default 512m)
+    >   #spark.yarn.am.memory        512m
+    >   # Number of cores to use for the YARN Application Master in client mode.
+    >   # (default 1)
+    >   #spark.yarn.am.cores            1
+    >
+    >   # The number of cores to use on each executor.
+    >   # (medium worker node has 14 cores)
+    >   spark.executor.cores            7
+    >   # Amount of memory to use per executor process.
+    >   # (medium worker node has 45G memorys)
+    >   # (45G - 512M)/2
+    >   # ((45 * 1024)-512)/2
+    >   spark.executor.memory      22784m
+    >
+    >   # The number of executors for static allocation.
+    >   # 4w * 2
+    >   spark.executor.instances        8
+    >
+    >
+    >   spark.local.dir            /var/spark/temp
+    >   spark.eventLog.dir         hdfs://master01:9000/spark-log
+    >   # END Ansible managed Spark configuration
+    >   # BEGIN Ansible managed Spark environment
+    >   # https://spark.apache.org/docs/3.0.0-preview2/configuration.html#inheriting-hadoop-cluster-configuration
+    >   spark.yarn.appMasterEnv.YARN_CONF_DIR=/opt/hadoop/etc/hadoop
+    >   spark.yarn.appMasterEnv.HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+    >   # END Ansible managed Spark environment
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.gaia-dev.aglais.uk:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Import our Random Forest notebook from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+    #
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 04 2021, 1:42:36 AM
+    Last cell  -
+
+
+    >   ....
+    >   org.apache.spark.SparkException:
+    >       Uncaught exception: org.apache.hadoop.yarn.exceptions.InvalidResourceRequestException:
+    >           Invalid resource request, requested resource type=[vcores] < 0 or greater than maximum allowed allocation.
+    >               Requested resource=<memory:25062, vCores:7>, maximum allowed allocation=<memory:43008, vCores:4>,
+    >                   please note that maximum allowed allocation is calculated by scheduler based on maximum resource of registered NodeManagers,
+    >                   which might be less than configured maximum allocation=<memory:43008, vCores:4>
+    >   ....
+
+
+            #
+            # Google-foo found this as a possible candidate.
+            #
+
+            <!--+
+                | The default value for yarn.scheduler.maximum-allocation-vcores is set to twice the number of CPUs.
+                | This oversubscription assumes that CPUs are not always running a thread, and hence assigning more cores enables maximum CPU utilization.
+                | https://serverfault.com/a/908778
+                +-->
+            <property>
+                <name>yarn.scheduler.maximum-allocation-vcores</name>
+                <value>48</value>
+            </property>
+
+            #
+            # Re-calculated to 90.
+            #
+
+            <!--+
+                | The default value for yarn.scheduler.maximum-allocation-vcores is set to twice the number of CPUs.
+                | This oversubscription assumes that CPUs are not always running a thread, and hence assigning more cores enables maximum CPU utilization.
+                | https://serverfault.com/a/908778
+                | (total cores) * 2 * 80%
+                | (4 * (14 core per vm)) * 2 * 80%
+                | (4 * 14) * 2 * 80% = 89.6
+                +-->
+            <property>
+                <name>yarn.scheduler.maximum-allocation-vcores</name>
+                <value>90</value>
+            </property>
+
+
+    ssh worker01
+        vi "/opt/hadoop/etc/hadoop/yarn-site.xml"
+
+    ssh worker02
+        vi "/opt/hadoop/etc/hadoop/yarn-site.xml"
+
+    ssh worker03
+        vi "/opt/hadoop/etc/hadoop/yarn-site.xml"
+
+    ssh worker04
+        vi "/opt/hadoop/etc/hadoop/yarn-site.xml"
+
+
+    ssh master
+
+        stop-yarn.sh
+
+    >   Stopping nodemanagers
+    >   Stopping resourcemanager
+
+        start-yarn.sh
+
+    >   Starting resourcemanager
+    >   Starting nodemanagers
+
+
+    #
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 04 2021, 12:44:49 PM.
+    Last cell  -
+
+
+    >   ....
+    >   org.apache.spark.SparkException:
+    >       Uncaught exception: org.apache.hadoop.yarn.exceptions.InvalidResourceRequestException:
+    >           Invalid resource request, requested resource type=[vcores] < 0 or greater than maximum allowed allocation.
+    >               Requested resource=<memory:25062, vCores:7>, maximum allowed allocation=<memory:43008, vCores:4>,
+    >                   please note that maximum allowed allocation is calculated by scheduler based on maximum resource of registered NodeManagers,
+    >                   which might be less than configured maximum allocation=<memory:43008, vCores:4>
+    >   ....
+
+    #
+    # Need to figure out where these values come from <memory:43008, vCores:4>
+    # The memory:43008 figure comes direct from either the master or worker config.
+    #
+
+
+    16-config-yarn-masters.yml
+
+    ....
+    - name: "Configure [{{hdhome}}/etc/hadoop/yarn-site.xml]"
+
+            ....
+
+            <!--+
+                | Maximum limit of memory to allocate to each container request at the Resource Manager.
+                | https://stackoverflow.com/a/43827548
+                | https://github.com/hortonworks/hdp-configuration-utils
+                +-->
+            <property>
+                <name>yarn.scheduler.maximum-allocation-mb</name>
+                <value>43008</value>
+            </property>
+
+
+
+
+    17-config-yarn-workers.yml
+
+    ....
+    - name: "Configure [{{hdhome}}/etc/hadoop/yarn-site.xml]"
+
+            ....
+
+            <!--+
+                | Maximum limit of memory to allocate to each container request at the Resource Manager.
+                | Amount of physical memory, in MB, that can be allocated for containers.
+                | It means the amount of memory YARN can utilize on this node and therefore this property should be lower than the total memory of that machine.
+                | https://stackoverflow.com/a/43827548
+                | 44*1024 = 45056
+                | https://github.com/hortonworks/hdp-configuration-utils
+                +-->
+            <property>
+                <name>yarn.nodemanager.resource.memory-mb</name>
+                <value>43008</value>
+            </property>
+
+            ....
+
+            <!--+
+                | Maximum limit of memory to allocate to each container request at the Resource Manager.
+                | Amount of physical memory, in MB, that can be allocated for containers.
+                | It means the amount of memory YARN can utilize on this node and therefore this property should be lower than the total memory of that machine.
+                | https://stackoverflow.com/a/43827548
+                | 44*1024 = 45056
+                | https://github.com/hortonworks/hdp-configuration-utils
+                +-->
+            <property>
+                <name>yarn.nodemanager.resource.memory-mb</name>
+                <value>43008</value>
+            </property>
+
+
+        #
+        # The vCores:4 value is much harder to track down.
+        #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Long term fix -
+    Start by commenting out ALL of the Hadoop and Yarn properties and then repeat the test cases.
+    Only re-instate the properties that actualkly make a difference to the performance.
+
+    Short term fix -
+    Revet to the values that the basic deployment used and see if those work.
+
+
+
+            # Amount of memory to use for the driver process (where SparkContext is initialized).
+            # (small zeppelin node has 22G memory)
+            #spark.driver.memory          10g
+            spark.driver.memory           13g
+            # Limit of total size of serialized results of all partitions for each Spark action.
+            # Setting a proper limit can protect the driver from out-of-memory errors.
+            spark.driver.maxResultSize     8g
+
+            # Amount of memory to use for the YARN Application Master
+            # (default 512m)
+            #spark.yarn.am.memory        512m
+            spark.yarn.am.memory          13g
+            # Number of cores to use for the YARN Application Master in client mode.
+            # (default 1)
+            #spark.yarn.am.cores            1
+            spark.yarn.am.cores             4
+
+            # The number of cores to use on each executor.
+            # (medium worker node has 14 cores)
+            #spark.executor.cores           7
+            spark.executor.cores            4
+            # Amount of memory to use per executor process.
+            # (medium worker node has 45G memorys)
+            # (45G - 512M)/2
+            # ((45 * 1024)-512)/2
+            #spark.executor.memory     22784m
+            spark.executor.memory         13g
+
+            # The number of executors for static allocation.
+            # 4w * 2
+            #spark.executor.instances       8
+            spark.executor.instances       11
+
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m16.984s
+    >   user    1m9.557s
+    >   sys     0m9.765s
+
+
+# -----------------------------------------------------
+# Create everything, using the small-08 config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'medium-04'
+
+    >   real    34m33.202s
+    >   user    8m25.092s
+    >   sys     2m37.100s
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}/zeppelin-0.8.2-bin-all"
+
+            # Manual edit to add names and passwords
+            vi conf/shiro.ini
+
+            # Restart Zeppelin for the changes to take.
+            ./bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: medium-04
+    >         name: gaia-dev-20210504
+    >         date: 20210504T120608
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [8196f1ad-0532-44c1-b534-e8216f349a9c]
+    >   Zeppelin IP [128.232.227.194]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.194  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Check our Spark config.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        cat /opt/spark/conf/spark-defaults.conf
+
+    >   # BEGIN Ansible managed Spark configuration
+    >
+    >
+    >   # https://spark.apache.org/docs/latest/configuration.html
+    >   # https://spark.apache.org/docs/latest/running-on-yarn.html
+    >   # https://stackoverflow.com/questions/37871194/how-to-tune-spark-executor-number-cores-and-executor-memory
+    >
+    >   spark.master                 yarn
+    >
+    >   # Amount of memory to use for the driver process (where SparkContext is initialized).
+    >   # (small zeppelin node has 22G memory)
+    >   #spark.driver.memory          10g
+    >   spark.driver.memory           13g
+    >   # Limit of total size of serialized results of all partitions for each Spark action.
+    >   # Setting a proper limit can protect the driver from out-of-memory errors.
+    >   spark.driver.maxResultSize     8g
+    >
+    >   # Amount of memory to use for the YARN Application Master
+    >   # (default 512m)
+    >   #spark.yarn.am.memory        512m
+    >   spark.yarn.am.memory          13g
+    >   # Number of cores to use for the YARN Application Master in client mode.
+    >   # (default 1)
+    >   #spark.yarn.am.cores            1
+    >   spark.yarn.am.cores             4
+    >
+    >   # The number of cores to use on each executor.
+    >   # (medium worker node has 14 cores)
+    >   #spark.executor.cores           7
+    >   spark.executor.cores            4
+    >   # Amount of memory to use per executor process.
+    >   # (medium worker node has 45G memorys)
+    >   # (45G - 512M)/2
+    >   # ((45 * 1024)-512)/2
+    >   #spark.executor.memory     22784m
+    >   spark.executor.memory         13g
+    >
+    >   # The number of executors for static allocation.
+    >   # 4w * 2
+    >   #spark.executor.instances       8
+    >   spark.executor.instances       11
+    >
+    >
+    >   spark.local.dir            /var/spark/temp
+    >   spark.eventLog.dir         hdfs://master01:9000/spark-log
+    >   # END Ansible managed Spark configuration
+    >   # BEGIN Ansible managed Spark environment
+    >   # https://spark.apache.org/docs/3.0.0-preview2/configuration.html#inheriting-hadoop-cluster-configuration
+    >   spark.yarn.appMasterEnv.YARN_CONF_DIR=/opt/hadoop/etc/hadoop
+    >   spark.yarn.appMasterEnv.HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+    >   # END Ansible managed Spark environment
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.gaia-dev.aglais.uk:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Import our Random Forest notebook from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+    #
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 04 2021, 1:42:36 AM
+    Last cell  -
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Watch the zeppelin logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            pushd "${HOME}/zeppelin-0.8.2-bin-all/logs"
+
+                tail -f "zeppelin-interpreter-spark-fedora-$(hostname -f).log"
+
+
+# -----------------------------------------------------
+# Monitor the zeppelin node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            htop
+
+
+# -----------------------------------------------------
+# Monitor the worker node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            htop -d 100
+
+
+# -----------------------------------------------------
+# Watch the application logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            tail -f "/var/hadoop/logs/userlogs/application_1620051958039_0001/container_1620051958039_0001_01_000019/stderr"
+
+        #
+        # Reading data from parquet files looks IO limited again
+        #
+
+    >   ....
+    >   2021-05-04 14:33:33,636 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 3667
+    >   2021-05-04 14:33:33,636 INFO executor.Executor: Running task 3666.0 in stage 1.0 (TID 3667)
+    >   2021-05-04 14:33:33,640 INFO datasources.FileScanRDD: Reading File path: file:///user/nch/PARQUET/REPARTITIONED/GEDR3/part-01488-be088e36-e954-4015-8f65-422df2aae82d_01488.c000.snappy.parquet, range: 0-134217728, partition values: [empty row]
+    >   2021-05-04 14:33:33,671 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:33,678 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:33,686 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:34,131 INFO memory.MemoryStore: Block rdd_4_3655 stored as values in memory (estimated size 53.1 KB, free 6.7 GB)
+    >   2021-05-04 14:33:34,133 INFO executor.Executor: Finished task 3655.0 in stage 1.0 (TID 3656). 2341 bytes result sent to driver
+    >   2021-05-04 14:33:34,134 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 3672
+    >   2021-05-04 14:33:34,134 INFO executor.Executor: Running task 3671.0 in stage 1.0 (TID 3672)
+    >   2021-05-04 14:33:34,138 INFO datasources.FileScanRDD: Reading File path: file:///user/nch/PARQUET/REPARTITIONED/GEDR3/part-00380-be088e36-e954-4015-8f65-422df2aae82d_00380.c000.snappy.parquet, range: 134217728-268435456, partition values: [empty row]
+    >   2021-05-04 14:33:34,152 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:34,159 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:34,165 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:34,404 INFO memory.MemoryStore: Block rdd_4_3661 stored as values in memory (estimated size 53.9 KB, free 6.7 GB)
+    >   2021-05-04 14:33:34,406 INFO executor.Executor: Finished task 3661.0 in stage 1.0 (TID 3662). 2341 bytes result sent to driver
+    >   2021-05-04 14:33:34,407 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 3674
+    >   2021-05-04 14:33:34,407 INFO executor.Executor: Running task 3673.0 in stage 1.0 (TID 3674)
+    >   2021-05-04 14:33:34,412 INFO datasources.FileScanRDD: Reading File path: file:///user/nch/PARQUET/REPARTITIONED/GEDR3/part-00783-be088e36-e954-4015-8f65-422df2aae82d_00783.c000.snappy.parquet, range: 134217728-268435456, partition values: [empty row]
+    >   2021-05-04 14:33:34,435 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:34,442 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:34,448 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:34,960 INFO memory.MemoryStore: Block rdd_4_3664 stored as values in memory (estimated size 74.5 KB, free 6.7 GB)
+    >   2021-05-04 14:33:34,963 INFO executor.Executor: Finished task 3664.0 in stage 1.0 (TID 3665). 2384 bytes result sent to driver
+    >   2021-05-04 14:33:34,964 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 3677
+    >   2021-05-04 14:33:34,964 INFO executor.Executor: Running task 3676.0 in stage 1.0 (TID 3677)
+    >   2021-05-04 14:33:34,968 INFO datasources.FileScanRDD: Reading File path: file:///user/nch/PARQUET/REPARTITIONED/GEDR3/part-00533-be088e36-e954-4015-8f65-422df2aae82d_00533.c000.snappy.parquet, range: 0-134217728, partition values: [empty row]
+    >   2021-05-04 14:33:34,998 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:35,006 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:35,011 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 14:33:35,445 INFO memory.MemoryStore: Block rdd_4_3666 stored as values in memory (estimated size 84.0 KB, free 6.7 GB)
+    >   2021-05-04 14:33:35,447 INFO executor.Executor: Finished task 3666.0 in stage 1.0 (TID 3667). 2341 bytes result sent to driver
+    >   ....
+
+
+    >     1  [||     6.9%]   5  [||     5.2%]   8  [||     0.5%]   12 [||     0.6%]
+    >     2  [||     6.7%]   6  [||     9.0%]   9  [||     6.9%]   13 [||     8.3%]
+    >     3  [||     0.5%]   7  [||     7.7%]   10 [||     6.1%]   14 [||     6.1%]
+    >     4  [||     1.0%]                      11 [||     5.2%]
+    >     Mem[|||||||||||||||||||3.61G/44.2G]   Tasks: 39, 441 thr; 2 running
+    >     Swp[                         0K/0K]   Load average: 4.10 3.50 1.85
+    >                                           Uptime: 02:24:48
+    >
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   31017 fedora     20   0 15.2G 1965M 43288 S 36.1  4.3  3:49.95 /etc/alternatives
+    >   29565 root       20   0 1986M  381M 14172 S 26.7  0.8  2:40.38 ceph-fuse --id=us
+    >   31081 fedora     20   0 15.2G 1965M 43288 D  7.5  4.3  0:48.35 /etc/alternatives
+    >   31079 fedora     20   0 15.2G 1965M 43288 D  6.6  4.3  0:46.95 /etc/alternatives
+    >   31080 fedora     20   0 15.2G 1965M 43288 D  7.6  4.3  0:48.48 /etc/alternatives
+    >   31082 fedora     20   0 15.2G 1965M 43288 D  8.9  4.3  0:46.96 /etc/alternatives
+    >   29572 root       20   0 1986M  381M 14172 S  5.7  0.8  0:30.36 ceph-fuse --id=us
+    >   29573 root       20   0 1986M  381M 14172 S  3.7  0.8  0:24.93 ceph-fuse --id=us
+    >   29571 root       20   0 1986M  381M 14172 S  4.8  0.8  0:24.08 ceph-fuse --id=us
+    >   31103 root       20   0 1986M  381M 14172 S  1.1  0.8  0:05.52 ceph-fuse --id=us
+    >   31104 root       20   0 1986M  381M 14172 S  1.2  0.8  0:04.56 ceph-fuse --id=us
+    >   29588 root       20   0 1986M  381M 14172 S  1.1  0.8  0:07.14 ceph-fuse --id=us
+    >   31105 root       20   0 1986M  381M 14172 S  1.2  0.8  0:04.47 ceph-fuse --id=us
+
+
+
+    #
+    # Fails the RandomForestClassifier training stage
+    #
+
+
+    >   ....
+    >   org.apache.spark.SparkException:
+    >       Job aborted due to stage failure:
+    >           Task 2949 in stage 34.0 failed 4 times, most recent failure:
+    >               Lost task 2949.3 in stage 34.0 (TID 90450, worker01, executor 2):
+    >                   java.io.IOException: No space left on device....
+
+    #
+    # Not clear which component is running out of space.
+    #
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 04 2021, 3:52:00 PM.
+    Last cell  -
+
+    #
+    # All the jobs are being passed to just one worker ?
+    #
+
+    >   ....
+    >   INFO [2021-05-04 14:57:07,587] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Starting task 2853.0 in stage 39.0 (TID 97919, worker04, executor 4, partition 2853, PROCESS_LOCAL, 8345 bytes)
+    >   INFO [2021-05-04 14:57:07,587] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 2846.0 in stage 39.0 (TID 97912) in 351 ms on worker04 (executor 4) (2850/4608)
+    >   INFO [2021-05-04 14:57:07,706] ({dispatcher-event-loop-1} Logging.scala[logInfo]:54) - Starting task 2854.0 in stage 39.0 (TID 97920, worker04, executor 4, partition 2854, PROCESS_LOCAL, 8345 bytes)
+    >   INFO [2021-05-04 14:57:07,707] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 2851.0 in stage 39.0 (TID 97917) in 159 ms on worker04 (executor 4) (2851/4608)
+    >   INFO [2021-05-04 14:57:07,740] ({dispatcher-event-loop-3} Logging.scala[logInfo]:54) - Starting task 2855.0 in stage 39.0 (TID 97921, worker04, executor 4, partition 2855, PROCESS_LOCAL, 8345 bytes)
+    >   INFO [2021-05-04 14:57:07,740] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 2850.0 in stage 39.0 (TID 97916) in 225 ms on worker04 (executor 4) (2852/4608)
+    >   INFO [2021-05-04 14:57:07,749] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Starting task 2856.0 in stage 39.0 (TID 97922, worker04, executor 4, partition 2856, PROCESS_LOCAL, 8345 bytes)
+    >   INFO [2021-05-04 14:57:07,750] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 2852.0 in stage 39.0 (TID 97918) in 199 ms on worker04 (executor 4) (2853/4608)
+    >   INFO [2021-05-04 14:57:07,827] ({dispatcher-event-loop-1} Logging.scala[logInfo]:54) - Starting task 2857.0 in stage 39.0 (TID 97923, worker04, executor 4, partition 2857, PROCESS_LOCAL, 8345 bytes)
+    >   INFO [2021-05-04 14:57:07,827] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 2853.0 in stage 39.0 (TID 97919) in 240 ms on worker04 (executor 4) (2854/4608)
+    >   INFO [2021-05-04 14:57:07,850] ({dispatcher-event-loop-3} Logging.scala[logInfo]:54) - Starting task 2858.0 in stage 39.0 (TID 97924, worker04, executor 4, partition 2858, PROCESS_LOCAL, 8345 bytes)
+    >   INFO [2021-05-04 14:57:07,850] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 2854.0 in stage 39.0 (TID 97920) in 144 ms on worker04 (executor 4) (2855/4608)
+    >   INFO [2021-05-04 14:57:07,913] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Starting task 2859.0 in stage 39.0 (TID 97925, worker04, executor 4, partition 2859, PROCESS_LOCAL, 8345 bytes)
+    >   INFO [2021-05-04 14:57:07,913] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 2855.0 in stage 39.0 (TID 97921) in 173 ms on worker04 (executor 4) (2856/4608)
+    >   INFO [2021-05-04 14:57:07,923] ({dispatcher-event-loop-1} Logging.scala[logInfo]:54) - Starting task 2860.0 in stage 39.0 (TID 97926, worker04, executor 4, partition 2860, PROCESS_LOCAL, 8345 bytes)
+    >   INFO [2021-05-04 14:57:07,923] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 2856.0 in stage 39.0 (TID 97922) in 174 ms on worker04 (executor 4) (2857/4608)
+    >   ....
+
+
+
+
+
+
+
+
+    #
+    # Restarted Yarn from master01.
+    #
+
+#[fedora@master01]
+
+    stop-yarn.sh
+
+    >   Stopping nodemanagers
+    >   worker03: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker02: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker04: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker01: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   Stopping resourcemanager
+
+    start-yarn.sh
+
+    >   Starting resourcemanager
+
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 04 2021, 4:47:29 PM.
+    Last cell  - May 04 2021, 5:19:14 PM.
+
+    32min
+
+    #
+    # Tasks issued to worker01,03 and 04.
+    # Worker02 is running yarn.ApplicationMaster
+    # Looks like we always have one worker 90% idle, running ApplicationMaster.
+    # Just shows up more in a four node cluster.
+    #
+
+    >   SLF4J: Class path contains multiple SLF4J bindings.
+    >   SLF4J: Found binding in [jar:file:/mnt/local/vda/hadoop/temp/nm-local-dir/usercache/fedora/filecache/12/__spark_libs__470159240453153735.zip/slf4j-log4j12-1.7.16.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+    >   SLF4J: Found binding in [jar:file:/opt/hadoop-3.1.3/share/hadoop/common/lib/slf4j-log4j12-1.7.25.jar!/org/slf4j/impl/StaticLoggerBinder.class]
+    >   SLF4J: See http://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+    >   SLF4J: Actual binding is of type [org.slf4j.impl.Log4jLoggerFactory]
+    >   2021-05-04 15:47:43,992 INFO util.SignalUtils: Registered signal handler for TERM
+    >   2021-05-04 15:47:43,993 INFO util.SignalUtils: Registered signal handler for HUP
+    >   2021-05-04 15:47:43,993 INFO util.SignalUtils: Registered signal handler for INT
+    >   2021-05-04 15:47:44,154 INFO spark.SecurityManager: Changing view acls to: fedora
+    >   2021-05-04 15:47:44,154 INFO spark.SecurityManager: Changing modify acls to: fedora
+    >   2021-05-04 15:47:44,155 INFO spark.SecurityManager: Changing view acls groups to:
+    >   2021-05-04 15:47:44,155 INFO spark.SecurityManager: Changing modify acls groups to:
+    >   2021-05-04 15:47:44,156 INFO spark.SecurityManager: SecurityManager: authentication disabled; ui acls disabled; users  with view permissions: Set(fedora); groups with view permissions: Set(); users  with modify permissions: Set(fedora);
+    >   groups with modify permissions: Set()
+    >   2021-05-04 15:47:44,442 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+    >   2021-05-04 15:47:44,634 INFO yarn.ApplicationMaster: Preparing Local resources
+    >   2021-05-04 15:47:45,215 INFO yarn.ApplicationMaster: ApplicationAttemptId: appattempt_1620143050625_0001_000001
+    >   2021-05-04 15:47:45,338 INFO client.RMProxy: Connecting to ResourceManager at master01/10.10.1.107:8030
+    >   2021-05-04 15:47:45,353 INFO yarn.YarnRMClient: Registering the ApplicationMaster
+    >   2021-05-04 15:47:45,492 INFO client.TransportClientFactory: Successfully created connection to zeppelin/10.10.3.230:37193 after 46 ms (0 ms spent in bootstraps)
+    >   2021-05-04 15:47:45,621 INFO yarn.ApplicationMaster:
+    >   ===============================================================================
+    >   YARN executor launch context:
+    >     env:
+    >       CLASSPATH -> {{PWD}}<CPS>{{PWD}}/__spark_conf__<CPS>{{PWD}}/__spark_libs__/*<CPS>$HADOOP_CONF_DIR<CPS>$HADOOP_COMMON_HOME/share/hadoop/common/*<CPS>$HADOOP_COMMON_HOME/share/hadoop/common/lib/*<CPS>$HADOOP_HDFS_HOME/share/hadoop/hdfs
+    >   /*<CPS>$HADOOP_HDFS_HOME/share/hadoop/hdfs/lib/*<CPS>$HADOOP_YARN_HOME/share/hadoop/yarn/*<CPS>$HADOOP_YARN_HOME/share/hadoop/yarn/lib/*<CPS>$HADOOP_MAPRED_HOME/share/hadoop/mapreduce/*<CPS>$HADOOP_MAPRED_HOME/share/hadoop/mapreduce/lib/*<CPS>{{PWD}}/__spark_conf__/__hadoop_conf__
+    >       SPARK_YARN_STAGING_DIR -> hdfs://master01:9000/user/fedora/.sparkStaging/application_1620143050625_0001
+    >       SPARK_USER -> fedora
+    >       PYTHONPATH -> /opt/spark/python/lib/py4j-0.10.7-src.zip:/opt/spark/python/::/opt/spark/python:/opt/spark/python/lib/py4j-0.10.4-src.zip<CPS>{{PWD}}/pyspark.zip<CPS>{{PWD}}/py4j-0.10.7-src.zip
+    >   
+    >     command:
+    >       {{JAVA_HOME}}/bin/java \
+    >         -server \
+    >         -Xmx13312m \
+    >         -Djava.io.tmpdir={{PWD}}/tmp \
+    >         '-Dspark.driver.port=37193' \
+    >         -Dspark.yarn.app.container.log.dir=<LOG_DIR> \
+    >         -XX:OnOutOfMemoryError='kill %p' \
+    >         org.apache.spark.executor.CoarseGrainedExecutorBackend \
+    >         --driver-url \
+    >         spark://CoarseGrainedScheduler@zeppelin:37193 \
+    >         --executor-id \
+    >         <executorId> \
+    >         --hostname \
+    >         <hostname> \
+    >         --cores \
+    >         4 \
+    >         --app-id \
+    >         application_1620143050625_0001 \
+    >         --user-class-path \
+    >         file:$PWD/__app__.jar \
+    >         1><LOG_DIR>/stdout \
+    >         2><LOG_DIR>/stderr
+    >   
+    >     resources:
+    >       __spark_conf__ -> resource { scheme: "hdfs" host: "master01" port: 9000 file: "/user/fedora/.sparkStaging/application_1620143050625_0001/__spark_conf__.zip" } size: 212090 timestamp: 1620143259806 type: ARCHIVE visibility: PRIVATE
+    >       sparkr -> resource { scheme: "hdfs" host: "master01" port: 9000 file: "/user/fedora/.sparkStaging/application_1620143050625_0001/sparkr.zip" } size: 1973839 timestamp: 1620143259659 type: ARCHIVE visibility: PRIVATE
+    >       pyspark.zip -> resource { scheme: "hdfs" host: "master01" port: 9000 file: "/user/fedora/.sparkStaging/application_1620143050625_0001/pyspark.zip" } size: 593464 timestamp: 1620143259690 type: FILE visibility: PRIVATE
+    >       __spark_libs__ -> resource { scheme: "hdfs" host: "master01" port: 9000 file: "/user/fedora/.sparkStaging/application_1620143050625_0001/__spark_libs__470159240453153735.zip" } size: 241112688 timestamp: 1620143259562 type: ARCHIVE visibility: PRIVATE
+    >       py4j-0.10.7-src.zip -> resource { scheme: "hdfs" host: "master01" port: 9000 file: "/user/fedora/.sparkStaging/application_1620143050625_0001/py4j-0.10.7-src.zip" } size: 42437 timestamp: 1620143259713 type: FILE visibility: PRIVATE
+    >   
+    >   ===============================================================================
+    >   2021-05-04 15:47:45,649 INFO yarn.YarnAllocator: Will request 11 executor container(s), each with 4 core(s) and 14643 MB memory (including 1331 MB of overhead)
+    >   2021-05-04 15:47:45,662 INFO yarn.YarnAllocator: Submitted 11 unlocalized container requests.
+    >   2021-05-04 15:47:45,865 INFO yarn.ApplicationMaster: Started progress reporter thread with (heartbeat : 3000, initial allocation : 200) intervals
+    >   2021-05-04 15:47:45,886 INFO impl.AMRMClientImpl: Received new token for : worker04:43783
+    >   2021-05-04 15:47:45,892 INFO yarn.YarnAllocator: Launching container container_1620143050625_0001_01_000002 on host worker04 for executor with ID 1
+    >   2021-05-04 15:47:45,894 INFO yarn.YarnAllocator: Received 1 containers from YARN, launching executors on 1 of them.
+    >   2021-05-04 15:47:45,896 INFO impl.ContainerManagementProtocolProxy: yarn.client.max-cached-nodemanagers-proxies : 0
+    >   2021-05-04 15:47:45,910 INFO impl.ContainerManagementProtocolProxy: Opening proxy : worker04:43783
+    >   2021-05-04 15:47:46,508 INFO impl.AMRMClientImpl: Received new token for : worker01:46593
+    >   2021-05-04 15:47:46,508 INFO impl.AMRMClientImpl: Received new token for : worker03:33623
+    >   2021-05-04 15:47:46,509 INFO yarn.YarnAllocator: Launching container container_1620143050625_0001_01_000003 on host worker03 for executor with ID 2
+    >   2021-05-04 15:47:46,509 INFO yarn.YarnAllocator: Launching container container_1620143050625_0001_01_000005 on host worker01 for executor with ID 3
+    >   2021-05-04 15:47:46,510 INFO yarn.YarnAllocator: Received 2 containers from YARN, launching executors on 2 of them.
+    >   2021-05-04 15:47:46,510 INFO impl.ContainerManagementProtocolProxy: yarn.client.max-cached-nodemanagers-proxies : 0
+    >   2021-05-04 15:47:46,510 INFO impl.ContainerManagementProtocolProxy: yarn.client.max-cached-nodemanagers-proxies : 0
+    >   2021-05-04 15:47:46,513 INFO impl.ContainerManagementProtocolProxy: Opening proxy : worker01:46593
+    >   2021-05-04 15:47:46,513 INFO impl.ContainerManagementProtocolProxy: Opening proxy : worker03:33623
+
+
+
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 04 2021, 8:19:33 PM
+    Last cell  -
+
+
+#[fedora@zeppelin]
+
+    tail -f "/home/fedora/zeppelin-0.8.2-bin-all/logs/zeppelin-interpreter-spark-fedora-$(hostname -f).log"
+
+    >   ....
+    >   INFO [2021-05-04 19:26:28,014] ({dispatcher-event-loop-1} Logging.scala[logInfo]:54) - Starting task 2708.0 in stage 1.0 (TID 2709, worker01, executor 1, partition 2708, PROCESS_LOCAL, 8334 bytes)
+    >   INFO [2021-05-04 19:26:28,015] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 2696.0 in stage 1.0 (TID 2697) in 1531 ms on worker01 (executor 1) (2697/4608)
+    >   INFO [2021-05-04 19:26:28,054] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Added rdd_4_2698 in memory on worker03:39005 (size: 82.2 KB, free: 6.7 GB)
+    >   INFO [2021-05-04 19:26:28,056] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Starting task 2709.0 in stage 1.0 (TID 2710, worker03, executor 2, partition 2709, PROCESS_LOCAL, 8334 bytes)
+    >   INFO [2021-05-04 19:26:28,056] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 2698.0 in stage 1.0 (TID 2699) in 1514 ms on worker03 (executor 2) (2698/4608)
+    >   INFO [2021-05-04 19:26:28,260] ({dispatcher-event-loop-3} Logging.scala[logInfo]:54) - Added rdd_4_2699 in memory on worker02:38313 (size: 52.7 KB, free: 6.7 GB)
+    >   INFO [2021-05-04 19:26:28,263] ({dispatcher-event-loop-0} Logging.scala[logInfo]:54) - Starting task 2710.0 in stage 1.0 (TID 2711, worker02, executor 3, partition 2710, PROCESS_LOCAL, 8334 bytes)
+    >   INFO [2021-05-04 19:26:28,263] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 2699.0 in stage 1.0 (TID 2700) in 1459 ms on worker02 (executor 3) (2699/4608)
+    >   ....
+
+
+#[fedora@zeppelin]
+
+    htop
+
+    >     1  [||                        1.5%]   4  [||                        0.3%]
+    >     2  [||                        0.5%]   5  [||                        0.5%]
+    >     3  [|                         0.1%]   6  [||||||||||||||||||||||||100.0%]
+    >     Mem[||||||||||||       2.56G/21.6G]   Tasks: 44, 476 thr; 2 running
+    >     Swp[                         0K/0K]   Load average: 1.07 0.90 0.47
+    >                                           Uptime: 07:20:31
+    >   
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >    6185 fedora     20   0 1490M 58376 19564 S 99.8  0.3  7:28.18 python /tmp/zeppe
+    >    6196 fedora     20   0 1490M 58376 19564 R 99.6  0.3  7:21.06 python /tmp/zeppe
+    >    6055 fedora     20   0 18.1G 1545M 53692 S  1.8  7.0  0:59.89 /etc/alternatives
+    >    2398 fedora     20   0 5560M  582M 25844 S  0.0  2.6  0:42.84 /etc/alternatives
+    >    2612 fedora     20   0 39012  6108  4244 S  0.2  0.0  0:20.63 sshd: fedora@pts/
+    >    6085 fedora     20   0 18.1G 1545M 53692 S  0.0  7.0  0:12.75 /etc/alternatives
+    >    6086 fedora     20   0 18.1G 1545M 53692 S  0.1  7.0  0:11.34 /etc/alternatives
+    >     308 root       20   0 1141M 34592 13744 S  0.0  0.2  0:09.34 ceph-fuse --id=us
+    >    6101 fedora     20   0 18.1G 1545M 53692 S  0.0  7.0  0:08.85 /etc/alternatives
+    >    2411 fedora     20   0 5560M  582M 25844 S  0.0  2.6  0:07.79 /etc/alternatives
+    >    2412 fedora     20   0 5560M  582M 25844 S  0.0  2.6  0:07.70 /etc/alternatives
+    >    2669 fedora     20   0 4290M  165M 18752 S  0.2  0.7  0:07.42 /etc/alternatives
+    >    6087 fedora     20   0 18.1G 1545M 53692 S  0.0  7.0  0:05.39 /etc/alternatives
+    >    6210 fedora     20   0 1490M 58376 19564 S  0.0  0.3  0:04.99 python /tmp/zeppe
+
+
+
+#[fedora@worker02]
+
+    tail -f /var/hadoop/logs/userlogs/application_1620143050625_0002/container_1620143050625_0002_01_000005/stderr
+
+    >   ....
+    >   2021-05-04 19:27:09,134 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 3016
+    >   2021-05-04 19:27:09,134 INFO executor.Executor: Running task 3015.0 in stage 1.0 (TID 3016)
+    >   2021-05-04 19:27:09,139 INFO datasources.FileScanRDD: Reading File path: file:///user/nch/PARQUET/REPARTITIONED/GEDR3/part-00046-be088e36-e954-4015-8f65-422df2aae82d_00046.c000.snappy.parquet, range: 134217728-268435456, partition values: [empty row]
+    >   2021-05-04 19:27:09,149 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 19:27:09,157 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 19:27:09,163 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 19:27:09,324 INFO memory.MemoryStore: Block rdd_4_3005 stored as values in memory (estimated size 53.1 KB, free 6.7 GB)
+    >   2021-05-04 19:27:09,326 INFO executor.Executor: Finished task 3005.0 in stage 1.0 (TID 3006). 2341 bytes result sent to driver
+    >   ....
+    >   2021-05-04 19:27:09,328 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 3019
+    >   2021-05-04 19:27:09,328 INFO executor.Executor: Running task 3018.0 in stage 1.0 (TID 3019)
+    >   2021-05-04 19:27:09,332 INFO datasources.FileScanRDD: Reading File path: file:///user/nch/PARQUET/REPARTITIONED/GEDR3/part-00243-be088e36-e954-4015-8f65-422df2aae82d_00243.c000.snappy.parquet, range: 0-134217728, partition values: [empty row]
+    >   2021-05-04 19:27:09,342 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 19:27:09,349 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 19:27:09,354 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-04 19:27:09,865 INFO memory.MemoryStore: Block rdd_4_3008 stored as values in memory (estimated size 77.3 KB, free 6.7 GB)
+    >   2021-05-04 19:27:09,867 INFO executor.Executor: Finished task 3008.0 in stage 1.0 (TID 3009). 2341 bytes result sent to driver
+    >   ....
+
+
+#[fedora@worker02]
+
+    htop
+
+    >     1  [||     5.0%]   5  [||     5.2%]   8  [||     7.0%]   12 [||     5.5%]
+    >     2  [||     4.2%]   6  [||     5.8%]   9  [||     3.9%]   13 [||     5.8%]
+    >     3  [|      0.1%]   7  [||     0.4%]   10 [||     0.5%]   14 [||     3.7%]
+    >     4  [||     4.5%]                      11 [||     7.0%]
+    >     Mem[|||||||||||||||||||5.03G/44.2G]   Tasks: 37, 445 thr; 1 running
+    >     Swp[                         0K/0K]   Load average: 4.29 3.06 1.42
+    >                                           Uptime: 07:17:17
+    >   
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   32107 fedora     20   0 15.2G 2927M 43380 S 29.2  6.5  3:04.97 /etc/alternatives
+    >   29561 root       20   0 2109M  386M 14096 S 23.6  0.9  5:57.57 ceph-fuse --id=us
+    >   32172 fedora     20   0 15.2G 2927M 43380 D  7.1  6.5  0:37.73 /etc/alternatives
+    >   32169 fedora     20   0 15.2G 2927M 43380 D  6.9  6.5  0:38.26 /etc/alternatives
+    >   32171 fedora     20   0 15.2G 2927M 43380 D  6.9  6.5  0:37.41 /etc/alternatives
+    >   32170 fedora     20   0 15.2G 2927M 43380 D  6.7  6.5  0:38.31 /etc/alternatives
+    >   29569 root       20   0 2109M  386M 14096 S  4.0  0.9  0:54.10 ceph-fuse --id=us
+    >   29568 root       20   0 2109M  386M 14096 S  3.8  0.9  0:51.43 ceph-fuse --id=us
+    >   29567 root       20   0 2109M  386M 14096 S  2.8  0.9  0:43.16 ceph-fuse --id=us
+    >   29584 root       20   0 2109M  386M 14096 S  1.3  0.9  0:18.45 ceph-fuse --id=us
+    >   31580 root       20   0 2109M  386M 14096 S  1.2  0.9  0:12.58 ceph-fuse --id=us
+    >   31586 root       20   0 2109M  386M 14096 S  1.2  0.9  0:10.27 ceph-fuse --id=us
+    >   31592 root       20   0 2109M  386M 14096 S  1.2  0.9  0:08.49 ceph-fuse --id=us
+
+
+#[fedora@worker02]
+
+    tail -f /var/hadoop/logs/userlogs/application_1620143050625_0002/container_1620143050625_0002_01_000005/stderr
+
+    >   ....
+    >   2021-05-04 19:31:50,461 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 55000
+    >   2021-05-04 19:31:50,461 INFO executor.Executor: Running task 4516.0 in stage 22.0 (TID 55000)
+    >   2021-05-04 19:31:50,461 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 55001
+    >   2021-05-04 19:31:50,461 INFO executor.Executor: Running task 4518.0 in stage 22.0 (TID 55001)
+    >   2021-05-04 19:31:50,462 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 55002
+    >   2021-05-04 19:31:50,462 INFO executor.Executor: Running task 4519.0 in stage 22.0 (TID 55002)
+    >   2021-05-04 19:31:50,462 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 55003
+    >   2021-05-04 19:31:50,462 INFO executor.Executor: Running task 4522.0 in stage 22.0 (TID 55003)
+    >   2021-05-04 19:31:50,466 INFO storage.BlockManager: Found block rdd_4_4516 locally
+    >   2021-05-04 19:31:50,466 INFO storage.BlockManager: Found block rdd_4_4518 locally
+    >   2021-05-04 19:31:50,466 INFO storage.BlockManager: Found block rdd_4_4522 locally
+    >   2021-05-04 19:31:50,466 INFO storage.BlockManager: Found block rdd_4_4519 locally
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(parallax#9) generates partition filter: ((parallax.count#2199 - parallax.nullCount#2198) > 0)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(parallax#9) generates partition filter: ((parallax.count#2199 - parallax.nullCount#2198) > 0)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(parallax#9) generates partition filter: ((parallax.count#2199 - parallax.nullCount#2198) > 0)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(b#96) generates partition filter: ((b.count#2214 - b.nullCount#2213) > 0)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(b#96) generates partition filter: ((b.count#2214 - b.nullCount#2213) > 0)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(b#96) generates partition filter: ((b.count#2214 - b.nullCount#2213) > 0)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate (parallax#9 > 8.0) generates partition filter: (8.0 < parallax.upperBound#2196)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate (parallax#9 > 8.0) generates partition filter: (8.0 < parallax.upperBound#2196)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate (parallax#9 > 8.0) generates partition filter: (8.0 < parallax.upperBound#2196)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(parallax#9) generates partition filter: ((parallax.count#2199 - parallax.nullCount#2198) > 0)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -65.0)) || ((ra#5 < 350.0) && (ra#5 > 40.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-65.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 350.0) && (40.0 < ra.upperBound#2201)))
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -65.0)) || ((ra#5 < 350.0) && (ra#5 > 40.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-65.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 350.0) && (40.0 < ra.upperBound#2201)))
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(b#96) generates partition filter: ((b.count#2214 - b.nullCount#2213) > 0)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -65.0)) || ((ra#5 < 350.0) && (ra#5 > 40.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-65.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 350.0) && (40.0 < ra.upperBound#2201)))
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate (parallax#9 > 8.0) generates partition filter: (8.0 < parallax.upperBound#2196)
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -55.0)) || ((ra#5 < 40.0) || (ra#5 > 120.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-55.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 40.0) || (120.0 < ra.upperBound#2201)))
+    >   2021-05-04 19:31:50,466 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -55.0)) || ((ra#5 < 40.0) || (ra#5 > 120.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-55.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 40.0) || (120.0 < ra.upperBound#2201)))
+    >   2021-05-04 19:31:50,467 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -55.0)) || ((ra#5 < 40.0) || (ra#5 > 120.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-55.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 40.0) || (120.0 < ra.upperBound#2201)))
+    >   2021-05-04 19:31:50,467 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -65.0)) || ((ra#5 < 350.0) && (ra#5 > 40.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-65.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 350.0) && (40.0 < ra.upperBound#2201)))
+    >   2021-05-04 19:31:50,467 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -55.0)) || ((ra#5 < 40.0) || (ra#5 > 120.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-55.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 40.0) || (120.0 < ra.upperBound#2201)))
+    >   2021-05-04 19:31:50,472 INFO memory.MemoryStore: Block rdd_103_4519 stored as values in memory (estimated size 170.1 KB, free 6.3 GB)
+    >   2021-05-04 19:31:50,472 INFO memory.MemoryStore: Block rdd_103_4522 stored as values in memory (estimated size 222.8 KB, free 6.4 GB)
+    >   2021-05-04 19:31:50,472 INFO memory.MemoryStore: Block rdd_103_4518 stored as values in memory (estimated size 222.8 KB, free 6.4 GB)
+    >   ....
+
+
+#[fedora@worker02]
+
+    htop
+
+    >     1  [|||   12.3%]   5  [|||   18.4%]   8  [||     6.3%]   12 [||     3.4%]
+    >     2  [||     5.1%]   6  [||||||91.8%]   9  [||     2.2%]   13 [||     3.4%]
+    >     3  [||||||90.9%]   7  [||     1.7%]   10 [||     7.3%]   14 [||||||91.2%]
+    >     4  [||||||76.9%]                      11 [||     1.8%]
+    >     Mem[|||||||||||||||||||7.57G/44.2G]   Tasks: 37, 523 thr; 5 running
+    >     Swp[                         0K/0K]   Load average: 4.25 3.97 2.33
+    >                                           Uptime: 07:22:48
+    >   
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   32107 fedora     20   0 15.4G 5520M 43320 S 406. 12.2  8:03.40 /etc/alternatives
+    >   32169 fedora     20   0 15.4G 5520M 43320 R 90.7 12.2  1:35.39 /etc/alternatives
+    >   32172 fedora     20   0 15.4G 5520M 43320 R 90.2 12.2  1:36.07 /etc/alternatives
+    >   32171 fedora     20   0 15.4G 5520M 43320 R 90.2 12.2  1:33.59 /etc/alternatives
+    >   32170 fedora     20   0 15.4G 5520M 43320 R 89.9 12.2  1:34.55 /etc/alternatives
+    >   32125 fedora     20   0 15.4G 5520M 43320 S 10.1 12.2  0:19.44 /etc/alternatives
+    >   32124 fedora     20   0 15.4G 5520M 43320 S  5.3 12.2  0:18.68 /etc/alternatives
+    >   32163 fedora     20   0 15.4G 5520M 43320 S  3.6 12.2  0:04.23 /etc/alternatives
+    >   32114 fedora     20   0 15.4G 5520M 43320 S  2.2 12.2  0:02.88 /etc/alternatives
+    >   32126 fedora     20   0 15.4G 5520M 43320 S  2.0 12.2  0:16.87 /etc/alternatives
+    >   32118 fedora     20   0 15.4G 5520M 43320 S  2.0 12.2  0:02.93 /etc/alternatives
+    >   32117 fedora     20   0 15.4G 5520M 43320 S  2.0 12.2  0:02.75 /etc/alternatives
+    >   32111 fedora     20   0 15.4G 5520M 43320 S  1.9 12.2  0:02.82 /etc/alternatives
+
+
+#[fedora@worker02]
+
+    tail -f /var/hadoop/logs/userlogs/application_1620143050625_0002/container_1620143050625_0002_01_000005/stderr
+
+    >   ....
+    >   2021-05-04 19:32:45,914 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 63247
+    >   2021-05-04 19:32:45,914 INFO executor.Executor: Running task 3490.0 in stage 25.0 (TID 63247)
+    >   2021-05-04 19:32:45,921 INFO storage.BlockManager: Found block rdd_103_3490 locally
+    >   2021-05-04 19:32:45,923 INFO executor.Executor: Finished task 3483.0 in stage 25.0 (TID 63238). 3059 bytes result sent to driver
+    >   2021-05-04 19:32:45,924 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 63250
+    >   2021-05-04 19:32:45,924 INFO executor.Executor: Running task 3494.0 in stage 25.0 (TID 63250)
+    >   2021-05-04 19:32:45,931 INFO storage.BlockManager: Found block rdd_103_3494 locally
+    >   2021-05-04 19:32:45,949 INFO executor.Executor: Finished task 3485.0 in stage 25.0 (TID 63240). 3059 bytes result sent to driver
+    >   ....
+    >   2021-05-04 19:32:45,951 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 63251
+    >   2021-05-04 19:32:45,951 INFO executor.Executor: Running task 3500.0 in stage 25.0 (TID 63251)
+    >   2021-05-04 19:32:45,954 INFO executor.Executor: Finished task 3488.0 in stage 25.0 (TID 63241). 3059 bytes result sent to driver
+    >   2021-05-04 19:32:45,955 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 63253
+    >   2021-05-04 19:32:45,955 INFO executor.Executor: Running task 3501.0 in stage 25.0 (TID 63253)
+    >   2021-05-04 19:32:45,957 INFO storage.BlockManager: Found block rdd_103_3500 locally
+    >   2021-05-04 19:32:45,961 INFO storage.BlockManager: Found block rdd_103_3501 locally
+    >   2021-05-04 19:32:45,973 INFO executor.Executor: Finished task 3490.0 in stage 25.0 (TID 63247). 3059 bytes result sent to driver
+    >   ....
+
+
+#[fedora@worker02]
+
+    htop
+
+    >     1  [||||||85.6%]   5  [||     3.6%]   8  [||||||87.6%]   12 [||     2.1%]
+    >     2  [|||   17.2%]   6  [||     6.1%]   9  [||     2.3%]   13 [|||   13.2%]
+    >     3  [||||||64.3%]   7  [|||   10.4%]   10 [||     1.1%]   14 [|      0.1%]
+    >     4  [||||||77.0%]                      11 [||     0.9%]
+    >     Mem[|||||||||||||||||||7.81G/44.2G]   Tasks: 37, 463 thr; 5 running
+    >     Swp[                         0K/0K]   Load average: 3.75 3.85 2.37
+    >                                           Uptime: 07:23:38
+    >   
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   32107 fedora     20   0 15.4G 5773M 43320 S 366. 12.8 10:52.97 /etc/alternatives
+    >   32170 fedora     20   0 15.4G 5773M 43320 R 86.4 12.8  2:08.86 /etc/alternatives
+    >   32171 fedora     20   0 15.4G 5773M 43320 R 86.1 12.8  2:07.69 /etc/alternatives
+    >   32169 fedora     20   0 15.4G 5773M 43320 R 85.2 12.8  2:09.63 /etc/alternatives
+    >   32172 fedora     20   0 15.4G 5773M 43320 R 85.1 12.8  2:10.27 /etc/alternatives
+    >   32163 fedora     20   0 15.4G 5773M 43320 S  2.8 12.8  0:04.79 /etc/alternatives
+    >   32257 fedora     20   0 15.4G 5773M 43320 S  2.1 12.8  0:09.73 /etc/alternatives
+    >   32126 fedora     20   0 15.4G 5773M 43320 S  1.9 12.8  0:18.22 /etc/alternatives
+    >   32120 fedora     20   0 15.4G 5773M 43320 S  1.8 12.8  0:02.31 /etc/alternatives
+    >   32124 fedora     20   0 15.4G 5773M 43320 S  1.7 12.8  0:19.93 /etc/alternatives
+    >   32119 fedora     20   0 15.4G 5773M 43320 S  1.0 12.8  0:03.09 /etc/alternatives
+    >   32112 fedora     20   0 15.4G 5773M 43320 S  0.9 12.8  0:03.14 /etc/alternatives
+    >   32125 fedora     20   0 15.4G 5773M 43320 S  0.9 12.8  0:20.53 /etc/alternatives
+
+
+
+
+    #
+    # ... and then the front fell off
+    # IOException: No space left on device
+    #
+    # Looks like the issue is temp space on the worker nodes.
+    #
+
+#[fedora@worker02]
+
+    tail -f /var/hadoop/logs/userlogs/application_1620143050625_0002/container_1620143050625_0002_01_000005/stderr
+
+    >   ....
+    >   2021-05-04 19:41:59,452 INFO executor.Executor: Running task 2782.0 in stage 34.0 (TID 90347)
+    >   2021-05-04 19:41:59,464 INFO storage.BlockManager: Found block rdd_103_2781 locally
+    >   2021-05-04 19:41:59,483 INFO storage.BlockManager: Found block rdd_103_2782 locally
+    >   2021-05-04 19:41:59,573 INFO executor.Executor: Finished task 2775.0 in stage 34.0 (TID 90342). 3052 bytes result sent to driver
+    >   2021-05-04 19:41:59,575 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 90353
+    >   2021-05-04 19:41:59,575 INFO executor.Executor: Running task 2785.0 in stage 34.0 (TID 90353)
+    >   2021-05-04 19:41:59,607 INFO storage.BlockManager: Found block rdd_103_2785 locally
+    >   2021-05-04 19:41:59,610 ERROR executor.Executor: Exception in task 2779.0 in stage 34.0 (TID 90344)
+    >   java.io.IOException: No space left on device
+    >   	at java.io.FileOutputStream.writeBytes(Native Method)
+    >   	at java.io.FileOutputStream.write(FileOutputStream.java:326)
+    >   	at org.apache.spark.storage.TimeTrackingOutputStream.write(TimeTrackingOutputStream.java:58)
+    >   	at java.io.BufferedOutputStream.flushBuffer(BufferedOutputStream.java:82)
+    >   	at java.io.BufferedOutputStream.flush(BufferedOutputStream.java:140)
+    >   	at net.jpountz.lz4.LZ4BlockOutputStream.finish(LZ4BlockOutputStream.java:260)
+    >   	at net.jpountz.lz4.LZ4BlockOutputStream.close(LZ4BlockOutputStream.java:190)
+    >   	at java.io.ObjectOutputStream$BlockDataOutputStream.close(ObjectOutputStream.java:1828)
+    >   	at java.io.ObjectOutputStream.close(ObjectOutputStream.java:742)
+    >   	at org.apache.spark.serializer.JavaSerializationStream.close(JavaSerializer.scala:57)
+    >   	at org.apache.spark.storage.DiskBlockObjectWriter.commitAndGet(DiskBlockObjectWriter.scala:173)
+    >   	at org.apache.spark.util.collection.ExternalSorter.writePartitionedFile(ExternalSorter.scala:701)
+    >   	at org.apache.spark.shuffle.sort.SortShuffleWriter.write(SortShuffleWriter.scala:71)
+    >   	at org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:99)
+    >   	at org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:55)
+    >   	at org.apache.spark.scheduler.Task.run(Task.scala:123)
+    >   	at org.apache.spark.executor.Executor$TaskRunner$$anonfun$10.apply(Executor.scala:408)
+    >   	at org.apache.spark.util.Utils$.tryWithSafeFinally(Utils.scala:1360)
+    >   	at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:414)
+    >   	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    >   	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    >   	at java.lang.Thread.run(Thread.java:748)
+    >   ....
+
+#[fedora@worker02]
+
+    df -h
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ....
+    >   /dev/vda1        20G   16G  3.7G  81% /
+    >   /dev/vdb         59G   53M   56G   1% /mnt/local/vdb
+    >   /dev/vdc        1.0T  123M 1022G   1% /mnt/cinder/vdc
+    >   ....
+
+
+

@@ -1,0 +1,554 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+    Target:
+
+        Request to change the live deplyment configuration to 16 tiny worker nodes.
+        https://github.com/wfau/aglais/issues/444
+
+    Result:
+
+        Work in progress
+        Deployment with only one worker succeded.
+        File paths and links are all OK.
+
+
+# -----------------------------------------------------
+# Checkout the deployment branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210422-zrq-deployment'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-prod
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m7.406s
+    >   user    1m4.131s
+    >   sys     0m8.895s
+
+
+# -----------------------------------------------------
+# Create everything, using the tiny-16 config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'tiny-16'
+
+    >   real    22m31.354s
+    >   user    6m13.067s
+    >   sys     1m19.577s
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd zeppelin-0.8.2-bin-all/
+            pushd conf/
+
+                # Manual edit to add names and passwords
+                vi shiro.ini
+
+                    ....
+                    ....
+            popd
+
+            # Restart Zeppelin for the changes to take.
+            ./bin/zeppelin-daemon.sh restart
+
+        popd
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: tiny-16
+    >         name: gaia-prod-20210426
+    >         date: 20210426T233800
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-prod
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [5325225b-e721-4848-9328-62524e6f233f]
+    >   Zeppelin IP [128.232.227.192]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-prod.hosts
+
+        ~   128.232.227.192  zeppelin.gaia-prod.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+    >   ....
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Check our DNS entries.
+#[root@ansibler]
+
+    sudo dnf install -y bind-utils
+
+    dig '@infra-ops.aglais.uk' "zeppelin.${cloudname:?}.aglais.uk"
+
+    >   ....
+    >   ;; QUESTION SECTION:
+    >   ;zeppelin.gaia-prod.aglais.uk.	IN	A
+    >   
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-prod.aglais.uk. 300 IN	A	128.232.227.192
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to our Zeppelin node and check the data shares.
+#[root@ansibler]
+
+    sharelist='/deployments/common/manila/datashares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+        echo "----"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        ssh 'zeppelin' \
+            "
+            date
+            hostname
+            echo '----'
+            df -h  '${mountpath:?}'
+            echo '----'
+            ls -al '${mountpath:?}' | tail
+            "
+    done
+
+    >   ---- ----
+    >   Share [GDR2]
+    >   ----
+    >   Tue Apr 27 00:10:19 UTC 2021
+    >   gaia-prod-20210426-zeppelin.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       512G  473G   40G  93% /data/gaia/dr2
+    >   ----
+    >   -rw-r--r--. 1 fedora fedora     30825240 Oct 24  2020 part-06504-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora     31802127 Oct 24  2020 part-06505-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora     31538538 Oct 24  2020 part-06506-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora     31218434 Oct 24  2020 part-06507-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora     30815074 Oct 24  2020 part-06508-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora     30406730 Oct 24  2020 part-06509-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora     29995058 Oct 24  2020 part-06510-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora     29447614 Oct 24  2020 part-06511-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora     28448646 Oct 24  2020 part-06512-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora      6317774 Oct 24  2020 part-06513-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   
+    >   ---- ----
+    >   Share [GEDR3]
+    >   ----
+    >   Tue Apr 27 00:10:21 UTC 2021
+    >   gaia-prod-20210426-zeppelin.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       540G  533G  7.9G  99% /data/gaia/edr3
+    >   ----
+    >   -rw-r--r--. 1 root root     36858229 Jan 11 22:27 part-11922-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     35391788 Jan 11 22:27 part-11923-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     39969879 Jan 11 22:27 part-11924-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     38923149 Jan 11 22:27 part-11925-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     36280019 Jan 11 22:27 part-11926-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     39559908 Jan 11 22:27 part-11927-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     34715127 Jan 11 22:27 part-11928-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     35453747 Jan 11 22:27 part-11929-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     30599245 Jan 11 22:27 part-11930-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     10852913 Jan 11 22:27 part-11931-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   
+    >   ---- ----
+    >   Share [ALLWISE]
+    >   ----
+    >   Tue Apr 27 00:10:23 UTC 2021
+    >   gaia-prod-20210426-zeppelin.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       350G  341G  9.9G  98% /data/wise/allwise
+    >   ----
+    >   -rw-r--r--. 1 root root     21195981 Jan 11 21:26 part-09124-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     20760761 Jan 11 21:26 part-09125-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     37549253 Jan 11 21:26 part-09126-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     32687920 Jan 11 21:26 part-09127-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     30215740 Jan 11 21:26 part-09128-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     26528776 Jan 11 21:26 part-09129-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     36999673 Jan 11 21:26 part-09130-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     30382801 Jan 11 21:26 part-09131-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     31622359 Jan 11 21:26 part-09132-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root      9956618 Jan 11 21:26 part-09133-6f95fee1-90c7-4207-911a-ebcc0ef05615-c000.snappy.parquet
+    >   
+    >   ---- ----
+    >   Share [PS1]
+    >   ----
+    >   Tue Apr 27 00:10:25 UTC 2021
+    >   gaia-prod-20210426-zeppelin.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       300G  270G   31G  90% /data/panstarrs/dr1
+    >   ----
+    >   -rw-r--r--. 1 root root     27803868 Jan 11 19:43 part-07723-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     22025506 Jan 11 19:43 part-07724-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     25756891 Jan 11 19:43 part-07725-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     31396660 Jan 11 19:43 part-07726-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     26859792 Jan 11 19:44 part-07727-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     24735889 Jan 11 19:44 part-07728-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     25470955 Jan 11 19:44 part-07729-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     25640631 Jan 11 19:44 part-07730-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     22504695 Jan 11 19:44 part-07731-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root     13200198 Jan 11 19:44 part-07732-22b55fbd-2678-4993-8e3a-3f384b1854bc-c000.snappy.parquet
+    >   
+    >   ---- ----
+    >   Share [2MASS]
+    >   ----
+    >   Tue Apr 27 00:10:27 UTC 2021
+    >   gaia-prod-20210426-zeppelin.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        40G   37G  3.5G  92% /data/twomass/allsky
+    >   ----
+    >   -rw-r--r--. 1 root root    16875933 Jan 11 17:44 part-01176-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root    31847987 Jan 11 17:44 part-01177-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root    33978033 Jan 11 17:45 part-01178-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root    33170642 Jan 11 17:45 part-01179-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root    33115257 Jan 11 17:45 part-01180-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root    33854964 Jan 11 17:45 part-01181-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root    31874821 Jan 11 17:45 part-01182-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root    33091386 Jan 11 17:45 part-01183-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root    31078087 Jan 11 17:45 part-01184-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root    14460710 Jan 11 17:45 part-01185-ce75a128-1cde-4ce1-90fc-4a36208209b2-c000.snappy.parquet
+
+
+# -----------------------------------------------------
+# Login to our Zeppelin node and check the user shares.
+#[root@ansibler]
+
+    sharelist='/deployments/common/manila/usershares.yaml'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'shares.[*].id'
+        )
+    do
+        echo ""
+        echo "---- ----"
+        echo "Share [${shareid:?}]"
+        echo "----"
+
+        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+
+        ssh 'zeppelin' \
+            "
+            date
+            hostname
+            echo '----'
+            df -h  '${mountpath:?}'
+            echo '----'
+            ls -al '${mountpath:?}' | tail
+            "
+    done
+
+    >   ---- ----
+    >   Share [nch]
+    >   ----
+    >   Tue Apr 27 00:10:47 UTC 2021
+    >   gaia-prod-20210426-zeppelin.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse        10T  7.0T  3.1T  70% /user/nch
+    >   ----
+    >   total 6
+    >   drwxrwxrwx. 4 nch  nch  7650919610626 Jan 24 18:43 .
+    >   drwxr-xr-x. 6 root root          4096 Apr 27 00:00 ..
+    >   drwxrwxr-x. 9 nch  nch  4119733449949 Mar 28 10:32 CSV
+    >   drwxrwxr-x. 7 nch  nch  3531186160276 Mar 31 09:02 PARQUET
+    >   -rw-rw-r--. 1 nch  nch            401 Oct 30 14:28 test.log
+    >   
+    >   ---- ----
+    >   Share [zrq]
+    >   ----
+    >   Tue Apr 27 00:10:47 UTC 2021
+    >   gaia-prod-20210426-zeppelin.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T   30G  995G   3% /user/zrq
+    >   ----
+    >   total 7
+    >   drwxrwxrwx. 6 zrq  zrq  31872343185 Mar 14 03:44 .
+    >   drwxr-xr-x. 6 root root        4096 Apr 27 00:00 ..
+    >   drwxrwxr-x. 9 zrq  zrq      2167622 Feb 22 16:25 notebooks
+    >   drwxrwxr-x. 3 zrq  zrq    493465585 Mar 14 03:54 owncloud
+    >   -rw-rw-r--. 1 zrq  zrq          158 Mar 14 03:44 owncloud.env
+    >   drwxr-xr-x. 3 zrq  zrq  31376671528 Dec  3 07:05 tmass
+    >   drwxrwxr-x. 2 zrq  zrq        38292 Mar 11 18:24 transfer
+    >   
+    >   ---- ----
+    >   Share [stv]
+    >   ----
+    >   Tue Apr 27 00:10:48 UTC 2021
+    >   gaia-prod-20210426-zeppelin.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T     0  1.0T   0% /user/stv
+    >   ----
+    >   total 5
+    >   drwxrwxrwx. 2 stv  stv     0 Dec  3 04:39 .
+    >   drwxr-xr-x. 6 root root 4096 Apr 27 00:00 ..
+    >   
+    >   ---- ----
+    >   Share [dcr]
+    >   ----
+    >   Tue Apr 27 00:10:48 UTC 2021
+    >   gaia-prod-20210426-zeppelin.novalocal
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ceph-fuse       1.0T     0  1.0T   0% /user/dcr
+    >   ----
+    >   total 5
+    >   drwxr-xr-x. 2 root root    0 Feb 19 09:29 .
+    >   drwxr-xr-x. 6 root root 4096 Apr 27 00:00 ..
+
+
+# -----------------------------------------------------
+# Login to our Zeppelin node and check the Spark, HDFS and Hadoop directories.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+
+        echo  ""
+        echo  "----"
+        echo  "/var/spark"
+        ls -l "/var/spark"
+        echo  "----"
+        df -h "/var/spark/temp"
+
+        echo  ""
+        echo  "----"
+        echo  "/var/hadoop"
+        ls -l "/var/hadoop"
+        echo  "----"
+        df -h "/var/hadoop/data"
+        df -h "/var/hadoop/logs"
+        df -h "/var/hadoop/temp"
+        '
+
+    >   Tue Apr 27 00:11:08 UTC 2021
+    >   gaia-prod-20210426-zeppelin.novalocal
+    >   
+    >   ----
+    >   /var/spark
+    >   total 0
+    >   lrwxrwxrwx. 1 root root 26 Apr 26 23:50 temp -> /mnt/cinder/vdc/spark/temp
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdc        512G   17M  510G   1% /mnt/cinder/vdc
+    >   
+    >   ----
+    >   /var/hadoop
+    >   total 0
+    >   lrwxrwxrwx. 1 root root 26 Apr 26 23:46 data -> /mnt/local/vdb/hadoop/data
+    >   lrwxrwxrwx. 1 root root 26 Apr 26 23:46 logs -> /mnt/local/vdb/hadoop/logs
+    >   lrwxrwxrwx. 1 root root 26 Apr 26 23:47 temp -> /mnt/local/vdb/hadoop/temp
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb         59G   53M   56G   1% /mnt/local/vdb
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb         59G   53M   56G   1% /mnt/local/vdb
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb         59G   53M   56G   1% /mnt/local/vdb
+
+
+# -----------------------------------------------------
+# Login to a worker node and check the HDFS and Hadoop directories.
+#[root@ansibler]
+
+    ssh worker01 \
+        '
+        date
+        hostname
+
+        echo  ""
+        echo  "----"
+        echo  "/var/hdfs"
+        ls -l "/var/hdfs"
+        df -h "/var/hdfs/data"
+
+        echo  ""
+        echo  "----"
+        echo  "/var/hadoop"
+        ls -l "/var/hadoop"
+        df -h "/var/hadoop/data"
+        '
+
+    >   Tue Apr 27 00:11:40 UTC 2021
+    >   gaia-prod-20210426-worker01.novalocal
+    >   
+    >   ----
+    >   /var/hdfs
+    >   total 0
+    >   lrwxrwxrwx. 1 root root 25 Apr 26 23:48 data -> /mnt/cinder/vdb/hdfs/data
+    >   lrwxrwxrwx. 1 root root 24 Apr 26 23:48 logs -> /mnt/local/vdb/hdfs/logs
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb        200G   17M  198G   1% /mnt/cinder/vdb
+    >   
+    >   ----
+    >   /var/hadoop
+    >   total 0
+    >   lrwxrwxrwx. 1 root root 27 Apr 26 23:46 data -> /mnt/cinder/vdb/hadoop/data
+    >   lrwxrwxrwx. 1 root root 27 Apr 26 23:46 logs -> /mnt/cinder/vdb/hadoop/logs
+    >   lrwxrwxrwx. 1 root root 27 Apr 26 23:47 temp -> /mnt/cinder/vdb/hadoop/temp
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vdb        200G   17M  198G   1% /mnt/cinder/vdb
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.aglais.uk:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+    Import our Random Forest notebook from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+
+
+
+
+
+

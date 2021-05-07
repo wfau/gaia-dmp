@@ -41,6 +41,7 @@
     buildname="aglais-$(date '+%Y%m%d')"
     builddate="$(date '+%Y%m%d:%H%M%S')"
 
+    deployconf="${2:-medium-04}"
     deployname="${cloudname:?}-$(date '+%Y%m%d')"
     deploydate=$(date '+%Y%m%dT%H%M%S')
 
@@ -53,6 +54,11 @@
         "${statusyml:?}" \
             'aglais.status.deployment.type' \
             'hadoop-yarn'
+    yq write \
+        --inplace \
+        "${statusyml:?}" \
+            'aglais.status.deployment.conf' \
+            "${deployconf}"
     yq write \
         --inplace \
         "${statusyml:?}" \
@@ -73,7 +79,10 @@
     echo "Config yml [${configyml}]"
     echo "Cloud name [${cloudname}]"
     echo "Build name [${buildname}]"
-    echo "Deployment [${deployname}]"
+    echo "---- ---- ----"
+    echo "Deploy conf [${deployconf}]"
+    echo "Deploy name [${deployname}]"
+    echo "Deploy date [${deploydate}]"
     echo "---- ---- ----"
 
 
@@ -109,10 +118,13 @@
     echo "---- ----"
     echo "Running Ansible deploy"
 
-   pushd "${treetop:?}/hadoop-yarn/ansible"
+    inventory="config/${deployconf}.yml"
+
+    pushd "${treetop:?}/hadoop-yarn/ansible"
 
         ansible-playbook \
-            --inventory "hosts.yml" \
+            --verbose \
+            --inventory "${inventory:?}" \
             "create-all.yml"
 
     popd
@@ -169,6 +181,7 @@
 
         "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
             'gaia-prod' \
+            "${inventory:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
             "${sharemode:?}"
@@ -195,6 +208,7 @@
 
         "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
             'gaia-prod' \
+            "${inventory:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
             "${sharemode:?}"

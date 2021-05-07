@@ -124,6 +124,7 @@
 
         ansible-playbook \
             --verbose \
+            --verbose \
             --inventory "${inventory:?}" \
             "create-all.yml"
 

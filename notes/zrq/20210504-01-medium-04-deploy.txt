@@ -1,0 +1,402 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Test the latest settings for the medium-04 deployment
+
+        Moved the Hadoop temp directory onto the Medium node ephemeral disc.
+
+            hdtemplink: "/var/hadoop/temp"
+            hdtempdest: "/mnt/local/vdb/hadoop/temp"
+
+    Result:
+
+        Work in progress
+
+
+# -----------------------------------------------------
+# Checkout the deployment branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210428-zrq-spark-conf'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-dev
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m47.290s
+    >   user    1m11.583s
+    >   sys     0m10.637s
+
+
+# -----------------------------------------------------
+# Create everything, using the small-08 config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'medium-04'
+
+    >   real    67m30.754s
+    >   user    12m52.440s
+    >   sys     3m29.430s
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}/zeppelin-0.8.2-bin-all"
+
+            # Manual edit to add names and passwords
+            vi conf/shiro.ini
+
+            # Restart Zeppelin for the changes to take.
+            ./bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: medium-04
+    >         name: gaia-dev-20210504
+    >         date: 20210504T232403
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [e727cb23-a0af-4cd8-8c2f-a2efe69c05c4]
+    >   Zeppelin IP [128.232.227.208]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.194  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Check our Spark config.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        cat /opt/spark/conf/spark-defaults.conf
+
+    >   # BEGIN Ansible managed Spark configuration
+    >   
+    >   
+    >   # https://spark.apache.org/docs/latest/configuration.html
+    >   # https://spark.apache.org/docs/latest/running-on-yarn.html
+    >   # https://stackoverflow.com/questions/37871194/how-to-tune-spark-executor-number-cores-and-executor-memory
+    >   
+    >   spark.master                 yarn
+    >   
+    >   # Amount of memory to use for the driver process (where SparkContext is initialized).
+    >   # (small zeppelin node has 22G memory)
+    >   #spark.driver.memory          10g
+    >   spark.driver.memory           13g
+    >   # Limit of total size of serialized results of all partitions for each Spark action.
+    >   # Setting a proper limit can protect the driver from out-of-memory errors.
+    >   spark.driver.maxResultSize     8g
+    >   
+    >   # Amount of memory to use for the YARN Application Master
+    >   # (default 512m)
+    >   #spark.yarn.am.memory        512m
+    >   spark.yarn.am.memory          13g
+    >   # Number of cores to use for the YARN Application Master in client mode.
+    >   # (default 1)
+    >   #spark.yarn.am.cores            1
+    >   spark.yarn.am.cores             4
+    >   
+    >   # The number of cores to use on each executor.
+    >   # (medium worker node has 14 cores)
+    >   #spark.executor.cores           7
+    >   spark.executor.cores            4
+    >   # Amount of memory to use per executor process.
+    >   # (medium worker node has 45G memorys)
+    >   # (45G - 512M)/2
+    >   # ((45 * 1024)-512)/2
+    >   #spark.executor.memory     22784m
+    >   spark.executor.memory         13g
+    >   
+    >   # The number of executors for static allocation.
+    >   # 4w * 2
+    >   #spark.executor.instances       8
+    >   spark.executor.instances       11
+    >   
+    >   
+    >   spark.local.dir            /var/spark/temp
+    >   spark.eventLog.dir         hdfs://master01:9000/spark-log
+    >   # END Ansible managed Spark configuration
+    >   # BEGIN Ansible managed Spark environment
+    >   # https://spark.apache.org/docs/3.0.0-preview2/configuration.html#inheriting-hadoop-cluster-configuration
+    >   spark.yarn.appMasterEnv.YARN_CONF_DIR=/opt/hadoop/etc/hadoop
+    >   spark.yarn.appMasterEnv.HADOOP_CONF_DIR=/opt/hadoop/etc/hadoop
+    >   # END Ansible managed Spark environment
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.gaia-dev.aglais.uk:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Import our Random Forest notebook from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+    #
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 05 2021, 1:57:49 AM
+    Last cell  - May 05 2021, 2:32:49 AM
+
+    35min
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Watch the zeppelin logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            pushd "${HOME}/zeppelin-0.8.2-bin-all/logs"
+
+                tail -f "zeppelin-interpreter-spark-fedora-$(hostname -f).log"
+
+
+# -----------------------------------------------------
+# Monitor the zeppelin node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            htop
+
+
+# -----------------------------------------------------
+# Monitor the worker node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            htop -d 100
+
+
+# -----------------------------------------------------
+# Watch the application logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            tail -f /var/hadoop/logs/userlogs/application_1620051958039_0001/container_1620051958039_0001_01_000019/stderr
+
+
+    >   ....
+    >   2021-05-05 01:12:15,311 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 55317
+    >   2021-05-05 01:12:15,311 INFO executor.Executor: Running task 4591.0 in stage 22.0 (TID 55317)
+    >   2021-05-05 01:12:15,311 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 55318
+    >   2021-05-05 01:12:15,312 INFO executor.Executor: Running task 4592.0 in stage 22.0 (TID 55318)
+    >   2021-05-05 01:12:15,315 INFO storage.BlockManager: Found block rdd_4_4591 locally
+    >   2021-05-05 01:12:15,316 INFO storage.BlockManager: Found block rdd_4_4592 locally
+    >   2021-05-05 01:12:15,316 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(parallax#9) generates partition filter: ((parallax.count#2199 - parallax.nullCount#2198) > 0)
+    >   2021-05-05 01:12:15,316 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(b#96) generates partition filter: ((b.count#2214 - b.nullCount#2213) > 0)
+    >   2021-05-05 01:12:15,316 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(parallax#9) generates partition filter: ((parallax.count#2199 - parallax.nullCount#2198) > 0)
+    >   2021-05-05 01:12:15,316 INFO columnar.InMemoryTableScanExec: Predicate (parallax#9 > 8.0) generates partition filter: (8.0 < parallax.upperBound#2196)
+    >   2021-05-05 01:12:15,316 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(b#96) generates partition filter: ((b.count#2214 - b.nullCount#2213) > 0)
+    >   2021-05-05 01:12:15,316 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -65.0)) || ((ra#5 < 350.0) && (ra#5 > 40.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-65.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 350.0) && (40.0 < ra.upperBound#2201)))
+    >   2021-05-05 01:12:15,316 INFO columnar.InMemoryTableScanExec: Predicate (parallax#9 > 8.0) generates partition filter: (8.0 < parallax.upperBound#2196)
+    >   2021-05-05 01:12:15,316 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -55.0)) || ((ra#5 < 40.0) || (ra#5 > 120.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-55.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 40.0) || (120.0 < ra.upperBound#2201)))
+    >   2021-05-05 01:12:15,316 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -65.0)) || ((ra#5 < 350.0) && (ra#5 > 40.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-65.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 350.0) && (40.0 < ra.upperBound#2201)))
+    >   2021-05-05 01:12:15,316 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -55.0)) || ((ra#5 < 40.0) || (ra#5 > 120.0))) generates partition filter: (((dec.lowerBound#2207 < -80.0) || (-55.0 < dec.upperBound#2206)) || ((ra.lowerBound#2202 < 40.0) || (120.0 < ra.upperBound#2201)))
+    >   2021-05-05 01:12:15,322 INFO memory.MemoryStore: Block rdd_103_4591 stored as values in memory (estimated size 198.5 KB, free 6.4 GB)
+    >   2021-05-05 01:12:15,322 INFO memory.MemoryStore: Block rdd_103_4592 stored as values in memory (estimated size 210.7 KB, free 6.4 GB)
+    >   2021-05-05 01:12:15,324 INFO executor.Executor: Finished task 4581.0 in stage 22.0 (TID 55315). 3102 bytes result sent to driver
+    >   ....
+
+
+    >     1  [||||||81.5%]   5  [||||||64.4%]   8  [||     7.6%]   12 [||||| 30.6%]
+    >     2  [||||||81.4%]   6  [||||||80.3%]   9  [||||| 31.8%]   13 [||||  22.6%]
+    >     3  [||     5.0%]   7  [||     4.5%]   10 [||     3.3%]   14 [||||  24.9%]
+    >     4  [||    13.1%]                      11 [||    11.9%]
+    >     Mem[|||||||||||||||||||6.30G/44.2G]   Tasks: 39, 510 thr; 6 running
+    >     Swp[                         0K/0K]   Load average: 4.22 3.98 2.50
+    >                                           Uptime: 01:45:06
+    >   
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   31070 fedora     20   0 15.4G 4493M 30388 S 444.  9.9  7:26.95 /etc/alternatives
+    >   31135 fedora     20   0 15.4G 4493M 30388 R 79.8  9.9  1:25.95 /etc/alternatives
+    >   31134 fedora     20   0 15.4G 4493M 30388 R 79.1  9.9  1:26.34 /etc/alternatives
+    >   31136 fedora     20   0 15.4G 4493M 30388 R 79.0  9.9  1:27.14 /etc/alternatives
+    >   31133 fedora     20   0 15.4G 4493M 30388 R 79.0  9.9  1:26.22 /etc/alternatives
+    >   31087 fedora     20   0 15.4G 4493M 30388 S 32.7  9.9  0:18.04 /etc/alternatives
+    >   31088 fedora     20   0 15.4G 4493M 30388 R 31.1  9.9  0:16.24 /etc/alternatives
+    >   31089 fedora     20   0 15.4G 4493M 30388 S 28.0  9.9  0:17.08 /etc/alternatives
+    >   31090 fedora     20   0 15.4G 4493M 30388 S  6.7  9.9  0:05.69 /etc/alternatives
+    >   31160 fedora     20   0 38416  3712  2500 S  4.8  0.0  0:03.01 sshd: fedora@pts/
+    >   31127 fedora     20   0 15.4G 4493M 30388 S  4.1  9.9  0:04.05 /etc/alternatives
+    >   31207 fedora     20   0 10512   536   472 S  2.5  0.0  0:01.62 tail -f /var/hado
+    >   31234 fedora     20   0 15.4G 4493M 30388 S  2.5  9.9  0:00.61 /etc/alternatives
+
+
+
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 05 2021, 2:39:10 AM
+    Last cell  - May 05 2021, 3:11:52 AM.
+
+    32min
+
+
+
+
+
+
+

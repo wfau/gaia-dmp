@@ -1,0 +1,1221 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+
+    Target:
+
+        Develop a 16 tiny worker deployment.
+        https://github.com/wfau/aglais/issues/444
+
+    Result:
+
+        Success - deployment work and passes the RandomFGorest test case.
+
+        TODO - figure out why the first pass is always faster (issue #465)
+
+
+# -----------------------------------------------------
+# Checkout the deployment branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210422-zrq-deployment'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-dev
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+
+    >   real    4m47.558s
+    >   user    1m43.364s
+    >   sys     0m14.361s
+
+
+# -----------------------------------------------------
+# Create everything, using the tiny-16 config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'tiny-16'
+
+    >   real    71m10.809s
+    >   user    17m6.760s
+    >   sys     6m40.423s
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}/zeppelin-0.8.2-bin-all"
+
+            # Manual edit to add names and passwords
+            vi conf/shiro.ini
+
+            # Restart Zeppelin for the changes to take.
+            ./bin/zeppelin-daemon.sh restart
+
+        popd
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: tiny-16
+    >         name: gaia-dev-20210502
+    >         date: 20210502T043143
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [0bfe5db3-1b64-4448-9433-2083fb46291e]
+    >   Zeppelin IP [128.232.227.237]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.237  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+    >   ....
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: bad address at /etc/dnsmasq/hosts/gaia-prod.hosts line 1
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 0 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+        exit
+
+# -----------------------------------------------------
+# Update our Spark config.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /opt/spark
+
+            sudo vi conf/spark-defaults.conf
+
+                # https://spark.apache.org/docs/latest/configuration.html
+                # https://spark.apache.org/docs/latest/running-on-yarn.html
+                # https://stackoverflow.com/questions/37871194/how-to-tune-spark-executor-number-cores-and-executor-memory
+
+                # Amount of memory to use for the driver process (where SparkContext is initialized).
+                # (small zeppelin node has 22G memory)
+                spark.driver.memory           10g
+                # Limit of total size of serialized results of all partitions for each Spark action.
+                # Setting a proper limit can protect the driver from out-of-memory errors.
+                spark.driver.maxResultSize 8192m
+
+                # Amount of memory to use for the YARN Application Master
+                # (default 512m)
+                #spark.yarn.am.memory        512m
+                # Number of cores to use for the YARN Application Master in client mode.
+                # (default 1)
+                #spark.yarn.am.cores            1
+
+                # The number of cores to use on each executor.
+                # (tiny worker node has 2 cores)
+                spark.executor.cores           1
+                # Amount of memory to use per executor process.
+                # (tiny worker node has 6G memory)
+                # (6G - 512M)/2
+                # ((6 * 1024)-512)/2
+                spark.executor.memory      2816m
+
+                # The number of executors for static allocation.
+                # spark.executor.instances    32
+
+        popd
+
+        # Restart Zeppelin for the changes to take.
+        pushd "${HOME}/zeppelin-0.8.2-bin-all"
+
+            ./bin/zeppelin-daemon.sh restart
+
+        popd
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.gaia-dev.aglais.uk:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+    Import our Random Forest notebook from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Watch the zeppelin logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            pushd "${HOME}/zeppelin-0.8.2-bin-all/logs"
+
+                tail -f "zeppelin-interpreter-spark-fedora-$(hostname -f).log"
+
+
+# -----------------------------------------------------
+# Monitor the zeppelin node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            htop
+
+
+# -----------------------------------------------------
+# Watch the worker logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            tail -f "/var/hadoop/logs/hadoop-fedora-nodemanager-$(hostname -f).log"
+
+
+# -----------------------------------------------------
+# Monitor the worker node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            htop
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    With this property commented out, Spark only uses a total of four executors, two executors on two nodes.
+    The other worker nodes are idle.
+
+    Wayyy too slow, editied the config and restarted Zeppelin.
+
+        # The number of executors for static allocation.
+    -   # spark.executor.instances    32
+    +   spark.executor.instances    32
+
+
+    With this property enabled, Spark is using all the workers.
+    Not totally clear how many executors on each node ..
+
+    ML forest (500 trees on 10% data) took ~30min
+
+    >   INFO [2021-05-02 12:33:35,430] ({pool-2-thread-5} SchedulerFactory.java[jobStarted]:114) - Job 20201013-131649_1734629667 started by scheduler iterpreter_85944985
+    >   ....
+    >   ....
+    >   INFO [2021-05-02 13:01:57,841] ({pool-2-thread-5} SchedulerFactory.java[jobFinished]:120) - Job 20201124-171324_1960205489 finished by scheduler interpreter_85944985
+
+    >   ....
+    >   INFO [2021-05-02 12:47:14,827] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Starting task 4176.0 in stage 25.0 (TID 78358, worker16, executor 8, partition 4176, PROCESS_LOCAL, 8535 bytes)
+    >   INFO [2021-05-02 12:47:14,827] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 4155.0 in stage 25.0 (TID 78342) in 72 ms on worker16 (executor 8) (3955/5721)
+    >   ....
+    >   INFO [2021-05-02 12:47:14,831] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Starting task 3602.0 in stage 25.0 (TID 78359, worker06, executor 12, partition 3602, PROCESS_LOCAL, 8535 bytes)
+    >   INFO [2021-05-02 12:47:14,831] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 3593.0 in stage 25.0 (TID 78343) in 60 ms on worker06 (executor 12) (3956/5721)
+    >   ....
+    >   INFO [2021-05-02 12:47:14,832] ({dispatcher-event-loop-5} Logging.scala[logInfo]:54) - Starting task 4082.0 in stage 25.0 (TID 78360, worker02, executor 4, partition 4082, PROCESS_LOCAL, 8535 bytes)
+    >   INFO [2021-05-02 12:47:14,832] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 4060.0 in stage 25.0 (TID 78345) in 59 ms on worker02 (executor 4) (3957/5721)
+    >   ....
+    >   INFO [2021-05-02 12:47:14,835] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Starting task 4141.0 in stage 25.0 (TID 78361, worker03, executor 5, partition 4141, PROCESS_LOCAL, 8535 bytes)
+    >   INFO [2021-05-02 12:47:14,835] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 4125.0 in stage 25.0 (TID 78344) in 63 ms on worker03 (executor 5) (3958/5721)
+    >   ....
+    >   ....
+
+
+    Looks like the initial scan of the parquet files is limited by IO bandwidth.
+
+    >   ....
+    >   2021-05-02 12:44:35,958 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 5359
+    >   2021-05-02 12:44:35,958 INFO executor.Executor: Running task 5358.0 in stage 1.0 (TID 5359)
+    >   2021-05-02 12:44:35,963 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-10992-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-39432295, partition values: [empty row]
+    >   2021-05-02 12:44:35,981 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:35,984 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:35,987 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:36,544 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-10985-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-39425458, partition values: [empty row]
+    >   2021-05-02 12:44:36,564 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:36,568 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:36,571 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:37,211 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-11801-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-39416481, partition values: [empty row]
+    >   2021-05-02 12:44:37,238 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:37,241 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:37,244 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:37,769 INFO memory.MemoryStore: Block rdd_4_5358 stored as values in memory (estimated size 46.3 KB, free 1304.5 MB)
+    >   2021-05-02 12:44:37,773 INFO executor.Executor: Finished task 5358.0 in stage 1.0 (TID 5359). 2341 bytes result sent to driver
+    >   ....
+    >   2021-05-02 12:44:37,775 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 5371
+    >   2021-05-02 12:44:37,775 INFO executor.Executor: Running task 5370.0 in stage 1.0 (TID 5371)
+    >   2021-05-02 12:44:37,780 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-11014-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-39016089, partition values: [empty row]
+    >   2021-05-02 12:44:37,824 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:37,828 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:37,831 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:38,459 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-11010-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-39007746, partition values: [empty row]
+    >   2021-05-02 12:44:38,542 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:38,545 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:38,548 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:38,982 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-11023-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-39000287, partition values: [empty row]
+    >   2021-05-02 12:44:39,010 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:39,019 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:39,022 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 12:44:39,511 INFO memory.MemoryStore: Block rdd_4_5370 stored as values in memory (estimated size 55.5 KB, free 1304.4 MB)
+    >   2021-05-02 12:44:39,621 INFO executor.Executor: Finished task 5370.0 in stage 1.0 (TID 5371). 2341 bytes result sent to driver
+    >   ....
+    >   ....
+
+
+    Looks like subsequent steps work on local data "Found block rdd_4_3534 locally"
+
+    >   ....
+    >   2021-05-02 12:45:46,986 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 32842
+    >   2021-05-02 12:45:46,986 INFO executor.Executor: Running task 3551.0 in stage 9.0 (TID 32842)
+    >   2021-05-02 12:45:46,989 INFO storage.BlockManager: Found block rdd_4_3551 locally
+    >   2021-05-02 12:45:46,989 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(parallax#9) generates partition filter: ((parallax.count#1293 - parallax.nullCount#1292) > 0)
+    >   2021-05-02 12:45:46,989 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(random_index#3L) generates partition filter: ((random_index.count#1268 - random_index.nullCount#1267) > 0)
+    >   2021-05-02 12:45:46,989 INFO columnar.InMemoryTableScanExec: Predicate (parallax#9 < -8.0) generates partition filter: (parallax.lowerBound#1291 < -8.0)
+    >   2021-05-02 12:45:46,991 INFO executor.Executor: Finished task 3551.0 in stage 9.0 (TID 32842). 1829 bytes result sent to driver
+    >   ....
+    >   2021-05-02 12:45:46,992 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 32861
+    >   2021-05-02 12:45:46,992 INFO executor.Executor: Running task 3566.0 in stage 9.0 (TID 32861)
+    >   2021-05-02 12:45:46,994 INFO storage.BlockManager: Found block rdd_4_3566 locally
+    >   2021-05-02 12:45:46,994 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(parallax#9) generates partition filter: ((parallax.count#1293 - parallax.nullCount#1292) > 0)
+    >   2021-05-02 12:45:46,994 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(random_index#3L) generates partition filter: ((random_index.count#1268 - random_index.nullCount#1267) > 0)
+    >   2021-05-02 12:45:46,994 INFO columnar.InMemoryTableScanExec: Predicate (parallax#9 < -8.0) generates partition filter: (parallax.lowerBound#1291 < -8.0)
+    >   2021-05-02 12:45:46,996 INFO executor.Executor: Finished task 3566.0 in stage 9.0 (TID 32861). 1829 bytes result sent to driver
+    >   ....
+    >   2021-05-02 12:45:46,997 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 32876
+    >   2021-05-02 12:45:46,997 INFO executor.Executor: Running task 3584.0 in stage 9.0 (TID 32876)
+    >   2021-05-02 12:45:47,000 INFO storage.BlockManager: Found block rdd_4_3584 locally
+    >   2021-05-02 12:45:47,000 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(parallax#9) generates partition filter: ((parallax.count#1293 - parallax.nullCount#1292) > 0)
+    >   2021-05-02 12:45:47,000 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(random_index#3L) generates partition filter: ((random_index.count#1268 - random_index.nullCount#1267) > 0)
+    >   2021-05-02 12:45:47,000 INFO columnar.InMemoryTableScanExec: Predicate (parallax#9 < -8.0) generates partition filter: (parallax.lowerBound#1291 < -8.0)
+    >   2021-05-02 12:45:47,002 INFO executor.Executor: Finished task 3584.0 in stage 9.0 (TID 32876). 1829 bytes result sent to driver
+    >   ....
+    >   ....
+
+
+    ... and then a mixture of local and remote data
+
+    >   ....
+    >   2021-05-02 12:52:01,359 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 103512
+    >   2021-05-02 12:52:01,360 INFO executor.Executor: Running task 519.0 in stage 32.0 (TID 103512)
+    >   2021-05-02 12:52:01,368 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 359 local blocks and 5362 remote blocks
+    >   2021-05-02 12:52:01,375 INFO storage.ShuffleBlockFetcherIterator: Started 15 remote fetches in 9 ms
+    >   2021-05-02 12:52:01,972 INFO executor.Executor: Finished task 519.0 in stage 32.0 (TID 103512). 1927 bytes result sent to driver
+    >   ....
+    >   2021-05-02 12:52:01,973 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 103528
+    >   2021-05-02 12:52:01,973 INFO executor.Executor: Running task 535.0 in stage 32.0 (TID 103528)
+    >   2021-05-02 12:52:01,981 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 359 local blocks and 5362 remote blocks
+    >   2021-05-02 12:52:01,988 INFO storage.ShuffleBlockFetcherIterator: Started 15 remote fetches in 9 ms
+    >   2021-05-02 12:52:02,585 INFO executor.Executor: Finished task 535.0 in stage 32.0 (TID 103528). 1884 bytes result sent to driver
+    >   ....
+    >   2021-05-02 12:52:02,587 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 103543
+    >   2021-05-02 12:52:02,587 INFO executor.Executor: Running task 550.0 in stage 32.0 (TID 103543)
+    >   2021-05-02 12:52:02,595 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 359 local blocks and 5362 remote blocks
+    >   2021-05-02 12:52:02,604 INFO storage.ShuffleBlockFetcherIterator: Started 15 remote fetches in 11 ms
+    >   2021-05-02 12:52:03,255 INFO executor.Executor: Finished task 550.0 in stage 32.0 (TID 103543). 1927 bytes result sent to driver
+    >   ....
+    >   ....
+
+
+[fedora@worker02]
+
+    ls -alh /var/hadoop/temp/nm-local-dir/usercache/fedora/appcache/application_1619933149161_0002/blockmgr-83e7cd86-502d-4f25-bce0-2e3146482730/14/
+
+    >   drwxrwxr-x. 1 fedora fedora 1.3K May  2 12:55 .
+    >   drwxrwxr-x. 1 fedora fedora  256 May  2 12:35 ..
+    >   -rw-rw-r--. 1 fedora fedora  45K May  2 12:53 shuffle_13_1023_0.index
+    >   -rw-rw-r--. 1 fedora fedora  45K May  2 12:53 shuffle_13_1045_0.index
+    >   -rw-rw-r--. 1 fedora fedora  45K May  2 12:53 shuffle_13_1089_0.index
+    >   -rw-rw-r--. 1 fedora fedora 5.4M May  2 12:53 shuffle_13_1357_0.data
+    >   ....
+    >   ....
+    >   -rw-rw-r--. 1 fedora fedora  283 May  2 12:45 shuffle_7_2939_0.data
+    >   -rw-rw-r--. 1 fedora fedora  162 May  2 12:45 shuffle_7_3929_0.data
+    >   -rw-rw-r--. 1 fedora fedora   16 May  2 12:45 shuffle_7_470_0.index
+    >   -rw-rw-r--. 1 fedora fedora 1.6K May  2 12:46 shuffle_7_4988_0.data
+
+
+[fedora@worker02]
+
+    ls -alh /var/hadoop/temp/nm-local-dir/usercache/fedora/appcache/application_1619933149161_0002/container_1619933149161_0002_01_000005/
+
+    >   drwx--x---. 1 fedora fedora  632 May  2 12:34 .
+    >   drwx--x---. 1 fedora fedora  268 May  2 12:34 ..
+    >   -rw-r--r--. 1 fedora fedora   12 May  2 12:33 .container_tokens.crc
+    >   -rw-r--r--. 1 fedora fedora   16 May  2 12:33 .default_container_executor.sh.crc
+    >   -rw-r--r--. 1 fedora fedora   16 May  2 12:33 .default_container_executor_session.sh.crc
+    >   -rw-r--r--. 1 fedora fedora   52 May  2 12:33 .launch_container.sh.crc
+    >   lrwxrwxrwx. 1 fedora fedora   78 May  2 12:33 __spark_conf__ -> /var/hadoop/temp/nm-local-dir/usercache/fedora/filecache/17/__spark_conf__.zip
+    >   lrwxrwxrwx. 1 fedora fedora   96 May  2 12:33 __spark_libs__ -> /var/hadoop/temp/nm-local-dir/usercache/fedora/filecache/18/__spark_libs__371816764644415716.zip
+    >   -rw-r--r--. 1 fedora fedora   84 May  2 12:33 container_tokens
+    >   -rwx------. 1 fedora fedora  725 May  2 12:33 default_container_executor.sh
+    >   -rwx------. 1 fedora fedora  670 May  2 12:33 default_container_executor_session.sh
+    >   -rwx------. 1 fedora fedora 5.4K May  2 12:33 launch_container.sh
+    >   lrwxrwxrwx. 1 fedora fedora   79 May  2 12:33 py4j-0.10.7-src.zip -> /var/hadoop/temp/nm-local-dir/usercache/fedora/filecache/19/py4j-0.10.7-src.zip
+    >   lrwxrwxrwx. 1 fedora fedora   71 May  2 12:33 pyspark.zip -> /var/hadoop/temp/nm-local-dir/usercache/fedora/filecache/16/pyspark.zip
+    >   -rwxrwxr-x. 1 fedora fedora  21M May  2 12:34 spark-interpreter-0.8.2.jar
+    >   lrwxrwxrwx. 1 fedora fedora   70 May  2 12:33 sparkr -> /var/hadoop/temp/nm-local-dir/usercache/fedora/filecache/15/sparkr.zip
+    >   drwx--x---. 1 fedora fedora  198 May  2 12:34 tmp
+
+
+[fedora@worker02]
+
+    ls -alh /var/hadoop/temp/nm-local-dir/usercache/fedora/filecache/18/__spark_libs__371816764644415716.zip
+
+    >   total 231M
+    >   drwx------. 1 fedora fedora   11K May  2 12:33 .
+    >   drwxr-xr-x. 1 fedora fedora    72 May  2 12:33 ..
+    >   -r-x------. 1 fedora fedora   17K May  2 12:33 JavaEWAH-0.3.2.jar
+    >   -r-x------. 1 fedora fedora  318K May  2 12:33 RoaringBitmap-0.7.45.jar
+    >   -r-x------. 1 fedora fedora  232K May  2 12:33 ST4-4.0.4.jar
+    >   -r-x------. 1 fedora fedora   68K May  2 12:33 activation-1.1.1.jar
+    >   ....
+    >   ....
+    >   -r-x------. 1 fedora fedora   98K May  2 12:33 xz-1.5.jar
+    >   -r-x------. 1 fedora fedora   35K May  2 12:33 zjsonpatch-0.3.0.jar
+    >   -r-x------. 1 fedora fedora  775K May  2 12:33 zookeeper-3.4.6.jar
+    >   -r-x------. 1 fedora fedora  2.3M May  2 12:33 zstd-jni-1.3.2-2.jar
+
+
+[fedora@worker02]
+
+    ls -alh /var/hadoop/temp/nm-local-dir/usercache/fedora/appcache/application_1619933149161_0002/spark-50716042-7022-4829-ace8-9146c2c220a8
+
+    >   total 21M
+    >   drwx------. 1 fedora fedora 110 May  2 12:34 .
+    >   drwx--x---. 1 fedora fedora 268 May  2 12:34 ..
+    >   -rw-rw-r--. 1 fedora fedora 21M May  2 12:34 7323134631619958819619_cache
+    >   -rw-rw-r--. 1 fedora fedora   0 May  2 12:34 7323134631619958819619_lock
+
+
+[fedora@worker02]
+
+    ls -alh /var/hadoop/temp/nm-local-dir/usercache/fedora/filecache/16/pyspark.zip
+
+    >   -r-x------. 1 fedora fedora 580K May  2 12:33 /var/hadoop/temp/nm-local-dir/usercache/fedora/filecache/16/pyspark.zip
+
+    #
+    # Starting a new test, (500 trees on 100% data)
+    # First cell - May 02 2021, 2:09:32 PM.
+    # Last cell  - May 02 2021, 6:31:50 PM.
+
+    4hr20m
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+    This look like an IO limited process to me ..
+
+# [fedora@zeppelin]
+
+    tail -f "${HOME}/zeppelin-0.8.2-bin-all/logs/zeppelin-interpreter-spark-fedora-$(hostname -f).log"
+
+    >   ....
+    >   INFO [2021-05-02 14:05:18,063] ({dispatcher-event-loop-5} Logging.scala[logInfo]:54) - Added rdd_413_2318 in memory on worker03:33629 (size: 16.0 B, free: 1287.3 MB)
+    >   INFO [2021-05-02 14:05:18,096] ({dispatcher-event-loop-0} Logging.scala[logInfo]:54) - Starting task 2332.0 in stage 111.0 (TID 362775, worker03, executor 5, partition 2332, PROCESS_LOCAL, 8535 bytes)
+    >   INFO [2021-05-02 14:05:18,096] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 2318.0 in stage 111.0 (TID 362761) in 1672 ms on worker03 (executor 5) (2317/5721)
+    >   INFO [2021-05-02 14:05:18,156] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Added rdd_413_2315 in memory on worker10:42523 (size: 16.0 B, free: 1291.2 MB)
+    >   INFO [2021-05-02 14:05:18,194] ({dispatcher-event-loop-3} Logging.scala[logInfo]:54) - Starting task 2333.0 in stage 111.0 (TID 362776, worker10, executor 3, partition 2333, PROCESS_LOCAL, 8535 bytes)
+    >   INFO [2021-05-02 14:05:18,195] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 2315.0 in stage 111.0 (TID 362758) in 2146 ms on worker10 (executor 3) (2318/5721)
+    >   INFO [2021-05-02 14:05:18,393] ({dispatcher-event-loop-1} Logging.scala[logInfo]:54) - Added rdd_413_2317 in memory on worker05:41153 (size: 16.0 B, free: 1288.8 MB)
+    >   INFO [2021-05-02 14:05:18,401] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Added rdd_413_2314 in memory on worker13:34117 (size: 16.0 B, free: 1287.9 MB)
+    >   ....
+    >   ....
+    >   INFO [2021-05-02 14:05:18,688] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 2316.0 in stage 111.0 (TID 362759) in 2307 ms on worker12 (executor 9) (2323/5721)
+    >   INFO [2021-05-02 14:05:18,712] ({dispatcher-event-loop-5} Logging.scala[logInfo]:54) - Starting task 2339.0 in stage 111.0 (TID 362782, worker11, executor 7, partition 2339, PROCESS_LOCAL, 8535 bytes)
+    >   INFO [2021-05-02 14:05:18,712] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 2323.0 in stage 111.0 (TID 362766) in 2075 ms on worker11 (executor 7) (2324/5721)
+    >   INFO [2021-05-02 14:05:19,020] ({dispatcher-event-loop-3} Logging.scala[logInfo]:54) - Added rdd_413_2326 in memory on worker04:35251 (size: 16.0 B, free: 1284.7 MB)
+    >   INFO [2021-05-02 14:05:19,066] ({dispatcher-event-loop-5} Logging.scala[logInfo]:54) - Starting task 2340.0 in stage 111.0 (TID 362783, worker04, executor 11, partition 2340, PROCESS_LOCAL, 8535 bytes)
+    >   INFO [2021-05-02 14:05:19,067] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 2326.0 in stage 111.0 (TID 362769) in 1721 ms on worker04 (executor 11) (2325/5721)
+    >   INFO [2021-05-02 14:05:19,126] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Added rdd_413_2325 in memory on worker06:36917 (size: 16.0 B, free: 1287.8 MB)
+    >   INFO [2021-05-02 14:05:19,161] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Starting task 2341.0 in stage 111.0 (TID 362784, worker06, executor 12, partition 2341, PROCESS_LOCAL, 8535 bytes)
+    >   ....
+
+
+# [fedora@worker02]
+
+    tail -f "/var/hadoop/logs/hadoop-fedora-nodemanager-$(hostname -f).log"
+
+    >   ....
+    >   2021-05-02 14:05:29,326 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 362887
+    >   2021-05-02 14:05:29,326 INFO executor.Executor: Running task 2444.0 in stage 111.0 (TID 362887)
+    >   2021-05-02 14:05:29,335 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-00557-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-49852346, partition values: [empty row]
+    >   2021-05-02 14:05:29,344 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:29,347 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:29,350 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:30,566 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-03854-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-49852304, partition values: [empty row]
+    >   2021-05-02 14:05:30,576 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:30,580 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:30,583 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:31,190 INFO memory.MemoryStore: Block rdd_413_2444 stored as values in memory (estimated size 16.0 B, free 1287.9 MB)
+    >   2021-05-02 14:05:31,232 INFO executor.Executor: Finished task 2444.0 in stage 111.0 (TID 362887). 2988 bytes result sent to driver
+    >    ....
+    >   2021-05-02 14:05:31,234 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 362903
+    >   2021-05-02 14:05:31,234 INFO executor.Executor: Running task 2460.0 in stage 111.0 (TID 362903)
+    >   2021-05-02 14:05:31,244 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-05658-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-49848991, partition values: [empty row]
+    >   2021-05-02 14:05:31,355 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:31,359 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:31,362 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:32,132 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-09124-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-49848948, partition values: [empty row]
+    >   2021-05-02 14:05:32,177 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:32,180 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:32,183 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:05:32,963 INFO memory.MemoryStore: Block rdd_413_2460 stored as values in memory (estimated size 16.0 B, free 1287.9 MB)
+    >   ....
+
+    #
+    # Application log shows the processes are busy reading files from Manila/CephFS while cpu use sits at 10%-12%#
+    #
+
+#[fedora@worker02]
+
+    htop
+
+    >   ....
+    >     1  [||||                     12.0%]   Tasks: 39, 379 thr; 2 running
+    >     2  [||||                     10.9%]   Load average: 1.19 1.27 1.21
+    >     Mem[|||||||||||||||||||2.67G/5.82G]   Uptime: 09:30:56
+    >     Swp[                         0K/0K]
+    >
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   30807 fedora     20   0 4736M 1517M 27468 S 11.4 25.5 23:40.73 /etc/alternatives
+    >   31260 fedora     20   0 4736M 1517M 27468 D 11.1 25.5  4:45.75 /etc/alternatives
+    >   27305 root       20   0 1727M  441M  2504 S  8.2  7.4  6:39.73 ceph-fuse --id=ag
+    >   27313 root       20   0 1727M  441M  2504 S  1.3  7.4  1:00.84 ceph-fuse --id=ag
+    >   ....
+    >   ....
+    >   31372 root       20   0 1727M  441M  2504 S  0.3  7.4  0:01.48 ceph-fuse --id=ag
+    >   31342 root       20   0 1727M  441M  2504 S  0.3  7.4  0:04.99 ceph-fuse --id=ag
+    >   ....
+
+    #
+    # Later on in the same process - using local data.
+    #
+
+    >   ....
+    >   2021-05-02 14:18:52,813 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 400922
+    >   2021-05-02 14:18:52,814 INFO executor.Executor: Running task 432.0 in stage 121.0 (TID 400922)
+    >   2021-05-02 14:18:52,824 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 355 local blocks and 5366 remote blocks
+    >   2021-05-02 14:18:52,831 INFO storage.ShuffleBlockFetcherIterator: Started 15 remote fetches in 9 ms
+    >   2021-05-02 14:18:53,436 INFO executor.Executor: Finished task 432.0 in stage 121.0 (TID 400922). 1927 bytes result sent to driver
+    >   ....
+    >   2021-05-02 14:18:53,439 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 400937
+    >   2021-05-02 14:18:53,439 INFO executor.Executor: Running task 447.0 in stage 121.0 (TID 400937)
+    >   2021-05-02 14:18:53,447 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 355 local blocks and 5366 remote blocks
+    >   2021-05-02 14:18:53,453 INFO storage.ShuffleBlockFetcherIterator: Started 15 remote fetches in 8 ms
+    >   2021-05-02 14:18:54,044 INFO executor.Executor: Finished task 447.0 in stage 121.0 (TID 400937). 1927 bytes result sent to driver
+    >   ....
+    >   2021-05-02 14:18:54,046 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 400953
+    >   2021-05-02 14:18:54,046 INFO executor.Executor: Running task 463.0 in stage 121.0 (TID 400953)
+    >   2021-05-02 14:18:54,054 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 355 local blocks and 5366 remote blocks
+    >   2021-05-02 14:18:54,072 INFO storage.ShuffleBlockFetcherIterator: Started 15 remote fetches in 20 ms
+    >   2021-05-02 14:18:54,692 INFO executor.Executor: Finished task 463.0 in stage 121.0 (TID 400953). 1884 bytes result sent to driver
+    >   ....
+    >   ....
+
+    #
+    # Application log shows the processes are reading cached blocks and cpu use rises to 40%-90%.
+    #
+
+    >     1  [|||||||||||||||          46.6%]   Tasks: 39, 380 thr; 2 running
+    >     2  [|||||||||||||||||||||||||92.2%]   Load average: 1.18 1.18 1.17
+    >     Mem[|||||||||||||||||||2.68G/5.82G]   Uptime: 09:44:37
+    >     Swp[                         0K/0K]
+    >
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   30807 fedora     20   0 4736M 1538M 27512 S 133. 25.8 29:47.43 /etc/alternatives
+    >   31260 fedora     20   0 4736M 1538M 27512 R 96.0 25.8  9:51.07 /etc/alternatives
+    >   ....
+    >   ....
+    >   30508 fedora     20   0 38416  1976   744 S  0.1  0.0  0:08.34 sshd: fedora@pts/
+    >   23860 fedora     20   0 3182M  242M  9548 S  0.1  4.1  0:00.84 /etc/alternatives
+
+
+
+    In theory we could put '/var/hadoop/temp/' on '/dev/vda1'
+    Potentially speed up access to local data.
+
+#[fedora@worker02]
+
+     du -h -d 1 /var/hadoop/temp/
+
+    >   3.6G	/var/hadoop/temp/nm-local-dir
+    >   3.6G	/var/hadoop/temp/
+
+    df -h
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   ....
+    >   /dev/vda1        12G  3.7G  7.6G  33% /
+    >   /dev/vdb        200G  4.0G  195G   2% /mnt/cinder/vdb
+    >   ....
+    >   ....
+
+
+# Calculating the confusion matrix goes back to the parquet files .. and we are IO limited again.
+#[fedora@zeppelin]
+
+    tail -f "${HOME}/zeppelin-0.8.2-bin-all/logs/zeppelin-interpreter-spark-fedora-$(hostname -f).log"
+
+    >   ....
+    >   INFO [2021-05-02 14:34:44,992] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 4385.0 in stage 127.0 (TID 422039) in 820 ms on worker10 (executor 3) (4377/5720)
+    >   INFO [2021-05-02 14:34:45,030] ({dispatcher-event-loop-5} Logging.scala[logInfo]:54) - Starting task 4393.0 in stage 127.0 (TID 422047, worker09, executor 13, partition 4393, PROCESS_LOCAL, 8437 bytes)
+    >   ....
+    >   INFO [2021-05-02 14:34:45,031] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 4374.0 in stage 127.0 (TID 422028) in 2040 ms on worker09 (executor 13) (4378/5720)
+    >   INFO [2021-05-02 14:34:45,359] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Starting task 4394.0 in stage 127.0 (TID 422048, worker03, executor 5, partition 4394, PROCESS_LOCAL, 8437 bytes)
+    >   ....
+    >   INFO [2021-05-02 14:34:45,360] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 4382.0 in stage 127.0 (TID 422036) in 1663 ms on worker03 (executor 5) (4379/5720)
+    >   INFO [2021-05-02 14:34:45,365] ({dispatcher-event-loop-0} Logging.scala[logInfo]:54) - Starting task 4395.0 in stage 127.0 (TID 422049, worker12, executor 9, partition 4395, PROCESS_LOCAL, 8437 bytes)
+    >   ....
+    >   INFO [2021-05-02 14:34:45,365] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 4378.0 in stage 127.0 (TID 422032) in 2020 ms on worker12 (executor 9) (4380/5720)
+    >   INFO [2021-05-02 14:34:45,403] ({dispatcher-event-loop-5} Logging.scala[logInfo]:54) - Starting task 4396.0 in stage 127.0 (TID 422050, worker08, executor 14, partition 4396, PROCESS_LOCAL, 8437 bytes)
+    >   ....
+    >   ....
+
+    #
+    # Application logs show workers are reading from Manila/CephFS shares,
+    # and cpu use drops back down to 10%-12%
+
+
+#[fedora@worker02]
+
+    tail -f "/var/hadoop/logs/hadoop-fedora-nodemanager-$(hostname -f).log"
+
+    >   ....
+    >   2021-05-02 14:33:15,411 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 421117
+    >   2021-05-02 14:33:15,411 INFO executor.Executor: Running task 3463.0 in stage 127.0 (TID 421117)
+    >   2021-05-02 14:33:15,449 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-04416-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-49640836, partition values: [empty row]
+    >   2021-05-02 14:33:15,479 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:15,483 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:15,486 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:16,105 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-05827-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-49640347, partition values: [empty row]
+    >   2021-05-02 14:33:16,128 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:16,131 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:16,134 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:16,857 INFO executor.Executor: Finished task 3463.0 in stage 127.0 (TID 421117). 2093 bytes result sent to driver
+    >   ....
+    >   2021-05-02 14:33:16,858 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 421136
+    >   2021-05-02 14:33:16,859 INFO executor.Executor: Running task 3482.0 in stage 127.0 (TID 421136)
+    >   2021-05-02 14:33:16,894 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-01275-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-49635149, partition values: [empty row]
+    >   2021-05-02 14:33:16,918 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:16,921 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:16,925 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:17,450 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-06010-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-49634633, partition values: [empty row]
+    >   2021-05-02 14:33:17,460 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:17,463 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:17,466 INFO compat.FilterCompat: Filtering using predicate: and(and(and(and(noteq(b, null), noteq(parallax, null)), gt(parallax, 8.0)), or(or(lt(dec, -80.0), gt(dec, -65.0)), and(lt(ra, 350.0), gt(ra, 40.0)))), or(or(lt(dec, -80.0), gt(dec, -55.0)), or(lt(ra, 40.0), gt(ra, 120.0))))
+    >   2021-05-02 14:33:17,921 INFO executor.Executor: Finished task 3482.0 in stage 127.0 (TID 421136). 2050 bytes result sent to driver
+    >   ....
+
+#[fedora@worker02]
+
+    htop
+
+    >     1  [|||||                    12.4%]   Tasks: 39, 377 thr; 2 running
+    >     2  [|||||                    11.3%]   Load average: 1.03 1.15 1.19
+    >     Mem[|||||||||||||||||||2.79G/5.82G]   Uptime: 09:58:26
+    >     Swp[                         0K/0K]
+    >
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   30807 fedora     20   0 4737M 1619M  9500 S 11.4 27.2 39:57.39 /etc/alternatives
+    >   31260 fedora     20   0 4737M 1619M  9500 D 11.1 27.2 17:38.16 /etc/alternatives
+    >   27305 root       20   0 1727M  438M  1636 S  9.0  7.4  7:30.36 ceph-fuse --id=ag
+    >   27311 root       20   0 1727M  438M  1636 S  1.6  7.4  1:16.42 ceph-fuse --id=ag
+    >   ....
+    >   ....
+    >   27316 root       20   0 1727M  438M  1636 R  0.4  7.4  0:17.44 ceph-fuse --id=ag
+    >   31341 root       20   0 1727M  438M  1636 S  0.3  7.4  0:07.48 ceph-fuse --id=ag
+
+
+    We are still only using about half of the memory on a worker.
+    Try doubling the value in the settings ?
+
+    It looks like we are IO limited reading from CephFS:
+    Try the same config using data from HDFS ?
+    Try the same config using data from Echo ?
+
+    Try setting up a local NFS on Cinder service ?
+
+    In this configuration, master is doing almost nothing.
+    We could easily step down to a tiny VM for master.
+
+    ---------------
+
+    This is clearly IO bound on read from CephFS.
+
+    For reference:
+
+    >   Feb 12th in Slack
+    >   ....
+    >   John Garbutt  3:47 PM
+    >   The issue here is the ceph hardware is fairly rubbish to start with. The newer cluster should be better, with slightly younger spinning disks, etc. But its has been bought for capacity, not speed.
+    >   ....
+
+    >   ....
+    >   2021-05-02 14:44:44,455 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 429797
+    >   2021-05-02 14:44:44,455 INFO executor.Executor: Running task 702.0 in stage 130.0 (TID 429797)
+    >   2021-05-02 14:44:44,486 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-02488-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-50307501, partition values: [empty row]
+    >   2021-05-02 14:44:44,504 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:44,507 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:44,510 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:45,386 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-00998-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-50307302, partition values: [empty row]
+    >   2021-05-02 14:44:45,431 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:45,435 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:45,438 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:46,449 INFO executor.Executor: Finished task 702.0 in stage 130.0 (TID 429797). 1636 bytes result sent to driver
+    >   ....
+    >   2021-05-02 14:44:46,451 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 429812
+    >   2021-05-02 14:44:46,451 INFO executor.Executor: Running task 717.0 in stage 130.0 (TID 429812)
+    >   2021-05-02 14:44:46,483 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-09342-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-50301593, partition values: [empty row]
+    >   2021-05-02 14:44:46,516 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:46,522 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:46,525 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:47,304 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-05461-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-50301452, partition values: [empty row]
+    >   2021-05-02 14:44:47,405 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:47,411 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:47,418 INFO compat.FilterCompat: Filtering using predicate: and(noteq(parallax, null), gt(parallax, 8.0))
+    >   2021-05-02 14:44:48,323 INFO executor.Executor: Finished task 717.0 in stage 130.0 (TID 429812). 1603 bytes result sent to driver
+    >   ....
+
+
+    >     1  [|||||||                  17.9%]   Tasks: 39, 377 thr; 2 running
+    >     2  [|||||                    15.1%]   Load average: 1.40 1.17 1.16
+    >     Mem[|||||||||||||||||||2.99G/5.82G]   Uptime: 10:11:18
+    >     Swp[                         0K/0K]
+    >
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   30807 fedora     20   0 4737M 1710M  9592 S 19.6 28.7 41:36.32 /etc/alternatives
+    >   31260 fedora     20   0 4737M 1710M  9592 D 18.5 28.7 19:11.73 /etc/alternatives
+    >   27305 root       20   0 1832M  558M  1860 S  9.9  9.4  8:37.44 ceph-fuse --id=ag
+    >   27312 root       20   0 1832M  558M  1860 S  1.9  9.4  1:17.81 ceph-fuse --id=ag
+    >   ....
+    >   31592 root       20   0 1832M  558M  1860 S  0.4  9.4  0:00.13 ceph-fuse --id=ag
+    >   31596 root       20   0 1832M  558M  1860 S  0.4  9.4  0:00.08 ceph-fuse --id=ag
+
+
+    Note to self - the full classification step goes back to the parquet file, even though the view is cached
+
+        # get the complete unclassified sample:
+        unclassified_sample_df = spark.sql('SELECT * FROM raw_sources WHERE parallax > +8.0' + quick_filter)
+
+
+
+
+
+    --------------- ---------------
+    --------------- ---------------
+
+    What happens if we halve the number of workers ?
+
+# -----------------------------------------------------
+# Edit the list of workers and restart.
+#[fedora@master01]
+
+    stop-yarn.sh
+
+    >   Stopping nodemanagers
+    >   worker03: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker01: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker04: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker07: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   ....
+    >   ....
+    >   worker15: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker14: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker16: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker12: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   Stopping resourcemanager
+
+    vi /opt/hadoop/etc/hadoop/workers
+
+        worker01
+        worker02
+        worker03
+        worker04
+        worker05
+        worker06
+        worker07
+        worker08
+    -   worker09
+    -   worker10
+    -   worker11
+    -   worker12
+    -   worker13
+    -   worker14
+    -   worker15
+    -   worker16
+
+
+        start-yarn.sh
+
+
+    >   Starting resourcemanager
+    >   Starting nodemanagers
+
+    #
+    # Restart interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 02 2021, 7:10:47 PM.
+    Last cell  - May 02 2021, 8:00:18 PM.
+
+    50 min
+
+# -----------------------------------------------------
+# Tail the application log
+#[fedora@worker02]
+
+    # Reading parquet file from CephFS
+
+    tail -f userlogs/application_1619978900571_0001/container_1619978900571_0001_01_000006/stderr
+
+
+    >   ....
+    >   2021-05-02 18:13:49,630 INFO executor.Executor: Running task 1237.0 in stage 1.0 (TID 1238)
+    >   2021-05-02 18:13:49,640 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-07193-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-50098647, partition values: [empty row]
+    >   2021-05-02 18:13:49,666 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:49,676 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:49,680 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:50,449 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-05503-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-50098436, partition values: [empty row]
+    >   2021-05-02 18:13:50,458 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:50,464 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:50,473 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:51,148 INFO memory.MemoryStore: Block rdd_4_1237 stored as values in memory (estimated size 62.0 KB, free 1316.5 MB)
+    >   2021-05-02 18:13:51,153 INFO executor.Executor: Finished task 1237.0 in stage 1.0 (TID 1238). 2298 bytes result sent to driver
+    >   ....
+    >   2021-05-02 18:13:51,155 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 1252
+    >   2021-05-02 18:13:51,155 INFO executor.Executor: Running task 1251.0 in stage 1.0 (TID 1252)
+    >   2021-05-02 18:13:51,170 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-06891-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-50096163, partition values: [empty row]
+    >   2021-05-02 18:13:51,179 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:51,183 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:51,187 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:51,962 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/edr3/part-00671-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet, range: 0-50096025, partition values: [empty row]
+    >   2021-05-02 18:13:51,988 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:51,992 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:51,997 INFO compat.FilterCompat: Filtering using predicate: noteq(parallax, null)
+    >   2021-05-02 18:13:53,319 INFO memory.MemoryStore: Block rdd_4_1251 stored as values in memory (estimated size 29.2 KB, free 1316.5 MB)
+    >   2021-05-02 18:13:53,324 INFO executor.Executor: Finished task 1251.0 in stage 1.0 (TID 1252). 2298 bytes result sent to driver
+    >   ....
+
+
+# -----------------------------------------------------
+# Monitor cpu performance
+#[fedora@worker02]
+
+    htop
+
+    >     1  [|||||||                  21.5%]   Tasks: 44, 402 thr; 1 running
+    >     2  [|||||||                  20.8%]   Load average: 1.99 0.74 0.33
+    >     Mem[|||||||||||||||||||2.94G/5.82G]   Uptime: 13:38:52
+    >     Swp[                         0K/0K]
+    >
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >   27305 root       20   0 1742M  534M  2176 S 14.5  9.0 26:26.57 ceph-fuse --id=ag
+    >   1757 fedora     20   0 4637M  862M 42404 S 12.2 14.5  0:25.09 /etc/alternatives
+    >   1756 fedora     20   0 4638M  847M 42292 S 11.1 14.2  0:24.92 /etc/alternatives
+    >   1818 fedora     20   0 4637M  862M 42404 S  8.6 14.5  0:10.04 /etc/alternatives
+    >   ....
+    >   ....
+    >   1016 root       20   0 1742M  534M  2176 S  0.7  9.0  0:14.02 ceph-fuse --id=ag
+    >   1053 root       20   0 1742M  534M  2176 S  0.7  9.0  0:13.65 ceph-fuse --id=ag
+    >   1133 root       20   0 1742M  534M  2176 S  0.7  9.0  0:07.64 ceph-fuse --id=ag
+    >   1852 root       20   0 1742M  534M  2176 S  0.7  9.0  0:00.23 ceph-fuse --id=ag
+
+
+# -----------------------------------------------------
+# Tail the application log
+#[fedora@worker02]
+
+    #
+    # Processing local data
+    #
+
+    tail -f userlogs/application_1619978900571_0001/container_1619978900571_0001_01_000006/stderr
+
+    >   ....
+    >   2021-05-02 18:29:53,368 INFO executor.Executor: Running task 338.0 in stage 29.0 (TID 91889)
+    >   2021-05-02 18:29:53,382 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 339 local blocks and 5382 remote blocks
+    >   2021-05-02 18:29:53,397 INFO storage.ShuffleBlockFetcherIterator: Started 15 remote fetches in 23 ms
+    >   2021-05-02 18:29:54,267 INFO executor.Executor: Finished task 338.0 in stage 29.0 (TID 91889). 1884 bytes result sent to driver
+    >   ....
+    >   2021-05-02 18:29:54,269 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 91904
+    >   2021-05-02 18:29:54,274 INFO executor.Executor: Running task 353.0 in stage 29.0 (TID 91904)
+    >   2021-05-02 18:29:54,281 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 339 local blocks and 5382 remote blocks
+    >   2021-05-02 18:29:54,309 INFO storage.ShuffleBlockFetcherIterator: Started 15 remote fetches in 30 ms
+    >   2021-05-02 18:29:55,250 INFO executor.Executor: Finished task 353.0 in stage 29.0 (TID 91904). 1927 bytes result sent to driver
+    >   ....
+    >   2021-05-02 18:29:55,252 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 91919
+    >   2021-05-02 18:29:55,258 INFO executor.Executor: Running task 368.0 in stage 29.0 (TID 91919)
+    >   2021-05-02 18:29:55,265 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 339 local blocks and 5382 remote blocks
+    >   2021-05-02 18:29:55,274 INFO storage.ShuffleBlockFetcherIterator: Started 15 remote fetches in 11 ms
+    >   2021-05-02 18:29:57,556 INFO executor.Executor: Finished task 368.0 in stage 29.0 (TID 91919). 1927 bytes result sent to driver
+    >   ....
+    >   2021-05-02 18:29:57,558 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 91933
+    >   2021-05-02 18:29:57,558 INFO executor.Executor: Running task 382.0 in stage 29.0 (TID 91933)
+    >   2021-05-02 18:29:57,566 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 339 local blocks and 5382 remote blocks
+    >   2021-05-02 18:29:57,583 INFO storage.ShuffleBlockFetcherIterator: Started 15 remote fetches in 19 ms
+    >   2021-05-02 18:29:58,520 INFO executor.Executor: Finished task 382.0 in stage 29.0 (TID 91933). 1927 bytes result sent to driver
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Monitor cpu performance
+#[fedora@worker02]
+
+    htop
+
+    >     1  [||||||||||||||||||||     62.2%]   Tasks: 42, 402 thr; 2 running
+    >     2  [||||||||||||||||||||     61.9%]   Load average: 3.04 2.57 1.96
+    >     Mem[|||||||||||||||||||4.48G/5.82G]   Uptime: 13:59:47
+    >     Swp[                         0K/0K]
+    >
+    >     PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+    >    1756 fedora     20   0 4711M 1498M  5984 S 62.8 25.1  7:55.06 /etc/alternatives
+    >    2114 fedora     20   0 4711M 1498M  5984 R 60.4 25.1  2:47.16 /etc/alternatives
+    >    1757 fedora     20   0 4704M 1502M  5376 S 57.7 25.2  7:55.31 /etc/alternatives
+    >    2065 fedora     20   0 4704M 1502M  5376 R 55.6 25.2  3:57.67 /etc/alternatives
+    >   ....
+    >   ....
+    >    1769 fedora     20   0 4711M 1498M  5984 S  0.2 25.1  0:00.47 /etc/alternatives
+    >    1808 fedora     20   0 4711M 1498M  5984 S  0.2 25.1  0:02.97 /etc/alternatives
+    >   30508 fedora     20   0 38416  1232     0 S  0.2  0.0  0:17.08 sshd: fedora@pts/
+    >    1534 fedora     20   0 3234M  538M  5752 S  0.2  9.0  0:00.54 /etc/alternatives
+
+    #
+    # We reduced the number of worker nodes, but left the number of executors the same.
+    # Does this explain the higher % use of the workers ?
+    #
+
+    >   ....
+    >   INFO [2021-05-02 18:53:13,236] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 5453.0 in stage 35.0 (TID 119888) in 923 ms on worker06 (executor 3) (5455/5721)
+    >   INFO [2021-05-02 18:53:13,258] ({dispatcher-event-loop-3} Logging.scala[logInfo]:54) - Starting task 5471.0 in stage 35.0 (TID 119906, worker02, executor 5, partition 5471, PROCESS_LOCAL, 7673 bytes)
+    >   INFO [2021-05-02 18:53:13,258] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 5452.0 in stage 35.0 (TID 119887) in 1101 ms on worker02 (executor 5) (5456/5721)
+    >   INFO [2021-05-02 18:53:13,363] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Starting task 5472.0 in stage 35.0 (TID 119907, worker07, executor 1, partition 5472, PROCESS_LOCAL, 7673 bytes)
+    >   INFO [2021-05-02 18:53:13,364] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 5456.0 in stage 35.0 (TID 119891) in 942 ms on worker07 (executor 1) (5457/5721)
+    >   ....
+    >   ....
+    >   INFO [2021-05-02 18:53:14,441] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 5476.0 in stage 35.0 (TID 119911) in 895 ms on worker01 (executor 11) (5477/5721)
+    >   INFO [2021-05-02 18:53:14,454] ({dispatcher-event-loop-0} Logging.scala[logInfo]:54) - Starting task 5493.0 in stage 35.0 (TID 119928, worker07, executor 9, partition 5493, PROCESS_LOCAL, 7673 bytes)
+    >   INFO [2021-05-02 18:53:14,454] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 5478.0 in stage 35.0 (TID 119913) in 796 ms on worker07 (executor 9) (5478/5721)
+    >   INFO [2021-05-02 18:53:14,500] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Starting task 5494.0 in stage 35.0 (TID 119929, worker05, executor 10, partition 5494, PROCESS_LOCAL, 7673 bytes)
+    >   ....
+
+
+    --------------- ---------------
+    --------------- ---------------
+
+    16 workers = 4hrs
+     8 workers = 1hr
+
+    What happens if we increase the number of workers to 12 ?
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Edit the list of workers and restart Hadoop.
+#[fedora@master01]
+
+    stop-yarn.sh
+
+    >   Stopping nodemanagers
+    >   worker02: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker01: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   ....
+    >   ....
+    >   worker06: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker08: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   Stopping resourcemanager
+
+    vi /opt/hadoop/etc/hadoop/workers
+
+        worker01
+        worker02
+        worker03
+        worker04
+        worker05
+        worker06
+        worker07
+        worker08
+    +   worker09
+    +   worker10
+    +   worker11
+    +   worker12
+
+
+    start-yarn.sh
+
+    >   Starting resourcemanager
+    >   Starting nodemanagers
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Update our Spark config.
+#[fedora@zeppelin]
+
+    sudo vi /opt/spark/conf/spark-defaults.conf
+
+        # The number of executors for static allocation.
+    -   spark.executor.instances    16
+    +   spark.executor.instances    24
+
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 03 2021, 12:10:34 AM.
+    Last cell  - May 03 2021, 12:45:33 AM.
+
+    35min
+
+    What happens if we increase the number of workers to 16 ?
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Edit the list of workers and restart Hadoop.
+#[fedora@master01]
+
+    stop-yarn.sh
+
+    >   Stopping nodemanagers
+    >   worker05: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker09: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   ....
+    >   ....
+    >   worker12: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   worker11: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+    >   Stopping resourcemanager
+
+    vi /opt/hadoop/etc/hadoop/workers
+
+        worker01
+        worker02
+        worker03
+        worker04
+        worker05
+        worker06
+        worker07
+        worker08
+        worker09
+        worker10
+        worker11
+        worker12
+    +   worker13
+    +   worker14
+    +   worker15
+    +   worker16
+
+
+    start-yarn.sh
+
+    >   Starting resourcemanager
+    >   Starting nodemanagers
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Update our Spark config.
+#[fedora@zeppelin]
+
+    sudo vi /opt/spark/conf/spark-defaults.conf
+
+        # The number of executors for static allocation.
+    -   spark.executor.instances    24
+    +   spark.executor.instances    32
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 03 2021, 12:55:03 AM.
+    Last cell  - May 03 2021,  1:28:03 AM.
+
+    30min
+
+    #
+    # Run the same test again (no restart)
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 03 2021, 1:34:46 AM.
+    Last cell  - May 03 2021, 4:45:43 AM.
+
+    3hr15min
+
+    Why does the second pass take twice as much time ?!
+
+    Is it just one step or do all of them take longer ?
+    Use the JSON pasrer to pull out accurate timings for each of the steps.
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 03 2021, 10:56:39 AM.
+    Got stuck at the end of the misclassifications cell.
+    Status is RUNNING 100%, but failed to transition tp FINISHED.
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 03 2021, 12:06:25 PM.
+    Last cell  - May 03 2021, 12:40:25 PM.
+
+    35min
+
+    #
+    # Restart the PySpark interpreter and run the test again ...
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - May 03 2021, 12:57:40 PM.
+    Last cell  - May 03 2021,  1:31:33 PM.
+
+    35min
+
+
+
+

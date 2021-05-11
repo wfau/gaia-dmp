@@ -1,0 +1,343 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Setup Prometheus and Grafana on a small cluster
+
+    Result:
+
+        Ongoing..
+
+
+# https://medium.com/devops-dudes/install-prometheus-on-ubuntu-18-04-a51602c6256b
+
+
+# Setup 1 master node & 2 worker nodes
+# This was done manually in the Edinburgh Openstack UI (cumulus system not available currently)
+
+
+
+# Installing node_exporter
+# Repeat on all nodes (master & worker nodes)
+# ---------------------------------------------------
+
+wget https://github.com/prometheus/node_exporter/releases/download/v0.15.2/node_exporter-0.15.2.linux-amd64.tar.gz
+tar -xf node_exporter-0.15.2.linux-amd64.tar.gz
+sudo mv node_exporter-0.15.2.linux-amd64/node_exporter /usr/local/bin
+rm -r node_exporter-0.15.2.linux-amd64*
+
+
+
+#  Create users and service files for node_exporter.
+# Repeat on all nodes (master & worker nodes)
+# ---------------------------------------------------
+
+sudo useradd -rs /bin/false node_exporter
+
+
+
+
+# Enable Node exporter to start on boot
+# Repeat on all nodes (master & worker nodes)
+# ---------------------------------------------------
+
+sudo nano /etc/systemd/system/node_exporter.service
+	
+# Reload daemon
+
+sudo systemctl daemon-reload
+sudo systemctl enable node_exporter
+sudo systemctl start node_exporter
+
+
+
+
+# Install Prometheus
+# ubuntu@master
+# --------------------------------------------------
+
+wget https://github.com/prometheus/prometheus/releases/download/v2.1.0/prometheus-2.1.0.linux-amd64.tar.gz
+tar -xf prometheus-2.1.0.linux-amd64.tar.gz
+sudo mv prometheus-2.1.0.linux-amd64/prometheus prometheus-2.1.0.linux-amd64/promtool /usr/local/bin
+
+
+
+# Edit hosts
+# ubuntu@master
+# --------------------------------------------------
+
+sudo nano /etc/hosts
+..
+127.0.0.1 localhost
+
+# The following lines are desirable for IPv6 capable hosts
+::1 ip6-localhost ip6-loopback
+fe00::0 ip6-localnet
+ff00::0 ip6-mcastprefix
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+ff02::3 ip6-allhosts
+
+192.168.0.6 prometheus-target-1
+
+
+
+# Setup prometheus configuration file
+# ubuntu@master
+# --------------------------------------------------
+
+sudo nano /etc/prometheus/prometheus.yml
+
+global:
+  scrape_interval: 10s
+
+scrape_configs:
+  - job_name: 'prometheus_metrics'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['localhost:9090']
+  - job_name: 'node_exporter_metrics'
+    scrape_interval: 5s
+    static_configs:
+      - targets: ['localhost:9100','prometheus-target-1:9100','prometheus-target-2:9100']
+
+
+
+# Change the ownership of files that Prometheus will use
+# ubuntu@master
+# --------------------------------------------------------
+
+sudo useradd -rs /bin/false prometheus
+sudo chown -R prometheus: /etc/prometheus /var/lib/prometheus
+
+
+# Create a systemd unit file in /etc/systemd/system/prometheus.service with the following contents 
+# ubuntu@master
+# ------------------------------------------------------------------------------------------------
+
+sudo nano /etc/systemd/system/prometheus.service
+
+[Unit]
+Description=Prometheus
+After=network.target
+
+[Service]
+User=prometheus
+Group=prometheus
+Type=simple
+ExecStart=/usr/local/bin/prometheus \
+    --config.file /etc/prometheus/prometheus.yml \
+    --storage.tsdb.path /var/lib/prometheus/ \
+    --web.console.templates=/etc/prometheus/consoles \
+    --web.console.libraries=/etc/prometheus/console_libraries
+
+[Install]
+WantedBy=multi-user.target
+
+# Reload systemd
+
+sudo systemctl daemon-reload
+sudo systemctl enable prometheus
+sudo systemctl start prometheus
+
+
+# Check 9090 on master
+# ubuntu@master
+# ------------------------------------
+
+curl -v -L http://localhost:9090
+* Rebuilt URL to: http://localhost:9090/
+*   Trying 127.0.0.1...
+* TCP_NODELAY set
+* Connected to localhost (127.0.0.1) port 9090 (#0)
+> GET / HTTP/1.1
+> Host: localhost:9090
+> User-Agent: curl/7.58.0
+> Accept: */*
+> 
+< HTTP/1.1 302 Found
+< Location: /graph
+< Date: Tue, 09 Mar 2021 13:55:20 GMT
+< Content-Length: 29
+< Content-Type: text/html; charset=utf-8
+< 
+* Ignoring the response-body
+* Connection #0 to host localhost left intact
+* Issue another request to this URL: 'http://localhost:9090/graph'
+* Found bundle for host localhost: 0x55a112dc3bf0 [can pipeline]
+* Re-using existing connection! (#0) with host localhost
+* Connected to localhost (127.0.0.1) port 9090 (#0)
+> GET /graph HTTP/1.1
+> Host: localhost:9090
+> User-Agent: curl/7.58.0
+> Accept: */*
+> 
+< HTTP/1.1 200 OK
+< Date: Tue, 09 Mar 2021 13:55:20 GMT
+< Content-Type: text/html; charset=utf-8
+< Transfer-Encoding: chunked
+< 
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Prometheus Time Series Collection and Processing Server</title>
+    <link rel="shortcut icon" href="/static/img/favicon.ico?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a">
+    <script src="/static/vendor/js/jquery.min.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+    <script src="/static/vendor/bootstrap-3.3.1/js/bootstrap.min.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+
+    <link type="text/css" rel="stylesheet" href="/static/vendor/bootstrap-3.3.1/css/bootstrap.min.css?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a">
+    <link type="text/css" rel="stylesheet" href="/static/css/prometheus.css?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a">
+
+    <script>
+      var PATH_PREFIX = "";
+      var BUILD_VERSION = "85f23d82a045d103ea7f3c89a91fba4a93e6367a";
+      $(function () {
+        $('[data-toggle="tooltip"]').tooltip()
+      })
+    </script>
+
+    
+    <link type="text/css" rel="stylesheet" href="/static/css/graph.css?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a">
+
+    <link type="text/css" rel="stylesheet" href="/static/vendor/rickshaw/rickshaw.min.css?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a">
+    <link type="text/css" rel="stylesheet" href="/static/vendor/eonasdan-bootstrap-datetimepicker/bootstrap-datetimepicker.min.css?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a">
+
+    <script src="/static/vendor/rickshaw/vendor/d3.v3.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+    <script src="/static/vendor/rickshaw/vendor/d3.layout.min.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+    <script src="/static/vendor/rickshaw/rickshaw.min.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+    <script src="/static/vendor/moment/moment.min.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+    <script src="/static/vendor/moment/moment-timezone-with-data.min.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+    <script src="/static/vendor/eonasdan-bootstrap-datetimepicker/bootstrap-datetimepicker.min.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+    <script src="/static/vendor/bootstrap3-typeahead/bootstrap3-typeahead.min.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+    <script src="/static/vendor/fuzzy/fuzzy.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+
+    <script src="/static/vendor/mustache/mustache.min.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+    <script src="/static/vendor/js/jquery.selection.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+    <script src="/static/vendor/js/jquery.hotkeys.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+
+    <script src="/static/js/graph/index.js?v=85f23d82a045d103ea7f3c89a91fba4a93e6367a"></script>
+
+    <script id="graph_template" type="text/x-handlebars-template"></script>
+
+  </head>
+
+  <body>
+    <nav class="navbar navbar-inverse navbar-fixed-top">
+      <div class="container-fluid">
+        <div class="navbar-header">
+          <button type="button" class="navbar-toggle collapsed" data-toggle="collapse" data-target="#navbar" aria-expanded="false" aria-controls="navbar">
+            <span class="sr-only">Toggle navigation</span>
+            <span class="icon-bar"></span>
+            <span class="icon-bar"></span>
+            <span class="icon-bar"></span>
+          </button>
+          <a class="navbar-brand" href="/">Prometheus</a>
+        </div>
+        <div id="navbar" class="navbar-collapse collapse">
+          <ul class="nav navbar-nav navbar-left">
+            
+            
+            <li><a href="/alerts">Alerts</a></li>
+            <li><a href="/graph">Graph</a></li>
+            <li class="dropdown">
+              <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-haspopup="true" aria-expanded="false">Status <span class="caret"></span></a>
+              <ul class="dropdown-menu">
+                <li><a href="/status">Runtime &amp; Build Information</a></li>
+                <li><a href="/flags">Command-Line Flags</a></li>
+                <li><a href="/config">Configuration</a></li>
+                <li><a href="/rules">Rules</a></li>
+                <li><a href="/targets">Targets</a></li>
+                <li><a href="/service-discovery">Service Discovery</a></li>
+              </ul>
+            </li>
+            <li>
+              <a href="https://prometheus.io/docs" target="_blank">Help</a>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    
+    <div id="graph_container" class="container-fluid">
+        <div class="query-history">
+            <i class="glyphicon glyphicon-unchecked"></i>
+            <button type="button" class="search-history" title="search previous queries">Enable query history</button>
+        </div>
+    </div>
+
+    <div class="container-fluid">
+      <div><input class="btn btn-primary" type="submit" value="Add Graph" id="add_graph"></div>
+    </div>
+
+  </body>
+</html>
+
+
+
+* Connection #0 to host localhost left intact
+
+
+# Try accessing from firefox
+ 
+firefox http://192.41.108.35:9090/
+# ERR_ADDRESS_UNREACHABLE
+
+
+# Tunneling works 
+ssh -L '9090:192.41.108.35:9090' ubuntu@aglais-dev-master
+
+# firefox http://localhost:9090
+# Success. We see the Prometheus UI
+
+
+
+
+# ----------------------------------------------
+# Setting up Grafana For Prometheus
+# ----------------------------------------------
+
+
+
+# Install Grafana on our instance which queries our Prometheus server.
+# ---------------------------------------------------------------------
+wget https://s3-us-west-2.amazonaws.com/grafana-releases/release/grafana_5.0.4_amd64.deb
+sudo apt-get install -y adduser libfontconfig
+sudo dpkg -i grafana_5.0.4_amd64.deb
+
+
+# Enable the automatic start of Grafana by systemd
+# ------------------------------------------------
+
+sudo systemctl daemon-reload && sudo systemctl enable grafana-server && sudo systemctl start grafana-server.service
+
+# Grafana is running now, and we can connect to it at http://your.server.ip:3000. The default user and password is admin / admin.
+
+# Tunnel Connection again
+ssh -L '3000:192.41.108.35:3000' ubuntu@aglais-dev-master
+
+
+# firefox http://localhost:3000
+
+# Success. We see the Grafana Interface

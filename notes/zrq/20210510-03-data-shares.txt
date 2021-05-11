@@ -1,0 +1,386 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+    Target:
+
+        Create a new Manila share for the repartitioned data and neighbour tables
+
+    Result:
+
+        Work in progress ....
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-dev
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# Run the scripts from the ansible directory.
+#[root@ansibler]
+
+    pushd "${ANSIBLE_CODE:?}"
+
+
+# -----------------------------------------------------
+# Create a new share for the Gaia data.
+#[root@ansibler]
+
+    sharename=aglais-gaia-edr3-20210510
+    sharesize=1024
+    sharecloud=gaia-prod
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share create \
+            --format json \
+            --name "${sharename:?}" \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            "${sharesize:?}" \
+    | tee /tmp/manila-share.json
+
+    shareid=$(
+        jq -r '.id' /tmp/manila-share.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                "${shareid:?}"
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Get details of the Ceph export location.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share show \
+            --format json \
+            "${shareid:?}" \
+    | jq '.' \
+    | tee /tmp/manila-share.json
+
+    locations=$(
+        jq '.export_locations' /tmp/manila-share.json
+        )
+
+    cephnodes=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\1/
+            s/,/ /g
+            '
+            )
+
+    cephpath=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\2/
+            '
+            )
+
+    cephsize=$(
+        jq '.size' /tmp/manila-share.json
+        )
+
+    cat << EOF
+Ceph path [${cephpath}]
+Ceph size [${cephsize}]
+EOF
+
+    for cephnode in ${cephnodes}
+    do
+        echo "Ceph node [${cephnode}]"
+    done
+
+--START--
+....
+....
+--END--
+
+# -----------------------------------------------------
+# Add a read-only access rule.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro"
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Add a read-write access rule.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw"
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Get details of the read-write access rule.
+#[root@ansibler]
+
+    accessid=$(
+        openstack \
+            --os-cloud "${sharecloud:?}" \
+            share access list \
+                --format json \
+                "${shareid:?}" \
+        | jq -r '.[] | select(
+            (.access_to == "'${sharename:?}'-rw")
+            and
+            (.access_level == "rw")
+            ) | .id'
+        )
+
+    echo "Access rule [${accessid:?}]"
+
+--START--
+....
+....
+--END--
+
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share access show \
+            --format json \
+            "${accessid:?}" \
+    | jq '.' \
+    | tee /tmp/manila-access.json
+
+--START--
+....
+....
+--END--
+
+
+    cephuser=$(
+        jq -r '.access_to' /tmp/manila-access.json
+        )
+
+    cephkey=$(
+        jq -r '.access_key' /tmp/manila-access.json
+        )
+
+    cat << EOF
+Ceph user [${cephuser:?}]
+Ceph key  [${cephkey:?}]
+EOF
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Add details of the share to our Ceph vars file.
+#[root@ansibler]
+
+    cat >> /tmp/ceph-vars.yml << EOF
+
+mntpath:  '/aglais/data/gaia/edr3-20210510'
+mntopts:  'async,auto,nodev,noexec,nosuid,rw,_netdev'
+
+cephuser:  '${cephuser:?}'
+cephkey:   '${cephkey:?}'
+cephpath:  '${cephpath:?}'
+cephnodes: '${cephnodes// /,}'
+
+EOF
+
+
+# -----------------------------------------------------
+# Create our Ansible vars file.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml' << EOF
+aglais:
+  status:
+    deployment:
+      type: hadoop-yarn
+      conf: tiny-16
+      name: gaia-dev-20210505
+  spec:
+    openstack:
+      cloud: ${cloudname}
+EOF
+
+    ln -sf '/tmp/aglais-status.yml' '/tmp/ansible-vars.yml'
+
+
+    EEK
+    share mount commands from old notes use 'hosts.yml' but the deployment is based on 'tiny-16.yml'
+    the number and names of the hosts will have changed
+    need to merge the changes from previous branch before we can do this ...
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# -----------------------------------------------------
+# Create our client ssh config.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        '05-config-ssh.yml'
+
+#   ansible-playbook \
+#       --inventory 'hosts.yml' \
+#       '07-host-keys.yml'
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        '08-ping-test.yml'
+
+
+# -----------------------------------------------------
+# Mount the share in our nodes.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory 'hosts.yml' \
+        --extra-vars '@/tmp/ceph-vars.yml' \
+        '51-cephfs-mount.yml'
+
+
+
+
+
+
+
+
+# -----------------------------------------------------
+# Login to the worker node to test the mount.
+#[root@ansibler]
+
+    ssh worker01 \
+        '
+        date
+        hostname
+        echo "----"
+        df -h  /aglais/data/gaia/dr2
+        '
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Copy data from the old mount to the new mount.
+#[root@ansibler]
+
+    ssh worker01
+
+        rsync \
+            --verbose \
+            --recursive \
+            '/aglais/gaia/gaia-dr2/gaia-dr2-full/' \
+            '/aglais/data/gaia/dr2'
+
+--START--
+....
+....
+--END--
+
+        df -h  /aglais/data/gaia/dr2
+
+--START--
+....
+....
+--END--
+

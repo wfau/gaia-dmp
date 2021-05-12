@@ -168,7 +168,8 @@
 # Using a hard coded cloud name to make it portable.
 
     sharelist="${treetop:?}/common/manila/datashares.yaml"
-    sharemode='ro'
+    mountmode='ro'
+    mounthost='zeppelin:masters:workers'
 
     for shareid in $(
         yq read "${sharelist:?}" 'shares.[*].id'
@@ -185,7 +186,8 @@
             "${inventory:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
-            "${sharemode:?}"
+            "${mounthost:?}" \
+            "${mountmode:?}"
 
     done
 
@@ -195,7 +197,8 @@
 # Using a hard coded cloud name to make it portable.
 
     sharelist="${treetop:?}/common/manila/usershares.yaml"
-    sharemode='rw'
+    mountmode='rw'
+    mounthost='zeppelin:masters:workers'
 
     for shareid in $(
         yq read "${sharelist:?}" 'shares.[*].id'
@@ -212,7 +215,8 @@
             "${inventory:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
-            "${sharemode:?}"
+            "${mounthost:?}" \
+            "${mountmode:?}"
 
     done
 

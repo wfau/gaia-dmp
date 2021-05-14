@@ -1,1 +1,1 @@
-The source of this role can be found here: https://github.com/MiteshSharma/PrometheusWithGrafana
+The original source for this role was copied from https://github.com/MiteshSharma/PrometheusWithGrafana

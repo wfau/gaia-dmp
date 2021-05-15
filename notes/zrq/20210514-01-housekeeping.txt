@@ -1,0 +1,356 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Update the owner and group for the Manila shares.
+
+    Result:
+
+        Work in progress ..
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[root@ansibler]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# List the current data shares.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud 'gaia-prod' \
+        share list
+
+    >   +--------------------------------------+-----------------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name                  |  Size | Share Proto | Status    | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+-----------------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | 2e46b5a5-c5d9-44c0-b11c-310c222f4818 | aglais-gaia-dr2       |   512 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | ca8231c3-1f5c-4ebf-8ec0-d3cfe2629976 | aglais-gaia-edr3      |   540 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | d583565e-de86-46df-9969-f587e4d61a37 | aglais-gaia-edr3-2048 |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | ba66d6db-7d85-44c4-bb95-7410a000f6b7 | aglais-panstarrs-dr1  |   300 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 9dc3016a-f010-48bc-89fc-a9cbd688b7cc | aglais-twomass-allsky |    40 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 8f0b3452-3c66-4e65-8815-15eb73988b3e | aglais-wise-allwise   |   350 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | ....                                 | ....                  |   ..  | ..          | ..        | ..        | ..               |      | ..                |
+    >   +--------------------------------------+-----------------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# Select the data shares ...
+#[root@ansibler]
+
+    #
+    # Turns out we have to use 'not startswith aglais-user' because the data shares don't have a prefix.
+    #
+
+    openstack \
+        --os-cloud 'gaia-prod' \
+        share list \
+            --format json \
+    | jq -r '.[] | select(.Name | startswith("aglais-user") | not) | .Name'
+
+    >   aglais-gaia-dr2
+    >   aglais-gaia-edr3
+    >   aglais-gaia-edr3-2048
+    >   aglais-panstarrs-dr1
+    >   aglais-twomass-allsky
+    >   aglais-wise-allwise
+
+
+    #
+    # Change the names of the data shares to use a common prefix.
+    #
+
+    for prevname in $(
+        openstack \
+            --os-cloud 'gaia-prod' \
+            share list \
+                --format json \
+        | jq -r '.[] | select(.Name | startswith("aglais-user") | not) | .Name'
+        )
+    do
+        nextname=$(
+            echo "${prevname:?}" \
+            | sed '
+                s/aglais-/aglais-data-/
+                '
+            )
+        echo "[${prevname}][$nextname]"
+        openstack \
+            --os-cloud 'gaia-prod' \
+            share set \
+                "${prevname:?}" \
+                --name "${nextname:?}"
+    done
+
+    #
+    # Now we can select all the data shares ..
+    #
+
+    openstack \
+        --os-cloud 'gaia-prod' \
+        share list \
+            --format json \
+    | jq -r '.[] | select(.Name | startswith("aglais-data")) | .Name'
+
+    >   aglais-data-gaia-dr2
+    >   aglais-data-gaia-edr3
+    >   aglais-data-gaia-edr3-2048
+    >   aglais-data-panstarrs-dr1
+    >   aglais-data-twomass-allsky
+    >   aglais-data-wise-allwise
+
+    #
+    # While we are here .. change PannSTARRS from dr1 to ps1 .. because of consistency.
+    # Nigel uses PS1 so I'm guessing this is the more recognised name.
+    #
+
+    openstack \
+        --os-cloud 'gaia-prod' \
+        share set \
+            'aglais-data-panstarrs-dr1' \
+            --name 'aglais-data-panstarrs-ps1'
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and create the mount point.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sudo mkdir /data/frog
+
+
+# -----------------------------------------------------
+# Mount the data shares as rw so we can edit them.
+#[root@ansibler]
+
+    inventory=config/zrq-dev-small.yml
+
+    for sharename in $(
+        openstack \
+            --os-cloud 'gaia-prod' \
+            share list \
+                --format json \
+        | jq -r '.[] | select(.Name | startswith("aglais-data")) | .Name'
+        )
+    do
+
+        mountpath=/data/frog/${sharename:?}-rw
+
+        "/deployments/hadoop-yarn/bin/cephfs-mount.sh" \
+            'gaia-prod' \
+            "${inventory:?}" \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            'zeppelin' \
+            'rw'
+
+    done
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and update the owner and permissions.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /data/frog
+
+            ls -al
+
+    >   total 11
+    >   drwxr-xr-x. 8 root   root           4096 May 14 10:51 .
+    >   drwxr-xr-x. 7 root   root           4096 May 14 10:46 ..
+    >   drwxrwxrwx. 2 fedora users  507579156147 Oct 24  2020 aglais-data-gaia-dr2-rw
+    >   drwxrwxrwx. 6 root   root  1029613873786 May 12 15:47 aglais-data-gaia-edr3-2048-rw
+    >   drwxrwxrwx. 2 root   root   571353028654 Jan 11 22:27 aglais-data-gaia-edr3-rw
+    >   drwxrwxrwx. 2 root   root   289851384250 Jan 11 19:44 aglais-data-panstarrs-ps1-rw
+    >   drwxrwxrwx. 2 root   root    39253008232 Jan 11 17:45 aglais-data-twomass-allsky-rw
+    >   drwxrwxrwx. 2 root   root   365261449025 Jan 11 21:26 aglais-data-wise-allwise-rw
+
+            # Change owner and permissions of the directory contents
+            for sharename in $(ls -1)
+            do
+                sudo chown -R root:root "${sharename:?}"
+                sudo chmod -R u=rw,g=r,o=r "${sharename:?}"
+            done
+
+            # Change permissions of the directories
+            for sharename in $(sudo find . -type d)
+            do
+                sudo chmod u=rwx,g=rx,o=rx "${sharename:?}"
+            done
+
+            ls -al
+
+    >   total 11
+    >   drwxr-xr-x. 8 root root          4096 May 14 10:51 .
+    >   drwxr-xr-x. 7 root root          4096 May 14 10:46 ..
+    >   drwxr-xr-x. 2 root root  507579156147 Oct 24  2020 aglais-data-gaia-dr2-rw
+    >   drwxr-xr-x. 6 root root 1029613873786 May 12 15:47 aglais-data-gaia-edr3-2048-rw
+    >   drwxr-xr-x. 2 root root  571353028654 Jan 11 22:27 aglais-data-gaia-edr3-rw
+    >   drwxr-xr-x. 2 root root  289851384250 Jan 11 19:44 aglais-data-panstarrs-ps1-rw
+    >   drwxr-xr-x. 2 root root   39253008232 Jan 11 17:45 aglais-data-twomass-allsky-rw
+    >   drwxr-xr-x. 2 root root  365261449025 Jan 11 21:26 aglais-data-wise-allwise-rw
+
+        #
+        # Housekeeping for Gaia DR2.
+        #
+
+        pushd aglais-data-gaia-dr2-rw
+
+            # Create GEDR2_6514_GAIASOURCE directory in DR2
+            sudo mkdir                 GEDR2_6514_GAIASOURCE
+            sudo chown root:root       GEDR2_6514_GAIASOURCE
+            sudo chmod u=rwx,g=rx,o=rx GEDR2_6514_GAIASOURCE
+
+            # Create GEDR2_GAIASOURCE link in DR2
+            sudo ln -s GEDR2_6514_GAIASOURCE GEDR2_GAIASOURCE
+            sudo chown root:root GEDR2_GAIASOURCE
+
+            # Move data into GEDR2_6514_GAIASOURCE directory
+            for filename in *.parquet
+            do
+                sudo mv -v $filename GEDR2_6514_GAIASOURCE
+            done
+
+            ls -al
+
+        popd
+
+    >   total 6
+    >   drwxr-xr-x. 3 root root 507579156168 May 14 11:06 .
+    >   drwxr-xr-x. 8 root root         4096 May 14 10:51 ..
+    >   drwxr-xr-x. 2 root root 507579156147 May 14 11:06 GEDR2_6514_GAIASOURCE
+    >   lrwxrwxrwx. 1 root root           21 May 14 11:01 GEDR2_GAIASOURCE -> GEDR2_6514_GAIASOURCE
+
+        #
+        # Housekeeping for original Gaia eDR3.
+        #
+
+        pushd aglais-data-gaia-edr3-rw
+
+            # Create GEDR3_11932_GAIASOURCE directory
+            sudo mkdir                 GEDR3_11932_GAIASOURCE
+            sudo chown root:root       GEDR3_11932_GAIASOURCE
+            sudo chmod u=rwx,g=rx,o=rx GEDR3_11932_GAIASOURCE
+
+            # Create GEDR2_GAIASOURCE link
+            sudo ln -s GEDR3_11932_GAIASOURCE GEDR3_GAIASOURCE
+            sudo chown root:root GEDR3_GAIASOURCE
+
+            # Move data into GEDR3_11932_GAIASOURCE directory
+            for filename in *.parquet
+            do
+                sudo mv -v $filename GEDR3_11932_GAIASOURCE
+            done
+
+            sudo rm _SUCCESS
+
+            ls -al
+
+        popd
+
+    >   total 6
+    >   drwxr-xr-x. 3 root root 571353028676 May 14 11:23 .
+    >   drwxr-xr-x. 8 root root         4096 May 14 10:51 ..
+    >   drwxr-xr-x. 2 root root 571353028654 May 14 11:19 GEDR3_11932_GAIASOURCE
+    >   lrwxrwxrwx. 1 root root           22 May 14 11:11 GEDR3_GAIASOURCE -> GEDR3_11932_GAIASOURCE
+
+        #
+        # Housekeeping for Gaia 2048 eDR3.
+        #
+
+        pushd aglais-data-gaia-edr3-2048-rw
+
+            # Create GEDR2_GAIASOURCE links in DR2
+            sudo ln -s GEDR3_2048_GAIASOURCE GEDR3_GAIASOURCE
+            sudo chown root:root GEDR3_GAIASOURCE
+
+            sudo ln -s GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS GEDR3_2MASSPSC_BEST_NEIGHBOURS
+            sudo chown root:root GEDR3_2MASSPSC_BEST_NEIGHBOURS
+
+            sudo ln -s GEDR3_2048_ALLWISE_BEST_NEIGHBOURS GEDR3_ALLWISE_BEST_NEIGHBOURS
+            sudo chown root:root GEDR3_ALLWISE_BEST_NEIGHBOURS
+
+            sudo ln -s GEDR3_2048_PS1_BEST_NEIGHBOURS GEDR3_PS1_BEST_NEIGHBOURS
+            sudo chown root:root GEDR3_PS1_BEST_NEIGHBOURS
+
+            ls -al
+
+        popd
+
+    >   drwxr-xr-x. 2 root root   63760865732 May 11 05:32 GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root  189525111830 May 11 06:31 GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root  602084506263 May 11 05:07 GEDR3_2048_GAIASOURCE
+    >   drwxr-xr-x. 2 root root  174243389961 May 11 07:27 GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   lrwxrwxrwx. 1 root root            35 May 14 11:28 GEDR3_2MASSPSC_BEST_NEIGHBOURS -> GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   lrwxrwxrwx. 1 root root            34 May 14 11:28 GEDR3_ALLWISE_BEST_NEIGHBOURS -> GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   lrwxrwxrwx. 1 root root            21 May 14 11:27 GEDR3_GAIASOURCE -> GEDR3_2048_GAIASOURCE
+    >   lrwxrwxrwx. 1 root root            30 May 14 11:28 GEDR3_PS1_BEST_NEIGHBOURS -> GEDR3_2048_PS1_BEST_NEIGHBOURS
+
+
+# -----------------------------------------------------
+# Update the names of the original DR2 and DR3 shares.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud 'gaia-prod' \
+        share set \
+            'aglais-data-gaia-dr2' \
+            --name 'aglais-data-gaia-dr2-6514'
+
+    openstack \
+        --os-cloud 'gaia-prod' \
+        share set \
+            'aglais-data-gaia-edr3' \
+            --name 'aglais-data-gaia-edr3-11932'
+
+    openstack \
+        --os-cloud 'gaia-prod' \
+        share list
+
+    >   +--------------------------------------+-----------------------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name                        |  Size | Share Proto | Status    | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+-----------------------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | 2e46b5a5-c5d9-44c0-b11c-310c222f4818 | aglais-data-gaia-dr2-6514   |   512 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | ca8231c3-1f5c-4ebf-8ec0-d3cfe2629976 | aglais-data-gaia-edr3-11932 |   540 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | d583565e-de86-46df-9969-f587e4d61a37 | aglais-data-gaia-edr3-2048  |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | ba66d6db-7d85-44c4-bb95-7410a000f6b7 | aglais-data-panstarrs-ps1   |   300 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 9dc3016a-f010-48bc-89fc-a9cbd688b7cc | aglais-data-twomass-allsky  |    40 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 8f0b3452-3c66-4e65-8815-15eb73988b3e | aglais-data-wise-allwise    |   350 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 7b03dcf9-6806-44a0-b87f-56528b50338f | aglais-user-dcr             |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 6852b819-7395-4786-80c0-06fa9cebcc65 | aglais-user-nch             | 10240 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | fe63568a-d90c-4fb0-8979-07504328809d | aglais-user-stv             |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | ff351afd-1f06-4d02-9f53-cbe20b0676cc | aglais-user-zrq             |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   +--------------------------------------+-----------------------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+
+

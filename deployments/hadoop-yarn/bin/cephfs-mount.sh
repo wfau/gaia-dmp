@@ -38,14 +38,16 @@
     inventory=${2:?}
     sharename=${3:?}
     mountpath=${4:?}
-    sharemode=${5:-'ro'}
+    mounthost=${5:-'zeppelin:masters:workers'}
+    mountmode=${6:-'ro'}
 
     echo "---- ---- ----"
     echo "Cloud name [${cloudname}]"
     echo "Hosts file [${inventory}]"
     echo "Share name [${sharename}]"
     echo "Mount path [${mountpath}]"
-    echo "Share mode [${sharemode}]"
+    echo "Mount host [${mounthost}]"
+    echo "Mount mode [${mountmode}]"
     echo "---- ---- ----"
     echo ""
 
@@ -134,7 +136,7 @@
             share access list \
                 --format json \
                 "${shareid:?}" \
-        | jq -r '.[] | select(.access_level == "'${sharemode:?}'") | .id'
+        | jq -r '.[] | select(.access_level == "'${mountmode:?}'") | .id'
         )
 
     openstack \
@@ -162,10 +164,11 @@
 # -----------------------------------------------------
 # Add details of the share to our Ansible vars file.
 
-    cat > /tmp/ceph-vars.yml << EOF
+    cat > /tmp/ceph-mount-vars.yml << EOF
 
 mntpath:  '${mountpath:?}'
-mntopts:  'async,auto,nodev,noexec,nosuid,${sharemode:?},_netdev'
+mntopts:  'async,auto,nodev,noexec,nosuid,${mountmode:?},_netdev'
+mnthost:  '${mounthost:?}'
 
 cephuser:  '${cephuser:?}'
 cephkey:   '${cephkey:?}'
@@ -181,7 +184,7 @@ EOF
 
         ansible-playbook \
             --inventory "${inventory:?}" \
-            --extra-vars '@/tmp/ceph-vars.yml' \
+            --extra-vars '@/tmp/ceph-mount-vars.yml' \
             '51-cephfs-mount.yml'
 
     popd

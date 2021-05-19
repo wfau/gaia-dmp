@@ -1,0 +1,193 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Test the issue-384-rebased branch (Prometheus)
+
+    Result:
+
+        Success
+
+
+# -----------------------------------------------------
+# Checkout the deployment branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout 'issue-384-rebased'
+
+    popd
+
+
+# Modify number of workers to 10, change num of executors to 10
+# Reason for this is that the tiny-16 deploy failed a few times last week due to resource limits
+# Not sure what the right Spark configuration is for 10 nodes, but I don't think performance is the concern here, as we aren't changing anythin in the Spark/Hadoop/Zeppelin components
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-test
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+	
+	> Done
+
+# -----------------------------------------------------
+# Create everything, using the tiny-16 config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'tiny-16'
+
+	> Done
+
+# -----------------------------------------------------
+# Setup integration with github
+#[root@ansibler]
+
+
+  ssh zeppelin \
+        '
+        export githubuser=username
+        export githubpass=pass
+
+        rm -rf /home/fedora/zeppelin-0.8.2-bin-all/notebook
+	git clone https://${githubuser:?}:${githubpass:?}@github.com/wfau/aglais-notebooks.git /home/fedora/zeppelin-0.8.2-bin-all/notebook
+
+	cat > "${HOME}/zeppelin-0.8.2-bin-all/notebook/.git/hooks/post-commit" << EOF
+	#!/bin/sh
+	git push 
+
+	EOF
+
+	chmod +x ${HOME}/zeppelin-0.8.2-bin-all/notebook/.git/hooks/post-commit
+	/home/fedora/zeppelin-0.8.2-bin-all/bin/zeppelin-daemon.sh restart
+	'
+
+	> Cloning into '/home/fedora/zeppelin-0.8.2-bin-all/notebook'...
+	  Zeppelin stop                                              [  OK  ]
+	  Zeppelin start                                             [  OK  ]
+
+
+
+
+
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://128.232.227.236:8080" &
+
+
+	# Run the "Good astrometric solutions via ML Random Forrest classifier" notebook
+        # Add the quick filter: 
+        #   "quick_filter = ' AND MOD(random_index, 10) = 0'"
+        # and change the numTrees to 500:  
+        #    "rf = RandomForestClassifier(featureSubsetStrategy = 'sqrt', featuresCol = 'features', labelCol = 'label', numTrees = 500, impurity = 'gini', seed=42)"
+        # Notebook version can be found here: https://raw.githubusercontent.com/wfau/aglais-notebooks/9a766bd47f0b607ac2e2dd57c5c59fdfad733684/2G6Q2D85X/note.json
+        
+
+        # SUCCESS
+
+        # Initial select
+        > Took 12 min 36 sec. Last updated by admin at May 18 2021, 8:01:18 PM.
+
+
+
+        # Forrest Classifier
+	# rf = RandomForestClassifier(featureSubsetStrategy = 'sqrt', featuresCol = 'features', labelCol = 'label', numTrees = 500, impurity = 'gini', seed=42)
+	> In Progress..
+
+
+        # Rest of Notebook runs Successfully
+	
+
+
+
+# -----------------------------------------------------
+# Check Prometheus / Grafana Metrics
+#[user@desktop]
+
+
+# Tunnel Connection from localhost to monitor node
+ssh -L '3000:monitor:3000' fedora@http://128.232.227.236/
+
+
+firefox --new-window "http://localhost:3000" &
+
+# Login with admin / admin
+
+# Select "Add your first data source" and then select "Prometheus" as the data source
+ 
+# Add http://monitor:9090 as the URL and click "Save & Test"
+
+# From left navigation click the "+" button & Import
+ 
+# In the Import textfield, add "1860" and click Load
+
+# In the next page, select the Prometheus source we created, and click "Import"
+
+# Success
+
+
+# Observe some nodes, by changing the "Host" Value at the top. (We see a dropdown list of all nodes)
+
+# Several potentially useful metrics while job is running (Random Forrest Classifier)
+
+	# RAM Used:  45%
+	# CPU Busy: 52%
+
+	# Memory usage breakdown (Cache & Apps usage near 6 GB)
+	# CPU Usage (Mostly idle, or waiting for IOPS)
+	# Network Traffic
+        # Disk Space Usage
+        # Disk IOps

@@ -1,0 +1,352 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Create a new Manila share for the repartitioned GEDR3-4096 data and neighbour tables
+
+        Continuing from prev notes
+        notes/zrq/20210514-01-housekeeping.txt
+
+    Result:
+
+        Work in progress ....
+
+
+
+# -----------------------------------------------------
+# Create a new share for the Gaia data.
+#[root@ansibler]
+
+    sharename=aglais-data-gaia-edr3-4096
+    sharesize=1024
+    sharecloud=gaia-prod
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share create \
+            --format json \
+            --name "${sharename:?}" \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            "${sharesize:?}" \
+    | tee /tmp/manila-share.json
+
+    shareid=$(
+        jq -r '.id' /tmp/manila-share.json
+        )
+
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+            share show \
+                "${shareid:?}"
+
+    >   +---------------------------------------+----------------------------------------+
+    >   | Field                                 | Value                                  |
+    >   +---------------------------------------+----------------------------------------+
+    >   | access_rules_status                   | active                                 |
+    >   | availability_zone                     | nova                                   |
+    >   | created_at                            | 2021-05-14T11:53:21.000000             |
+    >   | description                           | None                                   |
+    >   | ....                                  | ....                                   |
+    >   | id                                    | 9d745a5b-7d98-421c-a16e-d1ac9fdeebc8   |
+    >   | is_public                             | False                                  |
+    >   | name                                  | aglais-data-gaia-edr3-4096             |
+    >   | ....                                  | ....                                   |
+    >   | volume_type                           | cephfsnativetype                       |
+    >   +---------------------------------------+----------------------------------------+
+
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+            share set \
+                "${shareid:?}" \
+                --public true
+
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+            share show \
+                "${shareid:?}"
+
+    >   +---------------------------------------+----------------------------------------+
+    >   | Field                                 | Value                                  |
+    >   +---------------------------------------+----------------------------------------+
+    >   | ....                                  | ....                                   |
+    >   | id                                    | 9d745a5b-7d98-421c-a16e-d1ac9fdeebc8   |
+    >   | is_public                             | True                                   |
+    >   | name                                  | aglais-data-gaia-edr3-4096             |
+    >   | ....                                  | ....                                   |
+    >   +---------------------------------------+----------------------------------------+
+
+
+# -----------------------------------------------------
+# Get details of the Ceph export location.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share show \
+            --format json \
+            "${shareid:?}" \
+    | jq '.' \
+    | tee /tmp/manila-share.json
+
+    locations=$(
+        jq '.export_locations' /tmp/manila-share.json
+        )
+
+    cephnodes=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\1/
+            s/,/ /g
+            '
+            )
+
+    cephpath=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\2/
+            '
+            )
+
+    cephsize=$(
+        jq '.size' /tmp/manila-share.json
+        )
+
+    cat << EOF
+Ceph path [${cephpath}]
+Ceph size [${cephsize}]
+EOF
+
+    for cephnode in ${cephnodes}
+    do
+        echo "Ceph node [${cephnode}]"
+    done
+
+    >   Ceph path [/volumes/_nogroup/31134e02-b6c5-45ee-91c5-52e7bd4c8150]
+    >   Ceph size [1024]
+    >
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+
+
+# -----------------------------------------------------
+# Add a read-only access rule.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro"
+
+    >   {
+    >     "id": "2449c273-2e76-453b-a670-a9b64bade708",
+    >     "share_id": "9d745a5b-7d98-421c-a16e-d1ac9fdeebc8",
+    >     "access_level": "ro",
+    >     "access_to": "aglais-data-gaia-edr3-4096-ro",
+    >     "access_type": "cephx",
+    >     "state": "queued_to_apply",
+    >     "access_key": null,
+    >     "created_at": "2021-05-14T11:58:39.000000",
+    >     "updated_at": null,
+    >     "properties": ""
+    >   }
+
+
+# -----------------------------------------------------
+# Add a read-write access rule.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw"
+
+    >   {
+    >     "id": "81c1b821-cd00-43d6-87c5-2363883b806b",
+    >     "share_id": "9d745a5b-7d98-421c-a16e-d1ac9fdeebc8",
+    >     "access_level": "rw",
+    >     "access_to": "aglais-data-gaia-edr3-4096-rw",
+    >     "access_type": "cephx",
+    >     "state": "queued_to_apply",
+    >     "access_key": null,
+    >     "created_at": "2021-05-14T11:58:58.000000",
+    >     "updated_at": null,
+    >     "properties": ""
+    >   }
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # This needs to be done on the live deployment because that is where the new data is.
+    #
+
+# -----------------------------------------------------
+# Update our Ansible tmp vars.
+#[root@ansibler]
+
+    vi /tmp/aglais-status.yml
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: medium-04
+    >         name: gaia-prod-20210428
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-prod
+
+# -----------------------------------------------------
+# Update our local ssh config.
+#[root@ansibler]
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --verbose \
+            --verbose \
+            --inventory "${inventory:?}" \
+            '05-config-ssh.yml'
+
+    popd
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        '
+
+    >   Fri May 14 12:25:55 UTC 2021
+    >   gaia-prod-20210428-zeppelin.novalocal
+
+
+# -----------------------------------------------------
+# Mount the new share as rw so we can edit it.
+#[root@ansibler]
+
+    inventory=config/medium-04.yml
+
+    mountpath=/data/frog/${sharename:?}-rw
+
+    "/deployments/hadoop-yarn/bin/cephfs-mount.sh" \
+        'gaia-prod' \
+        "${inventory:?}" \
+        "${sharename:?}" \
+        "${mountpath:?}" \
+        'zeppelin' \
+        'rw'
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and implement the transfer.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        # Create the destination directories.
+        pushd /data/frog/aglais-data-gaia-edr3-4096-rw
+
+            sudo mkdir GEDR3_4096_GAIASOURCE
+            sudo mkdir GEDR3_4096_2MASSPSC_BEST_NEIGHBOURS
+            sudo mkdir GEDR3_4096_ALLWISE_BEST_NEIGHBOURS
+            sudo mkdir GEDR3_4096_PS1_BEST_NEIGHBOURS
+
+            sudo ln -s GEDR3_4096_GAIASOURCE                GEDR3_GAIASOURCE
+            sudo ln -s GEDR3_4096_2MASSPSC_BEST_NEIGHBOURS  GEDR3_2MASSPSC_BEST_NEIGHBOURS
+            sudo ln -s GEDR3_4096_ALLWISE_BEST_NEIGHBOURS   GEDR3_ALLWISE_BEST_NEIGHBOURS
+            sudo ln -s GEDR3_4096_PS1_BEST_NEIGHBOURS       GEDR3_PS1_BEST_NEIGHBOURS
+
+            ls -al
+
+        popd
+
+    >   drwxr-xr-x. 6 root root  120 May 14 12:28 .
+    >   drwxr-xr-x. 3 root root 4096 May 14 12:26 ..
+    >   lrwxrwxrwx. 1 root root   35 May 14 12:28 GEDR3_2MASSPSC_BEST_NEIGHBOURS -> GEDR3_4096_2MASSPSC_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root    0 May 14 12:15 GEDR3_4096_2MASSPSC_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root    0 May 14 12:15 GEDR3_4096_ALLWISE_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root    0 May 14 12:15 GEDR3_4096_GAIASOURCE
+    >   drwxr-xr-x. 2 root root    0 May 14 12:15 GEDR3_4096_PS1_BEST_NEIGHBOURS
+    >   lrwxrwxrwx. 1 root root   34 May 14 12:28 GEDR3_ALLWISE_BEST_NEIGHBOURS -> GEDR3_4096_ALLWISE_BEST_NEIGHBOURS
+    >   lrwxrwxrwx. 1 root root   21 May 14 12:28 GEDR3_GAIASOURCE -> GEDR3_4096_GAIASOURCE
+    >   lrwxrwxrwx. 1 root root   30 May 14 12:28 GEDR3_PS1_BEST_NEIGHBOURS -> GEDR3_4096_PS1_BEST_NEIGHBOURS
+
+
+        # Locate the repartitioned data
+        hadoop fs -ls hdfs://master01:9000/partitioned/GEDR3-4096 | head
+
+    >   Found 4097 items
+    >   -rw-r--r--   3 fedora supergroup          0 2021-05-13 19:57 hdfs://master01:9000/partitioned/GEDR3-4096/_SUCCESS
+    >   -rw-r--r--   3 fedora supergroup  147085601 2021-05-13 17:10 hdfs://master01:9000/partitioned/GEDR3-4096/part-00000-dc9b579c-2247-48f9-8f92-6ffbc0384845_00000.c000.snappy.parquet
+    >   -rw-r--r--   3 fedora supergroup  147099027 2021-05-13 17:09 hdfs://master01:9000/partitioned/GEDR3-4096/part-00001-dc9b579c-2247-48f9-8f92-6ffbc0384845_00001.c000.snappy.parquet
+    >   -rw-r--r--   3 fedora supergroup  147409679 2021-05-13 17:09 hdfs://master01:9000/partitioned/GEDR3-4096/part-00002-dc9b579c-2247-48f9-8f92-6ffbc0384845_00002.c000.snappy.parquet
+    >   -rw-r--r--   3 fedora supergroup  147103618 2021-05-13 17:09 hdfs://master01:9000/partitioned/GEDR3-4096/part-00003-dc9b579c-2247-48f9-8f92-6ffbc0384845_00003.c000.snappy.parquet
+    >   ....
+    >   ....
+
+        # Grant permission to write to the target directory.
+        sudo chmod a+w /data/frog/aglais-data-gaia-edr3-4096-rw/GEDR3_4096_GAIASOURCE
+
+
+        # Transfer the repartitioned data
+        hadoop fs -get \
+            hdfs://master01:9000/partitioned/GEDR3-4096/* \
+            /data/frog/aglais-data-gaia-edr3-4096-rw/GEDR3_4096_GAIASOURCE/
+
+    >   2021-05-14 12:42:57,302 INFO sasl.SaslDataTransferClient: SASL encryption trust check: localHostTrusted = false, remoteHostTrusted = false
+    >   2021-05-14 12:43:00,890 INFO sasl.SaslDataTransferClient: SASL encryption trust check: localHostTrusted = false, remoteHostTrusted = false
+    >   2021-05-14 12:43:04,860 INFO sasl.SaslDataTransferClient: SASL encryption trust check: localHostTrusted = false, remoteHostTrusted = false
+    >   2021-05-14 12:43:05,353 INFO sasl.SaslDataTransferClient: SASL encryption trust check: localHostTrusted = false, remoteHostTrusted = false
+    >   ....
+    >   ....
+    >   2021-05-14 17:15:26,850 INFO sasl.SaslDataTransferClient: SASL encryption trust check: localHostTrusted = false, remoteHostTrusted = false
+    >   2021-05-14 17:15:27,236 INFO sasl.SaslDataTransferClient: SASL encryption trust check: localHostTrusted = false, remoteHostTrusted = false
+    >   2021-05-14 17:15:31,753 INFO sasl.SaslDataTransferClient: SASL encryption trust check: localHostTrusted = false, remoteHostTrusted = false
+    >   2021-05-14 17:15:37,826 INFO sasl.SaslDataTransferClient: SASL encryption trust check: localHostTrusted = false, remoteHostTrusted = false
+
+
+        4 hours, 32 minutes to transfer 562G - not impressed
+
+

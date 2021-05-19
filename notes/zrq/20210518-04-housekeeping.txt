@@ -1,0 +1,262 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Traget:
+
+        Update the share mounts on live server.
+
+    Result:
+
+        Successfully applied the Ansible scripts for data shares and links.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-dev
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Update our Ansible tmp vars.
+#[root@ansibler]
+
+    cat > /tmp/ansible-vars.yml << EOF
+
+aglais:
+  status:
+    deployment:
+      type: hadoop-yarn
+      conf: medium-04
+      name: gaia-prod-20210428
+  spec:
+    openstack:
+      cloud: gaia-prod
+
+EOF
+
+
+# -----------------------------------------------------
+# Update our local ssh config.
+#[root@ansibler]
+
+    inventory=config/medium-04.yml
+
+    pushd /deployments/hadoop-yarn/ansible
+
+        ansible-playbook \
+            --verbose \
+            --verbose \
+            --inventory "${inventory:?}" \
+            '05-config-ssh.yml'
+
+    popd
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        '
+
+    >   Wed May 19 00:00:21 UTC 2021
+    >   gaia-prod-20210428-zeppelin.novalocal
+
+
+# -----------------------------------------------------
+# Unmount the existing shares.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sudo umount gaia/dr2
+        sudo umount gaia/edr3
+
+        sudo umount twomass/allsky
+        sudo umount panstarrs/dr1
+        sudo umount wise/allwise
+
+        sudo rmdir gaia/dr2
+        sudo rmdir gaia/edr3
+
+        sudo rmdir twomass/allsky
+        sudo rmdir panstarrs/dr1
+        sudo rmdir wise/allwise
+
+        exit
+
+
+# -----------------------------------------------------
+# Mount the data shares.
+#[root@ansibler]
+
+    sharelist='/deployments/common/manila/datashares.yaml'
+    mountmode='ro'
+    mounthost='zeppelin:masters:workers'
+
+    for shareid in $(
+        yq read "${sharelist:?}" 'datashares.[*].id'
+        )
+    do
+        echo ""
+        echo "Share [${shareid:?}]"
+
+        sharename=$(yq read "${sharelist:?}" "datashares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "datashares.(id==${shareid:?}).mountpath")
+
+        '/deployments/hadoop-yarn/bin/cephfs-mount.sh' \
+            'gaia-prod' \
+            "${inventory:?}" \
+            "${sharename:?}" \
+            "${mountpath:?}" \
+            "${mounthost:?}" \
+            "${mountmode:?}"
+
+    done
+
+
+# -----------------------------------------------------
+# Add the data symlinks.
+#[root@ansibler]
+
+    pushd '/deployments/hadoop-yarn/ansible'
+
+        ansible-playbook \
+            --verbose \
+            --verbose \
+            --inventory "${inventory:?}" \
+            '61-data-links.yml'
+
+    popd
+
+
+# -----------------------------------------------------
+# Mount the old DR2 share as rw so we can edit it.
+#[root@ansibler]
+
+    inventory=config/medium-04.yml
+
+    sharename=aglais-data-gaia-dr2-6514
+
+    mountpath=/data/frog/${sharename:?}-rw
+
+    '/deployments/hadoop-yarn/bin/cephfs-mount.sh' \
+        'gaia-prod' \
+        "${inventory:?}" \
+        "${sharename:?}" \
+        "${mountpath:?}" \
+        'zeppelin' \
+        'rw'
+
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the shares and links.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        ls -alh /data/gaia/
+
+    >   drwxr-xr-x. 2 root root 4.0K May 19 00:30 GDR2
+    >   drwxr-xr-x. 3 root root 473G May 19 00:45 GDR2_6514
+    >   drwxr-xr-x. 2 root root 4.0K May 19 00:22 GEDR3
+    >   drwxr-xr-x. 3 root root 533G May 14 11:23 GEDR3_11932
+    >   drwxr-xr-x. 6 root root 959G May 14 11:28 GEDR3_2048
+    >   drwxr-xr-x. 6 root root 562G May 14 12:28 GEDR3_4096
+    >   drwxr-xr-x. 6 root root 553G May 18 00:50 GEDR3_8192
+    >   lrwxrwxrwx. 1 root root   20 May 19 00:38 edr2 -> /data/gaia/GDR2_6514
+    >   lrwxrwxrwx. 1 root root   22 May 19 00:23 edr3 -> /data/gaia/GEDR3_11932
+
+
+        ls -alh /data/gaia/GDR2/GDR2_GAIASOURCE/ | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root  29M Oct 24  2020 part-06510-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  29M Oct 24  2020 part-06511-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  28M Oct 24  2020 part-06512-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 6.1M Oct 24  2020 part-06513-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3/GEDR3_GAIASOURCE/ | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root 281M May 11 05:06 part-02044-061dbeeb-75b5-41c3-9d01-422766759ddd_02044.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 05:07 part-02045-061dbeeb-75b5-41c3-9d01-422766759ddd_02045.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 05:07 part-02046-061dbeeb-75b5-41c3-9d01-422766759ddd_02046.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 05:07 part-02047-061dbeeb-75b5-41c3-9d01-422766759ddd_02047.c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3_2048/GEDR3_GAIASOURCE/ | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root 281M May 11 05:06 part-02044-061dbeeb-75b5-41c3-9d01-422766759ddd_02044.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 05:07 part-02045-061dbeeb-75b5-41c3-9d01-422766759ddd_02045.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 05:07 part-02046-061dbeeb-75b5-41c3-9d01-422766759ddd_02046.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 05:07 part-02047-061dbeeb-75b5-41c3-9d01-422766759ddd_02047.c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3_4096/GEDR3_GAIASOURCE/ | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root 141M May 14 17:15 part-04092-dc9b579c-2247-48f9-8f92-6ffbc0384845_04092.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 141M May 14 17:15 part-04093-dc9b579c-2247-48f9-8f92-6ffbc0384845_04093.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 141M May 14 17:15 part-04094-dc9b579c-2247-48f9-8f92-6ffbc0384845_04094.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 141M May 14 17:15 part-04095-dc9b579c-2247-48f9-8f92-6ffbc0384845_04095.c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3_8192/GEDR3_GAIASOURCE/ | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root  70M May 18 05:24 part-08188-b488a625-c20f-4220-b880-366c07b11360_08188.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  69M May 18 05:25 part-08189-b488a625-c20f-4220-b880-366c07b11360_08189.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  70M May 18 05:25 part-08190-b488a625-c20f-4220-b880-366c07b11360_08190.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  70M May 18 05:25 part-08191-b488a625-c20f-4220-b880-366c07b11360_08191.c000.snappy.parquet
+
+
+

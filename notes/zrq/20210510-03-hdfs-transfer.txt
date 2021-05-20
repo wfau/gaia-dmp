@@ -1,0 +1,999 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+    Target:
+
+        Create a new Manila share for the repartitioned data and neighbour tables
+
+    Result:
+
+        Work in progress ....
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    AGLAIS_CLOUD=gaia-dev
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[user@kubernator]
+
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# Create a new share for the Gaia data.
+#[root@ansibler]
+
+    sharename=aglais-gaia-edr3-20210510
+    sharesize=1024
+    sharecloud=gaia-prod
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share create \
+            --format json \
+            --name "${sharename:?}" \
+            --share-type 'cephfsnativetype' \
+            --availability-zone 'nova' \
+            'CEPHFS' \
+            "${sharesize:?}" \
+    | tee /tmp/manila-share.json
+
+    shareid=$(
+        jq -r '.id' /tmp/manila-share.json
+        )
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+            share show \
+                "${shareid:?}"
+
+--START--
++---------------------------------------+----------------------------------------+
+| Field                                 | Value                                  |
++---------------------------------------+----------------------------------------+
+| access_rules_status                   | active                                 |
+| availability_zone                     | nova                                   |
+| created_at                            | 2021-05-11T01:23:04.000000             |
+| description                           | None                                   |
+| ....                                  | ....                                   |
+| id                                    | d583565e-de86-46df-9969-f587e4d61a37   |
+| is_public                             | False                                  |
+| ....                                  | ....                                   |
+| volume_type                           | cephfsnativetype                       |
++---------------------------------------+----------------------------------------+
+--END--
+
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+            share set \
+                "${shareid:?}" \
+                --public true
+
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+            share show \
+                "${shareid:?}"
+
+--START--
++---------------------------------------+----------------------------------------+
+| Field                                 | Value                                  |
++---------------------------------------+----------------------------------------+
+| ....                                  | ....                                   |
+| id                                    | d583565e-de86-46df-9969-f587e4d61a37   |
+| is_public                             | True                                   |
+| ....                                  | ....                                   |
++---------------------------------------+----------------------------------------+
+--END--
+
+
+# -----------------------------------------------------
+# Get details of the Ceph export location.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share show \
+            --format json \
+            "${shareid:?}" \
+    | jq '.' \
+    | tee /tmp/manila-share.json
+
+    locations=$(
+        jq '.export_locations' /tmp/manila-share.json
+        )
+
+    cephnodes=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\1/
+            s/,/ /g
+            '
+            )
+
+    cephpath=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\2/
+            '
+            )
+
+    cephsize=$(
+        jq '.size' /tmp/manila-share.json
+        )
+
+    cat << EOF
+Ceph path [${cephpath}]
+Ceph size [${cephsize}]
+EOF
+
+    for cephnode in ${cephnodes}
+    do
+        echo "Ceph node [${cephnode}]"
+    done
+
+--START--
+Ceph path [/volumes/_nogroup/622bb766-6ae2-4aa5-ad9c-536a71012245]
+Ceph size [1024]
+
+Ceph node [10.206.1.5:6789]
+Ceph node [10.206.1.6:6789]
+Ceph node [10.206.1.7:6789]
+--END--
+
+
+# -----------------------------------------------------
+# Add a read-only access rule.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro"
+
+--START--
+{
+  "id": "f6ad0bc0-29ec-4686-a35c-a766c1a259e0",
+  "share_id": "d583565e-de86-46df-9969-f587e4d61a37",
+  "access_level": "ro",
+  "access_to": "aglais-gaia-edr3-20210510-ro",
+  "access_type": "cephx",
+  "state": "queued_to_apply",
+  "access_key": null,
+  "created_at": "2021-05-11T01:33:06.000000",
+  "updated_at": null,
+  "properties": ""
+}
+--END--
+
+
+# -----------------------------------------------------
+# Add a read-write access rule.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw"
+
+--START--
+{
+  "id": "88a1894c-074d-4b9b-a264-76130773116c",
+  "share_id": "d583565e-de86-46df-9969-f587e4d61a37",
+  "access_level": "rw",
+  "access_to": "aglais-gaia-edr3-20210510-rw",
+  "access_type": "cephx",
+  "state": "queued_to_apply",
+  "access_key": null,
+  "created_at": "2021-05-11T01:33:33.000000",
+  "updated_at": null,
+  "properties": ""
+}
+--END--
+
+
+# -----------------------------------------------------
+# Create our Ansible vars file.
+#[root@ansibler]
+
+    cat > '/tmp/aglais-status.yml' << EOF
+aglais:
+  status:
+    deployment:
+      type: hadoop-yarn
+      conf: tiny-16
+      name: gaia-dev-20210505
+  spec:
+    openstack:
+      cloud: ${cloudname}
+EOF
+
+    ln -sf '/tmp/aglais-status.yml' '/tmp/ansible-vars.yml'
+
+
+    #
+    # EEK
+    # Share mount commands from old notes use 'hosts.yml' but the deployment is based on 'tiny-16.yml'
+    # The number and names of the hosts will have changed
+    # Need to merge the changes from previous branch before we can do this ...
+    #
+    # OK - fixed
+    # Moved to a new branch and pulled the latest changes from upstream
+    # notes/zrq/20210510-04-git-fetch.txt
+    #
+
+# -----------------------------------------------------
+# Change to the ansible directory.
+#[root@ansibler]
+
+    cd '/deployments/hadoop-yarn/ansible/'
+
+# -----------------------------------------------------
+# Create our client ssh config.
+#[root@ansibler]
+
+    deployconf=$(
+        yq read /tmp/aglais-status.yml 'aglais.status.deployment.conf'
+        )
+
+    inventory="config/${deployconf}.yml"
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '05-config-ssh.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '08-ping-test.yml'
+
+
+--START--
+PLAY [Ping tests] ************************************************************************************************
+
+TASK [Check we can connect] **************************************************************************************
+ok: [zeppelin]
+ok: [master01]
+....
+....
+ok: [worker15]
+ok: [worker16]
+
+TASK [Check we can use sudo] *************************************************************************************
+ok: [zeppelin]
+ok: [master01]
+....
+....
+ok: [worker15]
+ok: [worker16]
+
+PLAY RECAP *******************************************************************************************************
+zeppelin                   : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+master01                   : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+....
+....
+worker15                   : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+worker16                   : ok=2    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+--END--
+
+
+# -----------------------------------------------------
+# Mount the share into all our nodes.
+#[root@ansibler]
+
+    mountpath=/data/gaia/edr3-20210510
+    mountmode=rw
+
+    "/deployments/hadoop-yarn/bin/cephfs-mount.sh" \
+        "${sharecloud:?}" \
+        "${inventory:?}" \
+        "${sharename:?}" \
+        "${mountpath:?}" \
+        "${mountmode:?}"
+
+--START--
+---- ---- ----
+File [cephfs-mount.sh]
+Path [/deployments/hadoop-yarn/bin]
+Tree [/deployments]
+---- ---- ----
+Cloud name [gaia-prod]
+Hosts file [config/tiny-16.yml]
+Share name [aglais-gaia-edr3-20210510]
+Mount path [/data/gaia/edr3-20210510]
+Share mode [rw]
+---- ---- ----
+
+Target [gaia-prod][aglais-gaia-edr3-20210510]
+Found  [d583565e-de86-46df-9969-f587e4d61a37]
+----
+Ceph path [/volumes/_nogroup/622bb766-6ae2-4aa5-ad9c-536a71012245]
+Ceph size [1024]
+----
+Ceph node [10.206.1.5:6789]
+Ceph node [10.206.1.6:6789]
+Ceph node [10.206.1.7:6789]
+----
+Ceph user [aglais-gaia-edr3-20210510-rw]
+Ceph key  [####-####]
+
+PLAY [Install and mount a CephFS share] **************************************************************************
+
+TASK [Install CephFS Fuse client] ********************************************************************************
+changed: [zeppelin]
+changed: [master01]
+....
+changed: [worker15]
+changed: [worker16]
+
+TASK [Creating CephFS key file [/etc/ceph/aglais-gaia-edr3-20210510-rw.keyring]] *********************************
+changed: [zeppelin]
+changed: [master01]
+....
+changed: [worker15]
+changed: [worker16]
+
+TASK [Creating CephFS cfg file [/etc/ceph/aglais-gaia-edr3-20210510-rw.conf]] ************************************
+changed: [zeppelin]
+changed: [master01]
+....
+changed: [worker15]
+changed: [worker16]
+
+TASK [Creating CephFS fstab entry [/data/gaia/edr3-20210510]] ****************************************************
+changed: [zeppelin]
+changed: [master01]
+....
+changed: [worker15]
+changed: [worker16]
+
+PLAY RECAP *******************************************************************************************************
+zeppelin                   : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+master01                   : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+....
+worker15                   : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+worker16                   : ok=4    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+--END--
+
+
+# -----------------------------------------------------
+# Login to a worker node to check the mount.
+#[root@ansibler]
+
+    ssh worker01 \
+        "
+        date
+        hostname
+        echo '----'
+        df -h  '${mountpath:?}'
+        "
+
+--START--
+Tue May 11 02:07:59 UTC 2021
+gaia-dev-20210505-worker01.novalocal
+----
+Filesystem      Size  Used Avail Use% Mounted on
+ceph-fuse       1.0T     0  1.0T   0% /data/gaia/edr3-20210510
+--END--
+
+
+# -----------------------------------------------------
+# Login to a worker node to transfer the data.
+#[root@ansibler]
+
+    ssh worker01 \
+        "
+        sudo chmod a+rwx '${mountpath:?}'
+        ls -al '${mountpath:?}'
+        "
+
+    ssh worker01 \
+        "
+        rsync \
+            --verbose \
+            --recursive \
+            '/user/zrq/repartitioned/' \
+            '${mountpath:?}'
+        "
+
+--START--
+sending incremental file list
+GEDR3/
+GEDR3/_SUCCESS
+GEDR3/part-00000-061dbeeb-75b5-41c3-9d01-422766759ddd_00000.c000.snappy.parquet
+GEDR3/part-00001-061dbeeb-75b5-41c3-9d01-422766759ddd_00001.c000.snappy.parquet
+GEDR3/part-00002-061dbeeb-75b5-41c3-9d01-422766759ddd_00002.c000.snappy.parquet
+GEDR3/part-00003-061dbeeb-75b5-41c3-9d01-422766759ddd_00003.c000.snappy.parquet
+GEDR3/part-00004-061dbeeb-75b5-41c3-9d01-422766759ddd_00004.c000.snappy.parquet
+GEDR3/part-00005-061dbeeb-75b5-41c3-9d01-422766759ddd_00005.c000.snappy.parquet
+....
+....
+--END--
+
+    #
+    # OMG this is slow ...
+    #
+
+
+# -----------------------------------------------------
+# Login to a worker node to check the results.
+#[root@ansibler]
+
+    ssh worker01 \
+        "
+        date
+        hostname
+        echo '----'
+        df -h  '${mountpath:?}'
+        "
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.gaia-dev.aglais.uk:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Import our Random Forest notebook from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+        #
+        # Change the column name.
+        astrometric_features = [
+            ....
+            'astrometric_sigma5d_max',
+            ....
+            ]
+
+        #
+        # Use the repartitioned data source
+        gs_parquet = sqlContext.read.parquet('file://///data/gaia/edr3-20210510/GEDR3')
+
+    #
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell -
+    Last cell  -
+
+    xx min
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Watch the zeppelin logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            pushd "${HOME}/zeppelin-0.8.2-bin-all/logs"
+
+                tail -f "zeppelin-interpreter-spark-fedora-$(hostname -f).log"
+
+
+# -----------------------------------------------------
+# Monitor the zeppelin node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh zeppelin
+
+            htop
+
+
+# -----------------------------------------------------
+# Monitor the worker node
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            htop -d 100
+
+
+# -----------------------------------------------------
+# Watch the application logs
+#[user@desktop]
+
+    podman exec -it ansibler /bin/bash
+
+        ssh worker02
+
+            tail -f /var/hadoop/logs/userlogs/application_1620051958039_0001/container_1620051958039_0001_01_000019/stderr
+
+
+    #
+    # Three attempts at running the notebook all failed for odd reasons.
+    # Try again with the original data ...
+    #
+
+# -----------------------------------------------------
+# Login to the master node and restart the workers.
+#[root@ansibler]
+
+    ssh master01 \
+        "
+        date
+        hostname
+        echo '----'
+        stop-yarn.sh
+        echo '----'
+        sleep 30
+        date
+        hostname
+        echo '----'
+        start-yarn.sh
+        "
+
+--START--
+Tue May 11 14:46:11 UTC 2021
+gaia-dev-20210505-master01.novalocal
+----
+Stopping nodemanagers
+worker09: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker10: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker03: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker08: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker04: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker05: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker06: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker07: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker01: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker02: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker15: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker16: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker12: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker14: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker11: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+worker13: WARNING: nodemanager did not stop gracefully after 5 seconds: Trying to kill with kill -9
+Stopping resourcemanager
+----
+Tue May 11 14:46:56 UTC 2021
+gaia-dev-20210505-master01.novalocal
+----
+Starting resourcemanager
+Starting nodemanagers
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Import our Random Forest notebook from GitHub, clear the output and run all the cells ...
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+        #
+        # Revert the column name.
+        astrometric_features = [
+            ....
+            'astrometric_sigma_5d_max',
+            ....
+            ]
+
+        #
+        # Use the original data source
+        gs_parquet = sqlContext.read.parquet('file:////data/gaia/edr3')
+
+
+    #
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell - Took 0 sec. Last updated by zrq at May 11 2021, 3:50:37 PM.
+    Last cell  - Took 0 sec. Last updated by zrq at May 11 2021, 4:31:11 PM.
+
+    40 minutes and 34 seconds
+
+    #
+    # Lots of connection errors during the run ..
+    #
+
+
+--START--
+....
+ INFO [2021-05-11 15:00:20,806] ({dispatcher-event-loop-1} Logging.scala[logInfo]:54) - Starting task 143.0 in stage 22.1 (TID 69027, worker16, executor 29, partition 4421, PROCESS_LOCAL, 8535 bytes)
+ INFO [2021-05-11 15:00:20,806] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 112.0 in stage 22.1 (TID 69015) in 76 ms on worker16 (executor 29) (156/184)
+ INFO [2021-05-11 15:00:20,806] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 174.0 in stage 22.1 (TID 69014) in 78 ms on worker12 (executor 30) (157/184)
+ INFO [2021-05-11 15:00:20,808] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Starting task 115.0 in stage 22.1 (TID 69028, worker05, executor 26, partition 3619, PROCESS_LOCAL, 8535 bytes)
+ INFO [2021-05-11 15:00:20,808] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 85.0 in stage 22.1 (TID 68983) in 227 ms on worker05 (executor 26) (158/184)
+ INFO [2021-05-11 15:00:20,809] ({dispatcher-event-loop-0} Logging.scala[logInfo]:54) - Added rdd_103_4602 in memory on worker04:34791 (size: 16.0 B, free: 1291.2 MB)
+ INFO [2021-05-11 15:00:20,811] ({dispatcher-event-loop-5} Logging.scala[logInfo]:54) - Starting task 180.0 in stage 22.1 (TID 69029, worker08, executor 16, partition 5560, PROCESS_LOCAL, 8655 bytes)
+ INFO [2021-05-11 15:00:20,811] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 169.0 in stage 22.1 (TID 69007) in 111 ms on worker08 (executor 16) (159/184)
+ INFO [2021-05-11 15:00:20,816] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 164.0 in stage 22.1 (TID 69013) in 92 ms on worker11 (executor 9) (160/184)
+ INFO [2021-05-11 15:00:20,818] ({dispatcher-event-loop-5} Logging.scala[logInfo]:54) - Added rdd_103_4443 in memory on worker02:37283 (size: 16.0 B, free: 1294.8 MB)
+ INFO [2021-05-11 15:00:20,819] ({dispatcher-event-loop-5} Logging.scala[logInfo]:54) - Added rdd_103_4473 in memory on worker08:38595 (size: 16.0 B, free: 1288.7 MB)
+ INFO [2021-05-11 15:00:20,819] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Added rdd_103_4335 in memory on worker04:36061 (size: 16.0 B, free: 1293.6 MB)
+ INFO [2021-05-11 15:00:20,821] ({dispatcher-event-loop-1} Logging.scala[logInfo]:54) - Added rdd_103_3790 in memory on worker07:34165 (size: 16.0 B, free: 1290.7 MB)
+ INFO [2021-05-11 15:00:20,823] ({dispatcher-event-loop-0} Logging.scala[logInfo]:54) - Added rdd_103_4421 in memory on worker16:45047 (size: 16.0 B, free: 1293.2 MB)
+ INFO [2021-05-11 15:00:20,823] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 136.0 in stage 22.1 (TID 69017) in 86 ms on worker16 (executor 15) (161/184)
+ INFO [2021-05-11 15:00:20,824] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Added rdd_103_5560 in memory on worker08:38473 (size: 16.0 B, free: 1293.9 MB)
+ INFO [2021-05-11 15:00:20,827] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 147.0 in stage 22.1 (TID 69001) in 147 ms on worker14 (executor 32) (162/184)
+ INFO [2021-05-11 15:00:20,830] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 156.0 in stage 22.1 (TID 69020) in 66 ms on worker02 (executor 23) (163/184)
+ INFO [2021-05-11 15:00:20,849] ({dispatcher-event-loop-3} Logging.scala[logInfo]:54) - Added rdd_103_5413 in memory on worker07:43375 (size: 16.0 B, free: 1293.8 MB)
+ INFO [2021-05-11 15:00:20,856] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 144.0 in stage 22.1 (TID 69026) in 51 ms on worker02 (executor 7) (164/184)
+ INFO [2021-05-11 15:00:20,860] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 180.0 in stage 22.1 (TID 69029) in 49 ms on worker08 (executor 16) (165/184)
+ INFO [2021-05-11 15:00:20,868] ({dispatcher-event-loop-4} Logging.scala[logInfo]:54) - Starting task 173.0 in stage 22.1 (TID 69030, worker04, executor 21, partition 5345, NODE_LOCAL, 8655 bytes)
+ INFO [2021-05-11 15:00:20,869] ({task-result-getter-3} Logging.scala[logInfo]:54) - Finished task 149.0 in stage 22.1 (TID 69021) in 86 ms on worker04 (executor 21) (166/184)
+ INFO [2021-05-11 15:00:20,878] ({dispatcher-event-loop-2} Logging.scala[logInfo]:54) - Added rdd_103_3619 in memory on worker05:32853 (size: 16.0 B, free: 1292.4 MB)
+ INFO [2021-05-11 15:00:20,879] ({task-result-getter-2} Logging.scala[logInfo]:54) - Finished task 143.0 in stage 22.1 (TID 69027) in 73 ms on worker16 (executor 29) (167/184)
+ INFO [2021-05-11 15:00:20,885] ({task-result-getter-1} Logging.scala[logInfo]:54) - Finished task 140.0 in stage 22.1 (TID 69022) in 100 ms on worker04 (executor 4) (168/184)
+ INFO [2021-05-11 15:00:20,887] ({task-result-getter-0} Logging.scala[logInfo]:54) - Finished task 145.0 in stage 22.1 (TID 69023) in 96 ms on worker08 (executor 31) (169/184)
+....
+--END--
+
+
+
+--START--
+....
+2021-05-11 15:00:42,127 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:00:42,171 INFO storage.ShuffleBlockFetcherIterator: Started 31 remote fetches in 56 ms
+2021-05-11 15:00:43,582 INFO executor.Executor: Finished task 85.0 in stage 23.0 (TID 69124). 1927 bytes result sent to driver
+2021-05-11 15:00:43,584 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 69149
+2021-05-11 15:00:43,584 INFO executor.Executor: Running task 110.0 in stage 23.0 (TID 69149)
+2021-05-11 15:00:43,617 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:00:43,651 INFO storage.ShuffleBlockFetcherIterator: Started 31 remote fetches in 51 ms
+2021-05-11 15:00:46,193 INFO executor.Executor: Finished task 110.0 in stage 23.0 (TID 69149). 1927 bytes result sent to driver
+2021-05-11 15:00:46,199 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 69199
+2021-05-11 15:00:46,200 INFO executor.Executor: Running task 160.0 in stage 23.0 (TID 69199)
+2021-05-11 15:00:46,211 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:00:46,244 INFO storage.ShuffleBlockFetcherIterator: Started 31 remote fetches in 41 ms
+2021-05-11 15:00:47,811 INFO executor.Executor: Finished task 160.0 in stage 23.0 (TID 69199). 1927 bytes result sent to driver
+2021-05-11 15:00:47,814 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 69241
+2021-05-11 15:00:47,814 INFO executor.Executor: Running task 202.0 in stage 23.0 (TID 69241)
+2021-05-11 15:00:47,838 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:00:47,892 INFO storage.ShuffleBlockFetcherIterator: Started 31 remote fetches in 76 ms
+2021-05-11 15:00:49,020 INFO executor.Executor: Finished task 202.0 in stage 23.0 (TID 69241). 1927 bytes result sent to driver
+2021-05-11 15:00:49,022 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 69277
+2021-05-11 15:00:49,023 INFO executor.Executor: Running task 238.0 in stage 23.0 (TID 69277)
+2021-05-11 15:00:49,051 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:00:49,134 INFO storage.ShuffleBlockFetcherIterator: Started 31 remote fetches in 109 ms
+2021-05-11 15:00:50,184 INFO executor.Executor: Finished task 238.0 in stage 23.0 (TID 69277). 1927 bytes result sent to driver
+2021-05-11 15:00:50,186 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 69310
+2021-05-11 15:00:50,186 INFO executor.Executor: Running task 271.0 in stage 23.0 (TID 69310)
+2021-05-11 15:00:50,221 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:00:50,254 INFO storage.ShuffleBlockFetcherIterator: Started 31 remote fetches in 65 ms
+2021-05-11 15:00:51,521 INFO executor.Executor: Finished task 271.0 in stage 23.0 (TID 69310). 1927 bytes result sent to driver
+....
+--END--
+
+    #
+    # Connection errors to some of the worker nodes ..
+    #
+
+--START--
+....
+2021-05-11 15:00:54,600 INFO executor.Executor: Running task 403.0 in stage 23.0 (TID 69442)
+2021-05-11 15:00:54,611 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:00:54,638 INFO client.TransportClientFactory: Found inactive connection to worker05/10.10.0.206:36377, creating a new one.
+2021-05-11 15:00:54,673 ERROR shuffle.RetryingBlockFetcher: Exception while beginning fetch of 1 outstanding blocks
+java.io.IOException: Failed to connect to worker05/10.10.0.206:36377
+	at org.apache.spark.network.client.TransportClientFactory.createClient(TransportClientFactory.java:245)
+	at org.apache.spark.network.client.TransportClientFactory.createClient(TransportClientFactory.java:187)
+	at org.apache.spark.network.netty.NettyBlockTransferService$$anon$2.createAndStart(NettyBlockTransferService.scala:114)
+	at org.apache.spark.network.shuffle.RetryingBlockFetcher.fetchAllOutstanding(RetryingBlockFetcher.java:141)
+	at org.apache.spark.network.shuffle.RetryingBlockFetcher.start(RetryingBlockFetcher.java:121)
+	at org.apache.spark.network.netty.NettyBlockTransferService.fetchBlocks(NettyBlockTransferService.scala:124)
+	at org.apache.spark.storage.ShuffleBlockFetcherIterator.sendRequest(ShuffleBlockFetcherIterator.scala:260)
+	at org.apache.spark.storage.ShuffleBlockFetcherIterator.org$apache$spark$storage$ShuffleBlockFetcherIterator$$send$1(ShuffleBlockFetcherIterator.scala:531)
+	at org.apache.spark.storage.ShuffleBlockFetcherIterator.fetchUpToMaxBytes(ShuffleBlockFetcherIterator.scala:526)
+	at org.apache.spark.storage.ShuffleBlockFetcherIterator.initialize(ShuffleBlockFetcherIterator.scala:365)
+	at org.apache.spark.storage.ShuffleBlockFetcherIterator.<init>(ShuffleBlockFetcherIterator.scala:156)
+	at org.apache.spark.shuffle.BlockStoreShuffleReader.read(BlockStoreShuffleReader.scala:45)
+	at org.apache.spark.rdd.ShuffledRDD.compute(ShuffledRDD.scala:105)
+	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346)
+	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310)
+	at org.apache.spark.rdd.MapPartitionsRDD.compute(MapPartitionsRDD.scala:52)
+	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346)
+	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310)
+	at org.apache.spark.scheduler.ResultTask.runTask(ResultTask.scala:90)
+	at org.apache.spark.scheduler.Task.run(Task.scala:123)
+	at org.apache.spark.executor.Executor$TaskRunner$$anonfun$10.apply(Executor.scala:408)
+	at org.apache.spark.util.Utils$.tryWithSafeFinally(Utils.scala:1360)
+	at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:414)
+	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+	at java.lang.Thread.run(Thread.java:748)
+Caused by: io.netty.channel.AbstractChannel$AnnotatedConnectException: Connection refused: worker05/10.10.0.206:36377
+Caused by: java.net.ConnectException: Connection refused
+	at sun.nio.ch.SocketChannelImpl.checkConnect(Native Method)
+	at sun.nio.ch.SocketChannelImpl.finishConnect(SocketChannelImpl.java:714)
+	at io.netty.channel.socket.nio.NioSocketChannel.doFinishConnect(NioSocketChannel.java:330)
+	at io.netty.channel.nio.AbstractNioChannel$AbstractNioUnsafe.finishConnect(AbstractNioChannel.java:334)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKey(NioEventLoop.java:702)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKeysOptimized(NioEventLoop.java:650)
+	at io.netty.channel.nio.NioEventLoop.processSelectedKeys(NioEventLoop.java:576)
+	at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:493)
+	at io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:989)
+	at io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)
+	at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	at java.lang.Thread.run(Thread.java:748)
+2021-05-11 15:00:54,701 INFO shuffle.RetryingBlockFetcher: Retrying fetch (1/3) for 1 outstanding blocks after 5000 ms
+2021-05-11 15:00:54,706 INFO storage.ShuffleBlockFetcherIterator: Started 31 remote fetches in 103 ms
+2021-05-11 15:00:59,716 INFO client.TransportClientFactory: Found inactive connection to worker05/10.10.0.206:36377, creating a new one.
+2021-05-11 15:00:59,718 ERROR shuffle.RetryingBlockFetcher: Exception while beginning fetch of 1 outstanding blocks (after 1 retries)
+java.io.IOException: Failed to connect to worker05/10.10.0.206:36377
+	at org.apache.spark.network.client.TransportClientFactory.createClient(TransportClientFactory.java:245)
+	at org.apache.spark.network.client.TransportClientFactory.createClient(TransportClientFactory.java:187)
+....
+--END--
+
+    #
+    # ..and then it recovers ..
+    #
+
+--START--
+....
+2021-05-11 15:01:28,814 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 69586
+2021-05-11 15:01:28,814 INFO executor.Executor: Running task 9.0 in stage 23.2 (TID 69586)
+2021-05-11 15:01:28,815 INFO spark.MapOutputTrackerWorker: Updating epoch to 49 and clearing cache
+2021-05-11 15:01:28,815 INFO broadcast.TorrentBroadcast: Started reading broadcast variable 30
+2021-05-11 15:01:28,819 INFO memory.MemoryStore: Block broadcast_30_piece0 stored as bytes in memory (estimated size 6.6 KB, free 1295.9 MB)
+2021-05-11 15:01:28,823 INFO broadcast.TorrentBroadcast: Reading broadcast variable 30 took 8 ms
+2021-05-11 15:01:28,823 INFO memory.MemoryStore: Block broadcast_30 stored as values in memory (estimated size 27.2 KB, free 1295.8 MB)
+2021-05-11 15:01:28,825 INFO spark.MapOutputTrackerWorker: Don't have map outputs for shuffle 9, fetching them
+2021-05-11 15:01:28,825 INFO spark.MapOutputTrackerWorker: Doing the fetch; tracker endpoint = NettyRpcEndpointRef(spark://MapOutputTracker@zeppelin:46827)
+2021-05-11 15:01:28,891 INFO spark.MapOutputTrackerWorker: Got the output locations
+2021-05-11 15:01:28,907 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:01:28,960 INFO storage.ShuffleBlockFetcherIterator: Started 30 remote fetches in 55 ms
+2021-05-11 15:01:30,112 INFO executor.Executor: Finished task 9.0 in stage 23.2 (TID 69586). 1927 bytes result sent to driver
+2021-05-11 15:01:30,113 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 69681
+2021-05-11 15:01:30,113 INFO executor.Executor: Running task 104.0 in stage 23.2 (TID 69681)
+2021-05-11 15:01:30,118 INFO storage.ShuffleBlockFetcherIterator: Getting 0 non-empty blocks including 0 local blocks and 0 remote blocks
+2021-05-11 15:01:30,118 INFO storage.ShuffleBlockFetcherIterator: Started 0 remote fetches in 0 ms
+2021-05-11 15:01:30,119 INFO executor.Executor: Finished task 104.0 in stage 23.2 (TID 69681). 1134 bytes result sent to driver
+2021-05-11 15:01:30,120 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 69692
+2021-05-11 15:01:30,120 INFO executor.Executor: Running task 115.0 in stage 23.2 (TID 69692)
+2021-05-11 15:01:30,124 INFO storage.ShuffleBlockFetcherIterator: Getting 0 non-empty blocks including 0 local blocks and 0 remote blocks
+2021-05-11 15:01:30,124 INFO storage.ShuffleBlockFetcherIterator: Started 0 remote fetches in 0 ms
+....
+--END--
+
+
+--START--
+....
+2021-05-11 15:03:28,059 INFO executor.Executor: Running task 651.0 in stage 29.0 (TID 92648)
+2021-05-11 15:03:28,066 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:03:28,074 INFO storage.ShuffleBlockFetcherIterator: Started 30 remote fetches in 10 ms
+2021-05-11 15:03:29,029 INFO executor.Executor: Finished task 651.0 in stage 29.0 (TID 92648). 1927 bytes result sent to driver
+2021-05-11 15:03:29,030 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 92683
+2021-05-11 15:03:29,030 INFO executor.Executor: Running task 686.0 in stage 29.0 (TID 92683)
+2021-05-11 15:03:29,037 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:03:29,062 INFO storage.ShuffleBlockFetcherIterator: Started 30 remote fetches in 27 ms
+2021-05-11 15:03:29,981 INFO executor.Executor: Finished task 686.0 in stage 29.0 (TID 92683). 1927 bytes result sent to driver
+2021-05-11 15:03:29,983 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 92714
+2021-05-11 15:03:29,983 INFO executor.Executor: Running task 717.0 in stage 29.0 (TID 92714)
+2021-05-11 15:03:29,990 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:03:30,043 INFO storage.ShuffleBlockFetcherIterator: Started 30 remote fetches in 55 ms
+
+2021-05-11 15:03:31,166 INFO executor.Executor: Finished task 717.0 in stage 29.0 (TID 92714). 1927 bytes result sent to driver
+2021-05-11 15:03:31,168 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 92758
+2021-05-11 15:03:31,169 INFO executor.Executor: Running task 761.0 in stage 29.0 (TID 92758)
+2021-05-11 15:03:31,186 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:03:31,203 INFO storage.ShuffleBlockFetcherIterator: Started 30 remote fetches in 21 ms
+2021-05-11 15:03:32,175 INFO executor.Executor: Finished task 761.0 in stage 29.0 (TID 92758). 1927 bytes result sent to driver
+2021-05-11 15:03:32,180 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 92795
+2021-05-11 15:03:32,180 INFO executor.Executor: Running task 798.0 in stage 29.0 (TID 92795)
+2021-05-11 15:03:32,187 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:03:32,247 INFO storage.ShuffleBlockFetcherIterator: Started 30 remote fetches in 62 ms
+2021-05-11 15:03:32,998 INFO executor.Executor: Finished task 798.0 in stage 29.0 (TID 92795). 1884 bytes result sent to driver
+2021-05-11 15:03:33,000 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 92821
+2021-05-11 15:03:33,000 INFO executor.Executor: Running task 824.0 in stage 29.0 (TID 92821)
+2021-05-11 15:03:33,007 INFO storage.ShuffleBlockFetcherIterator: Getting 5721 non-empty blocks including 191 local blocks and 5530 remote blocks
+2021-05-11 15:03:33,015 INFO storage.ShuffleBlockFetcherIterator: Started 30 remote fetches in 11 ms
+2021-05-11 15:03:33,887 INFO executor.Executor: Finished task 824.0 in stage 29.0 (TID 92821). 1927 bytes result sent to driver
+....
+--END--
+
+
+--START--
+  1  [|||||||||||||||||||||||| 77.3%]   Tasks: 45, 432 thr; 1 running
+  2  [|||||||||||||||||||||||  73.6%]   Load average: 2.49 2.23 1.50
+  Mem[|||||||||||||||||||4.85G/5.82G]   Uptime: 6 days, 02:22:17
+  Swp[                         0K/0K]
+
+  PID USER      PRI  NI  VIRT   RES   SHR S CPU% MEM%   TIME+  Command
+ 7554 fedora     20   0 4713M 1441M  6492 S 74.2 24.2  6:44.31 /etc/alternatives
+ 7682 fedora     20   0 4713M 1441M  6492 D 71.0 24.2  3:56.68 /etc/alternatives
+ 7553 fedora     20   0 4709M 1453M  6360 S 68.8 24.4  6:48.04 /etc/alternatives
+ 7681 fedora     20   0 4709M 1453M  6360 D 65.5 24.4  4:10.23 /etc/alternatives
+ 7560 fedora     20   0 4713M 1441M  6492 S  1.2 24.2  0:03.49 /etc/alternatives
+ 7559 fedora     20   0 4713M 1441M  6492 S  1.1 24.2  0:03.53 /etc/alternatives
+ 7558 fedora     20   0 4709M 1453M  6360 S  1.0 24.4  0:03.58 /etc/alternatives
+ 7557 fedora     20   0 4709M 1453M  6360 S  1.0 24.4  0:03.59 /etc/alternatives
+ 7292 fedora     20   0 3232M  560M  6108 S  0.7  9.4  0:22.57 /etc/alternatives
+ 7561 fedora     20   0 4709M 1453M  6360 S  0.6 24.4  0:02.11 /etc/alternatives
+ 7562 fedora     20   0 4713M 1441M  6492 S  0.6 24.2  0:02.22 /etc/alternatives
+ 7419 fedora     20   0 3232M  560M  6108 S  0.4  9.4  0:05.07 /etc/alternatives
+ 7573 fedora     20   0 4709M 1453M  6360 S  0.3 24.4  0:41.38 /etc/alternatives
+ 7599 fedora     20   0 4713M 1441M  6492 S  0.2 24.2  0:02.04 /etc/alternatives
+ 7566 fedora     20   0 4709M 1453M  6360 S  0.2 24.4  0:00.38 /etc/alternatives
+ 7568 fedora     20   0 4713M 1441M  6492 S  0.1 24.2  0:39.65 /etc/alternatives
+--END--
+
+
+
+
+
+
+
+    #
+    # Still seeing connection issues ..
+    #
+
+--START--
+....
+2021-05-11 15:11:40,299 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(parallax#9) generates partition filter: ((parallax.count#2541 - parallax.nullCount#2540) > 0)
+2021-05-11 15:11:40,299 INFO columnar.InMemoryTableScanExec: Predicate isnotnull(b#96) generates partition filter: ((b.count#2556 - b.nullCount#2555) > 0)
+2021-05-11 15:11:40,299 INFO columnar.InMemoryTableScanExec: Predicate (parallax#9 > 8.0) generates partition filter: (8.0 < parallax.upperBound#2538)
+2021-05-11 15:11:40,299 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -65.0)) || ((ra#5 < 350.0) && (ra#5 > 40.0))) generates partition filter: (((dec.lowerBound#2549 < -80.0) || (-65.0 < dec.upperBound#2548)) || ((ra.lowerBound#2544 < 350.0) && (40.0 < ra.upperBound#2543)))
+2021-05-11 15:11:40,299 INFO columnar.InMemoryTableScanExec: Predicate (((dec#7 < -80.0) || (dec#7 > -55.0)) || ((ra#5 < 40.0) || (ra#5 > 120.0))) generates partition filter: (((dec.lowerBound#2549 < -80.0) || (-55.0 < dec.upperBound#2548)) || ((ra.lowerBound#2544 < 40.0) || (120.0 < ra.upperBound#2543)))
+2021-05-11 15:11:40,305 INFO executor.Executor: Finished task 5702.0 in stage 38.0 (TID 125933). 2262 bytes result sent to driver
+2021-05-11 15:11:47,668 INFO executor.CoarseGrainedExecutorBackend: Got assigned task 125995
+2021-05-11 15:11:47,669 INFO executor.Executor: Running task 461.0 in stage 38.0 (TID 125995)
+2021-05-11 15:13:47,714 ERROR server.TransportChannelHandler: Connection to worker01/10.10.0.181:37415 has been quiet for 120000 ms while there are outstanding requests. Assuming connection is dead; please adjust spark.network.timeout if this is wrong.
+2021-05-11 15:13:47,715 ERROR client.TransportResponseHandler: Still have 1 requests outstanding when connection from worker01/10.10.0.181:37415 is closed
+2021-05-11 15:13:47,715 ERROR shuffle.OneForOneBlockFetcher: Failed while starting block fetches
+java.io.IOException: Connection from worker01/10.10.0.181:37415 closed
+	at org.apache.spark.network.client.TransportResponseHandler.channelInactive(TransportResponseHandler.java:146)
+	at org.apache.spark.network.server.TransportChannelHandler.channelInactive(TransportChannelHandler.java:108)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:262)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:248)
+	at io.netty.channel.AbstractChannelHandlerContext.fireChannelInactive(AbstractChannelHandlerContext.java:241)
+	at io.netty.channel.ChannelInboundHandlerAdapter.channelInactive(ChannelInboundHandlerAdapter.java:81)
+	at io.netty.handler.timeout.IdleStateHandler.channelInactive(IdleStateHandler.java:277)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:262)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:248)
+	at io.netty.channel.AbstractChannelHandlerContext.fireChannelInactive(AbstractChannelHandlerContext.java:241)
+	at io.netty.channel.ChannelInboundHandlerAdapter.channelInactive(ChannelInboundHandlerAdapter.java:81)
+	at org.apache.spark.network.util.TransportFrameDecoder.channelInactive(TransportFrameDecoder.java:178)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:262)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:248)
+	at io.netty.channel.AbstractChannelHandlerContext.fireChannelInactive(AbstractChannelHandlerContext.java:241)
+	at io.netty.channel.DefaultChannelPipeline$HeadContext.channelInactive(DefaultChannelPipeline.java:1405)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:262)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:248)
+	at io.netty.channel.DefaultChannelPipeline.fireChannelInactive(DefaultChannelPipeline.java:901)
+	at io.netty.channel.AbstractChannel$AbstractUnsafe$8.run(AbstractChannel.java:818)
+	at io.netty.util.concurrent.AbstractEventExecutor.safeExecute(AbstractEventExecutor.java:164)
+	at io.netty.util.concurrent.SingleThreadEventExecutor.runAllTasks(SingleThreadEventExecutor.java:472)
+	at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:500)
+	at io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:989)
+	at io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)
+	at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	at java.lang.Thread.run(Thread.java:748)
+2021-05-11 15:13:47,716 INFO shuffle.RetryingBlockFetcher: Retrying fetch (1/3) for 1 outstanding blocks after 5000 ms
+2021-05-11 15:13:52,717 INFO client.TransportClientFactory: Found inactive connection to worker01/10.10.0.181:37415, creating a new one.
+2021-05-11 15:13:52,732 INFO client.TransportClientFactory: Successfully created connection to worker01/10.10.0.181:37415 after 14 ms (0 ms spent in bootstraps)
+2021-05-11 15:15:33,452 INFO storage.BlockManager: Removing RDD 103
+2021-05-11 15:15:52,733 ERROR server.TransportChannelHandler: Connection to worker01/10.10.0.181:37415 has been quiet for 120000 ms while there are outstanding requests. Assuming connection is dead; please adjust spark.network.timeout if this is wrong.
+2021-05-11 15:15:52,734 ERROR client.TransportResponseHandler: Still have 1 requests outstanding when connection from worker01/10.10.0.181:37415 is closed
+2021-05-11 15:15:52,734 ERROR shuffle.OneForOneBlockFetcher: Failed while starting block fetches
+java.io.IOException: Connection from worker01/10.10.0.181:37415 closed
+	at org.apache.spark.network.client.TransportResponseHandler.channelInactive(TransportResponseHandler.java:146)
+	at org.apache.spark.network.server.TransportChannelHandler.channelInactive(TransportChannelHandler.java:108)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:262)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:248)
+	at io.netty.channel.AbstractChannelHandlerContext.fireChannelInactive(AbstractChannelHandlerContext.java:241)
+	at io.netty.channel.ChannelInboundHandlerAdapter.channelInactive(ChannelInboundHandlerAdapter.java:81)
+	at io.netty.handler.timeout.IdleStateHandler.channelInactive(IdleStateHandler.java:277)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:262)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:248)
+	at io.netty.channel.AbstractChannelHandlerContext.fireChannelInactive(AbstractChannelHandlerContext.java:241)
+	at io.netty.channel.ChannelInboundHandlerAdapter.channelInactive(ChannelInboundHandlerAdapter.java:81)
+	at org.apache.spark.network.util.TransportFrameDecoder.channelInactive(TransportFrameDecoder.java:178)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:262)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:248)
+	at io.netty.channel.AbstractChannelHandlerContext.fireChannelInactive(AbstractChannelHandlerContext.java:241)
+	at io.netty.channel.DefaultChannelPipeline$HeadContext.channelInactive(DefaultChannelPipeline.java:1405)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:262)
+	at io.netty.channel.AbstractChannelHandlerContext.invokeChannelInactive(AbstractChannelHandlerContext.java:248)
+	at io.netty.channel.DefaultChannelPipeline.fireChannelInactive(DefaultChannelPipeline.java:901)
+	at io.netty.channel.AbstractChannel$AbstractUnsafe$8.run(AbstractChannel.java:818)
+	at io.netty.util.concurrent.AbstractEventExecutor.safeExecute(AbstractEventExecutor.java:164)
+	at io.netty.util.concurrent.SingleThreadEventExecutor.runAllTasks(SingleThreadEventExecutor.java:472)
+	at io.netty.channel.nio.NioEventLoop.run(NioEventLoop.java:500)
+	at io.netty.util.concurrent.SingleThreadEventExecutor$4.run(SingleThreadEventExecutor.java:989)
+	at io.netty.util.internal.ThreadExecutorMap$2.run(ThreadExecutorMap.java:74)
+	at io.netty.util.concurrent.FastThreadLocalRunnable.run(FastThreadLocalRunnable.java:30)
+	at java.lang.Thread.run(Thread.java:748)
+2021-05-11 15:15:52,734 INFO shuffle.RetryingBlockFetcher: Retrying fetch (2/3) for 1 outstanding blocks after 5000 ms
+2021-05-11 15:15:57,735 INFO client.TransportClientFactory: Found inactive connection to worker01/10.10.0.181:37415, creating a new one.
+2021-05-11 15:15:57,737 INFO client.TransportClientFactory: Successfully created connection to worker01/10.10.0.181:37415 after 1 ms (0 ms spent in bootstraps)
+....
+--END--
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Run the test again using the new data ....
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+        #
+        # Change the column name.
+        astrometric_features = [
+            ....
+            'astrometric_sigma5d_max',
+            ....
+            ]
+
+        #
+        # Use the repartitioned data source
+        gs_parquet = sqlContext.read.parquet('file://///data/gaia/edr3-20210510/GEDR3')
+
+    #
+    # Starting a new test, (500 trees on 100% data)
+    #
+
+    First cell -
+    Last cell  -
+
+    xx min
+

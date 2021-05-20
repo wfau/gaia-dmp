@@ -168,26 +168,42 @@
 # Using a hard coded cloud name to make it portable.
 
     sharelist="${treetop:?}/common/manila/datashares.yaml"
-    sharemode='ro'
+    mountmode='ro'
+    mounthost='zeppelin:masters:workers'
 
     for shareid in $(
-        yq read "${sharelist:?}" 'shares.[*].id'
+        yq read "${sharelist:?}" 'datashares.[*].id'
         )
     do
         echo ""
         echo "Share [${shareid:?}]"
 
-        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
-        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+        sharename=$(yq read "${sharelist:?}" "datashares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "datashares.(id==${shareid:?}).mountpath")
 
         "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
             'gaia-prod' \
             "${inventory:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
-            "${sharemode:?}"
+            "${mounthost:?}" \
+            "${mountmode:?}"
 
     done
+
+# -----------------------------------------------------
+# Add the data symlinks.
+# Needs to be done after the data shares have been mounted.
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --verbose \
+            --verbose \
+            --inventory "${inventory:?}" \
+            "61-data-links.yml"
+
+    popd
 
 
 # -----------------------------------------------------
@@ -195,24 +211,26 @@
 # Using a hard coded cloud name to make it portable.
 
     sharelist="${treetop:?}/common/manila/usershares.yaml"
-    sharemode='rw'
+    mountmode='rw'
+    mounthost='zeppelin:masters:workers'
 
     for shareid in $(
-        yq read "${sharelist:?}" 'shares.[*].id'
+        yq read "${sharelist:?}" 'usershares.[*].id'
         )
     do
         echo ""
         echo "Share [${shareid:?}]"
 
-        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
-        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+        sharename=$(yq read "${sharelist:?}" "usershares.(id==${shareid:?}).sharename")
+        mountpath=$(yq read "${sharelist:?}" "usershares.(id==${shareid:?}).mountpath")
 
         "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
             'gaia-prod' \
             "${inventory:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
-            "${sharemode:?}"
+            "${mounthost:?}" \
+            "${mountmode:?}"
 
     done
 

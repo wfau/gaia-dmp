@@ -1,0 +1,571 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Test the CephFS shares using a custom small-08 deployment
+
+    Result:
+
+        Success, of a kind.
+        Still hitting resource limits, had to downsize from small-08 to small-06.
+        RandomForest completed in 31min.
+
+
+# -----------------------------------------------------
+# Checkout the target branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210518-zrq-housekeeping'
+
+    popd
+
+    >   Already on '20210518-zrq-housekeeping'
+    >   Your branch is up to date with 'origin/20210518-zrq-housekeeping'.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-dev
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m34.998s
+    >   user    1m13.969s
+    >   sys     0m10.498s
+
+
+# -----------------------------------------------------
+# Create everything, using a custom config.
+#[root@ansibler]
+
+    * downsized small-08 to small-06
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'small-08'
+
+    >   real    56m57.134s
+    >   user    14m54.878s
+    >   sys     5m16.778s
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: small-08
+    >         name: gaia-dev-20210518
+    >         date: 20210518T163735
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}/zeppelin-0.8.2-bin-all"
+
+            # Manual edit to add names and passwords
+            vi conf/shiro.ini
+
+            # Restart Zeppelin for the changes to take.
+            ./bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+    >   Zeppelin stop                   [  OK  ]
+    >   Zeppelin start                  [  OK  ]
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [7a2612fd-033f-4f0c-83be-539af70f9746]
+    >   Zeppelin IP [128.232.227.174]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.174  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the shares and links.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        ls -al /data/gaia/
+
+    >   GEDR2
+    >   GEDR2_6514
+    >   GEDR3
+    >   GEDR3_11932
+    >   GEDR3_2048
+    >   GEDR3_4096
+    >   GEDR3_8192
+    >   edr2 -> /data/gaia/GEDR2_6514
+    >   edr3 -> /data/gaia/GEDR3_11932
+
+
+        ls -alh /data/gaia/GEDR2
+
+    >   lrwxrwxrwx. 1 root root   43 May 18 17:24 GEDR2_GAIASOURCE -> /data/gaia/GEDR2_6514/GEDR2_6514_GAIASOURCE
+
+
+        ls -alh /data/gaia/GEDR2_6514
+
+    >   drwxr-xr-x. 2 root root 473G May 14 11:06 GEDR2_6514_GAIASOURCE
+    >   lrwxrwxrwx. 1 root root   21 May 14 11:01 GEDR2_GAIASOURCE -> GEDR2_6514_GAIASOURCE
+
+
+        ls -alh /data/gaia/GEDR2_6514/GEDR2_6514_GAIASOURCE | head
+
+    >   -rw-r--r--. 1 root root  71M Oct 24  2020 part-00000-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 100M Oct 24  2020 part-00001-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  95M Oct 24  2020 part-00002-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  93M Oct 24  2020 part-00003-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+        ls -alh /data/gaia/GEDR2_6514/GEDR2_6514_GAIASOURCE | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root  29M Oct 24  2020 part-06510-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  29M Oct 24  2020 part-06511-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  28M Oct 24  2020 part-06512-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 6.1M Oct 24  2020 part-06513-70392076-8b82-4457-8828-22069e7626e9-c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3
+
+    >   lrwxrwxrwx. 1 root root   43 May 18 17:25 GEDR3_GAIASOURCE               -> /data/gaia/GEDR3_2048/GEDR3_2048_GAIASOURCE
+    >   lrwxrwxrwx. 1 root root   57 May 18 17:27 GEDR3_2MASSPSC_BEST_NEIGHBOURS -> /data/gaia/GEDR3_2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   lrwxrwxrwx. 1 root root   56 May 18 17:25 GEDR3_ALLWISE_BEST_NEIGHBOURS  -> /data/gaia/GEDR3_2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   lrwxrwxrwx. 1 root root   52 May 18 17:26 GEDR3_PS1_BEST_NEIGHBOURS      -> /data/gaia/GEDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS
+
+
+        ls -alh /data/gaia/GEDR3_11932
+
+    >   drwxr-xr-x. 2 root root 533G May 14 11:19 GEDR3_11932_GAIASOURCE
+    >   lrwxrwxrwx. 1 root root   22 May 14 11:11 GEDR3_GAIASOURCE -> GEDR3_11932_GAIASOURCE
+
+
+        ls -alh /data/gaia/GEDR3_11932/GEDR3_11932_GAIASOURCE | head
+
+    >   -rw-r--r--. 1 root root  47M Jan 11 19:46 part-00000-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  47M Jan 11 19:46 part-00001-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  47M Jan 11 19:46 part-00002-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  48M Jan 11 19:46 part-00003-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+        ls -alh /data/gaia/GEDR3_11932/GEDR3_11932_GAIASOURCE | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root  34M Jan 11 22:27 part-11928-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  34M Jan 11 22:27 part-11929-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  30M Jan 11 22:27 part-11930-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  11M Jan 11 22:27 part-11931-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3_2048
+
+    >   lrwxrwxrwx. 1 root root   21 May 14 11:27 GEDR3_GAIASOURCE -> GEDR3_2048_GAIASOURCE
+    >   drwxr-xr-x. 2 root root 561G May 11 05:07 GEDR3_2048_GAIASOURCE
+    >
+    >   lrwxrwxrwx. 1 root root   35 May 14 11:28 GEDR3_2MASSPSC_BEST_NEIGHBOURS -> GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root  60G May 11 05:32 GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >
+    >   lrwxrwxrwx. 1 root root   34 May 14 11:28 GEDR3_ALLWISE_BEST_NEIGHBOURS -> GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root 177G May 11 06:31 GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >
+    >   lrwxrwxrwx. 1 root root   30 May 14 11:28 GEDR3_PS1_BEST_NEIGHBOURS -> GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root 163G May 11 07:27 GEDR3_2048_PS1_BEST_NEIGHBOURS
+
+
+        ls -alh /data/gaia/GEDR3_2048/GEDR3_2048_GAIASOURCE | head
+
+    >   -rw-r--r--. 1 root root 280M May 11 02:12 part-00000-061dbeeb-75b5-41c3-9d01-422766759ddd_00000.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 02:12 part-00001-061dbeeb-75b5-41c3-9d01-422766759ddd_00001.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 02:13 part-00002-061dbeeb-75b5-41c3-9d01-422766759ddd_00002.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 02:13 part-00003-061dbeeb-75b5-41c3-9d01-422766759ddd_00003.c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+        ls -alh /data/gaia/GEDR3_2048/GEDR3_2048_GAIASOURCE | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root 281M May 11 05:06 part-02044-061dbeeb-75b5-41c3-9d01-422766759ddd_02044.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 05:07 part-02045-061dbeeb-75b5-41c3-9d01-422766759ddd_02045.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 05:07 part-02046-061dbeeb-75b5-41c3-9d01-422766759ddd_02046.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 281M May 11 05:07 part-02047-061dbeeb-75b5-41c3-9d01-422766759ddd_02047.c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3_2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS | head
+
+    >   -rw-r--r--. 1 root root  30M May 11 05:07 part-00000-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00000.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  30M May 11 05:07 part-00001-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00001.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  30M May 11 05:07 part-00002-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00002.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  30M May 11 05:07 part-00003-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00003.c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+        ls -alh /data/gaia/GEDR3_2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root  30M May 11 05:31 part-02044-b8885964-7d1f-4f8f-88b3-e9a02469bf12_02044.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  30M May 11 05:31 part-02045-b8885964-7d1f-4f8f-88b3-e9a02469bf12_02045.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  30M May 11 05:31 part-02046-b8885964-7d1f-4f8f-88b3-e9a02469bf12_02046.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  30M May 11 05:32 part-02047-b8885964-7d1f-4f8f-88b3-e9a02469bf12_02047.c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3_2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS | head
+
+    >   -rw-r--r--. 1 root root  89M May 11 05:32 part-00000-ac60c244-841d-4cb2-9832-1ee22020769b_00000.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  89M May 11 05:32 part-00001-ac60c244-841d-4cb2-9832-1ee22020769b_00001.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  89M May 11 05:32 part-00002-ac60c244-841d-4cb2-9832-1ee22020769b_00002.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  89M May 11 05:32 part-00003-ac60c244-841d-4cb2-9832-1ee22020769b_00003.c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+        ls -alh /data/gaia/GEDR3_2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root  89M May 11 06:31 part-02044-ac60c244-841d-4cb2-9832-1ee22020769b_02044.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  89M May 11 06:31 part-02045-ac60c244-841d-4cb2-9832-1ee22020769b_02045.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  88M May 11 06:31 part-02046-ac60c244-841d-4cb2-9832-1ee22020769b_02046.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  89M May 11 06:31 part-02047-ac60c244-841d-4cb2-9832-1ee22020769b_02047.c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS | head
+
+    >   -rw-r--r--. 1 root root  82M May 11 06:31 part-00000-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_00000.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  81M May 11 06:31 part-00001-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_00001.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  82M May 11 06:31 part-00002-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_00002.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  82M May 11 06:32 part-00003-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_00003.c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+        ls -alh /data/gaia/GEDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root  82M May 11 07:27 part-02044-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_02044.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  82M May 11 07:27 part-02045-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_02045.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  82M May 11 07:27 part-02046-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_02046.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  82M May 11 07:27 part-02047-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_02047.c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3_4096
+
+    >   lrwxrwxrwx. 1 root root   21 May 14 12:28 GEDR3_GAIASOURCE -> GEDR3_4096_GAIASOURCE
+    >   drwxr-xr-x. 2 root root 562G May 14 17:15 GEDR3_4096_GAIASOURCE
+    >
+    >   lrwxrwxrwx. 1 root root   35 May 14 12:28 GEDR3_2MASSPSC_BEST_NEIGHBOURS -> GEDR3_4096_2MASSPSC_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root    0 May 14 12:15 GEDR3_4096_2MASSPSC_BEST_NEIGHBOURS
+    >
+    >   lrwxrwxrwx. 1 root root   34 May 14 12:28 GEDR3_ALLWISE_BEST_NEIGHBOURS -> GEDR3_4096_ALLWISE_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root    0 May 14 12:15 GEDR3_4096_ALLWISE_BEST_NEIGHBOURS
+    >
+    >   lrwxrwxrwx. 1 root root   30 May 14 12:28 GEDR3_PS1_BEST_NEIGHBOURS -> GEDR3_4096_PS1_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root    0 May 14 12:15 GEDR3_4096_PS1_BEST_NEIGHBOURS
+
+
+        ls -alh /data/gaia/GEDR3_4096/GEDR3_4096_GAIASOURCE | head
+
+    >   -rw-r--r--. 1 fedora fedora 141M May 14 12:43 part-00000-dc9b579c-2247-48f9-8f92-6ffbc0384845_00000.c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora 141M May 14 12:43 part-00001-dc9b579c-2247-48f9-8f92-6ffbc0384845_00001.c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora 141M May 14 12:43 part-00002-dc9b579c-2247-48f9-8f92-6ffbc0384845_00002.c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora 141M May 14 12:43 part-00003-dc9b579c-2247-48f9-8f92-6ffbc0384845_00003.c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+        ls -alh /data/gaia/GEDR3_4096/GEDR3_4096_GAIASOURCE | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 fedora fedora 141M May 14 17:15 part-04092-dc9b579c-2247-48f9-8f92-6ffbc0384845_04092.c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora 141M May 14 17:15 part-04093-dc9b579c-2247-48f9-8f92-6ffbc0384845_04093.c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora 141M May 14 17:15 part-04094-dc9b579c-2247-48f9-8f92-6ffbc0384845_04094.c000.snappy.parquet
+    >   -rw-r--r--. 1 fedora fedora 141M May 14 17:15 part-04095-dc9b579c-2247-48f9-8f92-6ffbc0384845_04095.c000.snappy.parquet
+
+
+        ls -alh /data/gaia/GEDR3_8192
+
+    >   lrwxrwxrwx. 1 root root   21 May 18 00:50 GEDR3_GAIASOURCE -> GEDR3_8192_GAIASOURCE
+    >   drwxr-xr-x. 2 root root 553G May 18 05:25 GEDR3_8192_GAIASOURCE
+    >
+    >   lrwxrwxrwx. 1 root root   35 May 18 00:50 GEDR3_2MASSPSC_BEST_NEIGHBOURS -> GEDR3_8192_2MASSPSC_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root    0 May 18 00:50 GEDR3_8192_2MASSPSC_BEST_NEIGHBOURS
+    >
+    >   lrwxrwxrwx. 1 root root   34 May 18 00:50 GEDR3_ALLWISE_BEST_NEIGHBOURS -> GEDR3_8192_ALLWISE_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root    0 May 18 00:50 GEDR3_8192_ALLWISE_BEST_NEIGHBOURS
+    >
+    >   lrwxrwxrwx. 1 root root   30 May 18 00:50 GEDR3_PS1_BEST_NEIGHBOURS -> GEDR3_8192_PS1_BEST_NEIGHBOURS
+    >   drwxr-xr-x. 2 root root    0 May 18 00:50 GEDR3_8192_PS1_BEST_NEIGHBOURS
+
+
+        ls -alh /data/gaia/GEDR3_8192/GEDR3_8192_GAIASOURCE | head
+
+    >   -rw-r--r--. 1 root root  69M May 18 00:58 part-00000-b488a625-c20f-4220-b880-366c07b11360_00000.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  70M May 18 00:58 part-00001-b488a625-c20f-4220-b880-366c07b11360_00001.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  70M May 18 00:58 part-00002-b488a625-c20f-4220-b880-366c07b11360_00002.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root  69M May 18 00:58 part-00003-b488a625-c20f-4220-b880-366c07b11360_00003.c000.snappy.parquet
+    >   ....
+    >   ....
+
+
+        ls -alh /data/gaia/GEDR3_4096/GEDR3_4096_GAIASOURCE | tail
+
+    >   ....
+    >   ....
+    >   -rw-r--r--. 1 root root 141M May 14 17:15 part-04092-dc9b579c-2247-48f9-8f92-6ffbc0384845_04092.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 141M May 14 17:15 part-04093-dc9b579c-2247-48f9-8f92-6ffbc0384845_04093.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 141M May 14 17:15 part-04094-dc9b579c-2247-48f9-8f92-6ffbc0384845_04094.c000.snappy.parquet
+    >   -rw-r--r--. 1 root root 141M May 14 17:15 part-04095-dc9b579c-2247-48f9-8f92-6ffbc0384845_04095.c000.snappy.parquet
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.gaia-dev.aglais.uk:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Run the test againts the new data ....
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+        #
+        # Change the column name.
+        astrometric_features = [
+            ....
+            'astrometric_sigma5d_max',
+            ....
+            ]
+
+        #
+        # Use the 8192 partition data.
+        gs_parquet = sqlContext.read.parquet('file:////data/gaia/GEDR3_8192/GEDR3_GAIASOURCE')
+
+        #
+        # Starting a new test, (500 trees on 100% data)
+        #
+
+        First cell - Took 0 sec. Last updated by zrq at May 18 2021, 11:54:14 PM.
+        Last cell  - Took 1 sec. Last updated by zrq at May 19 2021, 12:26:03 AM.
+
+        31 minutes and 49 seconds
+
+
+
+        #
+        # Use the 4096 partition data.
+        gs_parquet = sqlContext.read.parquet('file:////data/gaia/GEDR3_4096/GEDR3_GAIASOURCE')
+
+        #
+        # Starting a new test, (500 trees on 100% data)
+        #
+
+        First cell - Took 0 sec. Last updated by zrq at May 19 2021, 12:55:00 AM.
+        Last cell  - Took 1 sec. Last updated by zrq at May 19 2021,  1:15:20 AM.
+
+        20 minutes and 20 seconds
+
+
+
+        #
+        # Use the 2048 partition data.
+        gs_parquet = sqlContext.read.parquet('file:////data/gaia/GEDR3_2048/GEDR3_GAIASOURCE')
+
+        #
+        # Starting a new test, (500 trees on 100% data)
+        #
+
+        First cell - Took 0 sec. Last updated by zrq at May 19 2021, 1:25:57 AM.
+        Last cell  - Took 1 sec. Last updated by zrq at May 19 2021, 1:46:11 AM.
+
+        20 minutes and 14 seconds
+
+
+
+
+
+
+    # Checksum timing during the run
+
+    >   ....
+    >   2021-05-18T22:58:45+00:00
+    >   9e38870ed6c3ec8a716a45b345902118  part-03785-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   real 5.51
+    >   user 0.08
+    >   sys 0.02
+    >   ----
+    >   2021-05-18T22:59:11+00:00
+    >   b5675857afbfd44a9b1c61305a84f528  part-03786-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   real 2.67
+    >   user 0.08
+    >   sys 0.01
+    >   ----
+    >   2021-05-18T22:59:33+00:00
+    >   2fbaf174e5c1327ff19700ef218c7bf5  part-03787-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   real 3.98
+    >   user 0.07
+    >   sys 0.02
+    >   ----
+    >   2021-05-18T22:59:57+00:00
+    >   f29663ebfcb33899b3a06eba9bd9e897  part-03788-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   real 13.83
+    >   user 0.08
+    >   sys 0.01
+    >   ----
+    >   2021-05-18T23:00:31+00:00
+    >   8d45a21ac0586d1c324f45a29f20267c  part-03789-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   real 3.83
+    >   user 0.08
+    >   sys 0.01
+    >   ----
+    >   2021-05-18T23:00:55+00:00
+    >   d8c1c588fd56bd2efc0c1e752c36bedc  part-03790-59b9273a-2ef1-4988-8778-e00f67e65264-c000.snappy.parquet
+    >   real 7.54
+    >   user 0.08
+    >   sys 0.01
+    >   ....
+

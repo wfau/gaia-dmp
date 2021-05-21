@@ -1,0 +1,531 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Test the CephFS shares using a custom small-08 deployment
+
+    Result:
+
+        Success, of a kind.
+        Still hitting resource limits, had to downsize from small-08 to small-06.
+        RandomForest completed in 31min.
+
+
+# -----------------------------------------------------
+# Checkout the target branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210518-zrq-housekeeping'
+
+    popd
+
+    >   Already on '20210518-zrq-housekeeping'
+    >   Your branch is up to date with 'origin/20210518-zrq-housekeeping'.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-dev
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m55.058s
+    >   user    1m25.109s
+    >   sys     0m12.004s
+
+
+# -----------------------------------------------------
+# Create everything, using a custom config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'tiny-16'
+
+    >   real    103m53.131s
+    >   user    26m20.987s
+    >   sys     11m36.637s
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: tiny-16
+    >         name: gaia-dev-20210519
+    >         date: 20210519T013504
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}/zeppelin-0.8.2-bin-all"
+
+            # Manual edit to add names and passwords
+            vi conf/shiro.ini
+
+            # Restart Zeppelin for the changes to take.
+            ./bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [88959e26-517d-4a7a-87e1-fa9e93a42199]
+    >   Zeppelin IP [128.232.227.221]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.221  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+    >   dnsmasq[1]: cleared cache
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin.gaia-dev.aglais.uk:8080/" &
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Good astrometric solutions via ML Random Forest classifier
+    https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2FRPC4BFS/note.json
+
+        #
+        # Change the column name.
+        astrometric_features = [
+            ....
+            'astrometric_sigma5d_max',
+            ....
+            ]
+
+        #
+        # Use the 8192 partition data.
+        gs_parquet = sqlContext.read.parquet('file:////data/gaia/GEDR3_8192/GEDR3_GAIASOURCE')
+
+        #
+        # Starting a new test, (500 trees on 100% data)
+        #
+
+        First cell - Took 1 sec. Last updated by zrq at May 19 2021, 4:29:31 AM.
+        Last cell  - Took 1 sec. Last updated by zrq at May 19 2021, 5:06:58 AM.
+
+        datediff -f '%Hhr %Mmin %Ssec' '4:29:31' '5:06:58'
+        37min 27sec
+
+        #
+        # Use the 4096 partition data.
+        gs_parquet = sqlContext.read.parquet('file:////data/gaia/GEDR3_4096/GEDR3_GAIASOURCE')
+
+        #
+        # Starting a new test, (500 trees on 100% data)
+        #
+
+        First cell - Took 0 sec. Last updated by zrq at May 19 2021, 11:57:59 AM.
+        Last cell  - Took 1 sec. Last updated by zrq at May 19 2021, 12:24:12 PM.
+
+        datediff -f '%Hhr %Mmin %Ssec' '11:57:59' '12:24:12'
+        26min 13sec
+
+
+        #
+        # Use the 2048 partition data.
+        gs_parquet = sqlContext.read.parquet('file:////data/gaia/GEDR3_2048/GEDR3_GAIASOURCE')
+
+        #
+        # Starting a new test, (500 trees on 100% data)
+        #
+
+        First cell - Took 0 sec. Last updated by zrq at May 19 2021, 12:31:17 PM.
+        Last cell  - fail
+
+
+
+    # Filetimer before the run
+
+    >   ....
+    >   2021-05-19T03:25:26+00:00
+    >   97426+1 records in
+    >   97426+1 records out
+    >   49882295 bytes (50 MB, 48 MiB) copied, 0.631002 s, 79.1 MB/s
+    >   real 0.63
+    >   user 0.02
+    >   sys 0.08
+    >   ----
+    >   2021-05-19T03:25:47+00:00
+    >   97298+1 records in
+    >   97298+1 records out
+    >   49816941 bytes (50 MB, 48 MiB) copied, 0.414555 s, 120 MB/s
+    >   real 0.41
+    >   user 0.02
+    >   sys 0.08
+    >   ----
+    >   2021-05-19T03:26:07+00:00
+    >   97659+1 records in
+    >   97659+1 records out
+    >   50001802 bytes (50 MB, 48 MiB) copied, 0.672756 s, 74.3 MB/s
+    >   real 0.67
+    >   user 0.03
+    >   sys 0.07
+    >   ----
+    >   2021-05-19T03:26:28+00:00
+    >   94289+1 records in
+    >   94289+1 records out
+    >   48276349 bytes (48 MB, 46 MiB) copied, 0.761188 s, 63.4 MB/s
+    >   real 0.76
+    >   user 0.02
+    >   sys 0.08
+    >   ....
+
+    # Filetimer during the 8192 run
+
+    >   ....
+    >   2021-05-19T03:30:16+00:00
+    >   97819+1 records in
+    >   97819+1 records out
+    >   50083834 bytes (50 MB, 48 MiB) copied, 1.11943 s, 44.7 MB/s
+    >   real 1.12
+    >   user 0.02
+    >   sys 0.08
+    >   ----
+    >   2021-05-19T03:30:37+00:00
+    >   97627+1 records in
+    >   97627+1 records out
+    >   49985326 bytes (50 MB, 48 MiB) copied, 1.07668 s, 46.4 MB/s
+    >   real 1.08
+    >   user 0.03
+    >   sys 0.09
+    >   ----
+    >   2021-05-19T03:30:58+00:00
+    >   94135+1 records in
+    >   94135+1 records out
+    >   48197522 bytes (48 MB, 46 MiB) copied, 3.01906 s, 16.0 MB/s
+    >   real 3.02
+    >   user 0.03
+    >   sys 0.08
+    >   ----
+    >   2021-05-19T03:31:21+00:00
+    >   94218+1 records in
+    >   94218+1 records out
+    >   48240069 bytes (48 MB, 46 MiB) copied, 1.02166 s, 47.2 MB/s
+    >   real 1.02
+    >   user 0.04
+    >   sys 0.07
+    >   ....
+
+    >   ....
+    >   2021-05-19T03:33:50+00:00
+    >   97440+1 records in
+    >   97440+1 records out
+    >   49889697 bytes (50 MB, 48 MiB) copied, 1.45262 s, 34.3 MB/s
+    >   real 1.45
+    >   user 0.02
+    >   sys 0.09
+    >   ----
+    >   2021-05-19T03:34:11+00:00
+    >   97383+1 records in
+    >   97383+1 records out
+    >   49860215 bytes (50 MB, 48 MiB) copied, 2.70862 s, 18.4 MB/s
+    >   real 2.71
+    >   user 0.02
+    >   sys 0.09
+    >   ----
+    >   2021-05-19T03:34:34+00:00
+    >   96455+1 records in
+    >   96455+1 records out
+    >   49385450 bytes (49 MB, 47 MiB) copied, 1.27664 s, 38.7 MB/s
+    >   real 1.27
+    >   user 0.02
+    >   sys 0.08
+    >   ----
+    >   2021-05-19T03:34:55+00:00
+    >   96793+1 records in
+    >   96793+1 records out
+    >   49558348 bytes (50 MB, 47 MiB) copied, 2.64079 s, 18.8 MB/s
+    >   real 2.64
+    >   user 0.01
+    >   sys 0.10
+    >   ----
+    >   2021-05-19T03:35:18+00:00
+    >   97267+1 records in
+    >   97267+1 records out
+    >   49800888 bytes (50 MB, 47 MiB) copied, 1.25791 s, 39.6 MB/s
+    >   real 1.26
+    >   user 0.02
+    >   sys 0.08
+    >   ....
+
+
+    # Filetimer during the 2048 run
+
+    >   ....
+    >   2021-05-19T11:33:54+00:00
+    >   96814+1 records in
+    >   96814+1 records out
+    >   49568788 bytes (50 MB, 47 MiB) copied, 1.30074 s, 38.1 MB/s
+    >   real 1.30
+    >   user 0.02
+    >   sys 0.09
+    >   ----
+    >   2021-05-19T11:34:15+00:00
+    >   97844+1 records in
+    >   97844+1 records out
+    >   50096502 bytes (50 MB, 48 MiB) copied, 2.60773 s, 19.2 MB/s
+    >   real 2.61
+    >   user 0.03
+    >   sys 0.08
+    >   ----
+    >   2021-05-19T11:34:38+00:00
+    >   97237+1 records in
+    >   97237+1 records out
+    >   49785773 bytes (50 MB, 47 MiB) copied, 1.76549 s, 28.2 MB/s
+    >   real 1.76
+    >   user 0.02
+    >   sys 0.09
+    >   ----
+    >   2021-05-19T11:35:00+00:00
+    >   97503+1 records in
+    >   97503+1 records out
+    >   49921621 bytes (50 MB, 48 MiB) copied, 1.92543 s, 25.9 MB/s
+    >   real 1.92
+    >   user 0.02
+    >   sys 0.09
+    >   ....
+
+
+    # Filetimer after
+
+    >   ....
+    >   2021-05-19T12:46:41+00:00
+    >   98606+1 records in
+    >   98606+1 records out
+    >   50486743 bytes (50 MB, 48 MiB) copied, 0.643427 s, 78.5 MB/s
+    >   real 0.64
+    >   user 0.03
+    >   sys 0.08
+    >   ----
+    >   2021-05-19T12:47:02+00:00
+    >   96709+1 records in
+    >   96709+1 records out
+    >   49515074 bytes (50 MB, 47 MiB) copied, 0.694084 s, 71.3 MB/s
+    >   real 0.69
+    >   user 0.02
+    >   sys 0.08
+    >   ----
+    >   2021-05-19T12:47:22+00:00
+    >   95903+1 records in
+    >   95903+1 records out
+    >   49102510 bytes (49 MB, 47 MiB) copied, 0.727211 s, 67.5 MB/s
+    >   real 0.73
+    >   user 0.02
+    >   sys 0.08
+    >   ----
+    >   2021-05-19T12:47:43+00:00
+    >   96882+1 records in
+    >   96882+1 records out
+    >   49603625 bytes (50 MB, 47 MiB) copied, 0.824742 s, 60.1 MB/s
+    >   real 0.82
+    >   user 0.02
+    >   sys 0.08
+    >   ----
+    >   2021-05-19T12:48:04+00:00
+    >   97378+1 records in
+    >   97378+1 records out
+    >   49858008 bytes (50 MB, 48 MiB) copied, 0.706673 s, 70.6 MB/s
+    >   real 0.70
+    >   user 0.02
+    >   sys 0.07
+    >   ----
+    >   2021-05-19T12:48:25+00:00
+    >   97259+1 records in
+    >   97259+1 records out
+    >   49796881 bytes (50 MB, 47 MiB) copied, 0.760219 s, 65.5 MB/s
+    >   real 0.76
+    >   user 0.01
+    >   sys 0.09
+    >   
+    >   ....
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    TEST FAIL
+    RandomForestClassifier, 100% data 500 trees
+    tiny-16 deployment
+
+    Error reported in notebook:
+
+        Py4JJavaError: An error occurred while calling o188.fit.
+        : org.apache.spark.SparkException: Job aborted due to stage failure: ShuffleMapStage 28 (mapPartitions at RandomForest.scala:538) has failed the maximum allowable number of times: 4. Most recent failure reason: org.apache.spark.shuffle.MetadataFetchFailedException: Missing an output location for shuffle 7 	at org.apache.spark.MapOutputTracker$$anonfun$convertMapStatuses$2.apply(MapOutputTracker.scala:882) 	at org.apache.spark.MapOutputTracker$$anonfun$convertMapStatuses$2.apply(MapOutputTracker.scala:878) 	at scala.collection.Iterator$class.foreach(Iterator.scala:891) 	at scala.collection.AbstractIterator.foreach(Iterator.scala:1334) 	at org.apache.spark.MapOutputTracker$.convertMapStatuses(MapOutputTracker.scala:878) 	at org.apache.spark.MapOutputTrackerWorker.getMapSizesByExecutorId(MapOutputTracker.scala:691) 	at org.apache.spark.shuffle.BlockStoreShuffleReader.read(BlockStoreShuffleReader.scala:49) 	at org.apache.spark.sql.execution.ShuffledRowRDD.compute(ShuffledRowRDD.scala:165) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.rdd.MapPartitionsRDD.compute(MapPartitionsRDD.scala:52) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.rdd.MapPartitionsRDD.compute(MapPartitionsRDD.scala:52) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.rdd.UnionRDD.compute(UnionRDD.scala:105) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.rdd.MapPartitionsRDD.compute(MapPartitionsRDD.scala:52) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.sql.execution.SQLExecutionRDD$$anonfun$compute$1.apply(SQLExecutionRDD.scala:52) 	at org.apache.spark.sql.execution.SQLExecutionRDD$$anonfun$compute$1.apply(SQLExecutionRDD.scala:52) 	at org.apache.spark.sql.internal.SQLConf$.withExistingConf(SQLConf.scala:92) 	at org.apache.spark.sql.execution.SQLExecutionRDD.compute(SQLExecutionRDD.scala:51) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.rdd.MapPartitionsRDD.compute(MapPartitionsRDD.scala:52) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.rdd.MapPartitionsRDD.compute(MapPartitionsRDD.scala:52) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.rdd.MapPartitionsRDD.compute(MapPartitionsRDD.scala:52) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.rdd.MapPartitionsRDD.compute(MapPartitionsRDD.scala:52) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.rdd.MapPartitionsRDD.compute(MapPartitionsRDD.scala:52) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD$$anonfun$7.apply(RDD.scala:359) 	at org.apache.spark.rdd.RDD$$anonfun$7.apply(RDD.scala:357) 	at org.apache.spark.storage.BlockManager$$anonfun$doPutIterator$1.apply(BlockManager.scala:1165) 	at org.apache.spark.storage.BlockManager$$anonfun$doPutIterator$1.apply(BlockManager.scala:1156) 	at org.apache.spark.storage.BlockManager.doPut(BlockManager.scala:1091) 	at org.apache.spark.storage.BlockManager.doPutIterator(BlockManager.scala:1156) 	at org.apache.spark.storage.BlockManager.getOrElseUpdate(BlockManager.scala:882) 	at org.apache.spark.rdd.RDD.getOrCompute(RDD.scala:357) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:308) 	at org.apache.spark.rdd.MapPartitionsRDD.compute(MapPartitionsRDD.scala:52) 	at org.apache.spark.rdd.RDD.computeOrReadCheckpoint(RDD.scala:346) 	at org.apache.spark.rdd.RDD.iterator(RDD.scala:310) 	at org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:99) 	at org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:55) 	at org.apache.spark.scheduler.Task.run(Task.scala:123) 	at org.apache.spark.executor.Executor$TaskRunner$$anonfun$10.apply(Executor.scala:408) 	at org.apache.spark.util.Utils$.tryWithSafeFinally(Utils.scala:1360) 	at org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:414) 	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149) 	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624) 	at java.lang.Thread.run(Thread.java:748)
+	        at org.apache.spark.scheduler.DAGScheduler.org$apache$spark$scheduler$DAGScheduler$$failJobAndIndependentStages(DAGScheduler.scala:1925)
+	        at org.apache.spark.scheduler.DAGScheduler$$anonfun$abortStage$1.apply(DAGScheduler.scala:1913)
+	        at org.apache.spark.scheduler.DAGScheduler$$anonfun$abortStage$1.apply(DAGScheduler.scala:1912)
+            ....
+
+
+    Error in worker applicatin log
+
+        2021-05-19 11:40:26,585 INFO memory.MemoryStore: Block rdd_103_4608 stored as values in memory (estimated size 649.9 MB, free 642.7 MB)
+        OpenJDK 64-Bit Server VM warning: INFO: os::commit_memory(0x000000074a180000, 273678336, 0) failed; error='Cannot allocate memory' (errno=12)
+
+
+    No memory available on worker
+
+        free -h
+
+    >                 total        used        free      shared  buff/cache   available
+    >   Mem:          5.8Gi       5.4Gi       328Mi       0.0Ki        64Mi       234Mi
+    >   Swap:            0B          0B          0B
+
+
+    Disc space is good
+
+        df -h
+
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   devtmpfs        2.9G     0  2.9G   0% /dev
+    >   tmpfs           3.0G     0  3.0G   0% /dev/shm
+    >   tmpfs           3.0G  528K  3.0G   1% /run
+    >   tmpfs           3.0G     0  3.0G   0% /sys/fs/cgroup
+    >   /dev/vda1        12G  3.7G  7.6G  33% /
+    >   /dev/vdb        256G  1.7G  253G   1% /mnt/cinder/vdb
+    >   /dev/vdc        256G  250M  254G   1% /mnt/cinder/vdc
+    >   tmpfs           596M     0  596M   0% /run/user/1000
+    >   ....
+
+    TODO - reduce the memory tiny workers are allowed to request
+    TODO - find the memory trace tools we used in earlier projects
+    TODO - merge with main branch to use Prometheus monitoring
+

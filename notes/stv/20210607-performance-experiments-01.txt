@@ -1,0 +1,470 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+
+    Target:
+
+        Run some tests to document resource usage
+
+    Result:
+
+        Success
+
+
+# -----------------------------------------------------
+# Checkout the deployment branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout 'issue-445'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-test
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+
+     >   Done
+
+
+# -----------------------------------------------------
+# Create everything, using the tiny-16 config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'medium-04'
+
+     >   Done
+
+
+
+# -----------------------------------------------------
+# Setup integration with github
+#[root@ansibler]
+
+# Manual Step Warning! We need to setup github user & pass for commiting changes to our notebooks
+# TODO: automate this
+
+
+  ssh zeppelin \
+        '
+        export githubuser=username_encodede
+        export githubpass=pass_encoded
+
+        rm -rf /home/fedora/zeppelin-0.8.2-bin-all/notebook
+	git clone https://${githubuser:?}:${githubpass:?}@github.com/wfau/aglais-notebooks.git /home/fedora/zeppelin-0.8.2-bin-all/notebook
+
+	cat > "${HOME}/zeppelin-0.8.2-bin-all/notebook/.git/hooks/post-commit" << EOF
+	#!/bin/sh
+	git push 
+
+	EOF
+
+	chmod +x ${HOME}/zeppelin-0.8.2-bin-all/notebook/.git/hooks/post-commit
+	/home/fedora/zeppelin-0.8.2-bin-all/bin/zeppelin-daemon.sh restart
+	'
+
+	> Cloning into '/home/fedora/zeppelin-0.8.2-bin-all/notebook'...
+	  Zeppelin stop                                              [  OK  ]
+	  Zeppelin start                                             [  OK  ]
+
+	# Success
+
+
+# --------------------------------------------------------------------
+# What resources do we have available in total in the medium-04 setup?
+
+
+-  4 Worker nodes
+  
+  - Total Memory: 45 GB x 4 = 180 GB
+  - Total CPU: 14 * 4 = 56 VCPU
+
+
+# -----------------------------------------------------
+# What ends up being used when we run a Spark job:
+# Run the Aglais Examples SetUp notebook & then the 5d Kinematic Clustering Notebook
+# Observe Spark & Yarn UI:
+
+  # Tunnel connection
+    ssh -L '8088:master01:8088' fedora@IP_ADDRESS
+    firefox http://localhost:8088
+
+
+# In Spark UI, we see 3 active Executors & 1 Driver:
+
+   >  worker02, worker03, worker04 & zeppelin
+ 
+
+# (Where is worker01? Looks like we can only have 3 active worker nodes)
+  
+	Total Memory used: 16.3 KB / 29 GB
+        Total CPU used: 12 (4 per executor) 
+
+# Note:
+# The "Create and cache the primary data set" cell in the notebook completed in 20 minutes
+
+
+
+# Ok let's experiment with changing Spark and Yarn settings
+
+# Some useful documentation
+# https://medium.com/expedia-group-tech/part-3-efficient-executor-configuration-for-apache-spark-b4602929262
+# https://stackoverflow.com/questions/38331502/spark-on-yarn-resource-manager-relation-between-yarn-containers-and-spark-execu
+
+
+# After reading through blogs, a suggestion for optimal performance seems to be using 5 cores per executor
+# As we have 14 cores per node, this means we can have:
+
+   14 / 5 ~= 3 executors
+
+# However we probably need a core for other misc tasks (AM Master / Drivers?) so the right number here is probable 4 cores per executor
+
+# If we have 3 executors per node than we can have 3 * 4 = 12 which close to what we have now (11). Not sure if we set this to 12, if things will break or not. 
+
+# To calculate the memory per executor we can simply divide the total by the number of executors:
+
+   180 / 11 ~= 16 Gb
+
+# leaving 10-20% for Spark overhead / helper processes, the right number is close to 13Gb, which matches what we have
+
+
+# -----------------------------------------------------
+# Set Application master memory to 512M
+# Reason being, that I dont think it needs much more than that since it's only doing admin/managing tasks, & with the previous setting its taking up memory that could be used for the executors
+# [fedora@zeppelin]
+
+sudo nano /opt/spark/conf/spark-defaults.conf
+
+  .. 
+  spark.yarn.am.memory        512m
+  .. 
+
+
+# -----------------------------------------------------
+# Change Container request memory allocations in Yarn
+# It looks like these are per executor memory allocations
+# [fedora@master01]
+
+sudo nano /opt/hadoop/etc/hadoop/yarn-site.xml
+
+
+	<!--+
+	    | Maximum limit of memory to allocate to each container request at the Resource Manager.
+	    | https://stackoverflow.com/a/43827548
+	    | https://github.com/hortonworks/hdp-configuration-utils
+	    +-->
+	<property>
+	    <name>yarn.scheduler.maximum-allocation-mb</name>
+	    <value>15000</value>
+	</property>
+
+	<!--+
+	    | Minimum limit of memory to allocate to each container request at the Resource Manager.
+	    | https://stackoverflow.com/a/43827548
+	    | https://github.com/hortonworks/hdp-configuration-utils
+	    +-->
+	<property>
+	    <name>yarn.scheduler.minimum-allocation-mb</name>
+	    <value>12000</value>
+	</property>
+
+
+
+# Restart Zeppelin & Master and try the same notebook
+
+
+
+# -----------------------------------------------------
+# Observe Spark & Yarn UI with new settings
+
+
+# We now see:
+
+ # All worker nodes have active executors
+
+ > 8 Executors & 1 Driver ndoe
+ > Total Cores used: 32 
+ > Total Memory used: 65 GB
+
+
+# Great improvement, but looks like we still have more room for improvement of utilization
+
+# In Yarn settings, if we click the "Active Nodes" link, we see:
+Rack            State   Node Address    HTTP Address    Last health-update                     Containers      Mem Used         Mem Avail       VCores Used   VCores Avail   Version
+
+
+/default-rack	RUNNING	worker03:40743	worker03:8042	Tue Jun 08 13:55:51 +0000 2021		2		29.30 GB	12.70 GB	2	      11	     3.1.3
+/default-rack	RUNNING	worker01:36651	worker01:8042	Tue Jun 08 13:55:51 +0000 2021		2		29.30 GB	12.70 GB	2	      11	     3.1.3
+/default-rack	RUNNING	worker02:43533	worker02:8042	Tue Jun 08 13:55:51 +0000 2021		3		41.02 GB	1008 MB	        3	      10 	     3.1.3
+/default-rack	RUNNING	worker04:38157	worker04:8042	Tue Jun 08 13:55:51 +0000 2021		2		29.30 GB	12.70 GB	2	      11 	     3.1.3
+
+
+# So here, it looks like our 13Gb per executor means that we can't quite fit 3 executors per node
+
+
+
+
+# -----------------------------------------------------
+# Try changing Executor memory 12 Gb
+# [fedora@zeppelin]
+
+sudo nano /opt/spark/conf/spark-defaults.conf
+
+	spark.driver.memory           12g
+	...
+	spark.executor.memory         12g
+        ...
+
+
+# -----------------------------------------------------
+# Change Container request memory allocations in Yarn
+# [fedora@master01]
+
+sudo nano /opt/hadoop/etc/hadoop/yarn-site.xml
+
+	<!--+
+	    | Maximum limit of memory to allocate to each container request at the Resource Manager.
+	    | https://stackoverflow.com/a/43827548
+	    | https://github.com/hortonworks/hdp-configuration-utils
+	    +-->
+	<property>
+	    <name>yarn.scheduler.maximum-allocation-mb</name>
+	    <value>14000</value>
+	</property>
+
+	<!--+
+	    | Minimum limit of memory to allocate to each container request at the Resource Manager.
+	    | https://stackoverflow.com/a/43827548
+	    | https://github.com/hortonworks/hdp-configuration-utils
+	    +-->
+	<property>
+	    <name>yarn.scheduler.minimum-allocation-mb</name>
+	    <value>11000</value>
+	</property>
+
+# Note, yarn_scheduler_max_allocation >  spark_executor_memory + 10/spark_executor_memory
+# Just set to a value slightly larger than that to be sure
+# i.e. the maximum allocation has to be more than the spark_executor_memory + 10/spark_executor_memory 
+
+
+# Not sure about the minimum..
+
+
+# Restart Zeppelin & Master and try the same notebook
+
+
+
+# -----------------------------------------------------
+# Observe Spark & Yarn UI with new settings
+
+
+# We now see:
+
+ # All worker nodes have active executors
+
+ > 11 Executors & 1 Driver node
+ > Total Cores used: 44 
+ > Total Memory used: 80.2 GB
+
+
+# In the Yarn Active Nodes UI:
+
+	Mem Used        Mem Avail  VCores Used   VCores Avail
+	41.02 GB	1008 MB	   3 	         10	
+	41.02 GB	1008 MB    3	         10	
+	41.02 GB	1008 MB	   3	         10	
+	38.09 GB	3.91 GB	   3	         10	
+
+
+
+# In the Spark UI however, we see the Storage Memory per executor, set to 6.7 Gb
+# Note that in the previous two settings, this was set to aprox. 7Gb.
+# In both cases, this is less than the 13Gb Mem per executor, not sure if this means a missconfiguration somewhere, or if this is to be expected
+
+# After some googling, it looks like this is fine:
+# https://stackoverflow.com/questions/38347036/spark-on-yarn-less-executor-memory-than-set-via-spark-submit
+
+
+
+# Note: In Yarn, the cores used doesn't seem to match what we see in the Spark UI
+
+# Note: The "Create and cache the primary data set" cell in the notebook completed in 15 minutes
+
+
+
+# -------------------
+
+
+
+# So with this setting, we are using 44 cores out of 52, which sounds like a boost in performance
+
+
+# Todo: Test some notebooks compare performance..
+
+
+
+# -----------------------------------------------------------------------------------
+# Run the latest Good astrometric solutions via ML Random Forrest classifier notebook
+# [user@zeppelin]
+
+# [Previous version of system]
+
+
+
+  # Run the /AglaisPublicExamples/SetUp notebook (Latest version from Github)
+     # https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2G7GZKWUH/note.json
+
+  # Run the /AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+     # https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2G5NU6HTK/note.json
+  
+
+        # Raw catalogue with selected columns
+
+           > Took 10 min 15 sec. Last updated by admin at June 08 2021, 5:31:18 PM.
+
+
+        # Train up the Random Forrest
+
+           > Took 6 min 36 sec. Last updated by admin at June 08 2021, 5:38:03 PM.
+
+
+        # [Success]
+
+
+# -----------------------------------------------------------------------------------
+# Run the latest Good astrometric solutions via ML Random Forrest classifier notebook 
+# [user@zeppelin]
+
+# [New version of system]
+
+
+  # Run the /AglaisPublicExamples/SetUp notebook (Latest version from Github)
+     # https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2G7GZKWUH/note.json
+
+  # Run the /AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+     # https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2G5NU6HTK/note.json
+  
+      
+        # Raw catalogue with selected columns
+
+          > Took 6 min 9 sec. Last updated by admin at June 08 2021, 5:38:32 PM.
+
+        # Train up the Random Forrest
+
+          > Took 3 min 52 sec. Last updated by admin at June 08 2021, 5:43:39 PM.
+ 
+        # [Success]
+
+
+
+# -------------------------
+
+
+
+ 
+# -----------------------------------------------------------------------------------
+# Run a Pi Benchmark notebok
+# [user@zeppelin]
+
+# [Previous version of system]
+
+	%spark.pyspark
+	import random
+
+	NUM_SAMPLES = 10000000000
+
+	def inside(p):
+	    return x*x + y*y < 1
+	    x, y = random.random(), random.random()
+
+	count = sc.parallelize(range(0, NUM_SAMPLES)) \
+		     .filter(inside).count()
+	print ("Pi is roughly %f" % (4.0 * count / NUM_SAMPLES))
+
+
+
+> Took 7 min 49 sec. Last updated by admin at June 08 2021, 9:23:43 PM.
+
+
+
+
+# -----------------------------------------------------------------------------------
+# Run a Pi Benchmark notebok
+# [user@zeppelin]
+
+# [New version of system]
+
+	   
+	%spark.pyspark
+	import random
+
+	NUM_SAMPLES = 10000000000
+
+	def inside(p):
+	    x, y = random.random(), random.random()
+	    return x*x + y*y < 1
+
+	count = sc.parallelize(range(0, NUM_SAMPLES)) \
+		     .filter(inside).count()
+	print ("Pi is roughly %f" % (4.0 * count / NUM_SAMPLES))
+
+
+> Took 2 min 29 sec. Last updated by admin at June 08 2021, 9:16:17 PM.
+
+
+# Conclusion: In both notebooks we see a significant boost in performance
+
+

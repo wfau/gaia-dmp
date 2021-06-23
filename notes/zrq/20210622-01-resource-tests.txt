@@ -1,0 +1,593 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Run the resource tests again to see if anything changed.
+
+    Result:
+
+        Work in progress ..
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname openstacker \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything from all three clouds.
+#[user@openstacker]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            'gaia-dev'
+
+    >   real    1m41.655s
+    >   user    0m41.909s
+    >   sys     0m5.921s
+
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            'gaia-test'
+
+    >   real    1m2.889s
+    >   user    0m27.428s
+    >   sys     0m3.915s
+
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            'gaia-prod'
+
+    >   real    1m3.074s
+    >   user    0m27.505s
+    >   sys     0m3.915s
+
+
+# -----------------------------------------------------
+# Get the name of our keypair.
+#[user@openstacker]
+
+    cloudname=gaia-dev
+
+    keyname=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair list \
+                --format json \
+        | jq -r '.[0] | .Name'
+        )
+
+    echo "Key name [${keyname:?}]"
+
+    >   Key name [zrq-gaia-keypair]
+
+
+# -----------------------------------------------------
+# Find the subnet and network ID for the default network.
+#[user@openstacker]
+
+    subnetid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet list \
+                --format json \
+        | jq -r '.[] | select(.Name == "cumulus-internal") | .ID'
+        )
+
+    networkid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet show \
+                --format json \
+                "${subnetid:?}" \
+        | jq -r '.network_id'
+        )
+
+cat << EOF
+Subnet  [${subnetid:?}]
+Network [${networkid:?}]
+EOF
+
+    >   Subnet  [01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290]
+    >   Network [ecb791d5-1022-447a-a79c-8f38a0f5c990]
+
+
+# -----------------------------------------------------
+# List the gaia flavors.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list \
+            --format json \
+        | jq -r '.[] | select(.Name | startswith("gaia")) | .Name '
+
+    >   gaia.cclake.2vcpu
+    >   gaia.cclake.3vcpu
+    >   gaia.cclake.1vcpu
+    >   gaia.cclake.55vcpu
+    >   gaia.cclake.27vcpu
+    >   gaia.cclake.13vcpu
+    >   gaia.v1.special.tiny
+    >   gaia.cclake.6vcpu
+
+
+# -----------------------------------------------------
+# Create our lookup functions.
+#[user@openstacker]
+
+    getflavorid()
+        {
+        local flavorname=${1:?}
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+            | jq -r '.[] | select(.Name == "'${flavorname}'") | .ID'
+        }
+
+
+    getimageid()
+        {
+        local imagename=${1:?}
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            image list \
+                --format json \
+            | jq -r '.[] | select(.Name | test("'${imagename}'")) | .ID'
+        }
+
+
+
+    getflavorid 'gaia.cclake.13vcpu'
+
+    >   9a8df2c8-83fa-43f2-84da-fcc47e2c0144
+
+
+    getimageid 'Fedora-30'
+
+    >   ade3a5aa-a6a3-4761-8eed-083e5ce1f117
+
+
+# -----------------------------------------------------
+# Create our create, delete and list functions.
+#[user@openstacker]
+
+    clouds=(
+        gaia-dev
+        gaia-test
+        gaia-prod
+        )
+
+    create-nodes()
+        {
+        local vmcount=${1:?}
+        local imagename=${2:?}
+        local imageid=$(getimageid "${imagename}")
+        local flavorname=${3:?}
+        local flavorid=$(getflavorid "${flavorname}")
+
+        echo ""
+        echo "create-nodes"
+        echo "  Image  [${imagename}]"
+        echo "  Flavor [${flavorname}]"
+
+        for cloudname in ${clouds[*]}
+        do
+            echo ""
+            echo "  Cloud  [${cloudname:?}]"
+
+            for ((i=0 ; i < vmcount ; i++))
+            do
+                instance=tessera-${cloudname}-${i}
+
+                echo "    Node   [${instance}]"
+                openstack \
+                    --os-cloud "${cloudname}" \
+                    server create \
+                        --format json \
+                        --image "${imageid:?}" \
+                        --flavor "${flavorid:?}" \
+                        --network "${networkid:?}" \
+                        --key-name "${keyname:?}" \
+                        "${instance:?}" \
+                | jq '.' \
+                > '/tmp/${cloudname:?}-${instance:?}.json'
+            done
+        done
+        }
+
+    list-all()
+        {
+        echo ""
+        echo "list-all"
+
+        for cloudname in ${clouds[*]}
+        do
+            echo ""
+            echo "  Cloud [${cloudname:?}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                server list
+        done
+        }
+
+    list-active()
+        {
+        echo ""
+        echo "list-active"
+
+        for cloudname in ${clouds[*]}
+        do
+            echo ""
+            echo "  Cloud [${cloudname:?}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                server list \
+                    --format json \
+            | jq -r '.[] | select(.Status == "ACTIVE") | "\(.Flavor) \(.Name)"'
+        done
+        }
+
+    list-faults()
+        {
+        echo ""
+        echo "list-faults"
+
+        for cloudname in ${clouds[*]}
+        do
+            echo ""
+            echo "  Cloud [${cloudname:?}]"
+            for serverid in $(
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    server list \
+                        --format json \
+                | jq -r '.[] | select(.Status != "ACTIVE") | .ID'
+                )
+            do
+                echo "    Server [${serverid:?}]"
+                message=$(
+                    openstack \
+                        --os-cloud "${cloudname:?}" \
+                        server show \
+                            --format json \
+                            "${serverid:?}" \
+                    | jq -r '.fault.message'
+                    )
+                echo "    Fault  [${message:?}]"
+            done
+        done
+        }
+
+    delete-all()
+        {
+        echo ""
+        echo "delete-all"
+
+        for cloudname in ${clouds[*]}
+        do
+            echo ""
+            echo "  Cloud [${cloudname:?}]"
+            for serverid in $(
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    server list \
+                        --format json \
+                | jq -r '.[] | .ID'
+                )
+            do
+                echo "    Deleting [${serverid}]"
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    server delete \
+                        "${serverid:?}"
+            done
+        done
+        }
+
+
+# -----------------------------------------------------
+# Create our test function.
+#[user@openstacker]
+
+    create-test()
+        {
+        local vmcount=${1:?}
+        local imagename='Fedora-30'
+        local flavorname=${2:?}
+
+        echo ""
+        echo "create-test"
+        echo "  Flavor [${flavorname}]"
+
+        delete-all
+
+        create-nodes "${vmcount:?}" "${imagename:?}" "${flavorname:?}"
+
+        list-active
+
+        }
+
+
+# -----------------------------------------------------
+# Run the tests and count the good ones.
+#[user@openstacker]
+
+    create-test 5 'gaia.cclake.55vcpu'
+
+    >   ....
+    >   ....
+    >   
+    >     Cloud [gaia-dev]
+    >   gaia.cclake.55vcpu tessera-gaia-dev-4
+    >   gaia.cclake.55vcpu tessera-gaia-dev-3
+    >   gaia.cclake.55vcpu tessera-gaia-dev-2
+    >   gaia.cclake.55vcpu tessera-gaia-dev-1
+    >   gaia.cclake.55vcpu tessera-gaia-dev-0
+    >   
+    >     Cloud [gaia-test]
+    >   gaia.cclake.55vcpu tessera-gaia-test-4
+    >   gaia.cclake.55vcpu tessera-gaia-test-3
+    >   gaia.cclake.55vcpu tessera-gaia-test-2
+    >   gaia.cclake.55vcpu tessera-gaia-test-1
+    >   gaia.cclake.55vcpu tessera-gaia-test-0
+    >   
+    >     Cloud [gaia-prod]
+    >   gaia.cclake.55vcpu tessera-gaia-prod-1
+    >   gaia.cclake.55vcpu tessera-gaia-prod-0
+
+    # 5+5+2=12
+    # 12*55=660
+
+
+create-test 12 'gaia.cclake.27vcpu'
+
+    >   ....
+    >   ....
+    >   
+    >     Cloud [gaia-dev]
+    >   gaia.cclake.27vcpu tessera-gaia-dev-11
+    >   gaia.cclake.27vcpu tessera-gaia-dev-10
+    >   ....
+    >   gaia.cclake.27vcpu tessera-gaia-dev-1
+    >   gaia.cclake.27vcpu tessera-gaia-dev-0
+    >   
+    >     Cloud [gaia-test]
+    >   gaia.cclake.27vcpu tessera-gaia-test-11
+    >   gaia.cclake.27vcpu tessera-gaia-test-10
+    >   ....
+    >   gaia.cclake.27vcpu tessera-gaia-test-1
+    >   gaia.cclake.27vcpu tessera-gaia-test-0
+    >   
+    >     Cloud [gaia-prod]
+    >   gaia.cclake.27vcpu tessera-gaia-prod-3
+    >   gaia.cclake.27vcpu tessera-gaia-prod-2
+    >   gaia.cclake.27vcpu tessera-gaia-prod-1
+    >   gaia.cclake.27vcpu tessera-gaia-prod-0
+
+    # 12+12+4=28
+    # 28*27=756
+
+
+create-test 24 'gaia.cclake.13vcpu'
+
+
+    >   ....
+    >   ....
+    >   
+    >     Cloud [gaia-dev]
+    >   gaia.cclake.13vcpu tessera-gaia-dev-23
+    >   gaia.cclake.13vcpu tessera-gaia-dev-22
+    >   ....
+    >   gaia.cclake.13vcpu tessera-gaia-dev-1
+    >   gaia.cclake.13vcpu tessera-gaia-dev-0
+    >   
+    >     Cloud [gaia-test]
+    >   gaia.cclake.13vcpu tessera-gaia-test-23
+    >   gaia.cclake.13vcpu tessera-gaia-test-22
+    >   ....
+    >   gaia.cclake.13vcpu tessera-gaia-test-1
+    >   gaia.cclake.13vcpu tessera-gaia-test-0
+    >   
+    >     Cloud [gaia-prod]
+    >   gaia.cclake.13vcpu tessera-gaia-prod-11
+    >   gaia.cclake.13vcpu tessera-gaia-prod-10
+    >   ....
+    >   gaia.cclake.13vcpu tessera-gaia-prod-1
+    >   gaia.cclake.13vcpu tessera-gaia-prod-0
+
+    # 24+24+12=60
+    # 60*13=780
+
+
+create-test 48 'gaia.cclake.6vcpu'
+
+    >   ....
+    >   ....
+    >   
+    >     Cloud [gaia-dev]
+    >   gaia.cclake.6vcpu tessera-gaia-dev-47
+    >   gaia.cclake.6vcpu tessera-gaia-dev-46
+    >   ....
+    >   gaia.cclake.6vcpu tessera-gaia-dev-1
+    >   gaia.cclake.6vcpu tessera-gaia-dev-0
+    >   
+    >     Cloud [gaia-test]
+    >   gaia.cclake.6vcpu tessera-gaia-test-47
+    >   gaia.cclake.6vcpu tessera-gaia-test-46
+    >   ....
+    >   gaia.cclake.6vcpu tessera-gaia-test-1
+    >   gaia.cclake.6vcpu tessera-gaia-test-0
+    >   
+    >     Cloud [gaia-prod]
+    >   gaia.cclake.6vcpu tessera-gaia-prod-43
+    >   gaia.cclake.6vcpu tessera-gaia-prod-42
+    >   ....
+    >   gaia.cclake.6vcpu tessera-gaia-prod-1
+    >   gaia.cclake.6vcpu tessera-gaia-prod-0
+
+    # 48+48+44=140
+    # 140*6=840
+
+create-test 96 'gaia.cclake.3vcpu'
+
+    >   ....
+    >   ....
+    >   
+    >     Cloud [gaia-dev]
+    >   gaia.cclake.3vcpu tessera-gaia-dev-95
+    >   gaia.cclake.3vcpu tessera-gaia-dev-94
+    >   ....
+    >   gaia.cclake.3vcpu tessera-gaia-dev-1
+    >   gaia.cclake.3vcpu tessera-gaia-dev-0
+    >   
+    >     Cloud [gaia-test]
+    >   gaia.cclake.3vcpu tessera-gaia-test-95
+    >   gaia.cclake.3vcpu tessera-gaia-test-94
+    >   ....
+    >   gaia.cclake.3vcpu tessera-gaia-test-1
+    >   gaia.cclake.3vcpu tessera-gaia-test-0
+    >   
+    >     Cloud [gaia-prod]
+    >   gaia.cclake.3vcpu tessera-gaia-prod-91
+    >   gaia.cclake.3vcpu tessera-gaia-prod-90
+    >   ....
+    >   gaia.cclake.3vcpu tessera-gaia-prod-1
+    >   gaia.cclake.3vcpu tessera-gaia-prod-0
+
+    # 96+96+92=284
+    # 284*3=852
+
+
+create-test 192 'gaia.cclake.2vcpu'
+
+    >   ....
+    >   ....
+    >   
+    >     Cloud [gaia-dev]
+    >   gaia.cclake.2vcpu tessera-gaia-dev-191
+    >   gaia.cclake.2vcpu tessera-gaia-dev-190
+    >   ....
+    >   gaia.cclake.2vcpu tessera-gaia-dev-1
+    >   gaia.cclake.2vcpu tessera-gaia-dev-0
+    >   
+    >     Cloud [gaia-test]
+    >   gaia.cclake.2vcpu tessera-gaia-test-191
+    >   gaia.cclake.2vcpu tessera-gaia-test-190
+    >   ....
+    >   gaia.cclake.2vcpu tessera-gaia-test-1
+    >   gaia.cclake.2vcpu tessera-gaia-test-0
+    >   
+    >     Cloud [gaia-prod]
+    >   gaia.cclake.2vcpu tessera-gaia-prod-51
+    >   gaia.cclake.2vcpu tessera-gaia-prod-50
+    >   ....
+    >   gaia.cclake.2vcpu tessera-gaia-prod-1
+    >   gaia.cclake.2vcpu tessera-gaia-prod-0
+
+    # 192+192+52=436
+    # 436*2=872
+
+
+create-test 384 'gaia.cclake.1vcpu'
+
+    >   ....
+    >   ....
+    >   
+    >     Cloud [gaia-dev]
+    >   gaia.cclake.1vcpu tessera-gaia-dev-383
+    >   gaia.cclake.1vcpu tessera-gaia-dev-382
+    >   ....
+    >   gaia.cclake.1vcpu tessera-gaia-dev-1
+    >   gaia.cclake.1vcpu tessera-gaia-dev-0
+    >   
+    >     Cloud [gaia-test]
+    >   gaia.cclake.1vcpu tessera-gaia-test-383
+    >   gaia.cclake.1vcpu tessera-gaia-test-382
+    >   ....
+    >   gaia.cclake.1vcpu tessera-gaia-test-1
+    >   gaia.cclake.1vcpu tessera-gaia-test-0
+    >   
+    >     Cloud [gaia-prod]
+    >   gaia.cclake.1vcpu tessera-gaia-prod-64
+    >   gaia.cclake.1vcpu tessera-gaia-prod-62
+    >   ....
+    >   gaia.cclake.1vcpu tessera-gaia-prod-1
+    >   gaia.cclake.1vcpu tessera-gaia-prod-0
+
+    # 384+384+65=833
+    # 833*1=833
+
+
+create-test 384 'gaia.v1.special.tiny'
+
+    >   ....
+    >   ....
+    >   
+    >     Cloud [gaia-dev]
+    >   gaia.v1.special.tiny tessera-gaia-dev-383
+    >   gaia.v1.special.tiny tessera-gaia-dev-382
+    >   ....
+    >   gaia.v1.special.tiny tessera-gaia-dev-1
+    >   gaia.v1.special.tiny tessera-gaia-dev-0
+    >   
+    >     Cloud [gaia-test]
+    >   gaia.v1.special.tiny tessera-gaia-test-172
+    >   gaia.v1.special.tiny tessera-gaia-test-170
+    >   ....
+    >   gaia.v1.special.tiny tessera-gaia-test-1
+    >   gaia.v1.special.tiny tessera-gaia-test-0
+    >   
+    >     Cloud [gaia-prod]
+    >   ....
+
+    # 384+173=557
+    # 557*1=557 <- wow !?
+
+
+
+
+

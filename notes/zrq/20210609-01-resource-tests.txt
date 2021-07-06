@@ -1,0 +1,961 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Run the resource tests to see if everything is fixed.
+
+    Result:
+
+        Work in progress ..
+
+
+
+# -----------------------------------------------------
+# Table from a screenshot sent via Slack
+
+    Hostname    Type    VCPUs (used) VCPUs (total) RAM (used) RAM (total) Storage (used) Storage (total) Instances
+    cpu-p-633   QEMU    44           110           155G       187G        263G           880G            6
+    cpu-p-634   QEMU    46           110           165G       187G        259G           880G            5
+    cpu-p-635   QEMU    50           110           168G       187G        309G           880G            6
+    cpu-p-636   QEMU    48           110           166G       187G        299G           880G            4
+
+
+# -----------------------------------------------------
+# Create a new branch branch.
+#[user@desktop]
+
+    nextbranch=$(date '+%Y%m%d')-zrq-resources
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        git checkout master
+
+        git fetch upstream
+
+        git merge upstream/master
+
+        git checkout -b "${nextbranch:?}"
+
+        git push --set-upstream origin "${nextbranch:?}"
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname openstacker \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything from all three clouds.
+#[user@openstacker]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            'gaia-dev'
+
+    >   real    1m6.910s
+    >   user    0m27.923s
+    >   sys     0m3.912s
+
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            'gaia-test'
+
+    >   real    3m8.556s
+    >   user    1m7.377s
+    >   sys     0m9.142s
+
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            'gaia-prod'
+
+    >   real    3m17.452s
+    >   user    1m10.763s
+    >   sys     0m9.776s
+
+
+
+# -----------------------------------------------------
+# Get the name of our keypair.
+#[user@openstacker]
+
+    cloudname=gaia-dev
+
+    keyname=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            keypair list \
+                --format json \
+        | jq -r '.[0] | .Name'
+        )
+
+    echo "Key name [${keyname:?}]"
+
+    >   Key name [zrq-gaia-keypair]
+
+
+# -----------------------------------------------------
+# Find the subnet and network ID for the default network.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+------------------+--------------------------------------+---------------+
+    >   | ID                                   | Name             | Network                              | Subnet        |
+    >   +--------------------------------------+------------------+--------------------------------------+---------------+
+    >   | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290 | cumulus-internal | ecb791d5-1022-447a-a79c-8f38a0f5c990 | 10.218.0.0/16 |
+    >   +--------------------------------------+------------------+--------------------------------------+---------------+
+
+
+    subnetid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet list \
+                --format json \
+        | jq -r '.[] | select(.Name == "cumulus-internal") | .ID'
+        )
+
+    networkid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet show \
+                --format json \
+                "${subnetid:?}" \
+        | jq -r '.network_id'
+        )
+
+cat << EOF
+Subnet  [${subnetid:?}]
+Network [${networkid:?}]
+EOF
+
+    >   Subnet  [01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290]
+    >   Network [ecb791d5-1022-447a-a79c-8f38a0f5c990]
+
+
+# -----------------------------------------------------
+# Get the ID of the Fedora image.
+#[user@openstacker]
+
+    imageid=$(
+        openstack \
+            --os-cloud "${cloudname}" \
+            image list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("Fedora-30")) | .ID'
+        )
+
+    echo "Fedora-30 [${imageid:?}]"
+
+    >   Fedora-30 [ade3a5aa-a6a3-4761-8eed-083e5ce1f117]
+
+
+# -----------------------------------------------------
+# List the available flavors.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list
+
+    >   +--------------------------------------+----------------------+--------+------+-----------+-------+-----------+
+    >   | ID                                   | Name                 |    RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+----------------------+--------+------+-----------+-------+-----------+
+    >   | 20061eba-9e88-494c-95a3-41ed77721244 | general.v1.small     |  22528 |   20 |         0 |     6 | True      |
+    >   | 38192492-4cd2-49c2-911b-57c124299b93 | gaia.cclake.6vcpu    |  10240 |   20 |        35 |     6 | False     |
+    >   | 406a17e0-afd0-47d3-a6ad-8b19198bdd97 | general.v1.tiny      |   6144 |   12 |         0 |     2 | True      |
+    >   | 47732486-8ab9-43e2-ab1a-3ecaa5076fcd | gaia.cclake.2vcpu    |   4096 |   20 |        25 |     2 | False     |
+    >   | 4874d2f9-6c59-4454-8476-78ea3bd24502 | gaia.cclake.12vcpu   |  22528 |   20 |        90 |    12 | False     |
+    >   | 56222494-0559-4916-96d0-25be6baa74e5 | gaia.cclake.26vcpu   |  47104 |   20 |       200 |    26 | False     |
+    >   | 75ed7d42-7f10-44d1-96af-f88cde647219 | gaia.cclake.1vcpu    |   2048 |   20 |        12 |     1 | False     |
+    >   | 8a821ef8-20b8-4bbb-990b-91198745e7a7 | general.v1.xlarge    | 184320 |   20 |       340 |    28 | True      |
+    >   | 996c1c8c-c934-411c-9631-b74eb2829631 | general.v1.medium    |  46080 |   20 |        60 |    14 | True      |
+    >   | a918b38f-d32d-43e2-818b-04177b32641e | gaia.v1.special.tiny |   1024 |   12 |         0 |     1 | False     |
+    >   | c4c07f5a-260a-4f22-9530-a09a19aa490a | general.v1.large     |  92160 |   20 |       160 |    28 | True      |
+    >   | c968c2ef-e566-47d4-a20a-57315e28e686 | gaia.cclake.54vcpu   |  94208 |   20 |       420 |    54 | False     |
+    >   +--------------------------------------+----------------------+--------+------+-----------+-------+-----------+
+
+
+# -----------------------------------------------------
+# List the general flavors.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list \
+            --format json \
+        | jq -r '.[] | select(.Name | startswith("general")) | .Name '
+
+    >   general.v1.small
+    >   general.v1.tiny
+    >   general.v1.xlarge
+    >   general.v1.medium
+    >   general.v1.large
+
+
+# -----------------------------------------------------
+# List the gaia flavors.
+#[user@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list \
+            --format json \
+        | jq -r '.[] | select(.Name | startswith("gaia")) | .Name '
+
+    >   gaia.cclake.6vcpu
+    >   gaia.cclake.2vcpu
+    >   gaia.cclake.12vcpu
+    >   gaia.cclake.26vcpu
+    >   gaia.cclake.1vcpu
+    >   gaia.v1.special.tiny
+    >   gaia.cclake.54vcpu
+
+
+# -----------------------------------------------------
+# Create our create, delete and list functions.
+#[user@openstacker]
+
+    clouds=(
+        gaia-dev
+        gaia-test
+        gaia-prod
+        )
+
+    flavorid()
+        {
+        local flavorname=${1:?}
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+            | jq -r '.[] | select(.Name == "'${flavorname}'") | .ID'
+        }
+
+    create-nodes()
+        {
+        local vmcount=${1:?}
+        local flavorname=${2:?}
+        local flavorid=$(flavorid "${flavorname}")
+
+        echo ""
+        echo "create-nodes"
+        echo "  Flavor [${flavorname}]"
+
+        for cloudname in ${clouds[*]}
+        do
+            echo "  Cloud  [${cloudname:?}]"
+
+            for ((i=0 ; i<vmcount ; i++))
+            do
+                vmname=test-node-${i}
+                echo "    Node   [${vmname}]"
+                openstack \
+                    --os-cloud "${cloudname}" \
+                    server create \
+                        --format json \
+                        --image "${imageid:?}" \
+                        --flavor "${flavorid:?}" \
+                        --network "${networkid:?}" \
+                        --key-name "${keyname:?}" \
+                        "${vmname:?}" \
+                | jq '.' \
+                > '/tmp/${cloudname:?}-${vmname:?}.json'
+            done
+        done
+        }
+
+    list-all()
+        {
+        echo ""
+        echo "list-all"
+
+        for cloudname in ${clouds[*]}
+        do
+            echo "  Cloud [${cloudname:?}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                server list
+        done
+        }
+
+    list-active()
+        {
+        echo ""
+        echo "list-active"
+
+        for cloudname in ${clouds[*]}
+        do
+            echo "  Cloud [${cloudname:?}]"
+
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                server list \
+                    --format json \
+            | jq -r '.[] | select(.Status == "ACTIVE") | "\(.Flavor) \(.Name)"'
+        done
+        }
+
+    list-faults()
+        {
+        echo ""
+        echo "list-faults"
+
+        for cloudname in ${clouds[*]}
+        do
+            echo "  Cloud [${cloudname:?}]"
+
+            for serverid in $(
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    server list \
+                        --format json \
+                | jq -r '.[] | select(.Status != "ACTIVE") | .ID'
+                )
+            do
+                echo "    Server [${serverid:?}]"
+                message=$(
+                    openstack \
+                        --os-cloud "${cloudname:?}" \
+                        server show \
+                            --format json \
+                            "${serverid:?}" \
+                    | jq -r '.fault.message'
+                    )
+                echo "    Fault  [${message:?}]"
+            done
+        done
+        }
+
+    delete-all()
+        {
+        echo ""
+        echo "delete-all"
+
+        for cloudname in ${clouds[*]}
+        do
+            echo "  Cloud [${cloudname:?}]"
+            for serverid in $(
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    server list \
+                        --format json \
+                | jq -r '.[] | .ID'
+                )
+            do
+                echo "    Deleting [${serverid}]"
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    server delete \
+                        "${serverid:?}"
+            done
+        done
+        }
+
+    create-test()
+        {
+        local vmcount=${1:?}
+        local flavorname=${2:?}
+
+        echo ""
+        echo "create-test"
+        echo "  Flavor [${flavorname}]"
+
+        delete-all
+
+        create-nodes "${vmcount:?}" "${flavorname:?}"
+
+        list-active
+
+        }
+
+
+# -----------------------------------------------------
+# Run the tests and count the good ones.
+#[user@openstacker]
+
+    create-test 32 'general.v1.tiny'
+
+    >   create-test
+    >     Flavor [general.v1.tiny]
+    >     ....
+    >     ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       general.v1.tiny test-node-31
+    >       general.v1.tiny test-node-30
+    >       ....
+    >       ....
+    >       general.v1.tiny test-node-1
+    >       general.v1.tiny test-node-0
+    >     Cloud [gaia-test]
+    >       general.v1.tiny test-node-31
+    >       general.v1.tiny test-node-30
+    >       ....
+    >       ....
+    >       general.v1.tiny test-node-1
+    >       general.v1.tiny test-node-0
+    >     Cloud [gaia-prod]
+    >       general.v1.tiny test-node-20
+    >       general.v1.tiny test-node-19
+    >       ....
+    >       ....
+    >       general.v1.tiny test-node-1
+    >       general.v1.tiny test-node-0
+
+    general.v1.tiny
+
+        2 vcpu
+        (6144/1024)G mem
+        12 disc
+
+    instances per physical host
+
+        110/2 = 55
+        187/6 = 31.16
+        880/12 = 73.33
+
+    Limiting factor is memory, so we would expect 31 VM per host
+        31 * 4
+        => 124 instances
+
+    What we actually get
+        32 + 32 + 21
+        => 85 instances
+
+
+# -----------------------------------------------------
+
+    create-test 20 'general.v1.small'
+
+    >   create-test
+    >     Flavor [general.v1.small]
+    >       ....
+    >       ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       general.v1.small test-node-19
+    >       general.v1.small test-node-18
+    >       ....
+    >       ....
+    >       general.v1.small test-node-1
+    >       general.v1.small test-node-0
+    >     Cloud [gaia-test]
+    >       general.v1.small test-node-2
+    >       general.v1.small test-node-1
+    >       general.v1.small test-node-0
+    >     Cloud [gaia-prod]
+
+    general.v1.small
+
+        6 vcpu
+        (22528/1024)G mem
+        20 disc
+
+    instances per physical host
+
+        110/6 = 18.33
+        187/22 = 8.5
+        880/20 = 44
+
+    Limiting factor is memory, so we would expect 8 VM per host
+        8 * 4
+        => 32 instances
+
+    What we actually get
+        20 + 3
+        => 23 instances
+
+
+# -----------------------------------------------------
+
+    create-test 6 'general.v1.medium'
+
+    >   create-test
+    >     Flavor [general.v1.medium]
+    >       ....
+    >       ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       general.v1.medium test-node-5
+    >       general.v1.medium test-node-4
+    >       general.v1.medium test-node-3
+    >       general.v1.medium test-node-2
+    >       general.v1.medium test-node-1
+    >       general.v1.medium test-node-0
+    >     Cloud [gaia-test]
+    >       general.v1.medium test-node-2
+    >       general.v1.medium test-node-1
+    >       general.v1.medium test-node-0
+    >     Cloud [gaia-prod]
+
+    general.v1.medium
+
+        14 vcpu
+        (46080/1024)G mem
+        (20+60) disc
+
+    instances per physical host
+
+        110/14 = 7.85
+        187/45 = 4.15
+        880/80 = 11
+
+    Limiting factor is memory, so we would expect 4 VM per host
+        4 * 4
+        => 16 instances
+
+    What we actually get
+        6 + 3
+        => 9 instances
+
+
+# -----------------------------------------------------
+
+    create-test 4 'general.v1.large'
+
+    >   create-test
+    >     Flavor [general.v1.large]
+    >       ....
+    >       ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       general.v1.large test-node-2
+    >       general.v1.large test-node-1
+    >       general.v1.large test-node-0
+    >     Cloud [gaia-test]
+    >     Cloud [gaia-prod]
+
+    general.v1.large
+
+        28 vcpu
+        (92160/1024)G mem
+        (20+160) disc
+
+    instances per physical host
+
+        110/28 = 3.92
+        187/90 = 2.07
+        880/180 = 4.88
+
+    Limiting factor is memory, so we would expect 2 VM per host
+        2 * 4
+        => 8 instances
+
+    What we actually get
+        => 3 instances
+
+
+# -----------------------------------------------------
+
+    create-test 4 'general.v1.xlarge'
+
+    >   create-test
+    >     Flavor [general.v1.xlarge]
+    >       ....
+    >       ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >     Cloud [gaia-test]
+    >     Cloud [gaia-prod]
+
+    general.v1.xlarge
+
+        28 vcpu
+        (184320/1024)G mem
+        (20+340) disc
+
+    instances per physical host
+
+        110/28 = 3.92
+        187/180 = 1.03
+        880/360 = 2.44
+
+    Limiting factor is memory, so we would expect 1 VM per host
+        1 * 4
+        => 4 instances
+
+    What we actually get
+        none
+
+
+# -----------------------------------------------------
+
+    create-test 70 'gaia.v1.special.tiny'
+
+    >   ....
+    >   ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       gaia.v1.special.tiny test-node-69
+    >       gaia.v1.special.tiny test-node-68
+    >       ....
+    >       ....
+    >       gaia.v1.special.tiny test-node-1
+    >       gaia.v1.special.tiny test-node-0
+    >     Cloud [gaia-test]
+    >       gaia.v1.special.tiny test-node-69
+    >       gaia.v1.special.tiny test-node-68
+    >       ....
+    >       ....
+    >       gaia.v1.special.tiny test-node-1
+    >       gaia.v1.special.tiny test-node-0
+    >     Cloud [gaia-prod]
+    >       gaia.v1.special.tiny test-node-64
+    >       gaia.v1.special.tiny test-node-63
+    >       ....
+    >       ....
+    >       gaia.v1.special.tiny test-node-1
+    >       gaia.v1.special.tiny test-node-0
+
+    gaia.v1.special.tiny
+
+        1 vcpu
+        (1024/1024)G mem
+        12G disc
+
+    instances per physical host
+
+        110/1 = 110
+        187/1 = 187
+        880/12 = 73.333
+
+    Limiting factor is disc, so we would expect 73 VMs per host
+        73 * 4
+        => 292 instances
+
+    What we actually get
+        70 + 70 + 65
+        => 205  instances
+
+
+# -----------------------------------------------------
+
+    create-test 70 'gaia.cclake.1vcpu'
+
+    >   create-test
+    >     Flavor [gaia.cclake.1vcpu]
+    >       ....
+    >       ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       gaia.cclake.1vcpu test-node-69
+    >       gaia.cclake.1vcpu test-node-68
+    >       ....
+    >       ....
+    >       gaia.cclake.1vcpu test-node-1
+    >       gaia.cclake.1vcpu test-node-0
+    >     Cloud [gaia-test]
+    >       gaia.cclake.1vcpu test-node-5
+    >       gaia.cclake.1vcpu test-node-4
+    >       gaia.cclake.1vcpu test-node-3
+    >       gaia.cclake.1vcpu test-node-2
+    >       gaia.cclake.1vcpu test-node-1
+    >       gaia.cclake.1vcpu test-node-0
+    >     Cloud [gaia-prod]
+
+    gaia.cclake.1vcpu
+
+        1 vcpu
+        (2048/1024)G mem
+        (20+12)g disc   <- wrong
+
+    instances per physical host
+
+        110/1  = 110
+        187/2  = 93.5
+        880/32 = 27.5   <- wrong
+
+    Limiting factor is disc, so we would expect 27 VMs per host
+        27 * 4
+        => 108 instances
+
+    What we actually get
+        70 + 6
+        => 76 instances
+
+
+# -----------------------------------------------------
+
+    create-test 64 'gaia.cclake.2vcpu'
+
+    >   create-test
+    >     Flavor [gaia.cclake.2vcpu]
+    >       ....
+    >       ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       gaia.cclake.2vcpu test-node-53
+    >       gaia.cclake.2vcpu test-node-52
+    >       ....
+    >       ....
+    >       gaia.cclake.2vcpu test-node-1
+    >       gaia.cclake.2vcpu test-node-0
+    >     Cloud [gaia-test]
+    >     Cloud [gaia-prod]
+
+
+    gaia.cclake.2vcpu
+
+        2 vcpu
+        (4096/1024)G mem
+        (20+25)G disc   <- wrong
+
+    instances per physical host
+
+        110/2  = 55
+        187/4  = 46.75
+        880/45 = 19.55  <- wrong
+
+    Limiting factor is disc, so we would expect 19 VMs per host
+        19 * 4
+        => 76 instances
+
+    What we actually get
+        54
+        => 54 instances
+
+
+# -----------------------------------------------------
+
+    create-test 32 'gaia.cclake.6vcpu'
+
+    >   create-test
+    >     Flavor [gaia.cclake.6vcpu]
+    >       ....
+    >       ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       gaia.cclake.6vcpu test-node-31
+    >       gaia.cclake.6vcpu test-node-30
+    >       ....
+    >       ....
+    >       gaia.cclake.6vcpu test-node-1
+    >       gaia.cclake.6vcpu test-node-0
+    >     Cloud [gaia-test]
+    >       gaia.cclake.6vcpu test-node-10
+    >       gaia.cclake.6vcpu test-node-9
+    >       ....
+    >       ....
+    >       gaia.cclake.6vcpu test-node-1
+    >       gaia.cclake.6vcpu test-node-0
+    >     Cloud [gaia-prod]
+
+
+    gaia.cclake.6vcpu
+
+        6 vcpu
+        (10240/1024)G mem
+        (20+35)G disc
+
+    instances per physical host
+
+        110/6  = 18.33
+        187/10 = 18.7
+        880/55 = 16
+
+    Limiting factor is disc, so we would expect 16 VMs per host
+        16 * 4
+        => 64 instances
+
+    What we actually get
+        32 + 11
+        => 43 instances
+
+
+# -----------------------------------------------------
+
+    create-test 16 'gaia.cclake.12vcpu'
+
+    >   create-test
+    >     Flavor [gaia.cclake.12vcpu]
+    >       ....
+    >       ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       gaia.cclake.12vcpu test-node-15
+    >       gaia.cclake.12vcpu test-node-14
+    >       gaia.cclake.12vcpu test-node-13
+    >       gaia.cclake.12vcpu test-node-12
+    >       gaia.cclake.12vcpu test-node-11
+    >       gaia.cclake.12vcpu test-node-10
+    >       gaia.cclake.12vcpu test-node-9
+    >       gaia.cclake.12vcpu test-node-8
+    >       gaia.cclake.12vcpu test-node-7
+    >       gaia.cclake.12vcpu test-node-6
+    >       gaia.cclake.12vcpu test-node-5
+    >       gaia.cclake.12vcpu test-node-4
+    >       gaia.cclake.12vcpu test-node-3
+    >       gaia.cclake.12vcpu test-node-2
+    >       gaia.cclake.12vcpu test-node-1
+    >       gaia.cclake.12vcpu test-node-0
+    >     Cloud [gaia-test]
+    >       gaia.cclake.12vcpu test-node-4
+    >       gaia.cclake.12vcpu test-node-3
+    >       gaia.cclake.12vcpu test-node-2
+    >       gaia.cclake.12vcpu test-node-1
+    >       gaia.cclake.12vcpu test-node-0
+    >     Cloud [gaia-prod]
+
+
+    gaia.cclake.12vcpu
+
+        12 vcpu
+        (22528/1024)G mem
+        (20+90)G disc
+
+    instances per physical host
+
+        110/12  = 9.16
+        187/22  = 8.5
+        880/110 = 8
+
+    Limiting factor is disc, so we would expect 8 VMs per host
+        8 * 4
+        => 32 instances
+
+    What we actually get
+        16 + 5
+        => 21 instances
+
+
+# -----------------------------------------------------
+
+    create-test 8 'gaia.cclake.26vcpu'
+
+    >   create-test
+    >     Flavor [gaia.cclake.26vcpu]
+    >       ....
+    >       ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       gaia.cclake.26vcpu test-node-7
+    >       gaia.cclake.26vcpu test-node-6
+    >       gaia.cclake.26vcpu test-node-5
+    >       gaia.cclake.26vcpu test-node-4
+    >       gaia.cclake.26vcpu test-node-3
+    >       gaia.cclake.26vcpu test-node-2
+    >       gaia.cclake.26vcpu test-node-1
+    >       gaia.cclake.26vcpu test-node-0
+    >     Cloud [gaia-test]
+    >       gaia.cclake.26vcpu test-node-0
+    >     Cloud [gaia-prod]
+
+
+    gaia.cclake.26vcpu
+
+        26 vcpu
+        (47104/1024)G mem
+        (20+200)G disc
+
+    instances per physical host
+
+        110/26  = 4.23
+        187/46  = 4.06
+        880/220 = 4
+
+    Limiting factor is disc, so we would expect 4 VMs per host
+        4 * 4
+        => 16 instances
+
+    What we actually get
+        8 + 1
+        => 9 instances
+
+
+# -----------------------------------------------------
+
+    create-test 4 'gaia.cclake.54vcpu'
+
+    >   create-test
+    >     Flavor [gaia.cclake.54vcpu]
+    >       ....
+    >       ....
+    >   list-active
+    >     Cloud [gaia-dev]
+    >       gaia.cclake.54vcpu test-node-2
+    >       gaia.cclake.54vcpu test-node-1
+    >       gaia.cclake.54vcpu test-node-0
+    >     Cloud [gaia-test]
+    >     Cloud [gaia-prod]
+    >   
+
+
+    gaia.cclake.54vcpu
+
+        54 vcpu
+        (94208/1024)G mem
+        (20+420)G disc
+
+    instances per physical host
+
+        110/54  = 2.03
+        187/92  = 2.03
+        880/440 = 2
+
+    Limiting factor is disc, so we would expect 2 VMs per host
+        4 * 2
+        => 8 instances
+
+    What we actually get
+        3
+        => 3 instances
+
+
+# -----------------------------------------------------
+# Tidy up at the end.
+#[user@openstacker]
+
+    delete-all
+
+
+
+

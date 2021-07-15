@@ -1,0 +1,333 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+    
+        Notes on setting up ssh tunnels and tails in the ansibler container
+        
+    Result:
+    
+        Several gists that make it easier to jump in and watch an active notebook.
+        
+    TODO:
+    
+        Need to find a way of recording the settings from aglais-status.yml 
+        to make it easier to reconnect to an existing deployment.
+                 
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman rm ansibler
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-prod
+
+
+# -----------------------------------------------------
+# Create the deployment status.
+#[root@ansibler]
+
+    cat > '/tmp/aglais-status.yml' << EOF
+aglais:
+ status:
+   deployment:
+     type: hadoop-yarn
+     conf: cclake-medium-04
+     name: gaia-prod-20210623
+     date: 20210623T114559
+ spec:
+   openstack:
+     cloud: gaia-prod
+EOF
+
+
+    ln -sf '/tmp/aglais-status.yml' '/tmp/ansible-vars.yml'
+
+
+# -----------------------------------------------------
+# Run the ssh config script.
+#[root@ansibler]
+
+    config=cclake-medium-04
+    inventory="config/${config:?}.yml"
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --verbose \
+            --verbose \
+            --inventory "${inventory:?}" \
+            "05-config-ssh.yml"
+
+        ansible-playbook \
+            --verbose \
+            --verbose \
+            --inventory "${inventory:?}" \
+            "08-ping-test.yml"
+
+    popd
+
+
+# -----------------------------------------------------
+# Tunnel connection to Grafana on the monitor node.
+# https://linuxize.com/post/how-to-setup-ssh-tunneling/
+#[root@ansibler]
+
+    ssh -f -N -L '3000:monitor:3000' fedora@zeppelin
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Open Grafana in Firefox
+#[user@desktop]
+
+    firefox --new-window 'http://localhost:3000/login' &
+
+
+# -----------------------------------------------------
+# Add a new Data Source
+# From Stelios's notes
+
+    # Click on button "Data Sources: Add your first data source"
+    # Select Prometheus as the Data source
+    # Set the url to: http://monitor:9090
+    # Set the Scrape interval to 5s
+
+
+# -----------------------------------------------------
+# Add a new Dashboard
+# From Stelios's notes
+
+    # Import Dashboards for Node Exporter metrics:
+    # https://grafana.com/grafana/dashboards/11074
+
+    # Import our own dashboards from github.
+    # Import from copy/paste JSON.
+    # Import from filesystems on monitor host.
+    # Install own dashboards from github.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Tunnel connection to the Spark UI on the master node.
+# https://linuxize.com/post/how-to-setup-ssh-tunneling/
+#[root@ansibler]
+
+    ssh -f -N -L '8088:master01:8088' fedora@zeppelin
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox
+#[user@desktop]
+
+    firefox --new-window "http://localhost:8088/" &
+
+    # Entry point for Hadoop cluster
+    http://localhost:8088/cluster
+
+    # Fixed hostname in URL for Spark Application
+    http://master01:8088/proxy/application_1625714931998_0002/
+
+    # Modified hostname for Spark Application to use the proxy.
+    http://localhost:8088/proxy/application_1625714931998_0002/
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Combined tunnel and keepalive.
+#[root@ansibler]
+
+    ssh -f -N \
+        -o 'ServerAliveInterval=20' \
+        -L '3000:monitor:3000'  \
+        -L '8088:master01:8088' \
+        fedora@zeppelin
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Combined ssh login using jump host.
+# https://www.redhat.com/sysadmin/ssh-proxy-bastion-proxyjump
+#[user@desktop]
+
+    ssh -J fedora@zeppelin \
+        fedora@worker01
+    
+    ssh -J fedora@zeppelin \
+        fedora@worker02
+    
+    ssh -J fedora@zeppelin \
+        fedora@worker03
+    
+    ssh -J fedora@zeppelin \
+        fedora@worker04
+
+
+# -----------------------------------------------------
+# Find the last contaner of the last application.
+#[user@desktop]
+
+    ssh -J fedora@zeppelin \
+        fedora@worker04
+
+    ls -1 /var/hadoop/logs/userlogs/application*
+
+    >   /var/hadoop/logs/userlogs/application_1624450963932_0022:
+    >   container_1624450963932_0022_01_000004
+    >   container_1624450963932_0022_01_000008
+    >   container_1624450963932_0022_01_000012
+    >   
+    >   /var/hadoop/logs/userlogs/application_1624450963932_0023:
+    >   container_1624450963932_0023_01_000005
+    >   container_1624450963932_0023_01_000009
+    >   container_1624450963932_0023_01_000012
+    >   
+    >   /var/hadoop/logs/userlogs/application_1624450963932_0024:
+    >   container_1624450963932_0024_01_000001
+    >   container_1624450963932_0024_01_000002
+    >   container_1624450963932_0024_01_000006
+
+
+    ls -1 /var/hadoop/logs/userlogs | tail -n 1
+
+    >   application_1624450963932_0024
+
+    lastapp=$(
+        ls -1 /var/hadoop/logs/userlogs | tail -n 1
+        )
+
+
+    ls -1 /var/hadoop/logs/userlogs/${lastapp}
+
+    lastcont=$(
+        ls -1 "/var/hadoop/logs/userlogs/${lastapp}" | tail -n 1
+        )
+
+    ls -1 /var/hadoop/logs/userlogs/${lastapp}/${lastcont}/stderr
+    
+    tail -f /var/hadoop/logs/userlogs/${lastapp}/${lastcont}/stderr
+
+    
+# -----------------------------------------------------
+# Combined ssh jump and tail.
+#[user@desktop]
+
+    ssh -J fedora@zeppelin \
+        fedora@worker01 \
+            '
+            lastapp=$(
+                ls -1 /var/hadoop/logs/userlogs | tail -n 1
+                )
+
+            lastcont=$(
+                ls -1 "/var/hadoop/logs/userlogs/${lastapp}" | tail -n 1
+                )
+
+            tail -f /var/hadoop/logs/userlogs/${lastapp}/${lastcont}/stderr
+            '
+
+    ssh -J fedora@zeppelin \
+        fedora@worker02 \
+            '
+            lastapp=$(
+                ls -1 /var/hadoop/logs/userlogs | tail -n 1
+                )
+
+            lastcont=$(
+                ls -1 "/var/hadoop/logs/userlogs/${lastapp}" | tail -n 1
+                )
+
+            tail -f /var/hadoop/logs/userlogs/${lastapp}/${lastcont}/stderr
+            '
+
+
+# -----------------------------------------------------
+# Tail the worker logs from the ansibler container.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh worker01 \
+                    "
+                    lastapp=\$(
+                        ls -1 /var/hadoop/logs/userlogs | tail -n 1
+                        )
+
+                    lastcont=\$(
+                        ls -1 "/var/hadoop/logs/userlogs/\${lastapp}" | tail -n 1
+                        )
+
+                    tail -f /var/hadoop/logs/userlogs/\${lastapp}/\${lastcont}/stderr
+                    "
+            '
+
+
+# -----------------------------------------------------
+# Tail the zeppelin logs from the ansibler container.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh zeppelin \
+                    "
+                    tail -f /home/fedora/zeppelin/logs/zeppelin-interpreter-spark-\$(id -un)-\$(hostname).log
+                    "
+            '
+

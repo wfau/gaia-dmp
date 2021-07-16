@@ -1,0 +1,1099 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Test deploy of the latest config from git.
+
+    Result:
+
+    Result:
+
+        RandomForest        - PASS
+        MeanProperMotions   - PASS
+        HealpixSourceCounts - PASS
+
+        KinematicClustering - SKIP
+
+
+
+# -----------------------------------------------------
+# Checkout the target branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210716-zrq-test-deploy'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-dev
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m11.894s
+    >   user    1m8.821s
+    >   sys     0m9.433s
+
+
+# -----------------------------------------------------
+# Create everything, using a standard config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'cclake-medium-04'
+
+    >   real    56m58.519s
+    >   user    15m10.090s
+    >   sys     4m44.476s
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: cclake-medium-04
+    >         name: gaia-dev-20210716
+    >         date: 20210716T153544
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}"
+        ln -s "zeppelin-0.8.2-bin-all" "zeppelin"
+
+            pushd "zeppelin"
+
+                # Manual edit to add names and passwords
+                vi conf/shiro.ini
+
+                # Restart Zeppelin for the changes to take.
+                bin/zeppelin-daemon.sh restart
+
+            popd
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-origin
+
+	        git clone https://github.com/wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+    >   Cloning into 'notebook'...
+    >   remote: Enumerating objects: 357, done.
+    >   remote: Counting objects: 100% (357/357), done.
+    >   remote: Compressing objects: 100% (154/154), done.
+    >   remote: Total 357 (delta 129), reused 308 (delta 83), pack-reused 0
+    >   Receiving objects: 100% (357/357), 8.78 MiB | 24.03 MiB/s, done.
+    >   Resolving deltas: 100% (129/129), done.
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [75ffa4e6-f04f-40f6-b692-377e78a7fe42]
+    >   Zeppelin IP [128.232.227.145]
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.145  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Check the data shares.
+#[root@ansibler]
+
+    sharelist="/deployments/common/manila/datashares.yaml"
+
+    for shareid in $(
+        yq read "${sharelist}" 'datashares.[*].id'
+        )
+    do
+        #echo ""
+        #echo "Share [${shareid}]"
+
+        checkbase=$(
+            yq read "${sharelist}" "datashares.(id == ${shareid}).mountpath"
+            )
+        checknum=$(
+            yq read "${sharelist}" --length "datashares.(id == ${shareid}).checksums"
+            )
+
+        for (( i=0; i<checknum; i++ ))
+        do
+            checkpath=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].path"
+                )
+            checkcount=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].count"
+                )
+            checkhash=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].md5sum"
+                )
+
+            echo ""
+            #echo "Base  [${checkbase}]"
+            echo "Share [${checkbase}/${checkpath}]"
+
+            testcount=$(
+                ssh zeppelin \
+                    "
+                    ls -1 ${checkbase}/${checkpath} | wc -l
+                    "
+                )
+
+            if [ "${testcount}" == "${checkcount}" ]
+            then
+                echo "Count [PASS]"
+            else
+                echo "Count [FAIL][${checkcount}][${testcount}]"
+            fi
+
+            testhash=$(
+                ssh zeppelin \
+                    "
+                    ls -1 -v ${checkbase}/${checkpath} | md5sum | cut -d ' ' -f 1
+                    "
+                )
+
+            if [ "${testhash}" == "${checkhash}" ]
+            then
+                echo "Hash  [PASS]"
+            else
+                echo "Hash  [FAIL][${checkhash}][${testhash}]"
+            fi
+        done
+    done
+
+    >   Share [/data/gaia/GDR2_6514/GDR2_6514_GAIASOURCE]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_11932/GEDR3_11932_GAIASOURCE]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_2048/GEDR3_2048_GAIASOURCE]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_4096/GEDR3_4096_GAIASOURCE]
+    >   Count [PASS]
+    >   Hash  [FAIL][bd9b1270867c50fd310fd4535ace1bab][dc89c58bed3e06063679f27526f0c9cf]
+    >   
+    >   Share [/data/gaia/GEDR3_4096/GEDR3_4096_PS1_BEST_NEIGHBOURS]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_4096/GEDR3_4096_ALLWISE_BEST_NEIGHBOURS]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_4096/GEDR3_4096_2MASSPSC_BEST_NEIGHBOURS]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_8192/GEDR3_8192_GAIASOURCE]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_8192/GEDR3_8192_PS1_BEST_NEIGHBOURS]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_8192/GEDR3_8192_ALLWISE_BEST_NEIGHBOURS]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/gaia/GEDR3_8192/GEDR3_8192_2MASSPSC_BEST_NEIGHBOURS]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/wise/ALLWISE/]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/panstarrs/PS1/]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   
+    >   Share [/data/twomass/2MASSPSC/]
+    >   Count [PASS]
+    >   Hash  [PASS]
+
+
+# -----------------------------------------------------
+# Install the 'jq' JSON parser.
+# https://github.com/wfau/aglais/issues/526
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sudo dnf -y install jq
+        '
+
+    >   ....
+    >   ....
+    >   Installed:
+    >     jq-1.6-2.fc30.x86_64      oniguruma-6.9.2-4.fc30.x86_64
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to our Zeppelin node and generate a new interpreter.json file.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        # Create a list of notebooks
+        find /home/fedora/zeppelin/notebook -mindepth 1 -maxdepth 1 -type d ! -name '.git' -printf '%f\n' \
+        | tee /tmp/001.txt
+
+    >   2C35YU814
+    >   2EZ3MQG4S
+    >   ....
+    >   ....
+    >   2G9BXYCKP
+    >   2FF2VTAAM
+
+
+        # Create a JSON array of interpreter bindings.
+        sed '
+            1 i \
+"interpreterBindings": {
+        s/^\(.*\)$/"\1": ["spark", "md", "sh"]/
+        $ ! s/^\(.*\)$/\1,/
+        $ a \
+},
+            ' /tmp/001.txt \
+            | tee /tmp/002.txt
+
+
+    >   "interpreterBindings": {
+    >   "2C35YU814": ["spark", "md", "sh"],
+    >   "2EZ3MQG4S": ["spark", "md", "sh"],
+    >   ....
+    >   ....
+    >   "2G9BXYCKP": ["spark", "md", "sh"],
+    >   "2FF2VTAAM": ["spark", "md", "sh"]
+    >   },
+
+
+        # Wrap our fragment as a JSON document to check
+        sed '
+            1 i \
+{
+        $ s/,//
+        $ a \
+}
+            ' /tmp/002.txt \
+        | jq '.'
+
+
+    >   {
+    >     "interpreterBindings": {
+    >       "2C35YU814": [
+    >         "spark",
+    >         "md",
+    >         "sh"
+    >       ],
+    >       "2EZ3MQG4S": [
+    >         "spark",
+    >         "md",
+    >         "sh"
+    >       ],
+    >       ....
+    >       ....
+    >       "2G9BXYCKP": [
+    >         "spark",
+    >         "md",
+    >         "sh"
+    >       ],
+    >       "2FF2VTAAM": [
+    >         "spark",
+    >         "md",
+    >         "sh"
+    >       ]
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Truncate any existing list.
+#[user@zeppelin]
+
+        jq '
+            del(.interpreterBindings[])
+            ' \
+        /home/fedora/zeppelin/conf/interpreter.json \
+        > /tmp/003.json
+
+        sed -n '
+            /interpreterBindings/ p
+            ' /tmp/003.json
+
+    >     "interpreterBindings": {},
+
+# -----------------------------------------------------
+# Replace the empty list with our fragment.
+#[user@zeppelin]
+
+    # Insert our binding list into the rest of the file.
+    sed '
+        /interpreterBindings/ {
+            r /tmp/002.txt
+            d
+            }
+        ' /tmp/003.json \
+    | jq '.' \
+    > /tmp/004.json
+
+    # Run it through 'jq' to check.
+    jq '
+        .interpreterBindings
+        ' /tmp/004.json
+
+    >   {
+    >     "2C35YU814": [
+    >       "spark",
+    >       "md",
+    >       "sh"
+    >     ],
+    >     "2EZ3MQG4S": [
+    >       "spark",
+    >       "md",
+    >       "sh"
+    >     ],
+    >     ....
+    >     ....
+    >     "2G9BXYCKP": [
+    >       "spark",
+    >       "md",
+    >       "sh"
+    >     ],
+    >     "2FF2VTAAM": [
+    >       "spark",
+    >       "md",
+    >       "sh"
+    >     ]
+    >   }
+    >   
+
+
+# -----------------------------------------------------
+# Replace the original interpreter.json from git.
+#[user@zeppelin]
+
+    mv /home/fedora/zeppelin/conf/interpreter.json \
+       /home/fedora/zeppelin/conf/interpreter.origin
+
+    cp /tmp/004.json \
+       /home/fedora/zeppelin/conf/interpreter.json
+
+    /home/fedora/zeppelin/bin/zeppelin-daemon.sh restart
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create shell script functions to wrap the REST API.
+#[user@desktop]
+
+    zeppelinurl=http://zeppelin.gaia-dev.aglais.uk:8080
+
+    zeplogin()
+        {
+        local username=${1:?}
+        local password=${2:?}
+        zepcookies=/tmp/${username:?}.cookies
+        curl \
+            --silent \
+            --request 'POST' \
+            --cookie-jar "${zepcookies:?}" \
+            --data "userName=${username:?}" \
+            --data "password=${password:?}" \
+            "${zeppelinurl:?}/api/login" \
+        | jq '.'
+        }
+
+    zepnbjsonfile()
+        {
+        echo "/tmp/${nbident:?}.json"
+        }
+
+    zepnbjsonclr()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+        if [ -f "${jsonfile}" ]
+        then
+            rm "${jsonfile}"
+        fi
+        }
+
+    zepnbclear()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request PUT \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}/clear" \
+        | jq '.'
+        }
+
+    zepnbstatus()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request GET \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}" \
+        | jq '.' | tee $(zepnbjsonfile ${nbident})
+        }
+
+    zepnbexecute()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request POST \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/job/${nbident:?}" \
+        | jq '.'
+        }
+
+
+# -----------------------------------------------------
+# Calculate the elapsed time for each paragraph.
+#[user@desktop]
+
+    zepnbparatime()
+        {
+        local nbident=${1:?}
+
+        cat $(zepnbjsonfile ${nbident}) \
+        | sed '
+            /"dateStarted": null,/d
+            /"dateStarted":/ {
+                h
+                s/\([[:space:]]*\)"dateStarted":[[:space:]]*\("[^"]*"\).*$/\1\2/
+                x
+                }
+            /"dateFinished": null,/ d
+            /"dateFinished":/ {
+                H
+                x
+                s/[[:space:]]*"dateFinished":[[:space:]]*\("[^"]*"\).*$/ \1/
+                s/\([[:space:]]*\)\(.*\)/\1echo "\1\\"elapsedTime\\": \\"$(datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" \2)\\","/e
+                x
+                G
+                }
+            ' \
+        | jq '
+            .body.paragraphs[] | select(.results.code != null) | {
+                title,
+                result: .results.code,
+                time:   .elapsedTime,
+                }
+            '
+        }
+
+# -----------------------------------------------------
+# Calculate the elapsed time for the whole notebook.
+#[user@desktop]
+
+    zepnbtotaltime()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+
+        local first=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateStarted != null) | .dateStarted] | first
+                ' \
+                "${jsonfile}"
+            )
+
+        local last=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateFinished != null) | .dateFinished] | last
+                ' \
+                "${jsonfile}"
+            )
+
+        datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" "${first}" "${last}"
+        }
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[user@desktop]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gaiauser",
+    >       "ticket": "3262fb1d-05ac-4b71-8e49-074addd0e746",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Use the REST API to run the SetUp notebook.
+#[user@desktop]
+
+    notebook=2G7GZKWUH
+
+    zepnbclear ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+
+
+    zepnbexecute ${notebook}
+
+    >   {
+    >     "status": "OK"
+    >   }
+
+
+    zepnbstatus ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [
+    >       ....
+    >       ....
+    >       ],
+    >       "name": "/AglaisPublicExamples/SetUp",
+    >       "id": "2G7GZKWUH",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "spark:gaiauser:": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+
+
+    zepnbparatime ${notebook}
+
+    >   {
+    >     "title": null,
+    >     "result": "SUCCESS",
+    >     "time": "0:0:1"
+    >   }
+    >   {
+    >     "title": "Catalogue structure definitions",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:27"
+    >   }
+    >   {
+    >     "title": "Utility function definitions",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:1"
+    >   }
+    >   {
+    >     "title": "Set up the catalogues on the platform",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:8"
+    >   }
+    >   {
+    >     "title": "Show details of databases and tables",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:3"
+    >   }
+    >   {
+    >     "title": "Check location on disk for main catalogue table from metastore",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+
+    zepnbtotaltime ${notebook}
+
+    >   0:0:40
+
+
+# -----------------------------------------------------
+# Use the REST API to run the RandomForest notebook.
+#[user@desktop]
+
+    notebook=2G5NU6HTK
+
+    zepnbclear ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+
+
+    zepnbexecute ${notebook}
+
+    >   {
+    >     "status": "OK"
+    >   }
+
+
+    zepnbstatus ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [
+    >       ....
+    >       ....
+    >       ],
+    >       "name": "/AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier",
+    >       "id": "2G5NU6HTK",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "spark:gaiauser:": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+
+
+    zepnbparatime ${notebook}
+
+    >   {
+    >     "title": null,
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Basic catalogue query selections and predicates",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Raw catalogue with selected columns",
+    >     "result": "SUCCESS",
+    >     "time": "0:6:10"
+    >   }
+    >   {
+    >     "title": "Visualisation (colour / absolute-magnitue diagram) of the raw catalogue",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:5"
+    >   }
+    >   {
+    >     "title": null,
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Define the training samples",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:4"
+    >   }
+    >   {
+    >     "title": "Assemble training and reserve test sets",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:1"
+    >   }
+    >   {
+    >     "title": "Train up the Random Forrest",
+    >     "result": "SUCCESS",
+    >     "time": "0:4:3"
+    >   }
+    >   {
+    >     "title": "Check feature set for nulls",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Classify the reserved test sets",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Classification confusion matrix",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:10"
+    >   }
+    >   {
+    >     "title": "Relative importance of the selected features",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Apply the classification model and plot sample results",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:24"
+    >   }
+    >   {
+    >     "title": "Histogram of classification probability",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:30"
+    >   }
+    >   {
+    >     "title": "Sky distribution of good source sample",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:6"
+    >   }
+    >   {
+    >     "title": "Sky distribution of bad source sample",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:6"
+    >   }
+    >   {
+    >     "title": "Further reading and resources",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+
+    zepnbtotaltime ${notebook}
+
+    >   0:11:40
+
+
+# -----------------------------------------------------
+# Use the REST API to run the MeanProperMotions notebook
+#[user@desktop]
+
+    notebook=2G748GZSW
+
+    zepnbclear ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+
+
+    zepnbexecute ${notebook}
+
+    >   {
+    >     "status": "OK"
+    >   }
+
+
+    zepnbstatus ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [
+    >       ....
+    >       ....
+    >       ],
+    >       "name": "AglaisPublicExamples/Mean proper motions over the sky",
+    >       "id": "2G748GZSW",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "spark:gaiauser:": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+
+
+    zepnbparatime ${notebook}
+
+    >   {
+    >     "title": "Set HEALPix resolution",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Define a data frame by SQL query",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Mean RA proper motion plot",
+    >     "result": "SUCCESS",
+    >     "time": "0:1:17"
+    >   }
+    >   {
+    >     "title": "Mean Dec proper motion plot",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:1"
+    >   }
+    >   {
+    >     "title": "Further reading and resources",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+
+    zepnbtotaltime ${notebook}
+
+    >   0:1:19
+
+
+# -----------------------------------------------------
+# Use the REST API to run the HealpixSourceCounts notebook
+#[user@desktop]
+
+    notebook=2FKJ25GVF
+
+    zepnbclear ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+
+
+    zepnbexecute ${notebook}
+
+    >   {
+    >     "status": "OK"
+    >   }
+
+
+    zepnbstatus ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [
+    >       ....
+    >       ....
+    >       ],
+    >       "name": "/AglaisPublicExamples/Source counts over the sky",
+    >       "id": "2FKJ25GVF",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "spark:gaiauser:": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+
+
+    zepnbparatime ${notebook}
+
+    >   {
+    >     "title": null,
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Set the resolution level and define the query",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Plot up the results",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:28"
+    >   }
+    >   {
+    >     "title": "Further reading and resources",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+
+    zepnbtotaltime ${notebook}
+
+    >   0:0:28
+
+
+
+
+

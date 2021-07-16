@@ -1,0 +1,832 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+# -----------------------------------------------------
+# Checkout the target branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210702-zrq-prometheus'
+
+    popd
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-dev
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+--START--
+real    3m19.376s
+user    1m10.979s
+sys     0m9.656s
+--END--
+
+
+# -----------------------------------------------------
+# Create everything, using a standard config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'cclake-medium-04'
+
+--START--
+real    61m10.288s
+user    14m22.747s
+sys     4m26.738s
+--END--
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+--START--
+aglais:
+  status:
+    deployment:
+      type: hadoop-yarn
+      conf: cclake-medium-04
+      name: gaia-dev-20210715
+      date: 20210715T170917
+  spec:
+    openstack:
+      cloud: gaia-dev
+--END--
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}"
+        ln -s "zeppelin-0.8.2-bin-all" "zeppelin"
+
+            pushd "zeppelin"
+
+                # Manual edit to add names and passwords
+                vi conf/shiro.ini
+
+                # Restart Zeppelin for the changes to take.
+                ./bin/zeppelin-daemon.sh restart
+
+            popd
+        popd
+    exit
+
+--START--
+Zeppelin stop                                              [  OK  ]
+Zeppelin start                                             [  OK  ]
+--END--
+
+
+
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-origin
+
+	        git clone https://github.com/wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+--START--
+Cloning into 'notebook'...
+remote: Enumerating objects: 357, done.
+remote: Counting objects: 100% (357/357), done.
+remote: Compressing objects: 100% (154/154), done.
+remote: Total 357 (delta 129), reused 308 (delta 83), pack-reused 0
+Receiving objects: 100% (357/357), 8.78 MiB | 25.39 MiB/s, done.
+Resolving deltas: 100% (129/129), done.
+--END--
+
+--START--
+Zeppelin stop                                              [  OK  ]
+Zeppelin start                                             [  OK  ]
+--END--
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+--START--
+Zeppelin ID [4f3e7af2-79cf-43f4-ba9f-be70ca26d949]
+Zeppelin IP [128.232.227.137]
+--END--
+
+
+# -----------------------------------------------------
+# Update our DNS entries.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.137  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+--START--
+dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+--END--
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the shares and links.
+#[root@ansibler]
+
+    sharelist="/deployments/common/manila/datashares.yaml"
+
+    for shareid in $(
+        yq read "${sharelist}" 'datashares.[*].id'
+        )
+    do
+        #echo ""
+        #echo "Share [${shareid}]"
+
+        checkbase=$(
+            yq read "${sharelist}" "datashares.(id == ${shareid}).mountpath"
+            )
+        checknum=$(
+            yq read "${sharelist}" --length "datashares.(id == ${shareid}).checksums"
+            )
+
+        for (( i=0; i<checknum; i++ ))
+        do
+            checkpath=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].path"
+                )
+            checkcount=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].count"
+                )
+            checkhash=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].md5sum"
+                )
+ 
+            echo ""
+            #echo "Base  [${checkbase}]"
+            echo "Share [${checkbase}/${checkpath}]"
+
+            testcount=$(
+                ssh zeppelin \
+                    "
+                    ls -1 ${checkbase}/${checkpath} | wc -l
+                    "
+                )
+
+            if [ "${testcount}" == "${checkcount}" ]
+            then
+                echo "Count [PASS]"
+            else
+                echo "Count [FAIL][${checkcount}][${testcount}]"
+            fi
+
+            testhash=$(
+                ssh zeppelin \
+                    "
+                    ls -1 -v ${checkbase}/${checkpath} | md5sum | cut -d ' ' -f 1
+                    "
+                )
+ 
+            if [ "${testhash}" == "${checkhash}" ]
+            then
+                echo "Hash  [PASS]"
+            else
+                echo "Hash  [FAIL][${checkhash}][${testhash}]"
+            fi
+        done
+    done
+
+    #
+    # Lots of fun with _SUCCESS in some of the directories.
+    # The behaviour of 'ls' and 'sort' depend on the locale.
+    # See:
+    # https://stackoverflow.com/questions/5909404/sort-not-sorting-as-expected-space-and-locale
+    # https://stackoverflow.com/a/5909475
+    # https://askubuntu.com/questions/1103748/sorting-files-and-folders-with-underscore-at-the-beginning
+    # https://askubuntu.com/a/1103756
+    # 
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin as an admin user.
+#[user@desktop]
+
+    adminuser=$(secret aglais.zeppelin.adminuser)
+    adminpass=$(secret aglais.zeppelin.adminpass)
+
+    zeppelinurl=http://zeppelin.gaia-dev.aglais.uk:8080
+    admincookies=$(mktemp)
+
+    curl \
+        --silent \
+        --request 'POST' \
+        --cookie-jar "${admincookies:?}" \
+        --data "userName=${adminuser:?}" \
+        --data "password=${adminpass:?}" \
+        "${zeppelinurl:?}/api/login" \
+    | jq '.'
+
+--START--
+{
+  "status": "OK",
+  "message": "",
+  "body": {
+    "principal": "admin",
+    "ticket": "2555e286-a3ce-421d-b955-49d85d0be080",
+    "roles": "[\"admin\"]"
+  }
+}
+--END--
+
+
+# -----------------------------------------------------
+# Use the REST API to start the Spark interpreter.
+#[user@desktop]
+
+    # This is a fix for the 'No interpreter is binded to this note' error.
+    # https://issues.apache.org/jira/browse/ZEPPELIN-3243
+
+    curl \
+        --silent \
+        --request PUT \
+        --cookie "${admincookies:?}" \
+        "${zeppelinurl:?}/api/interpreter/setting/restart/spark" \
+    | jq '.' | tee "/tmp/interpreter.json"
+
+--START--
+{
+  "status": "OK",
+  "message": "",
+  "body": {
+    "id": "spark",
+    "name": "spark",
+    "group": "spark",
+....
+....
+    "dependencies": [],
+    "option": {
+      "remote": true,
+      "port": -1,
+      "perNote": "shared",
+      "perUser": "isolated",
+      "isExistingProcess": false,
+      "setPermission": false,
+      "owners": [],
+      "isUserImpersonate": false
+    }
+  }
+}
+--END--
+
+    # Nice try, but the fix doesn't work.
+    # We have to initialise it manually.
+
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[user@desktop]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeppelinurl=http://zeppelin.gaia-dev.aglais.uk:8080
+    gaiacookies=$(mktemp)
+
+    curl \
+        --silent \
+        --request 'POST' \
+        --cookie-jar "${gaiacookies:?}" \
+        --data "userName=${gaiauser:?}" \
+        --data "password=${gaiapass:?}" \
+        "${zeppelinurl:?}/api/login" \
+    | jq '.'
+
+--START--
+{
+  "status": "OK",
+  "message": "",
+  "body": {
+    "principal": "gaiauser",
+    "ticket": "0378bf49-ca89-47ca-865e-af2c5f9b4cbe",
+    "roles": "[\"user\"]"
+  }
+}
+--END--
+
+
+# -----------------------------------------------------
+# Use the REST API to run the SetUp notebook.
+#[user@desktop]
+
+    notebookid=2G7GZKWUH
+
+    curl \
+        --silent \
+        --request PUT \
+        --cookie "${gaiacookies:?}" \
+        "${zeppelinurl:?}/api/notebook/${notebookid:?}/clear" \
+    | jq '.'
+
+--START--
+{
+  "status": "OK",
+  "message": ""
+}
+--END--
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${gaiacookies:?}" \
+        "${zeppelinurl:?}/api/notebook/job/${notebookid:?}" \
+    | jq '.'
+
+--START--
+{
+  "status": "OK"
+}
+--END--
+
+
+    curl \
+        --silent \
+        --request GET \
+        --cookie "${gaiacookies:?}" \
+        "${zeppelinurl:?}/api/notebook/${notebookid:?}" \
+    | jq '.' | tee "/tmp/${notebookid:?}.json"
+
+--START--
+{
+  "status": "OK",
+  "message": "",
+  ....
+  ....
+}
+--END--
+
+
+# -----------------------------------------------------
+# Use the REST API to run the RandomForest notebook.
+#[user@desktop]
+
+    notebookid=2G5NU6HTK
+
+    curl \
+        --silent \
+        --request PUT \
+        --cookie "${gaiacookies:?}" \
+        "${zeppelinurl:?}/api/notebook/${notebookid:?}/clear" \
+    | jq '.'
+
+--START--
+{
+  "status": "OK",
+  "message": ""
+}
+--END--
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${gaiacookies:?}" \
+        "${zeppelinurl:?}/api/notebook/job/${notebookid:?}" \
+    | jq '.'
+
+--START--
+{
+  "status": "PRECONDITION_FAILED",
+  "message": "org.apache.zeppelin.interpreter.InterpreterNotFoundException: No interpreter is binded to this note: 2G5NU6HTK- Not selected or Invalid Interpreter bind"
+}
+--END--
+
+    #
+    # Manually restart the interpreter and then try again.
+    #
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${gaiacookies:?}" \
+        "${zeppelinurl:?}/api/notebook/job/${notebookid:?}" \
+    | jq '.'
+
+--START--
+{
+  "status": "OK"
+}
+--END--
+
+
+    curl \
+        --silent \
+        --request GET \
+        --cookie "${gaiacookies:?}" \
+        "${zeppelinurl:?}/api/notebook/${notebookid:?}" \
+    | jq '.' | tee "/tmp/${notebookid:?}.json"
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Calculate the elapsed time for each paragraph.
+#[user@desktop]
+
+    cat "/tmp/${notebookid:?}.json" \
+    | sed '
+        /"dateStarted": null,/d
+        /"dateStarted":/ {
+            h
+            s/\([[:space:]]*\)"dateStarted":[[:space:]]*\("[^"]*"\).*$/\1\2/
+            x
+            }
+        /"dateFinished": null,/ d
+        /"dateFinished":/ {
+            H
+            x
+            s/[[:space:]]*"dateFinished":[[:space:]]*\("[^"]*"\).*$/ \1/
+            s/\([[:space:]]*\)\(.*\)/\1echo "\1\\"elapsedTime\\": \\"$(datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" \2)\\","/e
+            x
+            G
+            }
+        ' \
+    | jq '
+        .body.paragraphs[] | select(.results.code != null) | {
+            title,
+            result: .results.code,
+            time:   .elapsedTime,
+            }
+        '
+
+--START--
+{
+  "title": null,
+  "result": "SUCCESS",
+  "time": "0:0:0"
+}
+{
+  "title": "Basic catalogue query selections and predicates",
+  "result": "SUCCESS",
+  "time": "0:0:0"
+}
+{
+  "title": "Raw catalogue with selected columns",
+  "result": "SUCCESS",
+  "time": "0:4:55"
+}
+{
+  "title": "Visualisation (colour / absolute-magnitue diagram) of the raw catalogue",
+  "result": "SUCCESS",
+  "time": "0:0:5"
+}
+{
+  "title": null,
+  "result": "SUCCESS",
+  "time": "0:0:0"
+}
+{
+  "title": "Define the training samples",
+  "result": "SUCCESS",
+  "time": "0:0:4"
+}
+{
+  "title": "Assemble training and reserve test sets",
+  "result": "SUCCESS",
+  "time": "0:0:1"
+}
+{
+  "title": "Train up the Random Forrest",
+  "result": "SUCCESS",
+  "time": "0:4:22"
+}
+{
+  "title": "Check feature set for nulls",
+  "result": "SUCCESS",
+  "time": "0:0:1"
+}
+{
+  "title": "Classify the reserved test sets",
+  "result": "SUCCESS",
+  "time": "0:0:0"
+}
+{
+  "title": "Classification confusion matrix",
+  "result": "SUCCESS",
+  "time": "0:0:11"
+}
+{
+  "title": "Relative importance of the selected features",
+  "result": "SUCCESS",
+  "time": "0:0:1"
+}
+{
+  "title": "Apply the classification model and plot sample results",
+  "result": "SUCCESS",
+  "time": "0:0:22"
+}
+{
+  "title": "Histogram of classification probability",
+  "result": "SUCCESS",
+  "time": "0:0:30"
+}
+{
+  "title": "Sky distribution of good source sample",
+  "result": "SUCCESS",
+  "time": "0:0:6"
+}
+{
+  "title": "Sky distribution of bad source sample",
+  "result": "SUCCESS",
+  "time": "0:0:6"
+}
+{
+  "title": "Further reading and resources",
+  "result": "SUCCESS",
+  "time": "0:0:0"
+}
+--END--
+
+
+# -----------------------------------------------------
+# Calculate the elapsed time for the whole notebook.
+#[user@desktop]
+
+    first=$(
+        cat "/tmp/${notebookid:?}.json" \
+            | jq -r '
+                [.body.paragraphs[] | select(.dateStarted != null) | .dateStarted] | first
+                '
+        )
+
+    last=$(
+        cat "/tmp/${notebookid:?}.json" \
+            | jq -r '
+                [.body.paragraphs[] | select(.dateFinished != null) | .dateFinished] | last
+                '
+        )
+
+    datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" "${first}" "${last}"
+
+--START--
+0:10:44
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    The 'No interpreter is binded' issue is caused by empty interpreterBindings in the 'interpreter.json' file we import.
+
+    This issue linked to it, but not the cause.
+    https://issues.apache.org/jira/browse/ZEPPELIN-3243
+
+        The issue fixes the IndexOutOfBoundsException.
+        It doesn't fix the 'No interpreter is binded' because it isn't wrong.
+        It is our fault for having an empty interpreterBindings list.
+
+    The version of 'interpreter.json' in git has an empty interpreterBindings list:
+
+        https://github.com/wfau/aglais/blob/504dbd832796c0d3a87f157c142f11accf5855ae/deployments/common/zeppelin/interpreter.json#L589
+
+            "interpreterBindings": {},
+
+    After we manually reload the interpreters, we get this:
+
+        cat /home/fedora/zeppelin/conf/interpreter.json
+
+            "interpreterBindings": {
+              "2G5NU6HTK": [
+                "spark",
+                "md",
+                "sh"
+              ],
+              "2G7GZKWUH": [
+                "spark",
+                "md",
+                "sh"
+              ]
+            },
+
+    In theory we could run a script on the server to restore the settings for all of our notebooks.
+
+    Note that when we manually restarted the interpreter, we were logged in using our own user account, 'zrq'.
+    When we ran the tests via the REST API, we were logged in using the 'gaia' user account.
+    So reloading the interpreter changes the settings for everyone, not just the current user.
+
+
+# -----------------------------------------------------
+# Install the 'jq' JSON parser.
+#[root@ansibler]
+
+    sudo dnf -y install jq
+
+
+# -----------------------------------------------------
+# List all our notebooks.
+#[root@ansibler]
+
+    for notebook in $(
+        find /home/fedora/zeppelin/notebook -mindepth 1 -maxdepth 1 -type d ! -name '.git' -printf '%f\n' \
+        )
+    do
+        echo "Notebook [${notebook}]"
+    done
+
+--START--
+Notebook [2C35YU814]
+Notebook [2EZ3MQG4S]
+....
+....
+Notebook [2G9BXYCKP]
+Notebook [2FF2VTAAM]
+--END--
+
+
+# -----------------------------------------------------
+# Create our new interpreter list.
+#[root@ansibler]
+
+    # Create a list of notebooks
+    find /home/fedora/zeppelin/notebook -mindepth 1 -maxdepth 1 -type d ! -name '.git' -printf '%f\n' \
+    | tee /tmp/001.txt
+
+
+    # Create a JSON array of interpreter bindings.
+    sed '
+        1 i \
+"interpreterBindings": {
+        s/^\(.*\)$/"\1": ["spark", "md", "sh"]/
+        $ ! s/^\(.*\)$/\1,/
+        $ a \
+},
+        ' /tmp/001.txt \
+        | tee /tmp/002.txt
+
+    
+    # Wrap our fragment as a JSON document to check
+    sed '
+        1 i \
+{
+        $ s/,//
+        $ a \
+}  
+        ' /tmp/002.txt \
+    | jq '.'
+
+
+# -----------------------------------------------------
+# Truncate any existing list.
+#[root@ansibler]
+                
+    jq '
+        del(.interpreterBindings[])
+        ' \
+    /home/fedora/zeppelin/conf/interpreter.json \
+    > /tmp/003.json
+
+    sed -n '
+        /interpreterBindings/ p
+        ' /tmp/003.json
+
+# -----------------------------------------------------
+# Replace the empty list with our fragment.
+#[root@ansibler]
+
+    # Insert our binding list into the rest of the file.
+    sed '
+        /interpreterBindings/ {
+            r /tmp/002.txt
+            d
+            }
+        ' /tmp/003.json \
+    | jq '.' \
+    | tee /tmp/004.json
+
+    # Run it through 'jq' to check.
+    jq '
+        .interpreterBindings
+        ' /tmp/004.json
+
+

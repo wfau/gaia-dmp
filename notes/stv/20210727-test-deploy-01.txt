@@ -1,0 +1,633 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+# Based on notes from dmr: 
+# https://github.com/Zarquan/aglais/blob/84e5623fd0cd2be6d85c9c145a69c5132fc5307c/notes/zrq/20210727-01-medium-04-deploy.txt
+
+
+    Target:
+
+        Test deploy of the latest config from git.
+
+
+    Result:
+
+        Good astrometric solutions via ML Random Forrest classifier        - SUCCESS
+        Mean RA proper motion plot   - SUCCESS
+        Source counts over the sky - SUCCESS
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Fetch any new tags from the upstream (WFAU) repository
+# and checkout our deployment tag.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+	git checkout '20210727-zrq-deploy'
+
+    popd
+
+	
+	> HEAD is now at 38a48db Merge pull request #530 from stvoutsin/issue-multi-user
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-test
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+	> Done
+
+	> real	3m48.394s
+	> user	0m46.416s
+	> sys	0m4.422s
+
+
+# -----------------------------------------------------
+# Create everything, using a standard config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'cclake-medium-04'
+
+
+	> real	68m23.293s
+	> user	15m49.227s
+	> sys	3m38.770s
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+      > aglais:
+	  status:
+	    deployment:
+	      type: hadoop-yarn
+	      conf: cclake-medium-04
+	      name: gaia-test-20210727
+	      date: 20210727T174742
+	  spec:
+	    openstack:
+	      cloud: gaia-test
+
+
+
+
+
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin-0.8.2-bin-all
+
+            mv -b notebook \
+               notebook-origin
+
+	        git clone https://github.com/wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+> Zeppelin ID [2daef725-1fda-40f3-97fa-ceccc6480e2d]
+> Zeppelin IP [128.232.227.136]
+
+
+
+# -----------------------------------------------------
+# Check the data shares.
+# TODO Move this to a bash script in the source tree.
+#[root@ansibler]
+
+    sharelist="/deployments/common/manila/datashares.yaml"
+
+    for shareid in $(
+        yq read "${sharelist}" 'datashares.[*].id'
+        )
+    do
+        #echo ""
+        #echo "Share [${shareid}]"
+
+        checkbase=$(
+            yq read "${sharelist}" "datashares.(id == ${shareid}).mountpath"
+            )
+        checknum=$(
+            yq read "${sharelist}" --length "datashares.(id == ${shareid}).checksums"
+            )
+
+        for (( i=0; i<checknum; i++ ))
+        do
+            checkpath=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].path"
+                )
+            checkcount=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].count"
+                )
+            checkhash=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].md5sum"
+                )
+
+            echo ""
+            #echo "Base  [${checkbase}]"
+            echo "Share [${checkbase}/${checkpath}]"
+
+            testcount=$(
+                ssh zeppelin \
+                    "
+                    ls -1 ${checkbase}/${checkpath} | wc -l
+                    "
+                )
+
+            if [ "${testcount}" == "${checkcount}" ]
+            then
+                echo "Count [PASS]"
+            else
+                echo "Count [FAIL][${checkcount}][${testcount}]"
+            fi
+
+            testhash=$(
+                ssh zeppelin \
+                    "
+                    ls -1 -v ${checkbase}/${checkpath} | md5sum | cut -d ' ' -f 1
+                    "
+                )
+
+            if [ "${testhash}" == "${checkhash}" ]
+            then
+                echo "Hash  [PASS]"
+            else
+                echo "Hash  [FAIL][${checkhash}][${testhash}]"
+            fi
+        done
+    done
+
+
+    # All PASS
+
+# -----------------------------------------------------
+# Install the 'jq' JSON parser.
+# https://github.com/wfau/aglais/issues/526
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sudo dnf -y install jq
+        '
+
+
+# -----------------------------------------------------
+# Login to our Zeppelin node and generate a new interpreter.json file.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        # Create a list of notebooks
+        find /home/fedora/zeppelin-0.8.2-bin-all/notebook/ -mindepth 1 -maxdepth 1 -type d ! -name '.git' -printf '%f\n' \
+        | tee /tmp/001.txt
+
+
+
+
+
+        # Create a JSON array of interpreter bindings.
+        sed '
+            1 i \
+"interpreterBindings": {
+        s/^\(.*\)$/"\1": ["spark", "md", "sh"]/
+        $ ! s/^\(.*\)$/\1,/
+        $ a \
+},
+            ' /tmp/001.txt \
+            | tee /tmp/002.txt
+
+
+
+        # Wrap our fragment as a JSON document to check
+        sed '
+            1 i \
+{
+        $ s/,//
+        $ a \
+}
+            ' /tmp/002.txt \
+        | jq '.'
+
+
+
+
+
+# -----------------------------------------------------
+# Truncate any existing list.
+#[user@zeppelin]
+
+        jq '
+            del(.interpreterBindings[])
+            ' \
+        /home/fedora/zeppelin-0.8.2-bin-all/conf/interpreter.json \
+        > /tmp/003.json
+
+        sed -n '
+            /interpreterBindings/ p
+            ' /tmp/003.json
+
+
+
+
+
+# -----------------------------------------------------
+# Replace the empty list with our fragment.
+#[user@zeppelin]
+
+    # Insert our binding list into the rest of the file.
+    sed '
+        /interpreterBindings/ {
+            r /tmp/002.txt
+            d
+            }
+        ' /tmp/003.json \
+    | jq '.' \
+    > /tmp/004.json
+
+    # Run it through 'jq' to check.
+    jq '
+        .interpreterBindings
+        ' /tmp/004.json
+
+
+
+
+
+
+# -----------------------------------------------------
+# Replace the original interpreter.json from git.
+#[user@zeppelin]
+
+    mv /home/fedora/zeppelin-0.8.2-bin-all/conf/interpreter.json \
+       /home/fedora/zeppelin-0.8.2-bin-all/conf/interpreter.origin
+
+    cp /tmp/004.json \
+       /home/fedora/zeppelin-0.8.2-bin-all/conf/interpreter.json
+
+    /home/fedora/zeppelin-0.8.2-bin-all/bin/zeppelin-daemon.sh restart
+
+
+
+
+# -----------------------------------------------------
+# Create shell script functions to wrap the REST API.
+#[user@desktop]
+
+    zeppelinurl=http://128.232.227.136:8080
+
+    zeplogin()
+        {
+        local username=${1:?}
+        local password=${2:?}
+        zepcookies=/tmp/${username:?}.cookies
+        curl \
+            --silent \
+            --request 'POST' \
+            --cookie-jar "${zepcookies:?}" \
+            --data "userName=${username:?}" \
+            --data "password=${password:?}" \
+            "${zeppelinurl:?}/api/login" \
+        | jq '.'
+        }
+
+    zepnbjsonfile()
+        {
+        echo "/tmp/${nbident:?}.json"
+        }
+
+    zepnbjsonclr()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+        if [ -f "${jsonfile}" ]
+        then
+            rm "${jsonfile}"
+        fi
+        }
+
+    zepnbclear()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request PUT \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}/clear" \
+        | jq '.'
+        }
+
+    zepnbstatus()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request GET \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}" \
+        | jq '.' | tee $(zepnbjsonfile ${nbident}) | jq 'del(.body.paragraphs[])'
+        }
+
+    zepnbexecute()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request POST \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/job/${nbident:?}" \
+        | jq '.'
+        }
+
+
+
+
+# -----------------------------------------------------
+# Calculate the elapsed time for each paragraph.
+#[user@desktop]
+
+    zepnbparatime()
+        {
+        local nbident=${1:?}
+
+        cat $(zepnbjsonfile ${nbident}) \
+        | sed '
+            /"dateStarted": null,/d
+            /"dateStarted":/ {
+                h
+                s/\([[:space:]]*\)"dateStarted":[[:space:]]*\("[^"]*"\).*$/\1\2/
+                x
+                }
+            /"dateFinished": null,/ d
+            /"dateFinished":/ {
+                H
+                x
+                s/[[:space:]]*"dateFinished":[[:space:]]*\("[^"]*"\).*$/ \1/
+                s/\([[:space:]]*\)\(.*\)/\1echo "\1\\"elapsedTime\\": \\"$(datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" \2)\\","/e
+                x
+                G
+                }
+            ' \
+        | jq '
+            .body.paragraphs[] | select(.results.code != null) | {
+                title,
+                result: .results.code,
+                time:   .elapsedTime,
+                }
+            '
+        }
+
+# -----------------------------------------------------
+# Calculate the elapsed time for the whole notebook.
+#[user@desktop]
+
+    zepnbtotaltime()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+
+        local first=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateStarted != null) | .dateStarted] | first
+                ' \
+                "${jsonfile}"
+            )
+
+        local last=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateFinished != null) | .dateFinished] | last
+                ' \
+                "${jsonfile}"
+            )
+
+        datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" "${first}" "${last}"
+        }
+
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[user@desktop]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass:?}"
+
+
+
+# -----------------------------------------------------
+# Use the REST API to run the SetUp notebook.
+#[user@desktop]
+
+    notebook=2G7GZKWUH
+
+    zepnbclear ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+
+
+    zepnbexecute ${notebook}
+
+    >   {
+    >     "status": "OK"
+    >   }
+
+
+    zepnbstatus ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "/AglaisPublicExamples/SetUp",
+    >       "id": "2G7GZKWUH",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "spark:gaiauser:": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+    >   
+
+
+    zepnbtotaltime ${notebook}
+
+   > -bash: datediff: command not found
+
+
+   # ------------------------------------------------------------------
+   # Run using the UI for now, will try to debug issue later / tomorrow
+
+    firefox --new-window "http://128.232.227.136/:8080" &
+
+
+     
+        /AglaisPublicExamples/Source counts over the sky
+  
+        # Plot up the results
+        > Took 1 min 24 sec. Last updated by gaiauser at July 28 2021, 12:09:00 AM.
+
+       
+        [Success]
+
+
+
+	/AglaisPublicExamples/Mean RA proper motion plot
+        
+        # Mean RA proper motion plot
+        > Took 1 min 20 sec. Last updated by gaiauser at July 28 2021, 12:09:01 AM.
+
+  
+        [Success]
+
+
+
+        /AglaisPublicExamples/Data holdings
+ 
+        [Success]
+
+
+
+        /AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+	# Raw catalogue with selected columns
+        > Took 6 min 22 sec. Last updated by gaiauser at July 28 2021, 12:07:35 AM.
+
+
+        # Train up the Random Forrest
+        > Took 4 min 0 sec. Last updated by gaiauser at July 28 2021, 12:13:05 AM.
+
+        [Success]
+
+
+
+
+
+        # Repeat /AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+
+	# Raw catalogue with selected columns
+        > Took 37 sec. Last updated by gaiauser at July 28 2021, 1:06:13 AM.
+
+        # Train up the Random Forrest
+        > Took 39 min 36 sec. Last updated by gaiauser at July 28 2021, 1:52:22 AM.
+
+        [Success] (Slow)
+
+

@@ -1,0 +1,1103 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    #
+    # Conversation on Slack with Stelios.
+    # TL;DR; Excepted this to happen.
+    # One notebook using cache will block another from executing.
+    # Been like this for a while !?
+    #
+
+    Live system config:
+
+    jq '
+      .interpreterSettings.spark
+      | del(.interpreterGroup)
+      | del(.properties)
+      ' \
+      /home/fedora/zeppelin/conf/interpreter.json
+
+    >   {
+    >     "id": "spark",
+    >     "name": "spark",
+    >     "group": "spark",
+    >     "status": "READY",
+    >     "dependencies": [],
+    >     "option": {
+    >       "remote": true,
+    >       "port": -1,
+    >       "perNote": "shared",
+    >       "perUser": "isolated",
+    >       "isExistingProcess": false,
+    >       "setPermission": false,
+    >       "owners": [],
+    >       "isUserImpersonate": false
+    >     }
+    >   }
+
+    #
+    # Previous deployment was dated '20210623'
+    # Best guess is it came from these notes:
+    # /home/Zarquan/Desktop/projects/WFAU/aglais/github-zrq/notes/zrq/20210622-02-medium-04-deploy.txt
+    #
+
+# -----------------------------------------------------
+# Checkout the target branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout '20210620-zrq-resources'
+
+    popd
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-dev
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create everything, using a standard config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'cclake-medium-04'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the interpreter.json file.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sudo dnf install jq
+
+        jq '
+          .interpreterSettings.spark
+          | del(.interpreterGroup)
+          | del(.properties)
+          ' \
+          /home/fedora/zeppelin/conf/interpreter.json
+
+    >   {
+    >     "id": "spark",
+    >     "name": "spark",
+    >     "group": "spark",
+    >     "status": "READY",
+    >     "dependencies": [],
+    >     "option": {
+    >       "remote": true,
+    >       "port": -1,
+    >       "isExistingProcess": false,
+    >       "setPermission": false,
+    >       "owners": [],
+    >       "isUserImpersonate": false
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}"
+        ln -s "zeppelin-0.8.2-bin-all" "zeppelin"
+
+            pushd "zeppelin"
+
+                # Manual edit to add names and passwords
+                vi conf/shiro.ini
+
+                # Restart Zeppelin for the changes to take.
+                bin/zeppelin-daemon.sh restart
+
+            popd
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-origin
+
+	        git clone https://github.com/wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create shell script functions to wrap the REST API.
+#[user@desktop]
+
+    zeppelinurl=http://zeppelin.gaia-dev.aglais.uk:8080
+
+    zeplogin()
+        {
+        local username=${1:?}
+        local password=${2:?}
+        zepcookies=/tmp/${username:?}.cookies
+        curl \
+            --silent \
+            --request 'POST' \
+            --cookie-jar "${zepcookies:?}" \
+            --data "userName=${username:?}" \
+            --data "password=${password:?}" \
+            "${zeppelinurl:?}/api/login" \
+        | jq '.'
+        }
+
+    zepnbjsonfile()
+        {
+        echo "/tmp/${nbident:?}.json"
+        }
+
+    zepnbjsonclr()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+        if [ -f "${jsonfile}" ]
+        then
+            rm "${jsonfile}"
+        fi
+        }
+
+    zepnbclear()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request PUT \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}/clear" \
+        | jq '.'
+        }
+
+    zepnbstatus()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request GET \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}" \
+        | jq '.' | tee $(zepnbjsonfile ${nbident}) | jq 'del(.body.paragraphs[])'
+        }
+
+    zepnbexecute()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request POST \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/job/${nbident:?}" \
+        | jq '.'
+        }
+
+
+# -----------------------------------------------------
+# Calculate the elapsed time for each paragraph.
+#[user@desktop]
+
+    zepnbparatime()
+        {
+        local nbident=${1:?}
+
+        cat $(zepnbjsonfile ${nbident}) \
+        | sed '
+            /"dateStarted": null,/d
+            /"dateStarted":/ {
+                h
+                s/\([[:space:]]*\)"dateStarted":[[:space:]]*\("[^"]*"\).*$/\1\2/
+                x
+                }
+            /"dateFinished": null,/ d
+            /"dateFinished":/ {
+                H
+                x
+                s/[[:space:]]*"dateFinished":[[:space:]]*\("[^"]*"\).*$/ \1/
+                s/\([[:space:]]*\)\(.*\)/\1echo "\1\\"elapsedTime\\": \\"$(datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" \2)\\","/e
+                x
+                G
+                }
+            ' \
+        | jq '
+            .body.paragraphs[] | select(.results.code != null) | {
+                title,
+                result: .results.code,
+                time:   .elapsedTime,
+                }
+            '
+        }
+
+# -----------------------------------------------------
+# Calculate the elapsed time for the whole notebook.
+#[user@desktop]
+
+    zepnbtotaltime()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+
+        local first=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateStarted != null) | .dateStarted] | first
+                ' \
+                "${jsonfile}"
+            )
+
+        local last=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateFinished != null) | .dateFinished] | last
+                ' \
+                "${jsonfile}"
+            )
+
+        datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" "${first}" "${last}"
+        }
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[user@desktop]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gaiauser",
+    >       "ticket": "881f2060-042b-431d-863b-94f7249ff5bc",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Use the REST API to run the SetUp notebook.
+#[user@desktop]
+
+    notebook=2G7GZKWUH
+
+    zepnbclear ${notebook}
+
+    >   {
+    >     "status": "PRECONDITION_FAILED",
+    >     "message": "org.apache.zeppelin.interpreter.InterpreterNotFoundException: No interpreter is binded to this note: 2G7GZKWUH- Not selected or Invalid Interpreter bind"
+    >   }
+
+
+# -----------------------------------------------------
+# Login as admin.
+#[user@desktop]
+
+    gaiauser=$(secret aglais.zeppelin.adminuser)
+    gaiapass=$(secret aglais.zeppelin.adminpass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "admin",
+    >       "ticket": "986e7f4b-e9b4-477d-822a-df3af0fb92bf",
+    >       "roles": "[\"admin\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# List the interpreters.
+#[user@desktop]
+
+    zepinterpreters()
+        {
+        curl \
+            --silent \
+            --request GET \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/interpreter" \
+        | tee /tmp/interpreters.json | jq '.'
+        }
+
+    zepinterpreters
+
+    >   ....
+    >   ....
+
+
+    zepinterpreters \
+        | jq '
+            .body.spark
+            | del(.interpreterGroup)
+            | del(.properties)
+            '
+
+    >   
+    >   {
+    >     "id": "spark",
+    >     "name": "spark",
+    >     "group": "spark",
+    >     "status": "READY",
+    >     "dependencies": [],
+    >     "option": {
+    >       "remote": true,
+    >       "port": -1,
+    >       "isExistingProcess": false,
+    >       "setPermission": false,
+    >       "isUserImpersonate": false
+    >     }
+    >   }
+
+# -----------------------------------------------------
+# Restart the Spark interpreter for the SetUp notebook.
+#[user@desktop]
+
+    notebook=2G7GZKWUH
+
+    zepnbrestart()
+        {
+        local nbident=${1:?}
+        local interpid=${2:?}
+
+        local putdata="{'noteId': '${nbident:?}'}"
+
+        curl \
+            --silent \
+            --request PUT \
+            --data "${putdata:?}" \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/interpreter/setting/restart/${interpid:?}" \
+        | jq '.'
+        }
+
+    zepnbrestart "${notebook}" "spark"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "id": "spark",
+    >       "name": "spark",
+    >       "group": "spark",
+    >       "properties": {
+    >         "zeppelin.spark.concurrentSQL": {
+    >           "name": "zeppelin.spark.concurrentSQL",
+    >           "value": false,
+    >           "type": "checkbox"
+    >         },
+    >         ....
+    >         ....
+    >       },
+    >       "status": "READY",
+    >       "interpreterGroup": [
+    >         {
+    >           "name": "spark",
+    >           "class": "org.apache.zeppelin.spark.SparkInterpreter",
+    >           "defaultInterpreter": true,
+    >           "editor": {
+    >             "language": "scala",
+    >             "editOnDblClick": false,
+    >             "completionKey": "TAB",
+    >             "completionSupport": true
+    >           }
+    >         },
+    >         ....
+    >         ....
+    >       ],
+    >       "dependencies": [],
+    >       "option": {
+    >         "remote": true,
+    >         "port": -1,
+    >         "isExistingProcess": false,
+    >         "setPermission": false,
+    >         "owners": [],
+    >         "isUserImpersonate": false
+    >       }
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Restart the Spark interpreter for the other notebooks.
+#[user@desktop]
+
+    notebooks=(
+        2FKJ25GVF
+        2G748GZSW
+        2G5NU6HTK
+        )
+
+    for notebook in "${notebooks[@]}"
+    do
+        echo "notebook [${notebook}]"
+        zepnbrestart "${notebook}" "spark"
+    done
+
+    >   notebook [2FKJ25GVF]
+    >       ....
+    >       ....
+    >   notebook [2G748GZSW]
+    >       ....
+    >       ....
+    >   notebook [2G5NU6HTK]
+    >       ....
+    >       ....
+
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[user@desktop]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gaiauser",
+    >       "ticket": "1728549f-4837-465a-94df-c985fd5f338d",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Use the REST API to run the SetUp notebook.
+#[user@desktop]
+
+    notebook=2G7GZKWUH
+
+    zepnbclear ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+
+
+    zepnbexecute ${notebook}
+
+    >   {
+    >     "status": "PRECONDITION_FAILED",
+    >     "message": "org.apache.zeppelin.interpreter.InterpreterNotFoundException: No interpreter is binded to this note: 2G7GZKWUH- Not selected or Invalid Interpreter bind"
+    >   }
+
+    #
+    # OK, try to reset it via the GUI.
+    # Login as 'zrq' and reset the interpreter..
+    #
+
+    zepnbexecute ${notebook}
+
+    >   {
+    >     "status": "OK"
+    >   }
+
+
+    #
+    # Note - this means 'zrq' can restart the interpreter for 'gaiauser'
+    # So the notebook contexts are shared.
+    #
+
+    zepnbstatus ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "/AglaisPublicExamples/SetUp",
+    >       "id": "2G7GZKWUH",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "spark:shared_process": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+
+
+    zepnbparatime ${notebook}
+
+    >   {
+    >     "title": null,
+    >     "result": "SUCCESS",
+    >     "time": "0:0:2"
+    >   }
+    >   {
+    >     "title": "Catalogue structure definitions",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:28"
+    >   }
+    >   {
+    >     "title": "Utility function definitions",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Set up the catalogues on the platform",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:7"
+    >   }
+    >   {
+    >     "title": "Show details of databases and tables",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:3"
+    >   }
+    >   {
+    >     "title": "Check location on disk for main catalogue table from metastore",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+
+    zepnbtotaltime ${notebook}
+
+    >   0:0:41
+
+
+# -----------------------------------------------------
+# Use the REST API to run the HealpixSourceCounts notebook
+#[user@desktop]
+
+    notebook=2FKJ25GVF
+
+    zepnbclear ${notebook}
+
+    zepnbexecute ${notebook}
+
+    >   {
+    >     "status": "PRECONDITION_FAILED",
+    >     "message": "org.apache.zeppelin.interpreter.InterpreterNotFoundException: No interpreter is binded to this note: 2FKJ25GVF- Not selected or Invalid Interpreter bind"
+    >   }
+
+    #
+    # Manual reset ....
+    # (needed two attepmts ?)
+    #
+
+    zepnbexecute ${notebook}
+
+    >   {
+    >     "status": "OK"
+    >   }
+
+
+    zepnbstatus ${notebook}
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "/AglaisPublicExamples/Source counts over the sky",
+    >       "id": "2FKJ25GVF",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "spark:shared_process": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+
+
+    zepnbparatime ${notebook}
+
+    >   {
+    >     "title": null,
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Set the resolution level and define the query",
+    >     "result": "ERROR",
+    >     "time": "0:0:27"
+    >   }
+
+    #
+    # Status is OK, but one of the cells failed with ERROR.
+    # Oh what a lovley REST interface this is(n't).
+    #
+
+    #
+    # Check the page details ..
+    #
+
+    Caused by: org.apache.spark.sql.catalyst.analysis.NoSuchTableException: Table or view 'gaia_source' not found in database 'default';
+
+    #
+    # Because we reset the interpreter, so we need to run the setUp notebook again.
+    # My my, the user experience really is .. not optimal.
+    #
+
+# -----------------------------------------------------
+# Run the SetUp notebook.
+#[user@desktop]
+
+    notebook=2G7GZKWUH
+
+    zepnbclear ${notebook}
+
+    zepnbexecute ${notebook}
+
+    zepnbstatus ${notebook}
+
+    zepnbparatime ${notebook}
+
+    zepnbtotaltime ${notebook}
+
+    >   {
+    >     "title": null,
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Catalogue structure definitions",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Utility function definitions",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Set up the catalogues on the platform",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:7"
+    >   }
+    >   {
+    >     "title": "Show details of databases and tables",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:3"
+    >   }
+    >   {
+    >     "title": "Check location on disk for main catalogue table from metastore",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+    >   0:0:10
+
+
+
+# -----------------------------------------------------
+# Run the HealpixSourceCounts notebook
+#[user@desktop]
+
+    notebook=2FKJ25GVF
+
+    zepnbclear ${notebook}
+
+    zepnbexecute ${notebook}
+
+    zepnbstatus ${notebook}
+
+    zepnbparatime ${notebook}
+
+    zepnbtotaltime ${notebook}
+
+    >   {
+    >     "title": null,
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Set the resolution level and define the query",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:2"
+    >   }
+    >   {
+    >     "title": "Plot up the results",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:38"
+    >   }
+    >   {
+    >     "title": "Further reading and resources",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+    >   0:0:40
+
+
+# -----------------------------------------------------
+# Run the MeanProperMotions notebook
+#[user@desktop]
+
+    notebook=2G748GZSW
+
+    zepnbclear ${notebook}
+
+    zepnbexecute ${notebook}
+
+{
+  "status": "PRECONDITION_FAILED",
+  "message": "org.apache.zeppelin.interpreter.InterpreterNotFoundException: No interpreter is binded to this note: 2G748GZSW- Not selected or Invalid Interpreter bind"
+}
+
+    #
+    # Manually reset the interpreter ..
+    #
+
+
+    zepnbexecute ${notebook}
+
+    >   {
+    >     "status": "OK"
+    >   }
+
+
+    zepnbstatus ${notebook}
+
+    zepnbparatime ${notebook}
+
+    >   {
+    >     "title": "Set HEALPix resolution",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:24"
+    >   }
+    >   {
+    >     "title": "Define a data frame by SQL query",
+    >     "result": "ERROR",
+    >     "time": "0:0:2"
+    >   }
+
+
+# -----------------------------------------------------
+# Run the SetUp notebook.
+#[user@desktop]
+
+    notebook=2G7GZKWUH
+
+    zepnbclear ${notebook}
+
+    zepnbexecute ${notebook}
+
+    zepnbstatus ${notebook}
+
+    zepnbparatime ${notebook}
+
+    zepnbtotaltime ${notebook}
+
+    >   ....
+    >   ....
+    >   {
+    >     "title": "Check location on disk for main catalogue table from metastore",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+    >   0:0:11
+
+
+# -----------------------------------------------------
+# Run the MeanProperMotions notebook
+#[user@desktop]
+
+    notebook=2G748GZSW
+
+    zepnbclear ${notebook}
+
+    zepnbexecute ${notebook}
+
+    zepnbstatus ${notebook}
+
+    zepnbparatime ${notebook}
+
+    zepnbtotaltime ${notebook}
+
+    >   {
+    >     "title": "Set HEALPix resolution",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Define a data frame by SQL query",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:2"
+    >   }
+    >   {
+    >     "title": "Mean RA proper motion plot",
+    >     "result": "SUCCESS",
+    >     "time": "0:1:20"
+    >   }
+    >   {
+    >     "title": "Mean Dec proper motion plot",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:1"
+    >   }
+    >   {
+    >     "title": "Further reading and resources",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+    >   0:1:24
+
+
+# -----------------------------------------------------
+# Run the RandomForest notebook.
+#[user@desktop]
+
+    notebook=2G5NU6HTK
+
+    zepnbclear ${notebook}
+
+    zepnbexecute ${notebook}
+
+
+    >   {
+    >     "status": "PRECONDITION_FAILED",
+    >     "message": "org.apache.zeppelin.interpreter.InterpreterNotFoundException: No interpreter is binded to this note: 2G5NU6HTK- Not selected or Invalid Interpreter bind"
+    >   }
+
+    #
+    # Manual reset ...
+    #
+
+
+# -----------------------------------------------------
+# Run the SetUp notebook.
+#[user@desktop]
+
+    notebook=2G7GZKWUH
+
+    zepnbclear ${notebook}
+
+    zepnbexecute ${notebook}
+
+    zepnbstatus ${notebook}
+
+    zepnbparatime ${notebook}
+
+    zepnbtotaltime ${notebook}
+
+    >   ....
+    >   ....
+    >   {
+    >     "title": "Check location on disk for main catalogue table from metastore",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+    >   0:0:37
+
+
+# -----------------------------------------------------
+# Run the RandomForest notebook.
+#[user@desktop]
+
+    notebook=2G5NU6HTK
+
+    zepnbclear ${notebook}
+
+    zepnbexecute ${notebook}
+
+    zepnbstatus ${notebook}
+
+    zepnbparatime ${notebook}
+
+    zepnbtotaltime ${notebook}
+
+    >   {
+    >     "title": null,
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Basic catalogue query selections and predicates",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Raw catalogue with selected columns",
+    >     "result": "SUCCESS",
+    >     "time": "0:5:59"
+    >   }
+    >   {
+    >     "title": "Visualisation (colour / absolute-magnitue diagram) of the raw catalogue",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:5"
+    >   }
+    >   {
+    >     "title": null,
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Define the training samples",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:5"
+    >   }
+    >   {
+    >     "title": "Assemble training and reserve test sets",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Train up the Random Forrest",
+    >     "result": "SUCCESS",
+    >     "time": "0:4:3"
+    >   }
+    >   {
+    >     "title": "Check feature set for nulls",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Classify the reserved test sets",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Classification confusion matrix",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:10"
+    >   }
+    >   {
+    >     "title": "Relative importance of the selected features",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+    >   {
+    >     "title": "Apply the classification model and plot sample results",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:21"
+    >   }
+    >   {
+    >     "title": "Histogram of classification probability",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:30"
+    >   }
+    >   {
+    >     "title": "Sky distribution of good source sample",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:6"
+    >   }
+    >   {
+    >     "title": "Sky distribution of bad source sample",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:6"
+    >   }
+    >   {
+    >     "title": "Further reading and resources",
+    >     "result": "SUCCESS",
+    >     "time": "0:0:0"
+    >   }
+
+    >   0:11:28
+
+
+    #
+    # This is where we got to with the live deploy ...
+    # (actually, the live deploy ran the MK RandomForest twice)
+    #
+
+    #
+    # Login to the UI as 'zrq' and try running the source counts notebook.
+    # PASS - lovley blue/green/yellow sky plot :-)
+    #
+
+    #
+    # Try running the mean proper motions notebook.
+    # PASS - lovley ranbow plot of motions ;-)
+    #
+
+    #
+    # Try running the ML RandomForest notebook.
+    # It is running, but slowly.
+    # This is the first time I've run this notebook, but it has already been run once by our test user.
+    # Interpreter was reset by 'zrq', then the notebook was run by test users, now notebook is slow for 'zrq'.
+    # 1:7:23 to run
+    #
+
+    #
+    # These tests were all done on the 20210620-zrq-resources deployment.
+    # Shared interpreters, shared Spark context.
+    #
+
+

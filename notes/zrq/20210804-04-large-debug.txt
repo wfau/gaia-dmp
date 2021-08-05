@@ -1,0 +1,227 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Debugging Dennis's notebook using large deploy on dev cloud.
+
+    Result:
+
+
+# -----------------------------------------------------
+# Transfer notebooks from live to dev service.
+#[user@desktop]
+
+    ssh 'prod'
+        pushd '/home/fedora/zeppelin/notebook'
+            git add .
+            git commit "Adding changes from live server"
+            git push
+        popd
+    exit
+
+    ssh 'dev'
+        pushd '/home/fedora/zeppelin/notebook'
+            git stash
+            git pull
+        popd
+
+       '/home/fedora/zeppelin/bin/zeppelin-daemon.sh' restart
+    exit
+
+
+
+# -----------------------------------------------------
+# Tail the Zeppelin Spark logs via the ansibler container.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh zeppelin \
+                    "
+                    tail -f /home/fedora/zeppelin/logs/zeppelin-interpreter-spark-\$(id -un)-\$(hostname).log
+                    "
+            '
+
+# -----------------------------------------------------
+# Tail the Hadoop worker logs via the ansibler container.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh worker01 \
+                    "
+                    lastapp=\$(
+                        ls -1 /var/hadoop/logs | grep '^application' | tail -n 1
+                        )
+
+                    lastcont=\$(
+                        ls -1 "/var/hadoop/logs/\${lastapp}" | tail -n 1
+                        )
+
+                    tail -f /var/hadoop/logs/\${lastapp}/\${lastcont}/stderr
+                    "
+            '
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Pushed system to the limits and watched Grafana metrics
+
+    Showed using up space on / filesystem when it shouldn't be.
+
+--START--
+    WARN [2021-08-04 16:01:09,614] ({task-result-getter-0} Logging.scala[logWarning]:66) - Lost task 161.0 in stage 20.0 (TID 6476, worker06, executor 23): java.io.FileNotFoundException: /mnt/local/vda/hadoop/data/usercache/fedora/appcache/application_1628085720806_0004/blockmgr-35be1c9b-51ff-4456-9773-ebc48bf0ed48/2b/temp_shuffle_fc73c9a0-5059-4e4c-9299-e4a82bf47b05 (No space left on device)
+--END--
+
+    Found a mis-configuration vda not vdb
+
+        hddatalink: "/var/hadoop/data"
+        hddatadest: "/mnt/local/vda/hadoop/data"
+
+    Updated the config file and run the Ansible scripts again ..
+
+
+# -----------------------------------------------------
+# Configure Hadoop, Spark and Zeppelin
+#[root@ansibler]
+
+
+    pushd '/deployments/hadoop-yarn/ansible'
+
+        ansible-playbook \
+            --verbose \
+            --inventory "config/${deployconf}.yml" \
+            '11-install-hadoop.yml'
+
+        ansible-playbook \
+            --verbose \
+            --inventory "config/${deployconf}.yml" \
+            '16-config-yarn-masters.yml'
+
+        ansible-playbook \
+            --verbose \
+            --inventory "config/${deployconf}.yml" \
+            '17-config-yarn-workers.yml'
+
+        ansible-playbook \
+            --verbose \
+            --inventory "config/${deployconf}.yml" \
+            '22-config-spark-master.yml'
+
+    popd
+
+
+# -----------------------------------------------------
+# Restart the services to recognise changes.
+#[root@ansibler]
+
+    ssh master01 \
+        '
+        /opt/hadoop/sbin/stop-all.sh
+
+        echo ""
+        echo "Pause ...."
+        sleep 30
+        echo ""
+
+        /opt/hadoop/sbin/start-all.sh
+        '
+
+    and it didn't work.
+    Ansible uses the value from the first host in the list, not each host.
+    So it always uses the settings from master01 rather than master01, worker01, etc
+
+    ssh master01 \
+        '
+        /opt/hadoop/sbin/stop-all.sh
+        '
+
+    workers=(
+        worker01
+        worker02
+        worker03
+        worker04
+        worker05
+        worker06
+        )
+
+    for worker in ${workers[*]}
+    do
+        echo "Worker [${worker}]"
+        ssh "${worker}" \
+            '
+            hostname
+            date
+            rm -rf /var/hadoop/data
+            rm -rf /var/hadoop/logs
+            rm -rf /mnt/local/vda/hadoop/data
+            rm -rf /mnt/local/vda/hadoop/logs
+
+            ln -s /mnt/local/vdb/hadoop/data  /var/hadoop/data
+            ln -s /mnt/local/vdb/hadoop/logs  /var/hadoop/logs
+
+            ls -al /var/hadoop
+
+            '
+    done
+
+    pushd '/deployments/hadoop-yarn/ansible'
+
+        ansible-playbook \
+            --verbose \
+            --inventory "config/${deployconf}.yml" \
+            '11-install-hadoop.yml'
+
+    popd
+
+    for worker in ${workers[*]}
+    do
+        echo "Worker [${worker}]"
+        ssh "${worker}" \
+            '
+            hostname
+            date
+            ls -al /var/hadoop
+            '
+    done
+
+
+    ssh master01 \
+        '
+        /opt/hadoop/sbin/start-all.sh
+        '
+

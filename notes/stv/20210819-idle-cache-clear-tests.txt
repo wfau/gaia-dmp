@@ -1,0 +1,729 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+
+    Target:
+
+        Test stv/issue-multi-user branch
+          Contains changes to allow dynamic allocation, and idle cache clearing with timeouts
+
+    Result:
+
+        SUCCESS
+       
+
+# -----------------------------------------------------
+# Checkout the deployment branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout 'issue-multi-user'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-test
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+
+	> Done
+
+# -----------------------------------------------------
+# Create everything, using the tiny-16 config.
+#[root@ansibler]
+
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'cclake-medium-04'
+
+	> real	121m1.516s
+	> user	25m54.075s
+	> sys	5m21.706s
+
+
+# -----------------------------------------------------
+# Create shortcut for "zeppelin"
+#[root@ansibler]
+
+
+    ssh zeppelin
+        pushd "${HOME}"
+        ln -s "zeppelin-0.8.2-bin-all" "zeppelin"
+       popd
+    exit
+
+ 
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-origin
+
+	        git clone https://github.com/wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+
+    > Zeppelin ID [d61959b0-fbb1-4657-9224-ec82b2ee04f3]
+    > Zeppelin IP [128.232.227.196]
+
+
+
+# -----------------------------------------------------
+# Install the 'jq' JSON parser.
+# https://github.com/wfau/aglais/issues/526
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sudo dnf -y install jq
+        '
+
+
+
+# -----------------------------------------------------
+# Login to our Zeppelin node and generate a new interpreter.json file.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        # Create a list of notebooks
+        find /home/fedora/zeppelin/notebook -mindepth 1 -maxdepth 1 -type d ! -name '.git' -printf '%f\n' \
+        | tee /tmp/001.txt
+
+
+        # Create a JSON array of interpreter bindings.
+        sed '
+            1 i \
+"interpreterBindings": {
+        s/^\(.*\)$/"\1": ["spark", "md", "sh"]/
+        $ ! s/^\(.*\)$/\1,/
+        $ a \
+},
+            ' /tmp/001.txt \
+            | tee /tmp/002.txt
+
+
+        # Wrap our fragment as a JSON document to check
+        sed '
+            1 i \
+{
+        $ s/,//
+        $ a \
+}
+            ' /tmp/002.txt \
+        | jq '.'
+
+# -----------------------------------------------------
+# Truncate any existing list.
+#[user@zeppelin]
+
+        jq '
+            del(.interpreterBindings[])
+            ' \
+        /home/fedora/zeppelin/conf/interpreter.json \
+        > /tmp/003.json
+
+        sed -n '
+            /interpreterBindings/ p
+            ' /tmp/003.json
+
+
+
+
+# -----------------------------------------------------
+# Replace the empty list with our fragment.
+#[user@zeppelin]
+
+    # Insert our binding list into the rest of the file.
+    sed '
+        /interpreterBindings/ {
+            r /tmp/002.txt
+            d
+            }
+        ' /tmp/003.json \
+    | jq '.' \
+    > /tmp/004.json
+
+    # Run it through 'jq' to check.
+    jq '
+        .interpreterBindings
+        ' /tmp/004.json
+
+ 
+
+# -----------------------------------------------------
+# Replace the original interpreter.json from git.
+#[user@zeppelin]
+
+    mv /home/fedora/zeppelin/conf/interpreter.json \
+       /home/fedora/zeppelin/conf/interpreter.origin
+
+    cp /tmp/004.json \
+       /home/fedora/zeppelin/conf/interpreter.json
+
+    /home/fedora/zeppelin/bin/zeppelin-daemon.sh restart
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+
+
+
+# -----------------------------------------------------
+# Setup a tunnel to the monitor
+
+ssh -L '3000:monitor:3000' fedora@128.232.227.196
+
+
+
+
+# -----------------------------------------------------
+# Setup a tunnel to the Yarn UI
+
+ssh -L '8088:master01:8088' fedora@128.232.227.196
+
+
+
+
+#-------------------------------------------------------
+# Run Single user run of ML notebook
+# admin@firefox
+
+
+
+	/AglaisPublicExamples/Set up
+
+        [Success]
+
+        # Yarn details:
+        # 1 applcation
+        # 47% Usage
+
+
+
+	/AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+	# Took 6 min 47 sec. Last updated by admin at August 19 2021, 1:58:05 PM.
+
+
+
+
+        # Yarn details:
+        # 1 applcation
+        # 95% Usage
+ 
+        # Spark details:
+        # Storage:
+        # Two entries, both only in memory
+        # 277.4 MB	-   MapPartitionsRDD	
+        # 1298.3 MB	-   *(1) Project [source_id#40L, random_index#41L, phot_g_mean_mag#107, phot_bp_rp_excess_factor#123, bp_rp#124, g_rp#126, parallax#47, ra#43, dec#45, b#134, ((1.15436 + (0.033772 * cast(bp_rp#124 as double))) + ((0.032277 * cast(bp_rp#124 as double)) * cast(bp_rp#124 as double))) AS fgbp_grp_0p5#33, (((1.162004 + (0.011464 * cast(bp_rp#124 as double))) + ((0.049255 * cast(bp_rp#124 as double)) * cast(bp_rp#124 as double))) - (((0.005879 * cast(bp_rp#124 as double)) * cast(bp_rp#124 as double)) * cast(bp_rp#124 as double))) AS fgbp_grp_0p5_4p0#34, (1.057572 + (0.0140537 * cast(bp_rp#124 as double))) AS fgbp_grp_4p0#35, (0.0059898 + (8.817481E-12 * POWER(cast(phot_g_mean_mag#107 as double), 7.618399))) AS sig_cstarg#36, parallax_error#48, abs(parallax_over_error#49) AS parallax_over_error#37, astrometric_sigma5d_max#85, pmra_error#52, pmdec_error#54, astrometric_excess_noise#71, ipd_gof_harmonic_amplitude#89, ruwe#93, visibility_periods_used#84, pmdec#53, ... 6 more fields] +- *(1) Filter (isnotnull(parallax#47...
+
+
+
+	# Train up the Random Forrest
+	> Took 3 min 49 sec. Last updated by admin at August 19 2021, 2:02:04 PM.
+
+
+
+        # Wait 60 seconds (cache timeout) and check Yarn & Spark UI
+
+
+        # Yarn details:
+        # 1 applcation
+        # 47% Usage
+ 
+        # Spark details:
+        # Storage:
+        # Two entries, both only in memory
+        # 277.4 MB 	-     *(1) Project [source_id#40L, random_index#41L, phot_g_mean_mag#107, phot_bp_rp_excess_factor#123, bp_rp#124, g_rp#126, parallax#47, ra#43, dec#45, b#134, ((1.15436 + (0.033772 * cast(bp_rp#124 as double))) + ((0.032277 * cast(bp_rp#124 as double)) * cast(bp_rp#124 as double))) AS fgbp_grp_0p5#33, (((1.162004 + (0.011464 * cast(bp_rp#124 as double))) + ((0.049255 * cast(bp_rp#124 as double)) * cast(bp_rp#124 as double))) - (((0.005879 * cast(bp_rp#124 as double)) * cast(bp_rp#124 as double)) * cast(bp_rp#124 as double))) AS fgbp_grp_0p5_4p0#34, (1.057572 + (0.0140537 * cast(bp_rp#124 as double))) AS fgbp_grp_4p0#35, (0.0059898 + (8.817481E-12 * POWER(cast(phot_g_mean_mag#107 as double), 7.618399))) AS sig_cstarg#36, parallax_error#48, abs(parallax_over_error#49) AS parallax_over_error#37, astrometric_sigma5d_max#85, pmra_error#52, pmdec_error#54, astrometric_excess_noise#71, ipd_gof_harmonic_amplitude#89, ruwe#93, visibility_periods_used#84, pmdec#53, ... 6 more fields] +- *(1) Filter (isnotnull(parallax#47...	
+       
+        # 600.6 MB	- *(1) Project [source_id#40L, random_index#41L, phot_g_mean_mag#107, phot_bp_rp_excess_factor#123, bp_rp#124, g_rp#126, parallax#47, ra#43, dec#45, b#134, fgbp_grp_0p5#33, fgbp_grp_0p5_4p0#34, fgbp_grp_4p0#35, sig_cstarg#36, parallax_error#48, parallax_over_error#37, astrometric_sigma5d_max#85, pmra_error#52, pmdec_error#54, astrometric_excess_noise#71, ipd_gof_harmonic_amplitude#89, ruwe#93, visibility_periods_used#84, pmdec#53, ... 10 more fields] +- *(1) Project [source_id#40L, random_index#41L, phot_g_mean_mag#107, phot_bp_rp_excess_factor#123, bp_rp#124, g_rp#126, parallax#47, ra#43, dec#45, b#134, fgbp_grp_0p5#33, fgbp_grp_0p5_4p0#34, fgbp_grp_4p0#35, sig_cstarg#36, parallax_error#48, parallax_over_error#37, astrometric_sigma5d_max#85, pmra_error#52, pmdec_error#54, astrometric_excess_noise#71, ipd_gof_harmonic_amplitude#89, ruwe#93, visibility_periods_used#84, pmdec#53, ... 7 more fields] +- *(1) Filter (isnotnull(parallax#47) && (parallax#47 > 8.0)) +- *(1) InMemoryTableScan [source_id#40L,...
+
+	[Success]
+
+	# Looks like resources were released after 60 seconds, and then the application returns to 47% usage
+
+
+	# Check Monitor:
+
+	  # Worker01 has high RAM usage (86%)
+
+
+
+#-------------------------------------------------------
+# Run Single user run of ML notebook as the second user
+# gaiauser@firefox
+
+# We have not cleared the spark context or killed any applications
+# First user's application is using 47%
+
+
+  # Import the /AglaisPublicExamples/SetUp notebook (Latest version from Github)
+     # https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2G7GZKWUH/note.json
+
+  # Import the /AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+     # https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2G5NU6HTK/note.json
+
+
+  # Import copies of the notebooks so that were not reusing the notebooks used by "admin"
+
+
+	/AglaisPublicExamples/Set up
+
+        [Success]
+
+        # Yarn details:
+        # 2 applications
+        # 47% Usage (application 1)
+        # 47% Usage (application 2)
+ 
+
+
+	/AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+	# Raw catalogue with selected columns
+	> Took 9 min 48 sec. Last updated by gaiauser at August 19 2021, 2:36:46 PM.
+
+	
+
+	# Train up the Random Forrest
+	> Took 5 min 21 sec. Last updated by gaiauser at August 19 2021, 2:42:17 PM.
+
+	[Success]
+
+
+
+	# Ran slightly slower than first user's run
+
+	# Check Yarn UI
+	# ---------------
+
+        # Yarn details:
+        # 2 applications
+        # 47% Usage (application 1)
+        # 47% Usage (application 2)
+ 
+
+	# Compare executors running on each application
+	# Application #1 (admin) has 11 executors, 6 of which were killed (Assumption is that this happens when the second application starts, via the dynamic allocation)
+	# Application #2 (gaiauser) has 5 executors
+	
+	# This seems to match the decrease in performance
+
+	
+	# Check Storage Tab
+	# ---------------
+
+	# Both applications have the same RDDs stored (fully in memory), one using 277.4Mb and one using  600.6Mb (See above)
+
+	
+	
+	# Check Monitor
+	# ---------------
+
+	# 2 worker nodes have 85% RAM usage and 2 worker nodes have 64-65%
+
+
+#-------------------------------------------------------
+# Run Single user run of ML notebook as the first user again
+# admin@firefox
+
+# We have not cleared the spark context or killed any applications
+
+# NOTE: We'll run this notebook two times, first time having removed the cache clear, and one with it included
+
+# Currently in Yarn we see two applications, with 47% each
+
+
+
+	/AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+	# Raw catalogue with selected columns
+	> Took 48 sec. Last updated by admin at August 19 2021, 3:04:37 PM.
+
+
+        # Visualisation (colour / absolute-magnitue diagram) of the raw catalogue
+	> Took 3 min 15 sec. Last updated by admin at August 19 2021, 3:07:52 PM.
+	
+
+	# Define the training samples
+	> Took 5 min 29 sec. Last updated by admin at August 19 2021, 3:13:22 PM.
+
+	# Train up the Random Forrest
+	> Started 23 minutes ago.
+
+	...
+	
+
+	# All notebooks running much slower
+
+		
+	# Check Storage Tab
+	# ---------------
+
+	# Application for admin only has one RDD in RAM (600.6 MB)	
+	# This is different from the first run, that had another one of around 1.2 GB
+
+
+	# Check Executors
+	# ---------------
+
+	# 5 Active Executors
+
+
+
+#----------------------------------------------------------------------------
+# While second run of admin user is running, try a run for second user (gaiauser)
+# gaiauser@firefox
+
+
+# For this run, lets not run the "Raw catalogue with selected columns" cell which creates the initial Dataframes
+# Instead, run everything after and record what we see
+
+
+        # Visualisation (colour / absolute-magnitue diagram) of the raw catalogue
+	> Took 2 sec. Last updated by gaiauser at August 19 2021, 3:14:58 PM.
+
+	# Define the training samples
+	> Took 4 sec. Last updated by gaiauser at August 19 2021, 3:16:16 PM.
+
+	# Train up the Random Forrest
+	> Took 5 min 34 sec. Last updated by gaiauser at August 19 2021, 3:21:57 PM.
+
+	[Success]
+
+
+
+
+#----------------------------------------------------------------------------
+# Run another run for second user (gaiauser)
+# gaiauser@firefox
+
+
+# Run from beginning, including "Raw catalogue with selected columns" cell
+
+
+	# Raw catalogue with selected columns
+	> Took 1 min 42 sec. Last updated by gaiauser at August 19 2021, 3:29:34 PM.
+
+
+        # Visualisation (colour / absolute-magnitue diagram) of the raw catalogue
+	> Took 6 min 48 sec. Last updated by gaiauser at August 19 2021, 3:36:22 PM.
+
+	# Everything running slow for this user as well..
+
+
+
+#----------------------------------------------------------------------------
+# Restart Spark Interpreter for both users
+# admin@firefox
+
+
+
+	# Check Monitor
+	# ---------------
+
+	# All worker nodes a 18% RAM usage
+
+
+
+
+
+#-------------------------------------------------------
+# Run Single user run of ML notebook as the first user
+# gaiauser@firefox
+
+# We have now cleared the spark context
+# No applications running currently
+
+
+	/AglaisPublicExamples/Set up
+
+        [Success]
+
+	# Based on previous investigations, it seems that the cache() command is problematic in the way we are using it.
+	# When running the clear command, there still seems to be leftover data in RAM, which makes it impossible to cache again
+
+	# Let's try instead using
+	# spark.sql("CACHE TABLE raw_sources")
+
+	# In "Raw catalogue with selected columns" cell, replace cache command with:  spark.sql("CACHE TABLE raw_sources")
+	# Cell looks like this:
+
+		%spark.pyspark
+
+		# clear any previously cached data in the context (cells may be executed in any order, and out-dated by changes from here onwards)
+		sqlContext.clearCache()
+
+		# a conservative selection of everything that COULD be within 100pc, including things with measured 
+		# distances putting them outside the 100pc horizon when their true distances are within, and also including 
+		# loads of spurious chaff with the wheat of course, plus bad things with significant, unphysical parallaxes:
+		raw_sources_df = spark.sql('SELECT source_id, random_index, phot_g_mean_mag, phot_bp_rp_excess_factor, bp_rp, g_rp, parallax, ra, dec, b, ' + photometric_consistency_indicators + features_select_string + ' FROM gaia_source WHERE ABS(parallax) > 8.0')
+
+		# cache it for speedy access below (all subsequent samples are derived from this):
+		raw_sources_cached = spark.sql("CACHE TABLE raw_sources")
+
+		# ... some good advice concerning caching in Spark here: https://towardsdatascience.com/best-practices-for-caching-in-spark-sql-b22fb0f02d34
+
+		# register as SQL-queryable
+		raw_sources_df.createOrReplaceTempView('raw_sources')
+
+		raw_sources_df.count()
+
+		
+	
+	
+	# Run full notebook
+
+
+	/AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+	# Raw catalogue with selected columns
+	> Took 6 min 12 sec. Last updated by admin at August 19 2021, 4:30:56 PM.
+
+	# Train up the Random Forrest
+	> Took 4 min 8 sec. Last updated by admin at August 19 2021, 4:35:44 PM.
+
+
+	[Success]
+
+
+
+
+	# Repeat the same notebook, from the same user without restarting the Spark Context
+
+
+	/AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+	# Raw catalogue with selected columns
+	> Took 6 min 53 sec. Last updated by admin at August 19 2021, 6:58:51 PM.
+
+	# Train up the Random Forrest
+	> Took 4 min 1 sec. Last updated by admin at August 19 2021, 7:02:59 PM.
+
+
+	[Success]
+
+
+
+	# Check Yarn Storage Tab after job completed:
+
+
+	# Two RDDs:
+	#   In-memory table `raw_sources` : 277.4 MB	
+	# *(1) Project [source_id#40L, random_index#41L, phot_g_mean_mag#107, phot_bp_rp_excess_factor#123, bp_rp#124, g_rp#126, parallax#47, ra#43, dec#45, b#134, fgbp_grp_0p5#7197, fgbp_grp_0p5_4p0#7198, fgbp_grp_4p0#7199, sig_cstarg#7200, parallax_error#48, parallax_over_error#7201, astrometric_sigma5d_max#85, pmra_error#52, pmdec_error#54, astrometric_excess_noise#71, ipd_gof_harmonic_amplitude#89, ruwe#93, visibility_periods_used#84, pmdec#53, ... 10 more fields] +- *(1) Project [source_id#40L, random_index#41L, phot_g_mean_mag#107, phot_bp_rp_excess_factor#123, bp_rp#124, g_rp#126, parallax#47, ra#43, dec#45, b#134, fgbp_grp_0p5#7197, fgbp_grp_0p5_4p0#7198, fgbp_grp_4p0#7199, sig_cstarg#7200, parallax_error#48, parallax_over_error#7201, astrometric_sigma5d_max#85, pmra_error#52, pmdec_error#54, astrometric_excess_noise#71, ipd_gof_harmonic_amplitude#89, ruwe#93, visibility_periods_used#84, pmdec#53, ... 7 more fields] +- *(1) Filter (isnotnull(parallax#47) && (parallax#47 > 8.0)) +- *(1) InMemoryTable... : 600.6 MB		
+
+
+	# Check RAM Usage in Monitor
+
+	# worker01: 92%
+	# worker02: 65%
+	# worker03: 20%
+	# worker04: 18%
+
+
+
+
+	# Clear cache
+
+	# Add a cell at the top of the notebook:
+
+	%spark.pyspark
+	sqlContext.clearCache()
+
+	# ----------------------
+
+
+
+	# Check Yarn Storage Tab after job completed:
+
+	# No Storage (Empty page)
+
+
+	# Check RAM Usage in Monitor
+
+	# worker01: 92%
+	# worker02: 65%
+	# worker03: 20%
+	# worker04: 18%
+	
+	# (No change in RAM usage in Grafana)
+
+
+
+
+	# Repeat the same notebook, from the same user without restarting the Spark Context
+
+
+	/AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+	# Raw catalogue with selected columns
+	> Took 7 min 9 sec. Last updated by admin at August 19 2021, 7:26:10 PM.
+
+	# Train up the Random Forrest
+	> Took 4 min 3 sec. Last updated by admin at August 19 2021, 7:30:20 PM.
+
+	[Success]	
+		
+
+	# Two RDDs:
+	#   In-memory table `raw_sources` : 277.4 MB	
+	# *(1) Project [source_id#40L, random_index#41L, phot_g_mean_mag#107, phot_bp_rp_excess_factor#123, bp_rp#124, g_rp#126, parallax#47, ra#43, dec#45, b#134, fgbp_grp_0p5#7197, fgbp_grp_0p5_4p0#7198, fgbp_grp_4p0#7199, sig_cstarg#7200, parallax_error#48, parallax_over_error#7201, astrometric_sigma5d_max#85, pmra_error#52, pmdec_error#54, astrometric_excess_noise#71, ipd_gof_harmonic_amplitude#89, ruwe#93, visibility_periods_used#84, pmdec#53, ... 10 more fields] +- *(1) Project [source_id#40L, random_index#41L, phot_g_mean_mag#107, phot_bp_rp_excess_factor#123, bp_rp#124, g_rp#126, parallax#47, ra#43, dec#45, b#134, fgbp_grp_0p5#7197, fgbp_grp_0p5_4p0#7198, fgbp_grp_4p0#7199, sig_cstarg#7200, parallax_error#48, parallax_over_error#7201, astrometric_sigma5d_max#85, pmra_error#52, pmdec_error#54, astrometric_excess_noise#71, ipd_gof_harmonic_amplitude#89, ruwe#93, visibility_periods_used#84, pmdec#53, ... 7 more fields] +- *(1) Filter (isnotnull(parallax#47) && (parallax#47 > 8.0)) +- *(1) InMemoryTable... : 600.6 MB		
+
+
+	# Check RAM Usage in Monitor
+
+	# worker01: 46%
+	# worker02: 92%
+	# worker03: 20%
+	# worker04: 43%
+
+
+
+# Run some tests for user #2 (gaiauser) after the change to how we cache as user #1
+# For Validation purposes, run the other AglaisPublicExamples as well as the ML Forrest Classifier
+# -----------------------------------------------------------------------------------
+
+
+/AglaisPublicExamples/Setup
+  [Success]
+
+
+/AglaisPublicExamples/Mean proper motions over the sky
+
+  # Mean RA proper motion plot
+  > Took 2 min 9 sec. Last updated by gaiauser at August 19 2021, 7:42:29 PM.
+
+  [Success]
+
+
+/AglaisPublicExamples/Source counts over the sky
+
+  # Plot up the results
+  > Took 49 sec. Last updated by gaiauser at August 19 2021, 7:44:48 PM.
+
+
+/AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+  # Raw catalogue with selected columns
+  > Took 9 min 47 sec. Last updated by gaiauser at August 19 2021, 7:56:16 PM.
+
+  # Train up the Random Forrest
+  > Took 5 min 13 sec. Last updated by gaiauser at August 19 2021, 8:01:38 PM.
+
+
+  [Success]
+
+
+
+  # Try clearing Spark Interpreter for user #1 and run some cells from the notebook of user #2 to confirm that the Spark interpreter restart from the other users had no effect
+
+  # Restarted Spark Interpreter, and ran some of the cells at the bottom of the ML notebook for user #2
+  # Cells run fine, and quick, which implies that the cache is being used
+  # Success
+
+
+
+
+
+

@@ -1,0 +1,335 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Test stv/issue-multi-user branch
+          Contains changes to allow dynamic allocation, and idle cache clearing with timeouts
+
+    Result:
+
+        SUCCESS
+       
+
+# -----------------------------------------------------
+# Checkout the deployment branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+            git checkout 'issue-multi-user'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    AGLAIS_CLOUD=gaia-test
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --env "cloudname=${AGLAIS_CLOUD:?}" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+
+	> Done
+
+# -----------------------------------------------------
+# Create everything, using the tiny-16 config.
+#[root@ansibler]
+
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'cclake-medium-04'
+
+	> Done
+
+
+# -----------------------------------------------------
+# Create shortcut for "zeppelin"
+#[root@ansibler]
+
+
+    ssh zeppelin
+        pushd "${HOME}"
+        ln -s "zeppelin-0.8.2-bin-all" "zeppelin"
+       popd
+    exit
+
+ 
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-origin
+
+	        git clone https://github.com/wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+
+
+
+# -----------------------------------------------------
+# Install the 'jq' JSON parser.
+# https://github.com/wfau/aglais/issues/526
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sudo dnf -y install jq
+        '
+
+
+
+# -----------------------------------------------------
+# Login to our Zeppelin node and generate a new interpreter.json file.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        # Create a list of notebooks
+        find /home/fedora/zeppelin/notebook -mindepth 1 -maxdepth 1 -type d ! -name '.git' -printf '%f\n' \
+        | tee /tmp/001.txt
+
+
+        # Create a JSON array of interpreter bindings.
+        sed '
+            1 i \
+"interpreterBindings": {
+        s/^\(.*\)$/"\1": ["spark", "md", "sh"]/
+        $ ! s/^\(.*\)$/\1,/
+        $ a \
+},
+            ' /tmp/001.txt \
+            | tee /tmp/002.txt
+
+
+        # Wrap our fragment as a JSON document to check
+        sed '
+            1 i \
+{
+        $ s/,//
+        $ a \
+}
+            ' /tmp/002.txt \
+        | jq '.'
+
+# -----------------------------------------------------
+# Truncate any existing list.
+#[user@zeppelin]
+
+        jq '
+            del(.interpreterBindings[])
+            ' \
+        /home/fedora/zeppelin/conf/interpreter.json \
+        > /tmp/003.json
+
+        sed -n '
+            /interpreterBindings/ p
+            ' /tmp/003.json
+
+
+
+
+# -----------------------------------------------------
+# Replace the empty list with our fragment.
+#[user@zeppelin]
+
+    # Insert our binding list into the rest of the file.
+    sed '
+        /interpreterBindings/ {
+            r /tmp/002.txt
+            d
+            }
+        ' /tmp/003.json \
+    | jq '.' \
+    > /tmp/004.json
+
+    # Run it through 'jq' to check.
+    jq '
+        .interpreterBindings
+        ' /tmp/004.json
+
+ 
+
+# -----------------------------------------------------
+# Replace the original interpreter.json from git.
+#[user@zeppelin]
+
+    mv /home/fedora/zeppelin/conf/interpreter.json \
+       /home/fedora/zeppelin/conf/interpreter.origin
+
+    cp /tmp/004.json \
+       /home/fedora/zeppelin/conf/interpreter.json
+
+    /home/fedora/zeppelin/bin/zeppelin-daemon.sh restart
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+
+# -----------------------------------------------------
+# Setup a tunnel to the monitor
+
+    ssh -L '3000:monitor:3000' fedora@128.232.227.178
+
+
+
+
+# -----------------------------------------------------
+# Setup a tunnel to the Yarn UI
+
+    ssh -L '8088:master01:8088' fedora@128.232.227.178
+
+
+
+
+
+#-------------------------------------------------------
+# Run Single user run of Public Examples & dcr's notebooks
+# admin@firefox
+
+
+	/experiments/dcr/eDR3 Cuts
+
+        [Success]
+
+
+
+	/experiments/dcr/ML_cuts
+
+        [Failed]
+
+ 	# Collect Required Data
+
+	Py4JJavaError: An error occurred while calling o73.sql.
+	: org.apache.spark.sql.AnalysisException: cannot resolve '`astrometric_sigma5d_max`' given input columns: [gaia_source.astrometric_n_good_obs_al, gaia_source.astrometric_chi2_al, gaia_source.phot_g_mean_flux_over_error, gaia_source.parallax_pmra_corr, gaia_source.random_index, gaia_source.ra_pmra_corr, gaia_source.dr2_radial_velocity_error, gaia_source.scan_direction_mean_k2, gaia_source.ref_epoch, gaia_source.phot_bp_n_obs, gaia_source.scan_direction_strength_k2, gaia_source.solution_id, gaia_source.ipd_gof_harmonic_phase, gaia_source.ecl_lat, gaia_source.astrometric_excess_noise_sig, gaia_source.phot_g_n_obs, gaia_source.pmdec, gaia_source.b, gaia_source.phot_bp_mean_flux, gaia_source.pmra_pseudocolour_corr, gaia_source.dec_parallax_corr, gaia_source.phot_g_mean_flux, gaia_source.astrometric_gof_al, gaia_source.astrometric_matched_transits, gaia_source.scan_direction_mean_k1, 
+
+	# I don't have much context on this notebook, so i'm not sure what we should be expecting. In any case it doesnt look like this is a fail due to any of the changes in this branch
+
+
+
+        /AglaisPublicExamples/SetUp
+
+        [Success]
+
+
+
+        /AglaisPublicExamples/Source counts over the sky
+
+	# Plot up the results
+	> Took 48 sec. Last updated by admin at August 23 2021, 3:26:45 PM.
+
+        [Success]
+
+
+
+        AglaisPublicExamples/Mean proper motions over the sky
+
+	# Mean RA proper motion plot
+	> Took 1 min 21 sec. Last updated by admin at August 23 2021, 3:30:33 PM.
+
+        [Success]
+
+
+
+        /AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+        # Raw catalogue with selected columns
+        > Took 6 min 6 sec. Last updated by admin at August 23 2021, 3:41:15 PM.
+
+        # Train up the Random Forrest
+        > Took 4 min 44 sec. Last updated by admin at August 23 2021, 3:46:09 PM.
+
+        [Success]
+
+
+
+
+#------------------------------------------------------------------------
+# Run copy ML Notebook from a second user (No Spark Interpreter restarts)
+# gaiauser@firefox
+
+# Import Setup and ML notebook
+     # https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2G7GZKWUH/note.json
+     # https://raw.githubusercontent.com/wfau/aglais-notebooks/main/2G5NU6HTK/note.json
+        
+
+
+        /AglaisPublicExamples/SetUp
+
+        [Success]
+
+
+
+        /AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier
+
+        # Raw catalogue with selected columns
+        > Took 7 min 29 sec. Last updated by gaiauser at August 23 2021, 4:05:04 PM.
+
+        # Train up the Random Forrest
+        > Took 4 min 50 sec. Last updated by gaiauser at August 23 2021, 4:10:05 PM.
+
+        [Success]
+
+
+
+
+
+
+
+

@@ -1,0 +1,198 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Re-connect to a running system and check the metrics.
+
+    Result:
+
+        Success.
+
+        TODO Save and restore the deployment config.
+
+        TODO Look at an alternative config using a direct ssh connection,
+        removing the requirement for using the docker client container.
+
+
+# -----------------------------------------------------
+# Checkout this branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        git checkout '20210702-zrq-prometheus'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-dev
+
+
+# -----------------------------------------------------
+# Create our Ansible vars file.
+#[root@ansibler]
+
+    # TODO this should have been stored somewhere ..
+
+    configyml='/tmp/aglais-config.yml'
+    statusyml='/tmp/aglais-status.yml'
+
+    cat > "${statusyml:?}" << EOF
+aglais:
+     status:
+       deployment:
+         type: hadoop-yarn
+         conf: cclake-large-06
+         name: gaia-dev-20210805
+         date: 20210805T013241
+     spec:
+       openstack:
+         cloud: gaia-dev
+EOF
+
+    ln -sf \
+        "${statusyml:?}" \
+        '/tmp/ansible-vars.yml'
+
+
+# -----------------------------------------------------
+# Read the config settings.
+#[root@ansibler]
+
+    # TODO shell script to read these automatically
+
+    deployconf=$(
+        yq read \
+            "${statusyml:?}" \
+            'aglais.status.deployment.conf'
+        )
+
+    deployname=$(
+        yq read \
+            "${statusyml:?}" \
+            'aglais.status.deployment.name'
+        )
+
+    deploydate=$(
+        yq read \
+            "${statusyml:?}" \
+            'aglais.status.deployment.date'
+        )
+
+# -----------------------------------------------------
+# Delete any existing known hosts file..
+# Temp fix until we get a better solution.
+# https://github.com/wfau/aglais/issues/401
+#[root@ansibler]
+
+    rm -f "${HOME}/.ssh/known_hosts"
+
+
+# -----------------------------------------------------
+# Run the Ansible ssh playbook.
+#[root@ansibler]
+
+    pushd '/deployments/hadoop-yarn/ansible'
+
+        ansible-playbook \
+            --verbose \
+            --inventory "config/${deployconf}.yml" \
+            '05-config-ssh.yml'
+
+        ansible-playbook \
+            --verbose \
+            --inventory "config/${deployconf}.yml" \
+            "08-ping-test.yml"
+
+    popd
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# https://www.digitalocean.com/community/tutorials/how-to-route-web-traffic-securely-without-a-vpn-using-a-socks-tunnel
+# Running 'htop' on the Zeppelin node to keep the connection alive.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh \
+                -t \
+                -D "3000"  \
+                zeppelin \
+                    "
+                    htop
+                    "
+            '
+
+# -----------------------------------------------------
+# Login to the Spark UI using Firefox.
+#[user@desktop]
+
+    firefox --new-window 'http://master01:8088/cluster' &
+
+
+# -----------------------------------------------------
+# Login to Grafana using Firefox.
+#[user@desktop]
+
+    firefox --new-window 'http://monitor:3000/login' &
+
+

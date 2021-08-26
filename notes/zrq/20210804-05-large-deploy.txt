@@ -1,0 +1,804 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Optimise the Spark configuration to use all of the available resources.
+
+    Result:
+
+        Work in progress
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-dev
+
+
+# -----------------------------------------------------
+# Delete everything from the test and dev systems.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m41.207s
+    >   user    1m19.605s
+    >   sys     0m11.271s
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'cclake-large-xx'
+
+    >   real    68m45.756s
+    >   user    17m37.848s
+    >   sys     6m5.282s
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: cclake-large-xx
+    >         name: gaia-dev-20210805
+    >         date: 20210805T013241
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}"
+        ln -s "zeppelin-0.8.2-bin-all" "zeppelin"
+
+            pushd "zeppelin"
+
+                # Manual edit to add names and passwords
+                vi conf/shiro.ini
+
+                # Restart Zeppelin for the changes to take.
+                bin/zeppelin-daemon.sh restart
+
+            popd
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-origin
+
+	        git clone git@github.com:wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [24a59304-c2ae-455a-a8a7-762fe3650337]
+    >   Zeppelin IP [128.232.227.216]
+
+
+# -----------------------------------------------------
+# Update our DNS record.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.216  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Check the DNS record.
+#[root@ansibler]
+
+    # TODO Add bind-utils to our client container
+    # https://github.com/wfau/aglais/issues/391
+
+    dnf install -y bind-utils
+
+    dig @infra-ops.aglais.uk zeppelin.${cloudname}.aglais.uk
+
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dev.aglais.uk. 300 IN	A	128.232.227.216
+
+
+# -----------------------------------------------------
+# Check the data shares.
+# TODO Move this to a bash script in the source tree.
+#[root@ansibler]
+
+    sharelist="/deployments/common/manila/datashares.yaml"
+
+    for shareid in $(
+        yq read "${sharelist}" 'datashares.[*].id'
+        )
+    do
+        #echo ""
+        #echo "Share [${shareid}]"
+
+        checkbase=$(
+            yq read "${sharelist}" "datashares.(id == ${shareid}).mountpath"
+            )
+        checknum=$(
+            yq read "${sharelist}" --length "datashares.(id == ${shareid}).checksums"
+            )
+
+        for (( i=0; i<checknum; i++ ))
+        do
+            checkpath=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].path"
+                )
+            checkcount=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].count"
+                )
+            checkhash=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].md5sum"
+                )
+
+            echo ""
+            #echo "Base  [${checkbase}]"
+            echo "Share [${checkbase}/${checkpath}]"
+
+            testcount=$(
+                ssh zeppelin \
+                    "
+                    ls -1 ${checkbase}/${checkpath} | wc -l
+                    "
+                )
+
+            if [ "${testcount}" == "${checkcount}" ]
+            then
+                echo "Count [PASS]"
+            else
+                echo "Count [FAIL][${checkcount}][${testcount}]"
+            fi
+
+            testhash=$(
+                ssh zeppelin \
+                    "
+                    ls -1 -v ${checkbase}/${checkpath} | md5sum | cut -d ' ' -f 1
+                    "
+                )
+
+            if [ "${testhash}" == "${checkhash}" ]
+            then
+                echo "Hash  [PASS]"
+            else
+                echo "Hash  [FAIL][${checkhash}][${testhash}]"
+            fi
+        done
+    done
+
+    >   Share [/data/gaia/GDR2_6514/GDR2_6514_GAIASOURCE]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   ....
+    >   ....
+    >   Share [/data/twomass/2MASSPSC/]
+    >   Count [PASS]
+    >   Hash  [PASS]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to our Zeppelin node and generate a new interpreter.json file.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        # Create a new list of interpreter bindings.
+        find /home/fedora/zeppelin/notebook \
+            -mindepth 1 \
+            -maxdepth 1 \
+            -type d \
+            ! -name '.git' \
+            -printf '%f\n' \
+        | sed '
+            1 i \
+"interpreterBindings": {
+        s/^\(.*\)$/"\1": ["spark", "md", "sh"]/
+        $ ! s/^\(.*\)$/\1,/
+        $ a \
+},
+            ' \
+            | tee /tmp/bindings.json
+
+    >   "interpreterBindings": {
+    >   "2C35YU814": ["spark", "md", "sh"],
+    >   "2EZ3MQG4S": ["spark", "md", "sh"],
+    >   ....
+    >   ....
+    >   "2G9BXYCKP": ["spark", "md", "sh"],
+    >   "2FF2VTAAM": ["spark", "md", "sh"]
+    >   },
+
+
+        # Replace the existing interpreter bindings.
+        jq '
+            del(.interpreterBindings[])
+            ' \
+        /home/fedora/zeppelin/conf/interpreter.json \
+        | sed '
+            /interpreterBindings/ {
+                r /tmp/bindings.json
+                d
+                }
+            ' \
+        | jq '.' \
+        | tee /tmp/interpreter-new.json
+
+    >   ....
+    >   ....
+
+
+    # Replace the original interpreter.json
+    mv /home/fedora/zeppelin/conf/interpreter.json \
+       /home/fedora/zeppelin/conf/interpreter.origin
+
+    cp /tmp/interpreter-new.json \
+       /home/fedora/zeppelin/conf/interpreter.json
+
+    # Restart Zeppelin to take effect
+    /home/fedora/zeppelin/bin/zeppelin-daemon.sh restart
+
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add our secret function to the ansibler container.
+#[root@ansibler]
+
+    # TODO Move this into the Ansible setup.
+    # TODO Move our secrets onto our infra-ops server.
+
+    if [ ! -e "${HOME}/bin" ]
+    then
+        mkdir "${HOME}/bin"
+    fi
+
+    cat > "${HOME}/bin/secret" << 'EOF'
+ssh -n \
+    'secretserver' \
+    "bin/secret '${1}'"
+EOF
+
+    chmod u+x "${HOME}/bin/secret"
+
+
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        mkdir "${HOME}/.ssh"
+    fi
+
+    # Fix for the out of date ssh server.
+    # RSA key have been deprecated, so we need to explicitly allow them for now.
+    # https://www.reddit.com/r/Fedora/comments/jh9iyi/f33_openssh_no_mutual_signature_algorithm/
+
+    cat >> "${HOME}/.ssh/config" << 'EOF'
+Host secretserver
+  User     Zarquan
+  Hostname data.metagrid.co.uk
+  PubkeyAcceptedKeyTypes +ssh-rsa
+EOF
+
+    ssh-keyscan 'data.metagrid.co.uk' >> "${HOME}/.ssh/known_hosts"
+
+    secret frog
+
+    >   Green Frog
+
+
+# -----------------------------------------------------
+# Create shell script functions to wrap the REST API.
+#[root@ansibler]
+
+    # TODO Add this to the client container.
+    # https://github.com/wfau/aglais/issues/542
+    # https://github.com/wfau/aglais/issues/495
+    dnf install -y dateutils
+
+    zeppelinhost=zeppelin.${cloudname:?}.aglais.uk
+    zeppelinport=8080
+    zeppelinurl="http://${zeppelinhost:?}:${zeppelinport:?}"
+
+    zeplogin()
+        {
+        local username=${1:?}
+        local password=${2:?}
+        zepcookies=/tmp/${username:?}.cookies
+        curl \
+            --silent \
+            --request 'POST' \
+            --cookie-jar "${zepcookies:?}" \
+            --data "userName=${username:?}" \
+            --data "password=${password:?}" \
+            "${zeppelinurl:?}/api/login" \
+        | jq '.'
+        }
+
+    zepnbjsonfile()
+        {
+        local nbident=${1:?}
+        echo "/tmp/${nbident:?}.json"
+        }
+
+    zepnbjsonclr()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+        if [ -f "${jsonfile}" ]
+        then
+            rm -f "${jsonfile}"
+        fi
+        }
+
+    zepnbclear()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request PUT \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}/clear" \
+        | jq '.'
+        }
+
+    zepnbstatus()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request GET \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}" \
+        | jq '.' | tee $(zepnbjsonfile ${nbident}) | jq 'del(.body.paragraphs[])'
+        }
+
+    zepnbexecute()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request POST \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/job/${nbident:?}" \
+        | jq '.'
+        }
+
+
+# -----------------------------------------------------
+# Execute a notebook paragraph at a time.
+#[root@ansibler]
+
+    zepnbexecstep()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+
+        # Fetch the notbook details.
+        curl \
+            --silent \
+            --request GET \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}" \
+            > $(zepnbjsonfile ${nbident})
+
+
+        # List the title, status and ident.
+        paralist=$(mktemp --suffix '.json')
+        jq '
+            [.body.paragraphs[]? | {id, status, title}]
+            ' "$(zepnbjsonfile ${nbident})" \
+            > "${paralist}"
+
+
+        # Execute each paragraph
+        jq -r '.[] | @text' "${paralist}" \
+        | while read line
+            do
+                title=$(jq -r '.title' <<< "${line}")
+                paraid=$(jq -r '.id'   <<< "${line}")
+                status=$(jq -r '.status' <<< "${line}")
+                echo ""
+                echo "Para [${paraid}][${title}]"
+
+                curl \
+                    --silent \
+                    --request POST \
+                    --cookie "${zepcookies:?}" \
+                    "${zeppelinurl:?}/api/notebook/run/${nbident:?}/${paraid:?}" \
+                | jq 'del(.body.msg)' \
+                | tee "/tmp/para-${paraid}.json"
+
+
+                result=$(
+                    jq -r '.body.code' "/tmp/para-${paraid}.json"
+                    )
+                echo "Result [${result}]"
+
+                if [ "${result}" != 'SUCCESS' ]
+                then
+                    break
+                fi
+
+            done
+        }
+
+# -----------------------------------------------------
+# Calculate the elapsed time for each paragraph.
+#[root@ansibler]
+
+    zepnbparatime()
+        {
+        local nbident=${1:?}
+
+        cat $(zepnbjsonfile ${nbident}) \
+        | sed '
+            /"dateStarted": null,/d
+            /"dateStarted":/ {
+                h
+                s/\([[:space:]]*\)"dateStarted":[[:space:]]*\("[^"]*"\).*$/\1\2/
+                x
+                }
+            /"dateFinished": null,/ d
+            /"dateFinished":/ {
+                H
+                x
+                s/[[:space:]]*"dateFinished":[[:space:]]*\("[^"]*"\).*$/ \1/
+                s/\([[:space:]]*\)\(.*\)/\1echo "\1\\"elapsedTime\\": \\"$(datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" \2)\\","/e
+                x
+                G
+                }
+            ' \
+        | jq '
+            .body.paragraphs[] | select(.results.code != null) | {
+                title,
+                result: .results.code,
+                time:   .elapsedTime,
+                }
+            '
+        }
+
+
+# -----------------------------------------------------
+# Calculate the elapsed time for the whole notebook.
+#[root@ansibler]
+
+    zepnbtotaltime()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+
+        local first=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateStarted != null) | .dateStarted] | first
+                ' \
+                "${jsonfile}"
+            )
+
+        local last=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateFinished != null) | .dateFinished] | last
+                ' \
+                "${jsonfile}"
+            )
+
+        datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" "${first}" "${last}"
+        }
+
+
+# -----------------------------------------------------
+# Setup the SSH tunnel connection.
+# https://linuxize.com/post/how-to-setup-ssh-tunneling/
+# Running 'htop' on the Zeppelin node to keep the connection alive.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh \
+                -t \
+                -L "3000:monitor:3000"  \
+                -L "8088:master01:8088" \
+                zeppelin \
+                    "
+                    htop
+                    "
+            '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the Spark UI using Firefox.
+#[user@desktop]
+
+    firefox --new-window 'http://localhost:8088/' &
+
+    # Entry point for Hadoop cluster
+    http://localhost:8088/cluster
+
+    # Application cluster page
+    http://localhost:8088/cluster/app/application_1628007610214_0001
+
+    # Original application page
+    http://master01:8088/proxy/application_1628007610214_0001/
+
+    # Localhost application page
+    http://localhost:8088/proxy/application_1628007610214_0001/
+    http://localhost:8088/proxy/application_1628007610214_0001/executors/
+
+    # 12 executors, 4 cores each, 6.7G memory
+
+
+# -----------------------------------------------------
+# Login to Grafana using Firefox
+#[user@desktop]
+
+    firefox --new-window 'http://localhost:3000/login' &
+
+        user: admin
+        pass: admin
+
+
+    # Set new password in the next page
+        ########
+
+
+# -----------------------------------------------------
+# Add Prometheus Data Source
+# From Stelios's notes
+
+    # Click on button "Data Sources: Add your first data source"
+    # Select Prometheus as the Data source
+    # Set the url to: http://monitor:9090
+    # Set the Scrape interval to 5s
+
+
+# -----------------------------------------------------
+# Add standard Dashboard
+# From Stelios's notes
+
+    # Import Dashboards for Node Exporter metrics:
+    # https://grafana.com/grafana/dashboards/11074
+
+    # Edit the filesystem monitors.
+    # Several of the metrics limit the file system type 'fstype' to 'ext.*|xfs'
+    # Update this to 'ext.*|btrfs' to include the discs we created.
+
+    node_filesystem_free_bytes{instance=~'$node',fstype=~"ext.*|xfs",mountpoint !~".*pod.*"}
+    node_filesystem_free_bytes{instance=~'$node',fstype=~"ext.*|btrfs",mountpoint !~".*pod.*"}
+
+
+    # How to embed dashboards in our deploy ?
+
+
+# -----------------------------------------------------
+# Add our own Dashboard
+
+    # Import from JSON file.
+    # 20210705-02-grafana-dash.txt
+    # How to embed dashboards in our deploy ?
+
+
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[root@ansibler]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass}"
+
+{
+  "status": "OK",
+  "message": "",
+  "body": {
+    "principal": "gaiauser",
+    "ticket": "20ed7efa-6ee0-4fb0-a62b-4f03cab80507",
+    "roles": "[\"user\"]"
+  }
+}
+
+
+# -----------------------------------------------------
+# Run the SetUp notebook.
+#[root@ansibler]
+
+    noteid=2G7GZKWUH
+
+    zepnbclear    ${noteid}
+    zepnbexecstep ${noteid}
+
+    zepnbstatus    ${noteid}
+    zepnbtotaltime ${noteid}
+
+    >   0:0:1
+
+
+# -----------------------------------------------------
+# Run the HealpixSourceCounts notebook
+#[root@ansibler]
+
+    noteid=2FKJ25GVF
+
+    zepnbclear    ${noteid}
+    zepnbexecstep ${noteid}
+
+    zepnbstatus    ${noteid}
+    zepnbtotaltime ${noteid}
+
+    >   0:0:23
+
+
+# -----------------------------------------------------
+# Run the MeanProperMotions notebook
+#[root@ansibler]
+
+    noteid=2G748GZSW
+
+    zepnbclear    ${noteid}
+    zepnbexecstep ${noteid}
+
+    zepnbstatus    ${noteid}
+    zepnbtotaltime ${noteid}
+
+    >   0:0:37
+
+
+# -----------------------------------------------------
+# Run the RandomForest notebook.
+#[root@ansibler]
+
+    noteid=2G5NU6HTK
+
+    zepnbclear    ${noteid}
+    zepnbexecstep ${noteid}
+
+    zepnbstatus    ${noteid}
+    zepnbtotaltime ${noteid}
+
+    >   0:8:9
+
+
+

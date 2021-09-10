@@ -1,4 +1,4 @@
-{#
+#
 # <meta:header>
 #   <meta:licence>
 #     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
@@ -18,31 +18,25 @@
 #   </meta:licence>
 # </meta:header>
 #
-#}
+# My firsr Ansible vars plugin
+#
 
-desc: "Configuration test .."
+from ansible.plugins.vars import BaseVarsPlugin
 
+class VarsModule(BaseVarsPlugin):
+    REQUIRES_ENABLED = True
+    
+    def get_vars(self, loader, path, entities, cache=True):
+        '''loads some new vars '''
+        data = {}
 
-# Calculated values
+        data['my_entities'] = entities
 
-available_master_memory: "{{available_master_memory}}"
-available_master_cores:  "{{available_master_cores}}"
-
-available_worker_memory: "{{available_worker_memory}}"
-available_worker_cores:  "{{available_worker_cores}}"
-
-executor_memory_total:    "{{executor_memory_total}}"
-executor_memory_overhead: "{{executor_memory_overhead}}"
-executor_memory_actual:   "{{executor_memory_actual}}"
-
-executor_cores: "{{executor_cores}}"
-
-used_memory: "{{used_memory}}"
-used_cores:  "{{used_cores}}"
-
-unused_memory: "{{unused_memory}}"
-unused_cores:  "{{unused_cores}}"
-
-
-
-
+        data['my_flowers'] = {
+            "red":    "rose",
+            "yellow": "daff",
+            "blue":   "corn"
+            }
+        
+        return data            
+            

@@ -1,4 +1,4 @@
-{#
+#
 # <meta:header>
 #   <meta:licence>
 #     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
@@ -18,31 +18,33 @@
 #   </meta:licence>
 # </meta:header>
 #
-#}
+#
+# My first Ansibble filter plugin.
+#
 
-desc: "Configuration test .."
+def test_one(string):
+    return "Test filer one [%s]" % (string)
 
-
-# Calculated values
-
-available_master_memory: "{{available_master_memory}}"
-available_master_cores:  "{{available_master_cores}}"
-
-available_worker_memory: "{{available_worker_memory}}"
-available_worker_cores:  "{{available_worker_cores}}"
-
-executor_memory_total:    "{{executor_memory_total}}"
-executor_memory_overhead: "{{executor_memory_overhead}}"
-executor_memory_actual:   "{{executor_memory_actual}}"
-
-executor_cores: "{{executor_cores}}"
-
-used_memory: "{{used_memory}}"
-used_cores:  "{{used_cores}}"
-
-unused_memory: "{{unused_memory}}"
-unused_cores:  "{{unused_cores}}"
+def test_two(string):
+    return DataObject(string)
 
 
+class DataObject(object):
+
+    def __init__(self, name):
+        self.name = name
+        
+    def name(self):
+        return self.name
+
+
+class FilterModule(object):
+    ''' Ansible jinja2 filters '''
+
+    def filters(self):
+        return {
+            'test_one': test_one,
+            'test_two': test_two
+            }
 
 

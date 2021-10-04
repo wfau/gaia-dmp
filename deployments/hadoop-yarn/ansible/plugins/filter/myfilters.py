@@ -19,7 +19,7 @@
 # </meta:header>
 #
 #
-# My first Ansibble filter plugin.
+# My first Ansible filter plugin.
 #
 
 def test_one(string):

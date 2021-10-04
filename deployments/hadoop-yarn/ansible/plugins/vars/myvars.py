@@ -18,7 +18,7 @@
 #   </meta:licence>
 # </meta:header>
 #
-# My firsr Ansible vars plugin
+# My first Ansible vars plugin
 #
 
 from ansible.plugins.vars import BaseVarsPlugin

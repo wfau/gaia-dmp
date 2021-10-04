@@ -234,3 +234,14 @@
 
     done
 
+# -----------------------------------------------------
+# Run Benchmarks
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --verbose \
+            --inventory "${inventory:?}" \
+            "36-run-benchmark.yml"
+
+    popd

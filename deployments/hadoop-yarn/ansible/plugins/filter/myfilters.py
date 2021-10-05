@@ -23,7 +23,7 @@
 #
 
 def test_one(string):
-    return "Test filer one [%s]" % (string)
+    return "Test filter one [%s]" % (string)
 
 def test_two(string):
     return DataObject(string)

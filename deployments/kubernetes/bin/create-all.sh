@@ -48,26 +48,25 @@
     statusyml='/tmp/aglais-status.yml'
     touch "${statusyml:?}"
 
-    yq write \
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.deployment.type' \
-            'kubernetes'
-    yq write \
+        ".aglais.status.deployment.type = \"kubernetes\"" \
+        "${statusyml:?}"
+
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.deployment.name' \
-            "${buildname}"
-    yq write \
+        ".aglais.status.deployment.name = \"${buildname}\"" \
+        "${statusyml:?}"
+
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.deployment.date' \
-            "${builddate}"
-    yq write \
+        ".aglais.status.deployment.date = \"${builddate}\"" \
+        "${statusyml:?}"
+
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.openstack.cloud' \
-            "${cloudname}"
+        "aglais.status.openstack.cloud = \"${cloudname}\"" \
+        "${statusyml:?}"
 
     echo "---- ---- ----"
     echo "Config yml [${configyml}]"
@@ -77,18 +76,16 @@
     echo "---- ---- ----"
 
     hemlpath='/tmp/helm'
-    yq write \
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.kubernetes.helm.path' \
-            "${hemlpath}"
+        ".aglais.status.kubernetes.helm.path = \"${hemlpath}\"" \
+        "${statusyml:?}"
 
     namespace=${buildname,,}
-    yq write \
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.kubernetes.namespace' \
-            "${namespace}"
+        ".aglais.status.kubernetes.namespace = \"${namespace}\"" \
+        "${statusyml:?}"
 
 
 # -----------------------------------------------------
@@ -114,11 +111,10 @@
     clusterid=$(
         jq -r '.uuid' '/tmp/cluster-status.json'
         )
-    yq write \
+    yq eval \
         --inplace \
+        "aglais.status.openstack.magnum.cluster.uuid = \"${clusterid}\"" \
         "${statusyml:?}" \
-            'aglais.status.openstack.magnum.cluster.uuid' \
-            "${clusterid}"
 
 
 # -----------------------------------------------------
@@ -139,16 +135,15 @@
         jq -r '.name' '/tmp/cluster-template.json'
         )
 
-    yq write \
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.openstack.magnum.template.uuid' \
-            "${templateuuid}"
-    yq write \
+        ".aglais.status.openstack.magnum.template.uuid = \"${templateuuid}\"" \
+        "${statusyml:?}"
+
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.openstack.magnum.template.name' \
-            "${templatename}"
+        ".aglais.status.openstack.magnum.template.name = \"${templatename}\"" \
+        "${statusyml:?}"
 
 
 # -----------------------------------------------------
@@ -212,9 +207,9 @@
 # https://github.com/helm/helm/issues/3134
 
 #   dashhost=$(
-#       yq read \
-#           "${configyml:?}" \
-#               'aglais.spec.dashboard.hostname'
+#       yq eval \
+#           ".aglais.spec.dashboard.hostname" \
+#           "${configyml:?}"
 #       )
     dashhost="dashboard.${cloudname:?}.aglais.uk"
 
@@ -249,11 +244,10 @@ EOF
 
     # We can't capture the external IP address here because it won't be ready yet.
 
-    yq write \
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.dashboard.hostname' \
-            "${dashhost}"
+        ".aglais.status.dashboard.hostname = \"${dashhost}\""
+        "${statusyml:?}"
 
 
 # -----------------------------------------------------
@@ -265,16 +259,16 @@ EOF
     sharemode='rw'
 
     for shareid in $(
-        yq read \
-            "${sharelist:?}" \
-                'shares.[*].id'
+        yq eval \
+            ".shares.[*].id" \
+            "${sharelist:?}"
         )
     do
         echo ""
         echo "Share [${shareid:?}]"
 
-        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
-        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+        sharename=$(yq eval ".shares.(id==${shareid:?}).sharename"  "${sharelist:?}")
+        mountpath=$(yq eval ".shares.(id==${shareid:?}).mountpath"  "${sharelist:?}")
 
         "${treetop:?}/kubernetes/bin/cephfs-mount.sh" \
             'gaia-prod' \
@@ -294,16 +288,16 @@ EOF
     sharemode='rw'
 
     for shareid in $(
-        yq read \
-            "${sharelist:?}" \
-                'shares.[*].id'
+        yq eval \
+            ".shares.[*].id" \
+            "${sharelist:?}"
         )
     do
         echo ""
         echo "Share [${shareid:?}]"
 
-        sharename=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).sharename")
-        mountpath=$(yq read "${sharelist:?}" "shares.(id==${shareid:?}).mountpath")
+        sharename=$(yq eval ".shares.(id==${shareid:?}).sharename"  "${sharelist:?}")
+        mountpath=$(yq eval ".shares.(id==${shareid:?}).mountpath"  "${sharelist:?}")
 
         "${treetop:?}/kubernetes/bin/cephfs-mount.sh" \
             'gaia-prod' \
@@ -321,9 +315,9 @@ EOF
 # https://github.com/helm/helm/issues/3134
 
 #   zepphost=$(
-#       yq read \
-#           "${configyml:?}" \
-#               'aglais.spec.zeppelin.hostname'
+#       yq eval \
+#           ".aglais.spec.zeppelin.hostname" \
+#           "${configyml:?}"
 #       )
     zepphost="zeppelin.${cloudname:?}.aglais.uk"
 
@@ -350,11 +344,10 @@ EOF
 
     # We can't capture the IP address here because it won't be ready yet.
 
-    yq write \
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.zeppelin.hostname' \
-            "${zepphost}"
+        ".aglais.status.zeppelin.hostname = \"${zepphost}\""
+        "${statusyml:?}"
 
 
 # -----------------------------------------------------
@@ -363,9 +356,9 @@ EOF
 # https://github.com/helm/helm/issues/3134
 
 #   drupalhost=$(
-#       yq read \
-#           "${configyml:?}" \
-#               'aglais.spec.drupal.hostname'
+#       yq eval \
+#           ".aglais.spec.drupal.hostname" \
+#           "${configyml:?}"
 #       )
     drupalhost="drupal.${cloudname:?}.aglais.uk"
 

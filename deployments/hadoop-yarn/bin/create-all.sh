@@ -49,31 +49,30 @@
     statusyml='/tmp/aglais-status.yml'
     touch "${statusyml:?}"
 
-    yq write \
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.deployment.type' \
-            'hadoop-yarn'
-    yq write \
+        ".aglais.status.deployment.type = \"hadoop-yarn\"" \
+        "${statusyml:?}"
+
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.deployment.conf' \
-            "${deployconf}"
-    yq write \
+        ".aglais.status.deployment.conf = \"${deployconf}\"" \
+        "${statusyml:?}"
+
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.deployment.name' \
-            "${deployname}"
-    yq write \
+        ".aglais.status.deployment.name = \"${deployname}\"" \
+        "${statusyml:?}"
+
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.status.deployment.date' \
-            "${deploydate}"
-    yq write \
+        ".aglais.status.deployment.date = \"${deploydate}\"" \
+        "${statusyml:?}"
+
+    yq eval \
         --inplace \
-        "${statusyml:?}" \
-            'aglais.spec.openstack.cloud' \
-            "${cloudname}"
+        ".aglais.spec.openstack.cloud = \"${cloudname}\"" \
+        "${statusyml:?}"
 
     echo "---- ---- ----"
     echo "Config yml [${configyml}]"
@@ -84,7 +83,6 @@
     echo "Deploy name [${deployname}]"
     echo "Deploy date [${deploydate}]"
     echo "---- ---- ----"
-
 
 # -----------------------------------------------------
 # Create our Ansible include vars file.
@@ -172,14 +170,18 @@
     mounthost='zeppelin:masters:workers'
 
     for shareid in $(
-        yq read "${sharelist:?}" 'datashares.[*].id'
+        yq eval '.datashares.[].id' "${sharelist:?}" 
         )
     do
         echo ""
         echo "Share [${shareid:?}]"
 
-        sharename=$(yq read "${sharelist:?}" "datashares.(id==${shareid:?}).sharename")
-        mountpath=$(yq read "${sharelist:?}" "datashares.(id==${shareid:?}).mountpath")
+        sharename=$(
+            yq eval ".datashares.[] | select(.id == \"${shareid:?}\").sharename"  "${sharelist:?}"
+            )
+        mountpath=$(
+            yq eval ".datashares.[] | select(.id == \"${shareid:?}\").mountpath"  "${sharelist:?}"
+            )
 
         "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
             'gaia-prod' \
@@ -207,6 +209,71 @@
 
 
 # -----------------------------------------------------
+# Check the data shares.
+# Using a hard coded cloud name to make it portable.
+
+    sharelist="${treetop:?}/common/manila/datashares.yaml"
+    testhost=zeppelin
+
+    for shareid in $(
+        yq eval '.datashares.[].id' "${sharelist}" 
+        )
+    do
+
+        checkbase=$(
+            yq eval ".datashares.[] | select(.id == \"${shareid}\").mountpath" "${sharelist}" 
+            )
+        checknum=$(
+            yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums | length" "${sharelist}" 
+            )
+
+        for (( i=0; i<checknum; i++ ))
+        do
+            checkpath=$(
+                yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums[${i}].path" "${sharelist}"
+                )
+            checkcount=$(
+                yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums[${i}].count" "${sharelist}"
+                )
+            checkhash=$(
+                yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums[${i}].md5sum" "${sharelist}"
+                )
+
+            echo ""
+            echo "Share [${checkbase}/${checkpath}]"
+
+            testcount=$(
+                ssh "${testhost:?}" \
+                    "
+                    ls -1 ${checkbase}/${checkpath} | wc -l
+                    "
+                )
+
+            if [ "${testcount}" == "${checkcount}" ]
+            then
+                echo "Count [PASS]"
+            else
+                echo "Count [FAIL][${checkcount}][${testcount}]"
+            fi
+
+            testhash=$(
+                ssh "${testhost:?}" \
+                    "
+                    ls -1 -v ${checkbase}/${checkpath} | md5sum | cut -d ' ' -f 1
+                    "
+                )
+
+            if [ "${testhash}" == "${checkhash}" ]
+            then
+                echo "Hash  [PASS]"
+            else
+                echo "Hash  [FAIL][${checkhash}][${testhash}]"
+            fi
+        done
+    done
+
+
+# -----------------------------------------------------
 # Mount the user shares.
 # Using a hard coded cloud name to make it portable.
 
@@ -215,14 +282,18 @@
     mounthost='zeppelin:masters:workers'
 
     for shareid in $(
-        yq read "${sharelist:?}" 'usershares.[*].id'
+        yq eval ".usershares.[].id" "${sharelist:?}"
         )
     do
         echo ""
         echo "Share [${shareid:?}]"
 
-        sharename=$(yq read "${sharelist:?}" "usershares.(id==${shareid:?}).sharename")
-        mountpath=$(yq read "${sharelist:?}" "usershares.(id==${shareid:?}).mountpath")
+        sharename=$(
+            yq eval ".usershares.[] | select(.id == \"${shareid:?}\").sharename" "${sharelist:?}"
+            )
+        mountpath=$(
+            yq eval ".usershares.[] | select(.id == \"${shareid:?}\").mountpath" "${sharelist:?}"
+            )
 
         "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
             'gaia-prod' \

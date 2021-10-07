@@ -1,0 +1,618 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+    
+        Test the configurations work. 
+
+    Result:
+    
+        Success.
+        System passed basic notebook tests.
+
+    TODO:
+    
+        Looks like the system is only using about half of the available memory when run with a single user.
+        Might want to increase the resource limits.
+        
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    # Using prod as dev because Dennis is using dev as prod.
+
+    cloudname=gaia-prod
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m22.007s
+    >   user    1m13.083s
+    >   sys     0m9.518s
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'cclake-large-06'
+
+    >   real    35m0.418s
+    >   user    11m43.941s
+    >   sys     4m44.102s
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: cclake-large-06
+    >         name: gaia-prod-20211007
+    >         date: 20211007T053110
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-prod
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}"
+        ln -s "zeppelin-0.8.2-bin-all" "zeppelin"
+
+            pushd "zeppelin"
+
+                # Manual edit to add names and passwords
+                vi conf/shiro.ini
+
+                # Restart Zeppelin for the changes to take.
+                bin/zeppelin-daemon.sh restart
+
+            popd
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-origin
+
+	        git clone git@github.com:wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add our secret function to the ansibler container.
+#[root@ansibler]
+
+    # TODO Move this into the Ansible setup.
+    # TODO Move our secrets onto our infra-ops server.
+
+    if [ ! -e "${HOME}/bin" ]
+    then
+        mkdir "${HOME}/bin"
+    fi
+
+    cat > "${HOME}/bin/secret" << 'EOF'
+ssh -n \
+    'secretserver' \
+    "bin/secret '${1}'"
+EOF
+
+    chmod u+x "${HOME}/bin/secret"
+
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        mkdir "${HOME}/.ssh"
+    fi
+
+    cat >> "${HOME}/.ssh/config" << 'EOF'
+Host secretserver
+  User     Zarquan
+  Hostname data.metagrid.co.uk
+  PubkeyAcceptedKeyTypes +ssh-rsa
+EOF
+
+    ssh-keyscan 'data.metagrid.co.uk' >> "${HOME}/.ssh/known_hosts"
+
+    secret frog
+
+    >   Green Frog
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r ".addresses | .\"${deployname}-internal-network\" | .[1]"
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [be95108f-561a-4406-8e3a-6924ff483fcb]
+    >   Zeppelin IP [128.232.227.167]
+
+
+# -----------------------------------------------------
+# Update our DuckDNS record.
+#[root@ansibler]
+
+    # Using prod as dev because Dennis is using dev as prod.
+
+    ducktoken=$(secret 'aglais.duckdns.token')    
+    duckipv4=${zeppelinip:?}
+    duckhost=aglais-prod
+
+    curl "https://www.duckdns.org/update/${duckhost:?}/${ducktoken:?}/${duckipv4:?}"
+    
+    >   OK
+
+
+# -----------------------------------------------------
+# Add bind-utils to the client.
+# https://github.com/wfau/atolmis/issues/17
+#[root@ansibler]
+
+    dnf -y install bind-utils
+    
+    >   ....
+    >   Installed:
+    >     bind-libs-32:9.16.21-1.fc34.x86_64
+    >     bind-license-32:9.16.21-1.fc34.noarch
+    >     bind-utils-32:9.16.21-1.fc34.x86_64
+
+
+# -----------------------------------------------------
+# Check the DNS record.
+#[root@ansibler]
+
+    dig "${duckhost:?}.duckdns.org"
+
+    >   ;; ANSWER SECTION:
+    >   aglais-prod.duckdns.org. 60	IN	A	128.232.227.167
+
+
+    dig "zeppelin.${cloudname}.aglais.uk"
+
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-prod.aglais.uk. 600 IN	CNAME	aglais-prod.duckdns.org.
+    >   aglais-prod.duckdns.org. 47	IN	A	128.232.227.167
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to our Zeppelin node and generate a new interpreter.json file.
+# TODO Convert this to an Ansible playbook.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        # Create a new list of interpreter bindings.
+        find /home/fedora/zeppelin/notebook \
+            -mindepth 1 \
+            -maxdepth 1 \
+            -type d \
+            ! -name '.git' \
+            -printf '%f\n' \
+        | sed '
+            1 i \
+"interpreterBindings": {
+        s/^\(.*\)$/"\1": ["spark", "md", "sh"]/
+        $ ! s/^\(.*\)$/\1,/
+        $ a \
+},
+            ' \
+            | tee /tmp/bindings.json
+
+    >   "interpreterBindings": {
+    >   "2C35YU814": ["spark", "md", "sh"],
+    >   "2EZ3MQG4S": ["spark", "md", "sh"],
+    >   ....
+    >   ....
+    >   "2G9BXYCKP": ["spark", "md", "sh"],
+    >   "2FF2VTAAM": ["spark", "md", "sh"]
+    >   },
+
+
+        # Replace the existing interpreter bindings.
+        jq '
+            del(.interpreterBindings[])
+            ' \
+        /home/fedora/zeppelin/conf/interpreter.json \
+        | sed '
+            /interpreterBindings/ {
+                r /tmp/bindings.json
+                d
+                }
+            ' \
+        | jq '.' \
+        | tee /tmp/interpreter-new.json
+
+    >   ....
+    >   ....
+
+
+    # Replace the original interpreter.json
+    mv /home/fedora/zeppelin/conf/interpreter.json \
+       /home/fedora/zeppelin/conf/interpreter.origin
+
+    cp /tmp/interpreter-new.json \
+       /home/fedora/zeppelin/conf/interpreter.json
+
+    # Restart Zeppelin to take effect
+    /home/fedora/zeppelin/bin/zeppelin-daemon.sh restart
+
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# https://www.digitalocean.com/community/tutorials/how-to-route-web-traffic-securely-without-a-vpn-using-a-socks-tunnel
+# Running 'htop' on the Zeppelin node to keep the connection alive.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh \
+                -t \
+                -D "3000"  \
+                zeppelin \
+                    "
+                    htop
+                    "
+            '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the Spark UI using Firefox.
+# (*) using FoxyProxy Firefox plugin to select the SOCKS proxy for internal hostnames.
+#[user@desktop]
+
+    firefox --new-window 'http://master01:8088/cluster' &
+
+
+# -----------------------------------------------------
+# Login to Grafana using Firefox.
+# (*) using FoxyProxy Firefox plugin to select the SOCKS proxy for internal hostnames.
+#[user@desktop]
+
+    firefox --new-window 'http://monitor:3000/login' &
+
+        user: admin
+        pass: admin
+
+
+    # Set new password in the next page
+        ########
+
+
+# -----------------------------------------------------
+# Add Prometheus Data Source
+
+    http://monitor:3000/datasources/new
+    
+    # Select Prometheus as the Data source
+    # Set the url to: http://monitor:9090
+    # Set the Scrape interval to 5s
+
+
+# -----------------------------------------------------
+# Add our dashboards from local JSON files.
+#[user@desktop]
+
+    http://monitor:3000/dashboard/import
+
+        deployments/common/grafana/20210705-02-grafana-dash.json
+        deployments/common/grafana/node-exporter-v20201010-1633446087511.json
+
+
+# -----------------------------------------------------
+# Select our dashboards.
+#[user@desktop]
+
+    http://monitor:3000/d/xfpJB9FGz/1-node-exporter-for-prometheus-dashboard-en-v20201010?orgId=1&refresh=15s
+    http://monitor:3000/d/34S3C8k7z/my-first-dash?orgId=1&refresh=5s
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Load our tests scripts.
+#[root@ansibler]
+
+    cloudname=gaia-prod
+
+    zeppelinhost=zeppelin.${cloudname:?}.aglais.uk
+    zeppelinport=8080
+    zeppelinurl=http://${zeppelinhost:?}:${zeppelinport:?}
+
+    source /deployments/zeppelin/test/bin/rest-tests.sh
+
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[root@ansibler]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gaiauser",
+    >       "ticket": "15cfb07e-9810-48ea-8125-843d9053504c",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Run the SetUp notebook.
+#[root@ansibler]
+
+    noteid=2G7GZKWUH
+
+    zepnbclear    ${noteid}
+    zepnbexecstep ${noteid}
+
+    zepnbstatus    ${noteid}
+    zepnbtotaltime ${noteid}
+
+
+    >   ....
+    >   ....
+    >   Result [SUCCESS]
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "/AglaisPublicExamples/SetUp",
+    >       "id": "2G7GZKWUH",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "sh:shared_process": [],
+    >         "spark:dcr:": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+
+    >   0:0:36
+
+
+# -----------------------------------------------------
+# Run the HealpixSourceCounts notebook
+#[root@ansibler]
+
+    noteid=2FKJ25GVF
+
+    zepnbclear    ${noteid}
+    zepnbexecstep ${noteid}
+
+    zepnbstatus    ${noteid}
+    zepnbtotaltime ${noteid}
+
+    >   ....
+    >   ....
+    >   Result [SUCCESS]
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "/AglaisPublicExamples/Source counts over the sky",
+    >       "id": "2FKJ25GVF",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "spark:zrq:": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+
+    >   0:0:29
+
+# -----------------------------------------------------
+# Run the MeanProperMotions notebook
+#[root@ansibler]
+
+    noteid=2G748GZSW
+
+    zepnbclear    ${noteid}
+    zepnbexecstep ${noteid}
+
+    zepnbstatus    ${noteid}
+    zepnbtotaltime ${noteid}
+
+    >   ....
+    >   ....
+    >   Result [SUCCESS]
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "AglaisPublicExamples/Mean proper motions over the sky",
+    >       "id": "2G748GZSW",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "spark:zrq:": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+
+    >   0:0:45
+
+# -----------------------------------------------------
+# Run the RandomForest notebook.
+#[root@ansibler]
+
+    noteid=2G5NU6HTK
+
+    zepnbclear    ${noteid}
+    zepnbexecstep ${noteid}
+
+    zepnbstatus    ${noteid}
+    zepnbtotaltime ${noteid}
+
+    >   ....
+    >   ....
+    >   Result [SUCCESS]
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "/AglaisPublicExamples/Good astrometric solutions via ML Random Forrest classifier",
+    >       "id": "2G5NU6HTK",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {
+    >         "md:shared_process": [],
+    >         "spark:zrq:": []
+    >       },
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {}
+    >     }
+    >   }
+
+    >   0:7:53
+

@@ -1,0 +1,215 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Slack conversation about the storage platform.
+    
+    Background:
+    
+    Dave was trying to do a delete-all create-all deployment, and it was failing at the point where it attached and mounted Cinder volumes on the VMs.
+    In the background Dennis was running a ML analysis on a different cloud, saturating the CephFS system and causing Cinder commands to timeout.
+    
+    Running the same build scripts a couple of hours later, after Dennis's ML analysis had finished, completed with no problems
+    
+----------------------------------------------------------------
+----------------------------------------------------------------
+
+Dave Morris
+3:14 @Paul Browne Are there any issue with Cinder volumes on the Openstack platform at the moment ?
+3:14 We are seeing quite longs delays in creating, mounting and deleting Cinder volumes.
+Paul Browne
+3:16 Are your clients currently doing 1.2GiB/s read I/O? Might be one possible reason.
+3:16
+<code>
+client:   1.2 GiB/s rd, 468 op/s rd, 0 op/s wr
+</code>
+
+
+Dave Morris
+3:20 checking ...
+3:25 yep, looks like us
+3:26 machine learning algorithm in one project causing problems for an Openstack deploy in another project
+
+Paul Browne
+3:27 Well, it's all the same Ceph cluster hardware. And is increasingly creaking, so we should get your projects migrated off there really
+Dave  Morris
+:+1:
+
+John Garbutt
+3:28 The deploy in the other project, is it trying to do boot from volume? Or just attach a blank volume?
+
+    Dave Morris
+    Creating and attaching empty volumes to new VMs.
+    Dave Morris
+    All of the Cinder steps are slow today, creating, attaching and deleting volumes
+    Dave Morris
+    Specifically at the moment, the deploy script fails when it is trying to attach a newly created volume to a VM.
+
+
+Dave Morris
+3:36 We quite often see 60% iowait on our Spark worker nodes when the ML algorithm is doing a scan of the data.
+John Garbutt
+3:41 You are targeting remote old individual spinning disks for all this io. Granted that is because there isn’t an alternative in this cloud. The new Arcus cloud paul is wanting to migrate you to has the updated ceph hardware, although it is also spinning disks. This sounds like something you want on a hyperconverged file system that uses the local SSD storage, although I believe you need more space than that would give you right now? Certainly local NVMe is more typical for this sort of ML pipeline.
+Dave Morris
+3:42 Yes - we know
+John Garbutt
+3:42 @Dave Morris I haven’t forgotten about catching up about Blazar, and other pieces. Hope to get back to you on that soon.
+Dave Morris
+3:42 We have got custom VM templates to maximise access to the local SSD discs for Spark temp data
+3:43but we can't do that for the bulk science data
+3:43 A hyperconverged system that could handle Tbytes of science data would indeed be ideal
+3:43 but I don't think that is an option is it ?
+3:44 we have been making do with a Manila CephFS share to make the science data available to all the Spark workers, because so far that is the best option we have found
+3:45 high iowait on the worker nodes is normal, but today is the first time I've had problems with a deployment in another project
+3:46 could be this is the first time that I've tried a deploy at the same time that our scientists are running a long ML task
+John Garbutt
+3:46 What is your deployment doing? Just creating blank volumes?
+Dave Morris
+3:47 https://github.com/wfau/aglais/blob/master/deployments/hadoop-yarn/ansible/09-cinder-volumes.yml
+     https://github.com/wfau/aglais/blob/master/deployments/hadoop-yarn/ansible/tasks/create-volumes.yml
+     https://github.com/wfau/aglais/blob/master/deployments/hadoop-yarn/ansible/tasks/mount-volumes.yml
+
+Dave Morris
+3:47 the deploy creates a set of blank volumes, attaches them to the VMs and then formats and mounts them
+
+    John Garbutt
+    OK, I guess the format could be blocked on the spark workflow taking all the IOPS
+
+Paul Browne
+3:48 Yes, the cloud we're migrating all the IRIS projects to has a larger Ceph cluster as John G. says, but it is still spinning rust instead of solid state. Just more of it.
+     There are some very nice+expensive NVMe-packed nodes in our DC, but they're not earmarked to be integrated into a cloud really as they're intended to be used as batch cluster burst buffer storage.
+     In terms of actually doing this migration for your 3 projects; would you need to be moving a lot of data when we migrate those projects or can you rebuild most/all of your infra without too much hassle and then load in data from external sources?
+
+     Dave Morris
+     All of our VMs are regularly re-built from scratch, so they are easy enough to move to another platform.
+
+     Dave Morris
+     Our science data is currently in Manila shares, and we also have copies in echo S3 buckets
+
+     Paul Browne
+     OK, sounds like very little data would need to be migrated between the older cloud and the current one then, and you can rebuild your workloads very easily on the other side.
+     In that case we should schedule moving your nodes over as soon as is practicable for your projects.
+
+     Dave Morris
+     we can move whenever you are ready
+
+     Dave Morris
+     tomorrow ?
+
+     Dave Morris
+     I can ask our scientists to log off for a few days, and then we are good to go
+
+     Paul Browne
+     Tomorrow might be just a bit quick :slightly_smiling_face: We would need to reconfigure the nodes to move them between clouds, so first we need to evacuate them of any current workload.
+     For EUCLID the way we did this is one sacrificial node went first, they booted the basics on the new cloud, then the rest followed after.
+
+     Dave Morris
+     Yep, agree, we need to plan it.
+
+     Dave Morris
+     We don't need to be running 24/7
+
+     Dave Morris
+     As long as we warn them, our scientists are happy with a few days downtime.
+
+     Dave Morris
+     One option would be to migrate 1/3 of our allocation and use that to to a test deployment.
+
+     Dave Morris
+     That would show up any issues with different version of Openstack etc, and we could get a performance metric for comparison.
+
+     Paul Browne
+     OK, that sounds like a workable start. I can provide the list of what hosts are currently hosting what instances, and we can decide which ones to take away from there.
+
+     Dave Morris
+     If we ask our scientists to take a day off we can delete everything off all the hosts and re-build everything in <60 min.
+
+     Dave Morris
+     don't worry about keeping existing VMs running
+
+     Dave Morris
+     so we can delete all of them, migrate 1~/3 of the allocation and then re-build the live system on the resources that are left
+
+     Paul Browne
+     Doing it staggered may be preferable all told, as moving hosts between clouds is not that short a process, and leaving 2/3 of your capacity running while 1/3 is in transit means you're not fully down for a day (or more if I get pulled away onto something).
+
+     Dave Morris
+     whichever is easiest for you
+
+     Dave Morris
+     but don't worry about trying to keep anything running, we can delete the lot and re-build in <60 min
+
+
+Dave Morris
+3:50 Do we know if spinning rust is the issue, or is it a bottleneck with the servers running the Ceph cluster ?
+3:50 Either way happy to follow your advice on this
+3:53 (*) important note
+3:54 the current disc read load is one astronomer running one ML algorithm on one dataset (edited) 
+3:55 the goal of the project was to offer a notebook analysis platform to multiple users
+3:57 The current data is relatively small <5Tbytes, but we are expecting a x10 increase with a new data set available next year.
+3:58 We tried using S3 via echo, but the latency was too high.
+3:59 We did try using S3 from local Swift, but we couldn't get the client software to work.
+4:00 If we thing the CephFS is the bottleneck, we could try going back to an earlier configuration that used Hadoop HDFS on Cinder volumes, but that wasn't great either.
+4:02 We do have a task on our todo list to experiment with NFS ontop of Cinder, but given everything comes from the same discs, likeley that that isn't a solution either.
+4:04 We have an experiment planned (probably in December) to do a test deploy on the sommerville system at Edinburgh to see what kind of results we can get on that system.
+
+John Garbutt
+4:04 We know the current ceph hardware is terrible and there isn’t much of it (only three servers, with three way replication) The new ceph is in the new OpenStack and should be somewhat faster. But I am not convinced it will be fast enough, but it’s all we have requested via IRIS RSAP right now.
+
+Dave Morris
+4:05 We are open to suggestions.
+4:06 Happy to help with test deployments to measure performance etc.
+4:06 If we can get good stats from deployments of systems like Somerviille, would that help with bids for more funding from IRIS ? (edited) 
+
+John Garbutt
+4:07 Yes, I would say so. The SSD ceph there should be a good thing.
+
+Dave Morris
+4:09 I think Somerville also have a lot of servers running the Ceph cluster ?
+
+John Garbutt
+4:10 We have done a few NVMe ceph clusters, but they are not that much of a step up yet over SSD, more tuning needed there. What does fly is software raid over local NVMe for the local ephemeral disk. It would be a good comparison to prove how io limited you are.
+4:13 I forgot how big Somerville ceph is in the current hardware, but I third all SSD, which is the key. IRIS funding per GB was spinning disk money.
+
+Dave Morris
+4:14 A network FS like NFS or HDFS on top of ephemeral disc would be a good solution, if we can get enough aggregated space between them to handle a Tbyte data set.
+4:15 but @Paul Browne wasn't keen on us using large blocks of local attached storage because it makes the VMs hard/impossible to migrate (edited) 
+
+John Garbutt
+4:19 Yep, that is my current ML recommendation, hyperconverged on local disk. Some algorithms can work on sharded data between the nodes, others need the Shared file system or a mix of the two. But yes, live-migration can be very slow, I believe limited by disk write io bandwidth in the single local ssd setup we have.
+
+Dave Morris
+4:21 Long term, that would indeed be ideal.
+4:21 Short term, a slightly faster set of spinning discs would be a good step.
+
+John Garbutt
+4:22 That is available to you, when you migrate to the Arcus cloud, which we should do soon.
+4:22 The faster spinning disk, that is.
+
+---------------------------------------
+

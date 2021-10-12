@@ -1,0 +1,397 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Work on tools for Zeppelin REST API.
+
+    Result:
+
+        Work in progress ..
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-dev
+
+
+# -----------------------------------------------------
+# Create our Ansible vars file.
+#[root@ansibler]
+
+    configyml='/tmp/aglais-config.yml'
+    statusyml='/tmp/aglais-status.yml'
+
+    cat > "${statusyml:?}" << EOF
+aglais:
+ status:
+   deployment:
+     type: hadoop-yarn
+     conf: cclake-medium-04
+     name: gaia-dev-20210730
+     date: 20210727T021544
+ spec:
+   openstack:
+     cloud: gaia-dev
+EOF
+
+    ln -sf \
+        "${statusyml:?}" \
+        '/tmp/ansible-vars.yml'
+
+
+# -----------------------------------------------------
+# Read the config settings.
+#[root@ansibler]
+
+    deployconf=$(
+        yq read \
+            "${statusyml:?}" \
+            'aglais.status.deployment.conf'
+        )
+
+    deployname=$(
+        yq read \
+            "${statusyml:?}" \
+            'aglais.status.deployment.name'
+        )
+
+    deploydate=$(
+        yq read \
+            "${statusyml:?}" \
+            'aglais.status.deployment.date'
+        )
+
+# -----------------------------------------------------
+# Delete any existing known hosts file..
+# Temp fix until we get a better solution.
+# https://github.com/wfau/aglais/issues/401
+#[root@ansibler]
+
+    rm -f "${HOME}/.ssh/known_hosts"
+
+
+# -----------------------------------------------------
+# Run the Ansible ssh playbook.
+#[root@ansibler]
+
+    pushd '/deployments/hadoop-yarn/ansible'
+
+        ansible-playbook \
+            --verbose \
+            --inventory "config/${deployconf}.yml" \
+            '05-config-ssh.yml'
+
+        ansible-playbook \
+            --verbose \
+            --inventory "config/${deployconf}.yml" \
+            "08-ping-test.yml"
+
+    popd
+
+
+# -----------------------------------------------------
+# Create shell script functions to wrap the REST API.
+#[root@ansibler]
+
+    # TODO Add this to the client container.
+    dnf install -y datediff
+
+    zeppelinhost=zeppelin.${cloudname:?}.aglais.uk
+    zeppelinport=8080
+    zeppelinurl="http://${zeppelinhost:?}:${zeppelinport:?}"
+
+    zeplogin()
+        {
+        local username=${1:?}
+        local password=${2:?}
+        zepcookies=/tmp/${username:?}.cookies
+        curl \
+            --silent \
+            --request 'POST' \
+            --cookie-jar "${zepcookies:?}" \
+            --data "userName=${username:?}" \
+            --data "password=${password:?}" \
+            "${zeppelinurl:?}/api/login" \
+        | jq '.'
+        }
+
+    zepnbjsonfile()
+        {
+        local nbident=${1:?}
+        echo "/tmp/${nbident:?}.json"
+        }
+
+    zepnbjsonclr()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+        if [ -f "${jsonfile}" ]
+        then
+            rm -f "${jsonfile}"
+        fi
+        }
+
+    zepnbclear()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request PUT \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}/clear" \
+        | jq '.'
+        }
+
+    zepnbstatus()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request GET \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}" \
+        | jq '.' | tee $(zepnbjsonfile ${nbident}) | jq 'del(.body.paragraphs[])'
+        }
+
+    zepnbexecute()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request POST \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/job/${nbident:?}" \
+        | jq '.'
+        }
+
+
+# -----------------------------------------------------
+# Calculate the elapsed time for each paragraph.
+#[root@ansibler]
+
+    zepnbparatime()
+        {
+        local nbident=${1:?}
+
+        cat $(zepnbjsonfile ${nbident}) \
+        | sed '
+            /"dateStarted": null,/d
+            /"dateStarted":/ {
+                h
+                s/\([[:space:]]*\)"dateStarted":[[:space:]]*\("[^"]*"\).*$/\1\2/
+                x
+                }
+            /"dateFinished": null,/ d
+            /"dateFinished":/ {
+                H
+                x
+                s/[[:space:]]*"dateFinished":[[:space:]]*\("[^"]*"\).*$/ \1/
+                s/\([[:space:]]*\)\(.*\)/\1echo "\1\\"elapsedTime\\": \\"$(datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" \2)\\","/e
+                x
+                G
+                }
+            ' \
+        | jq '
+            .body.paragraphs[] | select(.results.code != null) | {
+                title,
+                result: .results.code,
+                time:   .elapsedTime,
+                }
+            '
+        }
+
+# -----------------------------------------------------
+# Calculate the elapsed time for the whole notebook.
+#[root@ansibler]
+
+    zepnbtotaltime()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+
+        local first=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateStarted != null) | .dateStarted] | first
+                ' \
+                "${jsonfile}"
+            )
+
+        local last=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateFinished != null) | .dateFinished] | last
+                ' \
+                "${jsonfile}"
+            )
+
+        datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" "${first}" "${last}"
+        }
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Add our secret function to the ansibler container.
+#[root@ansibler]
+
+    # TODO Move this into the Ansible setup.
+    # TODO Move our secrets onto our infra-ops server.
+
+    if [ ! -e "${HOME}/bin" ]
+    then
+        mkdir "${HOME}/bin"
+    fi
+
+    cat > "${HOME}/bin/secret" << 'EOF'
+ssh -n \
+    'secretserver' \
+    "bin/secret '${1}'"
+EOF
+
+    chmod u+x "${HOME}/bin/secret"
+
+
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        mkdir "${HOME}/.ssh"
+    fi
+
+    # Fix for the out of date ssh server.
+    # RSA key have been deprecated, so we need to explicitly allow them for now.
+    # https://www.reddit.com/r/Fedora/comments/jh9iyi/f33_openssh_no_mutual_signature_algorithm/
+
+    cat >> "${HOME}/.ssh/config" << 'EOF'
+Host secretserver
+  User     Zarquan
+  Hostname data.metagrid.co.uk
+  PubkeyAcceptedKeyTypes +ssh-rsa
+EOF
+
+    ssh-keyscan 'data.metagrid.co.uk' >> "${HOME}/.ssh/known_hosts"
+
+    secret frog
+
+    >   Green Frog
+
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[root@ansibler]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass}"
+
+
+# -----------------------------------------------------
+# Setup the MeanProperMotions notebook
+#[root@ansibler]
+
+    noteid=2G748GZSW
+
+    zepnbclear ${noteid}
+
+    zepnbstatus ${noteid}
+
+
+    # List the title, status and ident.
+    jq '
+        [.body.paragraphs[]? | {id, status, title}]
+        ' "$(zepnbjsonfile ${noteid})" \
+        | tee '/tmp/tistid.json'
+
+
+    # Execute each paragraph
+    jq -r '.[] | @text' '/tmp/tistid.json' \
+    | while read line
+        do
+            paraid=$(jq -r '.id' <<< "${line}")
+            title=$(jq -r '.title' <<< "${line}")
+            status=$(jq -r '.status' <<< "${line}")
+            echo ""
+            echo "Para [${paraid}][${title}]"
+
+            curl \
+                --silent \
+                --request POST \
+                --cookie "${zepcookies:?}" \
+                "${zeppelinurl:?}/api/notebook/run/${noteid:?}/${paraid:?}" \
+            | jq 'del(.body.msg[]? | select(.type != "TEXT") | .data)' \
+            | tee "/tmp/para-${paraid}.json"
+
+
+            result=$(
+                jq -r '.body.code' "/tmp/para-${paraid}.json"
+                )
+            echo "Result [${result}]"
+
+            if [ "${result}" != 'SUCCESS' ]
+            then
+                break
+            fi
+
+        done
+
+    #
+    # We get the status, but we don't get the start/end time.
+    # Need to go back to the full paragraph detail for that :-(
+    #
+
+
+
+
+
+

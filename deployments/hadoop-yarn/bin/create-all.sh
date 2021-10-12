@@ -2,7 +2,7 @@
 #
 # <meta:header>
 #   <meta:licence>
-#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
 #
 #     This information is free software: you can redistribute it and/or modify
 #     it under the terms of the GNU General Public License as published by
@@ -120,7 +120,7 @@
     echo "---- ----"
     echo "Running Ansible deploy"
 
-    inventory="config/${deployconf}.yml"
+    inventory="config/${deployconf:?}.yml"
 
     pushd "${treetop:?}/hadoop-yarn/ansible"
 

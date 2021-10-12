@@ -1,0 +1,980 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Deploy a large system.
+
+        Apache Spark: Config Cheatsheet
+        https://www.c2fo.io/c2fo/spark/aws/emr/2016/07/06/apache-spark-config-cheatsheet/
+        https://www.c2fo.io/c2fo/spark/aws/emr/2016/09/01/apache-spark-config-cheatsheet-part2/
+
+        https://github.com/AndresNamm/SparkDebugging
+
+    Result:
+
+        Work in progress ...
+        Conflicting configuration - fails to allocate Yarn containers on workers.
+
+
+# -----------------------------------------------------
+# Create an intermediate deployment configuration.
+#[user@desktop]
+
+    # Use config settings from the original medium-04 config.
+    # USe the worker count and size from the large-06 config.
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        pushd deployments/hadoop-yarn/ansible/config
+
+            cp cclake-large-06.yml \
+               cclake-large-xx.yml
+
+            gedit cclake-large-xx.yml &
+
+            diff cclake-medium-04.yml \
+                 cclake-large-xx.yml
+
+        popd
+    popd
+
+    >   <             flavor: 'gaia.cclake.6vcpu'
+    >   ---
+    >   >             flavor: 'gaia.cclake.27vcpu'
+    >   139c141
+    >   <                 hddatadest: "/mnt/local/vda/hadoop/data"
+    >   ---
+    >   >                 hddatadest: "/mnt/local/vdb/hadoop/data"
+    >   142c144
+    >   <                 hdtempdest: "/mnt/local/vda/hadoop/temp"
+    >   ---
+    >   >                 hdtempdest: "/mnt/local/vdb/hadoop/temp"
+    >   145c147
+    >   <                 hdlogsdest: "/mnt/local/vda/hadoop/logs"
+    >   ---
+    >   >                 hdlogsdest: "/mnt/local/vdb/hadoop/logs"
+    >   184c186
+    >   <                 worker[01:04]:
+    >   ---
+    >   >                 worker[01:06]:
+    >   188c190
+    >   <                 flavor: 'gaia.cclake.13vcpu'
+    >   ---
+    >   >                 flavor: 'gaia.cclake.27vcpu'
+    >   209c211
+    >   <                     hdlogsdest: "/mnt/local/vda/hadoop/logs"
+    >   ---
+    >   >                     hdlogsdest: "/mnt/local/vdb/hadoop/logs"
+    >   212c214
+    >   <                     hdfslogsdest: "/mnt/local/vda/hdfs/logs"
+    >   ---
+    >   >                     hdfslogsdest: "/mnt/local/vdb/hdfs/logs"
+
+    #
+    # This should work, but have a lot of spare resources.
+    #
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2020.12.02 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-dev
+
+
+# -----------------------------------------------------
+# Delete everything from the test and dev systems.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m30.215s
+    >   user    1m15.033s
+    >   sys     0m10.355s
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            'cclake-large-xx'
+
+    >   real    103m20.874s
+    >   user    24m39.185s
+    >   sys     7m41.561s
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: cclake-large-xx
+    >         name: gaia-dev-20210803
+    >         date: 20210803T094519
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}"
+        ln -s "zeppelin-0.8.2-bin-all" "zeppelin"
+
+            pushd "zeppelin"
+
+                # Manual edit to add names and passwords
+                vi conf/shiro.ini
+
+                # Restart Zeppelin for the changes to take.
+                bin/zeppelin-daemon.sh restart
+
+            popd
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-origin
+
+	        git clone git@github.com:wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq read \
+            '/tmp/aglais-status.yml' \
+                'aglais.status.deployment.name'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r '.addresses' \
+        | sed '
+            s/[[:space:]]//
+            s/.*=\(.*\)/\1/
+            s/.*,\(.*\)/\1/
+            '
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [7c5ddb7b-1f6f-4b34-bfe7-1aef77d5c124]
+    >   Zeppelin IP [128.232.227.163]
+
+
+# -----------------------------------------------------
+# Update our DNS record.
+#[root@ansibler]
+
+    ssh root@infra-ops.aglais.uk
+
+        vi /var/aglais/dnsmasq/hosts/gaia-dev.hosts
+
+        ~   128.232.227.163  zeppelin.gaia-dev.aglais.uk
+
+
+        podman kill --signal SIGHUP dnsmasq
+
+        podman logs dnsmasq | tail
+
+        exit
+
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-prod.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-test.hosts - 1 addresses
+    >   dnsmasq[1]: read /etc/dnsmasq/hosts/gaia-dev.hosts - 1 addresses
+
+
+# -----------------------------------------------------
+# Check the DNS record.
+#[root@ansibler]
+
+    # TODO Add bind-utils to our client container
+    # https://github.com/wfau/aglais/issues/391
+
+    dnf install -y bind-utils
+
+    dig @infra-ops.aglais.uk zeppelin.${cloudname}.aglais.uk
+
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dev.aglais.uk. 300 IN	A	128.232.227.163
+
+
+# -----------------------------------------------------
+# Check the data shares.
+# TODO Move this to a bash script in the source tree.
+#[root@ansibler]
+
+    sharelist="/deployments/common/manila/datashares.yaml"
+
+    for shareid in $(
+        yq read "${sharelist}" 'datashares.[*].id'
+        )
+    do
+        #echo ""
+        #echo "Share [${shareid}]"
+
+        checkbase=$(
+            yq read "${sharelist}" "datashares.(id == ${shareid}).mountpath"
+            )
+        checknum=$(
+            yq read "${sharelist}" --length "datashares.(id == ${shareid}).checksums"
+            )
+
+        for (( i=0; i<checknum; i++ ))
+        do
+            checkpath=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].path"
+                )
+            checkcount=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].count"
+                )
+            checkhash=$(
+                yq read "${sharelist}" "datashares.(id == ${shareid}).checksums[${i}].md5sum"
+                )
+
+            echo ""
+            #echo "Base  [${checkbase}]"
+            echo "Share [${checkbase}/${checkpath}]"
+
+            testcount=$(
+                ssh zeppelin \
+                    "
+                    ls -1 ${checkbase}/${checkpath} | wc -l
+                    "
+                )
+
+            if [ "${testcount}" == "${checkcount}" ]
+            then
+                echo "Count [PASS]"
+            else
+                echo "Count [FAIL][${checkcount}][${testcount}]"
+            fi
+
+            testhash=$(
+                ssh zeppelin \
+                    "
+                    ls -1 -v ${checkbase}/${checkpath} | md5sum | cut -d ' ' -f 1
+                    "
+                )
+
+            if [ "${testhash}" == "${checkhash}" ]
+            then
+                echo "Hash  [PASS]"
+            else
+                echo "Hash  [FAIL][${checkhash}][${testhash}]"
+            fi
+        done
+    done
+
+    >   Share [/data/gaia/GDR2_6514/GDR2_6514_GAIASOURCE]
+    >   Count [PASS]
+    >   Hash  [PASS]
+    >   ....
+    >   ....
+    >   Share [/data/twomass/2MASSPSC/]
+    >   Count [PASS]
+    >   Hash  [PASS]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to our Zeppelin node and generate a new interpreter.json file.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        # Create a new list of interpreter bindings.
+        find /home/fedora/zeppelin/notebook \
+            -mindepth 1 \
+            -maxdepth 1 \
+            -type d \
+            ! -name '.git' \
+            -printf '%f\n' \
+        | sed '
+            1 i \
+"interpreterBindings": {
+        s/^\(.*\)$/"\1": ["spark", "md", "sh"]/
+        $ ! s/^\(.*\)$/\1,/
+        $ a \
+},
+            ' \
+            | tee /tmp/bindings.json
+
+    >   "interpreterBindings": {
+    >   "2C35YU814": ["spark", "md", "sh"],
+    >   "2EZ3MQG4S": ["spark", "md", "sh"],
+    >   ....
+    >   ....
+    >   "2G9BXYCKP": ["spark", "md", "sh"],
+    >   "2FF2VTAAM": ["spark", "md", "sh"]
+    >   },
+
+
+        # Replace the existing interpreter bindings.
+        jq '
+            del(.interpreterBindings[])
+            ' \
+        /home/fedora/zeppelin/conf/interpreter.json \
+        | sed '
+            /interpreterBindings/ {
+                r /tmp/bindings.json
+                d
+                }
+            ' \
+        | jq '.' \
+        | tee /tmp/interpreter-new.json
+
+    >   ....
+    >   ....
+
+    # Replace the original interpreter.json
+    mv /home/fedora/zeppelin/conf/interpreter.json \
+       /home/fedora/zeppelin/conf/interpreter.origin
+
+    cp /tmp/interpreter-new.json \
+       /home/fedora/zeppelin/conf/interpreter.json
+
+    # Restart Zeppelin to take effect
+    /home/fedora/zeppelin/bin/zeppelin-daemon.sh restart
+
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Add our secret function to the ansibler container.
+#[root@ansibler]
+
+    # TODO Move this into the Ansible setup.
+    # TODO Move our secrets onto our infra-ops server.
+
+    if [ ! -e "${HOME}/bin" ]
+    then
+        mkdir "${HOME}/bin"
+    fi
+
+    cat > "${HOME}/bin/secret" << 'EOF'
+ssh -n \
+    'secretserver' \
+    "bin/secret '${1}'"
+EOF
+
+    chmod u+x "${HOME}/bin/secret"
+
+
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        mkdir "${HOME}/.ssh"
+    fi
+
+    # Fix for the out of date ssh server.
+    # RSA key have been deprecated, so we need to explicitly allow them for now.
+    # https://www.reddit.com/r/Fedora/comments/jh9iyi/f33_openssh_no_mutual_signature_algorithm/
+
+    cat >> "${HOME}/.ssh/config" << 'EOF'
+Host secretserver
+  User     Zarquan
+  Hostname data.metagrid.co.uk
+  PubkeyAcceptedKeyTypes +ssh-rsa
+EOF
+
+    ssh-keyscan 'data.metagrid.co.uk' >> "${HOME}/.ssh/known_hosts"
+
+    secret frog
+
+    >   Green Frog
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create shell script functions to wrap the REST API.
+#[root@ansibler]
+
+    # TODO Add this to the client container.
+    # https://github.com/wfau/aglais/issues/542
+    # https://github.com/wfau/aglais/issues/495
+    dnf install -y dateutils
+
+    zeppelinhost=zeppelin.${cloudname:?}.aglais.uk
+    zeppelinport=8080
+    zeppelinurl="http://${zeppelinhost:?}:${zeppelinport:?}"
+
+    zeplogin()
+        {
+        local username=${1:?}
+        local password=${2:?}
+        zepcookies=/tmp/${username:?}.cookies
+        curl \
+            --silent \
+            --request 'POST' \
+            --cookie-jar "${zepcookies:?}" \
+            --data "userName=${username:?}" \
+            --data "password=${password:?}" \
+            "${zeppelinurl:?}/api/login" \
+        | jq '.'
+        }
+
+    zepnbjsonfile()
+        {
+        local nbident=${1:?}
+        echo "/tmp/${nbident:?}.json"
+        }
+
+    zepnbjsonclr()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+        if [ -f "${jsonfile}" ]
+        then
+            rm -f "${jsonfile}"
+        fi
+        }
+
+    zepnbclear()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request PUT \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}/clear" \
+        | jq '.'
+        }
+
+    zepnbstatus()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request GET \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}" \
+        | jq '.' | tee $(zepnbjsonfile ${nbident}) | jq 'del(.body.paragraphs[])'
+        }
+
+    zepnbexecute()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+        curl \
+            --silent \
+            --request POST \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/job/${nbident:?}" \
+        | jq '.'
+        }
+
+
+# -----------------------------------------------------
+# Execute a notebook paragraph at a time.
+#[root@ansibler]
+
+    zepnbexecstep()
+        {
+        local nbident=${1:?}
+        zepnbjsonclr ${nbident}
+
+        # Fetch the notbook details.
+        curl \
+            --silent \
+            --request GET \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook/${nbident:?}" \
+            > $(zepnbjsonfile ${nbident})
+
+
+        # List the title, status and ident.
+        paralist=$(mktemp --suffix '.json')
+        jq '
+            [.body.paragraphs[]? | {id, status, title}]
+            ' "$(zepnbjsonfile ${nbident})" \
+            > "${paralist}"
+
+
+        # Execute each paragraph
+        jq -r '.[] | @text' "${paralist}" \
+        | while read line
+            do
+                title=$(jq -r '.title' <<< "${line}")
+                paraid=$(jq -r '.id'   <<< "${line}")
+                status=$(jq -r '.status' <<< "${line}")
+                echo ""
+                echo "Para [${paraid}][${title}]"
+
+                curl \
+                    --silent \
+                    --request POST \
+                    --cookie "${zepcookies:?}" \
+                    "${zeppelinurl:?}/api/notebook/run/${nbident:?}/${paraid:?}" \
+                | jq 'del(.body.msg[]? | select(.type != "TEXT") | .data)' \
+                | tee "/tmp/para-${paraid}.json"
+
+
+                result=$(
+                    jq -r '.body.code' "/tmp/para-${paraid}.json"
+                    )
+                echo "Result [${result}]"
+
+                if [ "${result}" != 'SUCCESS' ]
+                then
+                    break
+                fi
+
+            done
+        }
+
+# -----------------------------------------------------
+# Calculate the elapsed time for each paragraph.
+#[root@ansibler]
+
+    zepnbparatime()
+        {
+        local nbident=${1:?}
+
+        cat $(zepnbjsonfile ${nbident}) \
+        | sed '
+            /"dateStarted": null,/d
+            /"dateStarted":/ {
+                h
+                s/\([[:space:]]*\)"dateStarted":[[:space:]]*\("[^"]*"\).*$/\1\2/
+                x
+                }
+            /"dateFinished": null,/ d
+            /"dateFinished":/ {
+                H
+                x
+                s/[[:space:]]*"dateFinished":[[:space:]]*\("[^"]*"\).*$/ \1/
+                s/\([[:space:]]*\)\(.*\)/\1echo "\1\\"elapsedTime\\": \\"$(datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" \2)\\","/e
+                x
+                G
+                }
+            ' \
+        | jq '
+            .body.paragraphs[] | select(.results.code != null) | {
+                title,
+                result: .results.code,
+                time:   .elapsedTime,
+                }
+            '
+        }
+
+# -----------------------------------------------------
+# Calculate the elapsed time for the whole notebook.
+#[root@ansibler]
+
+    zepnbtotaltime()
+        {
+        local nbident=${1:?}
+        local jsonfile=$(zepnbjsonfile ${nbident})
+
+        local first=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateStarted != null) | .dateStarted] | first
+                ' \
+                "${jsonfile}"
+            )
+
+        local last=$(
+            jq -r '
+                [.body.paragraphs[] | select(.dateFinished != null) | .dateFinished] | last
+                ' \
+                "${jsonfile}"
+            )
+
+        datediff --format "%H:%M:%S" --input-format "%b %d, %Y %H:%M:%S %p" "${first}" "${last}"
+        }
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[root@ansibler]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gaiauser",
+    >       "ticket": "7d984818-1d49-4b76-bde6-80d245fd0ab1",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Run the SetUp notebook.
+#[root@ansibler]
+
+    noteid=2G7GZKWUH
+
+    zepnbclear ${noteid}
+
+    zepnbexecstep ${noteid}
+
+    >   Para [20210504-130917_57061499][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS",
+    >       "msg": [
+    >         {
+    >           "type": "HTML"
+    >         }
+    >       ]
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210504-131126_1544574772][Catalogue structure definitions]
+    >   ^C
+
+    #
+    # Locks up trying to execute the catalog schema paragraph.
+    # Same with the GUI.
+    # $%^&*!!
+    #
+
+    #
+    # Stuck at RUNNING 0^
+    # Same issues we same with resource contention.
+    #
+
+    #
+    # Try restarting the interpreter in the GUI.
+    # Locks up £$%^&*!!
+    #
+
+
+    >   ....
+    >    INFO [2021-08-03 12:50:40,795] ({qtp466505482-61} InterpreterRestApi.java[restartSetting]:180) - Restart interpreterSetting spark, msg={"noteId":"2G7GZKWUH"}
+    >    INFO [2021-08-03 12:50:40,797] ({qtp466505482-61} ManagedInterpreterGroup.java[close]:100) - Close Session: shared_session for interpreter setting: spark
+    >    WARN [2021-08-03 12:50:40,806] ({qtp466505482-61} NotebookServer.java[afterStatusChange]:2316) - Job 20210504-131126_1544574772 is finished, status: ABORT, exceptio
+    >   n: null, result: null
+    >    WARN [2021-08-03 12:50:40,813] ({qtp466505482-52} HttpChannel.java[handleException]:590) - /api/notebook/run/2G7GZKWUH/20210504-131126_1544574772
+    >   javax.servlet.ServletException: java.lang.NullPointerException
+    >   ....
+
+    #
+    # Refresh the page, and try again.
+    # Try restarting the interpreter in the GUI.
+    # Locks up £$%^&*!!
+    #
+
+    >   ....
+    >    INFO [2021-08-03 12:53:57,938] ({qtp466505482-94} NotebookServer.java[onOpen]:151) - New connection from 81.187.247.196 : 48838
+    >    INFO [2021-08-03 12:53:58,126] ({qtp466505482-90} NotebookServer.java[sendNote]:828) - New operation from 81.187.247.196 : 48838 : gaiauser : GET_NOTE : 2G7GZKWUH
+    >    INFO [2021-08-03 12:54:05,802] ({qtp466505482-94} InterpreterRestApi.java[restartSetting]:180) - Restart interpreterSetting spark, msg={"noteId":"2G7GZKWUH"}
+    >   ....
+
+    #
+    # Run all paragraphs doesn't work either.
+    # We broke it :-(
+    #
+
+
+# -----------------------------------------------------
+# Restart Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        /home/fedora/zeppelin/bin/zeppelin-daemon.sh restart
+        '
+
+    #
+    # Login via the GUI and run the SetUp notebook.
+    # Locks up trying to execute the catalog schema paragraph.
+    # $%^&*!!
+    #
+
+
+
+    #
+    # Basically, the system is broke.
+    # Which is causing it, 27core VMs or 6 workers ?
+    #
+
+    ssh zeppelin \
+        '
+        less /home/fedora/zeppelin/logs/zeppelin-interpreter-spark-fedora-gaia-dev-20210803-zeppelin.novalocal.log
+        '
+
+    >   ....
+    >    INFO [2021-08-03 12:59:10,602] ({pool-2-thread-5} Logging.scala[logInfo]:54) - Submitting application application_1627988974755_0002 to ResourceManager
+    >    INFO [2021-08-03 12:59:10,631] ({pool-2-thread-5} YarnClientImpl.java[submitApplication]:273) - Submitted application application_1627988974755_0002
+    >    INFO [2021-08-03 12:59:10,633] ({pool-2-thread-5} Logging.scala[logInfo]:54) - Starting Yarn extension services with app application_1627988974755_0002 and attemptId None
+    >    INFO [2021-08-03 12:59:11,310] ({pool-2-thread-2} Logging.scala[logInfo]:54) - Application report for application_1627988974755_0001 (state: ACCEPTED)
+    >    INFO [2021-08-03 12:59:11,640] ({pool-2-thread-5} Logging.scala[logInfo]:54) - Application report for application_1627988974755_0002 (state: ACCEPTED)
+    >    INFO [2021-08-03 12:59:11,643] ({pool-2-thread-5} Logging.scala[logInfo]:54) -
+    >            client token: N/A
+    >            diagnostics: [Tue Aug 03 12:59:10 +0000 2021] Application is added to the scheduler and is not yet activated. Skipping AM assignment as cluster resource is empty.
+    >   Details : AM Partition = <DEFAULT_PARTITION>; AM Resource Request = <memory:11000, vCores:1>; Queue Resource Limit for AM = <memory:0, vCores:0>; User AM Resource Limit of t
+    >   he queue = <memory:0, vCores:0>; Queue AM Resource Usage = <memory:0, vCores:0>;
+    >            ApplicationMaster host: N/A
+    >            ApplicationMaster RPC port: -1
+    >            queue: default
+    >            start time: 1627995550613
+    >            final status: UNDEFINED
+    >            tracking URL: http://master01:8088/proxy/application_1627988974755_0002/
+    >            user: fedora
+    >    INFO [2021-08-03 12:59:12,311] ({pool-2-thread-2} Logging.scala[logInfo]:54) - Application report for application_1627988974755_0001 (state: ACCEPTED)
+    >    INFO [2021-08-03 12:59:12,645] ({pool-2-thread-5} Logging.scala[logInfo]:54) - Application report for application_1627988974755_0002 (state: ACCEPTED)
+    >   ....
+
+
+    ssh master01 \
+        '
+        less /var/hadoop/logs/hadoop-fedora-resourcemanager-gaia-dev-20210803-master01.novalocal.log
+        '
+
+    >   ....
+    >   2021-08-03 12:59:10,622 INFO org.apache.hadoop.yarn.server.resourcemanager.ApplicationMasterService: Registering app attempt : appattempt_1627988974755_0002_000001
+    >   2021-08-03 12:59:10,622 INFO org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptImpl: appattempt_1627988974755_0002_000001 State change from NEW to SUBMITTED on event = START
+    >   2021-08-03 12:59:10,623 INFO org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.LeafQueue: Skipping activateApplications for appattempt_1627988974755_0002_000001 since cluster resource is <memory:0, vCores:0>
+    >   2021-08-03 12:59:10,623 INFO org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.LeafQueue: Application added - appId: application_1627988974755_0002 user: fedora, leaf-queue: default #user-pending-applications: 2 #user-active-applications: 0 #queue-pending-applications: 2 #queue-active-applications: 0
+    >   2021-08-03 12:59:10,623 INFO org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler: Added Application Attempt appattempt_1627988974755_0002_000001 to scheduler from user fedora in queue default
+    >   2021-08-03 12:59:10,630 INFO org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttemptImpl: appattempt_1627988974755_0002_000001 State change from SUBMITTED to SCHEDULED on event = ATTEMPT_ADDED
+    >   ....
+
+
+    ssh worker01 \
+        '
+        less /var/hadoop/logs/hadoop-fedora-nodemanager-$(hostname).log
+        '
+
+    >   ....
+    >   2021-08-03 11:09:37,165 INFO org.apache.hadoop.metrics2.impl.MetricsSystemImpl: Stopping NodeManager metrics system...
+    >   2021-08-03 11:09:37,165 INFO org.apache.hadoop.metrics2.impl.MetricsSystemImpl: NodeManager metrics system stopped.
+    >   2021-08-03 11:09:37,165 INFO org.apache.hadoop.metrics2.impl.MetricsSystemImpl: NodeManager metrics system shutdown complete.
+    >   2021-08-03 11:09:37,165 ERROR org.apache.hadoop.yarn.server.nodemanager.NodeManager: Error starting NodeManager
+    >   org.apache.hadoop.yarn.exceptions.YarnRuntimeException: org.apache.hadoop.yarn.exceptions.YarnRuntimeException: Received SHUTDOWN signal from Resourcemanager, Registration of NodeManager failed, Message from ResourceManager: NodeManager from  worker01 doesn't satisfy minimum allocations, Sending SHUTDOWN signal to the NodeManager. Node capabilities are <memory:8192, vCores:8>; minimums are 11000mb and 1 vcores
+    >   ....
+
+
+    ssh worker02 \
+        '
+        less /var/hadoop/logs/hadoop-fedora-nodemanager-$(hostname).log
+        '
+
+    >   2021-08-03 11:09:36,637 INFO org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdaterImpl: Sending out 0 NM container statuses: []
+    >   2021-08-03 11:09:36,644 INFO org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdaterImpl: Registering with RM using containers :[]
+    >   2021-08-03 11:09:37,041 ERROR org.apache.hadoop.yarn.server.nodemanager.NodeStatusUpdaterImpl: Unexpected error starting NodeStatusUpdater
+    >   org.apache.hadoop.yarn.exceptions.YarnRuntimeException: Received SHUTDOWN signal from Resourcemanager, Registration of NodeManager failed, Message from ResourceManager: NodeManager from  worker02 doesn't satisfy minimum allocations, Sending SHUTDOWN signal to the NodeManager. Node capabilities are <memory:8192, vCores:8>; minimums are 11000mb and 1 vcores
+    >   ....
+    >   2021-08-03 11:09:37,168 ERROR org.apache.hadoop.yarn.server.nodemanager.NodeManager: Error starting NodeManager
+    >   org.apache.hadoop.yarn.exceptions.YarnRuntimeException: org.apache.hadoop.yarn.exceptions.YarnRuntimeException: Received SHUTDOWN signal from Resourcemanager, Registration of NodeManager failed, Message from ResourceManager: NodeManager from  worker02 doesn't satisfy minimum allocations, Sending SHUTDOWN signal to the NodeManager. Node capabilities are <memory:8192, vCores:8>; minimums are 11000mb and 1 vcores
+    >   ....
+
+
+    #
+    # I hate yarn.
+    #
+
+
+    >   ....
+    >   org.apache.hadoop.yarn.exceptions.YarnRuntimeException:
+    >       Received SHUTDOWN signal from Resourcemanager, Registration of NodeManager failed, Message from ResourceManager:
+    >           NodeManager from  worker02 doesn't satisfy minimum allocations, Sending SHUTDOWN signal to the NodeManager.
+    >               Node capabilities are <memory:8192, vCores:8>; minimums are 11000mb and 1 vcores
+    >   ....
+
+
+    Avialable memory defaults to 8192
+    Minimum allocation is 11000mb
+
+    Looks like the minimum came from here:
+
+        <property>
+            <name>yarn.scheduler.minimum-allocation-mb</name>
+            <value>11000</value>
+        </property>
+
+
+    According to this page:
+    https://www.ibm.com/docs/en/spectrum-scale-bda?topic=tuning-yarn
+
+    Defaults are:
+
+        yarn.nodemanager.resource.memory-mb = 8192
+
+            "The total memory that could be allocated for Yarn jobs."
+
+        yarn.scheduler.maximum-allocation-mb = 8192
+
+            "The total memory that could be allocated for Yarn jobs."
+
+        yarn.scheduler.minimum-allocation-mb = 1024
+
+            "This value should not be greater than mapreduce.map.memory.mb and mapreduce.reduce.memory.mb.
+            And, mapreduce.map.memory.mb and mapreduce.reduce.memory.mb must be the multiple times of this value.
+            For example, if this value is 1024MB, then, you cannot configure mapreduce.map.memory.mb as 1536 MB."
+
+        yarn.nodemanager.resource.cpu-vcores = 8
+
+            "Set this based on /proc/cpuinfo
+             If you will run CPU sensitive workloads, keep the ratio of physical_cpu/vcores as 1:1.
+             If you will run IO bound workloads, you could change this as 1:4."
+
+             -- interesting
+
+        yarn.scheduler.minimum-allocation-vcores = 1
+        yarn.scheduler.maximum-allocation-vcores = 32
+
+        yarn.app.mapreduce.am.resource.mb = 1536
+
+            "Configure this as the value for yarn.scheduler.minimum-allocation-mb.
+             Usually, 1GB or 2GB is enough for this."
+
+
+        yarn.nodemanager.resource.memory-mb  = max-mem
+        yarn.nodemanager.resource.cpu-vcores = max-cores (1:1 > 1:4 based on /proc/cpuinfo)
+
+        yarn.scheduler.maximum-allocation-mb = max-mem
+        yarn.scheduler.minimum-allocation-mb = 1024
+
+        yarn.scheduler.minimum-allocation-vcores = 1
+        yarn.scheduler.maximum-allocation-vcores = max-cores
+
+        yarn.app.mapreduce.am.resource.mb = (yarn.scheduler.minimum-allocation-mb)
+
+        mapreduce.map.memory.mb    = (multiple of yarn.scheduler.minimum-allocation-mb)
+        mapreduce.reduce.memory.mb = (multiple of yarn.scheduler.minimum-allocation-mb)
+
+
+    ssh worker01 \
+        '
+        cat /proc/cpuinfo
+        echo ""
+        free -h
+        '
+
+    >   ....
+    >   processor	: 0
+    >   vendor_id	: GenuineIntel
+    >   cpu family	: 6
+    >   ....
+    >   ....
+    >   processor	: 26
+    >   vendor_id	: GenuineIntel
+    >   cpu family	: 6
+    >   ....
+
+
+    >                 total        used        free      shared  buff/cache   available
+    >   Mem:           44Gi       719Mi        39Gi       0.0Ki       3.9Gi        42Gi
+    >   Swap:            0B          0B          0B
+
+
+
+
+

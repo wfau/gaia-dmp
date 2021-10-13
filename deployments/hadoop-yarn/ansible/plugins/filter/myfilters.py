@@ -1,7 +1,7 @@
 #
 # <meta:header>
 #   <meta:licence>
-#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
 #
 #     This information is free software: you can redistribute it and/or modify
 #     it under the terms of the GNU General Public License as published by
@@ -19,20 +19,32 @@
 # </meta:header>
 #
 #
+# My first Ansible filter plugin.
+#
 
----
+def test_one(string):
+    return "Test filter one [%s]" % (string)
 
-# Role metadata.
-# https://galaxy.ansible.com/docs/contributing/creating_role.html#role-metadata
-galaxy_info:
-  role_name: podman-host
-  author: 'Zarquan (https://github.com/Zarquan)'
-  description: 'Podman container host.'
-  company: 'University of Edinburgh'
-  license: 'GPLv3'
+def test_two(string):
+    return DataObject(string)
 
-# Role dependencies
-# https://docs.ansible.com/ansible/latest/user_guide/playbooks_reuse_roles.html#using-role-dependencies
-dependencies:
-  - role: infra-base
+
+class DataObject(object):
+
+    def __init__(self, name):
+        self.name = name
+        
+    def name(self):
+        return self.name
+
+
+class FilterModule(object):
+    ''' Ansible jinja2 filters '''
+
+    def filters(self):
+        return {
+            'test_one': test_one,
+            'test_two': test_two
+            }
+
 

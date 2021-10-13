@@ -1,7 +1,7 @@
 #
 # <meta:header>
 #   <meta:licence>
-#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#     Copyright (c) 2020, ROE (http://www.roe.ac.uk/)
 #
 #     This information is free software: you can redistribute it and/or modify
 #     it under the terms of the GNU General Public License as published by
@@ -18,21 +18,25 @@
 #   </meta:licence>
 # </meta:header>
 #
+# My first Ansible vars plugin
 #
 
----
+from ansible.plugins.vars import BaseVarsPlugin
 
-# Role metadata.
-# https://galaxy.ansible.com/docs/contributing/creating_role.html#role-metadata
-galaxy_info:
-  role_name: podman-host
-  author: 'Zarquan (https://github.com/Zarquan)'
-  description: 'Podman container host.'
-  company: 'University of Edinburgh'
-  license: 'GPLv3'
+class VarsModule(BaseVarsPlugin):
+    REQUIRES_ENABLED = True
+    
+    def get_vars(self, loader, path, entities, cache=True):
+        '''loads some new vars '''
+        data = {}
 
-# Role dependencies
-# https://docs.ansible.com/ansible/latest/user_guide/playbooks_reuse_roles.html#using-role-dependencies
-dependencies:
-  - role: infra-base
+        data['my_entities'] = entities
 
+        data['my_flowers'] = {
+            "red":    "rose",
+            "yellow": "daff",
+            "blue":   "corn"
+            }
+        
+        return data            
+            

@@ -20,6 +20,6 @@
 
     ssh zeppelin \
         '
-        /home/fedora/zeppelin-0.8.2-bin-all/bin/zeppelin-daemon.sh start
+        /home/fedora/zeppelin-0.10.0-bin-all/bin/zeppelin-daemon.sh start
         '
 

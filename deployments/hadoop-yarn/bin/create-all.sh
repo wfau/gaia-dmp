@@ -44,6 +44,9 @@
     deployconf="${2:-medium-04}"
     deployname="${cloudname:?}-$(date '+%Y%m%d')"
     deploydate=$(date '+%Y%m%dT%H%M%S')
+    deploytype="${3:-prod}"
+
+    hostname="${4:-zeppelin.aglais.uk}"
 
     configyml='/tmp/aglais-config.yml'
     statusyml='/tmp/aglais-status.yml'
@@ -74,6 +77,16 @@
         ".aglais.spec.openstack.cloud = \"${cloudname}\"" \
         "${statusyml:?}"
 
+    yq eval \
+        --inplace \
+        ".aglais.status.deployment.hostname = \"${hostname}\"" \
+        "${statusyml:?}"
+
+    yq eval \
+        --inplace \
+        ".aglais.status.deployment.deploytype = \"${deploytype}\"" \
+        "${statusyml:?}"
+
     echo "---- ---- ----"
     echo "Config yml [${configyml}]"
     echo "Cloud name [${cloudname}]"
@@ -82,6 +95,8 @@
     echo "Deploy conf [${deployconf}]"
     echo "Deploy name [${deployname}]"
     echo "Deploy date [${deploydate}]"
+    echo "Deploy hostname [${hostname}]"
+    echo "Deploy deploytype [${deploytype}]"
     echo "---- ---- ----"
 
 # -----------------------------------------------------
@@ -151,6 +166,31 @@
 # Initialise the Zeppelin service.
 
     "${treetop:?}/hadoop-yarn/bin/start-zeppelin.sh"
+
+
+
+# -----------------------------------------------------
+# Setup SSL for NGINX
+
+if [[ "$deploytype" == "prod" ]]
+then
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --verbose \
+            --inventory "${inventory:?}" \
+            "38-nginx-ssl.yml"
+
+    popd
+
+fi
+
+
+# -----------------------------------------------------
+# Restart NGINX proxy
+
+    "${treetop:?}/hadoop-yarn/bin/start-nginx.sh"
 
 
 # -----------------------------------------------------

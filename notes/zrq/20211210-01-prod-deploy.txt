@@ -1,0 +1,296 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Last steps to complete a deployment.
+
+    Result:
+
+        Work in progress ..
+
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-28.180-spark-6.27.45
+    >         name: gaia-dev-20211207
+    >         date: 20211207T011400
+    >     spec:
+    >       openstack:
+    >         cloud: gaia-dev
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}"
+        ln -s "zeppelin-0.10.0-bin-all" "zeppelin"
+
+            pushd "zeppelin"
+
+                # Manual edit to add names and passwords
+                vi conf/shiro.ini
+
+                # Restart Zeppelin for the changes to take.
+                bin/zeppelin-daemon.sh restart
+
+            popd
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-origin
+
+	        git clone git@github.com:wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add our secret function to the ansibler container.
+#[root@ansibler]
+
+    # TODO Move this into the Ansible setup.
+    # TODO Move our secrets onto our infra-ops server.
+
+    if [ ! -e "${HOME}/bin" ]
+    then
+        mkdir "${HOME}/bin"
+    fi
+
+    cat > "${HOME}/bin/secret" << 'EOF'
+ssh -n \
+    'secretserver' \
+    "bin/secret '${1}'"
+EOF
+
+    chmod u+x "${HOME}/bin/secret"
+
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        mkdir "${HOME}/.ssh"
+    fi
+
+    cat >> "${HOME}/.ssh/config" << 'EOF'
+Host secretserver
+  User     Zarquan
+  Hostname data.metagrid.co.uk
+  PubkeyAcceptedKeyTypes +ssh-rsa
+EOF
+
+    ssh-keyscan 'data.metagrid.co.uk' >> "${HOME}/.ssh/known_hosts"
+
+    secret frog
+
+    >   Green Frog
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    cloudname=$(
+        yq eval \
+            '.aglais.spec.openstack.cloud' \
+            '/tmp/aglais-status.yml'
+        )
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r ".addresses | .\"${deployname}-internal-network\" | .[1]"
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [6d5a100e-815c-4e59-a6a9-42c0df75bf23]
+    >   Zeppelin IP [128.232.227.221]
+
+
+# -----------------------------------------------------
+# Update our DuckDNS record.
+#[root@ansibler]
+
+    # Using prod as dev because Dennis is using dev as prod.
+
+    duckhost=aglais-dev
+    duckipv4=${zeppelinip:?}
+    ducktoken=$(secret 'aglais.duckdns.token')
+
+    curl "https://www.duckdns.org/update/${duckhost:?}/${ducktoken:?}/${duckipv4:?}"
+
+    >   OK
+
+
+# -----------------------------------------------------
+# Add bind-utils to the client.
+# https://github.com/wfau/atolmis/issues/17
+#[root@ansibler]
+
+    dnf -y install bind-utils
+
+    >   ....
+    >   Installed:
+    >     bind-libs-32:9.16.21-1.fc34.x86_64
+    >     bind-license-32:9.16.21-1.fc34.noarch
+    >     bind-utils-32:9.16.21-1.fc34.x86_64
+
+
+# -----------------------------------------------------
+# Check the DNS record.
+#[root@ansibler]
+
+    dig "${duckhost:?}.duckdns.org"
+
+    >   ....
+    >   ;; ANSWER SECTION:
+    >   aglais-dev.duckdns.org.	60	IN	A	128.232.227.221
+    >   ....
+
+
+    dig "zeppelin.${cloudname}.aglais.uk"
+
+    >   ....
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dev.aglais.uk. 272 IN	CNAME	aglais-dev.duckdns.org.
+    >   aglais-dev.duckdns.org.	31	IN	A	128.232.227.221
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to our Zeppelin node and generate a new interpreter.json file.
+# TODO Convert this to an Ansible playbook.
+#[root@ansibler]
+
+    #
+    # This rest doesn't work on Spark3 ....
+    # interpreter.json doesn't have a list of notebooks in it.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Load our tests scripts.
+#[root@ansibler]
+
+    zeppelinhost=zeppelin.${cloudname:?}.aglais.uk
+    zeppelinport=8080
+    zeppelinurl=http://${zeppelinhost:?}:${zeppelinport:?}
+
+    source /deployments/zeppelin/test/bin/rest-tests.sh
+
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[root@ansibler]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gaiauser",
+    >       "ticket": "635ec016-dd4a-44cf-b2b5-2803b375d6c0",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Run the SetUp notebook.
+#[root@ansibler]
+
+    noteid=2G7GZKWUH
+
+    zepnbclear    ${noteid}
+
+    >   {
+    >     "status": "NOT_FOUND",
+    >     "message": "No such note: 2G7GZKWUH"
+    >   }
+
+    #
+    # Not unexpected.
+    # The names/identifiers of the notebooks have changed in Spark-3.
+    #
+

@@ -123,8 +123,6 @@
     pushd "${treetop:?}/hadoop-yarn/ansible"
 
         ansible-playbook \
-            --verbose \
-            --verbose \
             --inventory "${inventory:?}" \
             "create-all.yml"
 
@@ -172,7 +170,7 @@
     mounthost='zeppelin:masters:workers'
 
     for shareid in $(
-        yq eval '.datashares.[].id' "${sharelist:?}" 
+        yq eval '.datashares.[].id' "${sharelist:?}"
         )
     do
         echo ""
@@ -218,15 +216,15 @@
     testhost=zeppelin
 
     for shareid in $(
-        yq eval '.datashares.[].id' "${sharelist}" 
+        yq eval '.datashares.[].id' "${sharelist}"
         )
     do
 
         checkbase=$(
-            yq eval ".datashares.[] | select(.id == \"${shareid}\").mountpath" "${sharelist}" 
+            yq eval ".datashares.[] | select(.id == \"${shareid}\").mountpath" "${sharelist}"
             )
         checknum=$(
-            yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums | length" "${sharelist}" 
+            yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums | length" "${sharelist}"
             )
 
         for (( i=0; i<checknum; i++ ))

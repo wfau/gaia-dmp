@@ -1,0 +1,483 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    The next steps after we get a VM to respond.
+
+
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[root@ansibler]
+
+    # This is older than cumulus.
+    export OS_SHARE_API_VERSION=2.46
+
+    >   Version 2.51 is not supported by the API. Minimum is 2.0 and maximum is 2.46. (HTTP 406) (Request-ID: req-19e757f4-31b3-4f31-bd0d-5affcc90f7e2)
+
+
+# -----------------------------------------------------
+# Check the available quota.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share quota show
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the available share types.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share type list
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create a Manila share.
+#[root@ansibler]
+
+    sharesize=512
+    sharename=${buildname:?}-test-share
+    sharetype=ceph01_cephfs
+    sharezone=nova
+    shareprotocol=CEPHFS
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name "${sharename:?}" \
+            --share-type "${sharetype:?}" \
+            --availability-zone "${sharezone:?}" \
+            "${shareprotocol:?}" \
+            "${sharesize:?}" \
+    | tee "/tmp/${sharename:?}-share.json" \
+    | jq '{name, id, size, status}'
+
+    >   ....
+    >   ....
+
+    shareid=$(
+        jq -r '.id' "/tmp/${sharename:?}-share.json"
+        )
+
+
+# -----------------------------------------------------
+# Add access rules to the share.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro" \
+    | tee "/tmp/${buildname:?}-ro-share-access.json" \
+    | jq '{id, access_to, access_level, access_type}'
+
+    >   ....
+    >   ....
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw" \
+    | tee "/tmp/${buildname:?}-rw-share-access.json" \
+    | jq '{id, access_to, access_level, access_type}'
+
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# List the routers.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# List the networks.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# List the subnets.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get our project ID.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        project list \
+        --my-projects
+
+    >   +----------------------------------+---------------+
+    >   | ID                               | Name          |
+    >   +----------------------------------+---------------+
+    >   | e216e6b502134b6185380be6ccd0bf09 | iris-gaia-dev |
+    >   +----------------------------------+---------------+
+
+    projectid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            project list \
+                --my-projects \
+                --format json \
+        | jq -r '.[0] | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Create a new router to link to the Ceph network.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router create \
+            --format json \
+            --enable \
+            --project "${projectid:?}" \
+            "${buildname:?}-ceph-router" \
+    | tee "/tmp/${buildname:?}-ceph-router.json" \
+    | jq '{name, id, status, routes}'
+
+    >   ....
+    >   ....
+
+    cephrouterid=$(
+        jq -r '.id' "/tmp/${buildname:?}-ceph-router.json"
+        )
+
+
+# -----------------------------------------------------
+# Get the details of the Ceph network.
+#[root@openstacker]
+
+    cephnetworkid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+            --format json \
+        | jq -r '.[] | select(.Name == "cephfs") | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network show \
+            --format json \
+            "${cephnetworkid:?}" \
+    | tee "/tmp/ceph-network.json" \
+    | jq '{name, id, subnets}'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get the details of the Ceph subnet.
+#[root@openstacker]
+
+    cephsubnetid=$(
+        jq -r '.subnets[0]' "/tmp/ceph-network.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet show \
+            --format json \
+            "${cephsubnetid:?}" \
+    | tee "/tmp/ceph-subnet.json" \
+    | jq '{name, id, cidr, allocation_pools}'
+
+    >   ....
+    >   ....
+
+    cephsubnetcidr=$(
+        jq -r '.cidr' "/tmp/ceph-subnet.json"
+        )
+
+
+# -----------------------------------------------------
+# Set the Ceph router's external gateway to point to the cephfs network.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --external-gateway "${cephnetworkid:?}" \
+            "${cephrouterid:?}"
+
+
+# -----------------------------------------------------
+# Create a network port for our local subnet.
+#[root@openstacker]
+
+cat << EOF
+Local network [${aglaisnetworkid}]
+Local subnet  [${aglaissubnetid}]
+EOF
+
+    >   ....
+    >   ....
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        port create \
+            --format json \
+            --network "${aglaisnetworkid:?}" \
+            --fixed-ip "subnet=${aglaissubnetid:?}" \
+        "${buildname:?}-subnet-port" \
+    | tee "/tmp/${buildname:?}-subnet-port.json" \
+    | jq '{name, id, network_id, fixed_ips}'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Add our local subnet port to our Ceph router.
+#[root@openstacker]
+
+    aglaissubnetportid=$(
+        jq -r '.id' "/tmp/${buildname:?}-subnet-port.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router add port \
+            "${cephrouterid:?}" \
+            "${aglaissubnetportid:?}"
+
+
+# -----------------------------------------------------
+# Add a route for the Ceph network to our local router.
+#[root@openstacker]
+
+    aglaissubnetportip=$(
+        jq -r ".fixed_ips[] | select(.subnet_id = \"${aglaissubnetid:?}\") | .ip_address" "/tmp/${buildname:?}-subnet-port.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=${cephsubnetcidr:?},gateway=${aglaissubnetportip:?}" \
+            "${aglaisrouterid:?}"
+
+
+# -----------------------------------------------------
+# Check the details of our local router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${aglaisrouterid:?}" \
+    | tee "/tmp/${buildname:?}-aglais-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   ....
+    >   ....
+
+
+
+# -----------------------------------------------------
+# Check the details of our Ceph router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${cephrouterid:?}" \
+    | tee "/tmp/${buildname:?}-ceph-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get details of the Ceph export location for our share.
+#[root@ansibler]
+
+    shareid=
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share show \
+            --format json \
+            "${shareid:?}" \
+    | jq '.' \
+    | tee /tmp/gaia-share.json
+
+    locations=$(
+        jq '.export_locations' /tmp/gaia-share.json
+        )
+
+    cephnodes=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\1/
+            s/,/ /g
+            '
+            )
+
+    cephpath=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\2/
+            '
+            )
+
+    cephsize=$(
+        jq '.size' /tmp/gaia-share.json
+        )
+
+
+    cat << EOF
+Ceph path [${cephpath}]
+Ceph size [${cephsize}]
+EOF
+
+    for cephnode in ${cephnodes}
+    do
+        echo "Ceph node [${cephnode}]"
+    done
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# List the access rules for this share.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access list \
+            "${shareid:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Get details of the read only access rule.
+#[root@ansibler]
+
+    roaccess=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share access list \
+                --format json \
+                "${shareid:?}" \
+        | jq -r '.[] | select(.access_level == "ro") | .id'
+        )
+
+    echo "Access rule [${roaccess:?}]"
+
+    >   ....
+    >   ....
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access show \
+            --format json \
+            "${roaccess:?}" \
+    | jq '.' \
+    | tee /tmp/gaia-access.json
+
+    >   ....
+    >   ....
+
+    cephuser=$(
+        jq -r '.access_to' /tmp/gaia-access.json
+        )
+
+    cephkey=$(
+        jq -r '.access_key' /tmp/gaia-access.json
+        )
+
+    cat << EOF
+Ceph user [${cephuser:?}]
+Ceph key  [${cephkey:?}]
+EOF
+
+    >   ....
+    >   ....
+
+
+    #############################
+
+    notes/zrq/20201012-03-ceph-mount.txt
+

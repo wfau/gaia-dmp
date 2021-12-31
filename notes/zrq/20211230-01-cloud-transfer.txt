@@ -1,0 +1,1399 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Email from Paul Browne says the large VM is getting killed by OutOfMemory killer on the host.
+        Create a new VM specifically for the rsync transfer.
+
+        Start with the VM created earlier.
+        notes/zrq/20211229-02-cloud-transfer.txt
+
+    Result:
+
+        Work in progress ..
+
+# -----------------------------------------------------
+# Login using the command line client ..
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-dev
+    buildname="aglais-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[root@ansibler]
+
+    # Maximum available on cumulus.
+    export OS_SHARE_API_VERSION=2.51
+
+
+# -----------------------------------------------------
+# Get our project ID.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        project list \
+        --my-projects
+
+    projectid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            project list \
+                --my-projects \
+                --format json \
+        | jq -r '.[0] | .ID'
+        )
+
+    >   +----------------------------------+----------------+
+    >   | ID                               | Name           |
+    >   +----------------------------------+----------------+
+    >   | 08e24c6d87f94740aa59c172462ed927 | iris-gaia-dev  |
+    >   | 190eb5f98d994fcca43e9abb0867d319 | iris           |
+    >   | 21b4ae3a2ea44bc5a9c14005ed2963af | iris-gaia-prod |
+    >   | bea28e83e6aa47a8962b59c3b24495fe | iris-gaia-test |
+    >   +----------------------------------+----------------+
+
+
+# -----------------------------------------------------
+# Create a new router to link to the Ceph network.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router create \
+            --format json \
+            --enable \
+            "${buildname:?}-ceph-router" \
+    | tee "/tmp/${buildname:?}-ceph-router.json" \
+    | jq '{name, id, status, routes}'
+
+    cephrouterid=$(
+        jq -r '.id' "/tmp/${buildname:?}-ceph-router.json"
+        )
+
+    >   {
+    >     "name": "aglais-20211230-ceph-router",
+    >     "id": "aa97ce08-2585-4361-8f47-80225a836b80",
+    >     "status": "ACTIVE",
+    >     "routes": []
+    >   }
+
+
+# -----------------------------------------------------
+# Get the details of the Ceph network.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+------------------------------------+----------------------------------------------------------------------------+
+    >   | ID                                   | Name                               | Subnets                                                                    |
+    >   +--------------------------------------+------------------------------------+----------------------------------------------------------------------------+
+    >   | 10b29b97-5aac-4714-9385-a201f55608d9 | aglais-20211229-network            | 6cce5474-78e1-416e-95d1-d269e7b88523                                       |
+    >   | 88c9507f-738c-438d-a27c-cc2bda1ee23c | gaia-dev-20211214-internal-network | 14aad2c6-9574-4c60-a784-e8d4830097b0                                       |
+    >   | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | internet                           | 180dc961-c52f-461a-b241-8f7a30d022a5, 273123bb-70f6-4f51-a406-7fc4b446532d |
+    >   | ecb791d5-1022-447a-a79c-8f38a0f5c990 | cumulus-internal                   | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290                                       |
+    >   +--------------------------------------+------------------------------------+----------------------------------------------------------------------------+
+
+    cephnetworkid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+            --format json \
+        | jq -r '.[] | select(.Name == "cumulus-internal") | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network show \
+            --format json \
+            "${cephnetworkid:?}" \
+    | tee "/tmp/ceph-network.json" \
+    | jq '{name, id, subnets}'
+
+    >   {
+    >     "name": "cumulus-internal",
+    >     "id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+    >     "subnets": [
+    >       "01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290"
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Get the details of the Ceph subnet.
+#[root@openstacker]
+
+    cephsubnetid=$(
+        jq -r '.subnets[0]' "/tmp/ceph-network.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet show \
+            --format json \
+            "${cephsubnetid:?}" \
+    | tee "/tmp/ceph-subnet.json" \
+    | jq '{name, id, cidr, allocation_pools}'
+
+    cephsubnetcidr=$(
+        jq -r '.cidr' "/tmp/ceph-subnet.json"
+        )
+
+    >   {
+    >     "name": "cumulus-internal",
+    >     "id": "01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290",
+    >     "cidr": "10.218.0.0/16",
+    >     "allocation_pools": [
+    >       {
+    >         "start": "10.218.1.1",
+    >         "end": "10.218.10.199"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Set the Ceph router's external gateway to point to the cephfs network.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --external-gateway "${cephnetworkid:?}" \
+            "${cephrouterid:?}"
+
+
+# -----------------------------------------------------
+# Get our network ID.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+------------------------------------+----------------------------------------------------------------------------+
+    >   | ID                                   | Name                               | Subnets                                                                    |
+    >   +--------------------------------------+------------------------------------+----------------------------------------------------------------------------+
+    >   | 10b29b97-5aac-4714-9385-a201f55608d9 | aglais-20211229-network            | 6cce5474-78e1-416e-95d1-d269e7b88523                                       |
+    >   | 88c9507f-738c-438d-a27c-cc2bda1ee23c | gaia-dev-20211214-internal-network | 14aad2c6-9574-4c60-a784-e8d4830097b0                                       |
+    >   | a929e8db-1bf4-4a5f-a80c-fabd39d06a26 | internet                           | 180dc961-c52f-461a-b241-8f7a30d022a5, 273123bb-70f6-4f51-a406-7fc4b446532d |
+    >   | ecb791d5-1022-447a-a79c-8f38a0f5c990 | cumulus-internal                   | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290                                       |
+    >   +--------------------------------------+------------------------------------+----------------------------------------------------------------------------+
+
+    aglaisnetworkid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+                --format json \
+        | jq -r '.[] | select(.Name | startswith("aglais")) | .ID'
+        )
+
+# -----------------------------------------------------
+# Get our subnet ID.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------+---------------+
+    >   | ID                                   | Name                                      | Network                              | Subnet        |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------+---------------+
+    >   | 01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290 | cumulus-internal                          | ecb791d5-1022-447a-a79c-8f38a0f5c990 | 10.218.0.0/16 |
+    >   | 14aad2c6-9574-4c60-a784-e8d4830097b0 | gaia-dev-20211214-internal-network-subnet | 88c9507f-738c-438d-a27c-cc2bda1ee23c | 10.10.0.0/16  |
+    >   | 6cce5474-78e1-416e-95d1-d269e7b88523 | aglais-20211229-subnet                    | 10b29b97-5aac-4714-9385-a201f55608d9 | 10.56.0.0/16  |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------+---------------+
+
+    aglaissubnetid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet list \
+                --format json \
+        | jq -r '.[] | select(.Name | startswith("aglais")) | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Get our router ID.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                      | Status | State | Project                          |
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+    >   | 8301a71a-fd3a-4346-88ee-9e082f37513b | gaia-dev-20211214-internal-network-router | ACTIVE | UP    | 08e24c6d87f94740aa59c172462ed927 |
+    >   | aa97ce08-2585-4361-8f47-80225a836b80 | aglais-20211230-ceph-router               | ACTIVE | UP    | 08e24c6d87f94740aa59c172462ed927 |
+    >   | c37360c9-c226-4ded-bbb9-ad2dd2a6e2e1 | aglais-20211229-router                    | ACTIVE | UP    | 08e24c6d87f94740aa59c172462ed927 |
+    >   | c7afa5e0-1ac4-4e84-99ca-7e33be2b071b | gaia-dev-20211214-cephfs-router           | ACTIVE | UP    | 08e24c6d87f94740aa59c172462ed927 |
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+
+    aglaisrouterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("aglais-[0-9]*-router")) | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Create a network port for our local subnet.
+#[root@openstacker]
+
+cat << EOF
+Local network [${aglaisnetworkid}]
+Local subnet  [${aglaissubnetid}]
+EOF
+
+    >   Local network [10b29b97-5aac-4714-9385-a201f55608d9]
+    >   Local subnet  [6cce5474-78e1-416e-95d1-d269e7b88523]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        port create \
+            --format json \
+            --network "${aglaisnetworkid:?}" \
+            --fixed-ip "subnet=${aglaissubnetid:?}" \
+        "${buildname:?}-subnet-port" \
+    | tee "/tmp/${buildname:?}-subnet-port.json" \
+    | jq '{name, id, network_id, fixed_ips}'
+
+    >   {
+    >     "name": "aglais-20211230-subnet-port",
+    >     "id": "0ba232b8-480b-46e1-a7f1-5f26ee006823",
+    >     "network_id": "10b29b97-5aac-4714-9385-a201f55608d9",
+    >     "fixed_ips": [
+    >       {
+    >         "subnet_id": "6cce5474-78e1-416e-95d1-d269e7b88523",
+    >         "ip_address": "10.56.3.209"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Add our local subnet port to our Ceph router.
+#[root@openstacker]
+
+    aglaissubnetportid=$(
+        jq -r '.id' "/tmp/${buildname:?}-subnet-port.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router add port \
+            "${cephrouterid:?}" \
+            "${aglaissubnetportid:?}"
+
+
+# -----------------------------------------------------
+# Add a route for the Ceph network to our local router.
+#[root@openstacker]
+
+    aglaissubnetportip=$(
+        jq -r ".fixed_ips[] | select(.subnet_id = \"${aglaissubnetid:?}\") | .ip_address" "/tmp/${buildname:?}-subnet-port.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=${cephsubnetcidr:?},gateway=${aglaissubnetportip:?}" \
+            "${aglaisrouterid:?}"
+
+        #
+        # I think this is wrong.
+        # see debugging below ..
+        #
+
+# -----------------------------------------------------
+# Check the details of our local router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${aglaisrouterid:?}" \
+    | tee "/tmp/${buildname:?}-aglais-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "name": "aglais-20211229-router",
+    >     "id": "c37360c9-c226-4ded-bbb9-ad2dd2a6e2e1",
+    >     "external_gateway_info": {
+    >       "network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "273123bb-70f6-4f51-a406-7fc4b446532d",
+    >           "ip_address": "128.232.227.237"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "7c3bb5c7-0c29-4a18-8258-7dfe67fb77db",
+    >         "ip_address": "10.56.0.1",
+    >         "subnet_id": "6cce5474-78e1-416e-95d1-d269e7b88523"
+    >       }
+    >     ],
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.56.3.209",
+    >         "destination": "10.218.0.0/16"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Check the details of our Ceph router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${cephrouterid:?}" \
+    | tee "/tmp/${buildname:?}-ceph-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "name": "aglais-20211230-ceph-router",
+    >     "id": "aa97ce08-2585-4361-8f47-80225a836b80",
+    >     "external_gateway_info": {
+    >       "network_id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290",
+    >           "ip_address": "10.218.2.187"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "0ba232b8-480b-46e1-a7f1-5f26ee006823",
+    >         "ip_address": "10.56.3.209",
+    >         "subnet_id": "6cce5474-78e1-416e-95d1-d269e7b88523"
+    >       }
+    >     ],
+    >     "routes": []
+    >   }
+
+
+# -----------------------------------------------------
+# List the available VMs.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+    >   +--------------------------------------+----------------------------+--------+-----------------------------------------------------------------+---------------+--------------------+
+    >   | ID                                   | Name                       | Status | Networks                                                        | Image         | Flavor             |
+    >   +--------------------------------------+----------------------------+--------+-----------------------------------------------------------------+---------------+--------------------+
+    >   | 225dd9ee-d809-4824-93a7-a58e595ae77f | aglais-20211229-machine    | ACTIVE | aglais-20211229-network=10.56.0.15, 128.232.227.232             | Fedora-30-1.2 | general.v1.small   |
+    >   | 7657ccaf-4fe2-4595-99d0-3dd060e8a50d | gaia-dev-20211214-worker06 | ACTIVE | gaia-dev-20211214-internal-network=10.10.3.50                   | Fedora-30-1.2 | gaia.cclake.27vcpu |
+    >   | ed6b5998-572b-4086-9a19-5dc9ffac4852 | gaia-dev-20211214-worker05 | ACTIVE | gaia-dev-20211214-internal-network=10.10.3.115                  | Fedora-30-1.2 | gaia.cclake.27vcpu |
+    >   | acc43599-1168-4337-ac1b-0e2b359fad40 | gaia-dev-20211214-worker04 | ACTIVE | gaia-dev-20211214-internal-network=10.10.0.77                   | Fedora-30-1.2 | gaia.cclake.27vcpu |
+    >   | 5b29f384-a947-4f89-91dc-55f08c910db7 | gaia-dev-20211214-worker03 | ACTIVE | gaia-dev-20211214-internal-network=10.10.3.161                  | Fedora-30-1.2 | gaia.cclake.27vcpu |
+    >   | fc834800-a2d6-40c6-a800-1ee51c81e44b | gaia-dev-20211214-worker02 | ACTIVE | gaia-dev-20211214-internal-network=10.10.1.105                  | Fedora-30-1.2 | gaia.cclake.27vcpu |
+    >   | f1fc4b7a-883d-400b-b8e0-f09503e33b29 | gaia-dev-20211214-worker01 | ACTIVE | gaia-dev-20211214-internal-network=10.10.3.153                  | Fedora-30-1.2 | gaia.cclake.27vcpu |
+    >   | cc8d9a0b-39cd-4e09-a4fb-e212e3957963 | gaia-dev-20211214-master01 | ACTIVE | gaia-dev-20211214-internal-network=10.10.2.173                  | Fedora-30-1.2 | gaia.cclake.2vcpu  |
+    >   | 75c50e49-0977-4bd2-aaca-7a5665973afe | gaia-dev-20211214-monitor  | ACTIVE | gaia-dev-20211214-internal-network=10.10.1.38                   | Fedora-30-1.2 | gaia.cclake.2vcpu  |
+    >   | 9e386a34-d098-4014-8e30-9cf6cf0330ad | gaia-dev-20211214-zeppelin | ACTIVE | gaia-dev-20211214-internal-network=10.10.1.126, 128.232.227.243 | Fedora-30-1.2 | general.v1.xlarge  |
+    >   +--------------------------------------+----------------------------+--------+-----------------------------------------------------------------+---------------+--------------------+
+
+
+# -----------------------------------------------------
+# Get the VM details.
+#[root@ansibler]
+
+    vmident=225dd9ee-d809-4824-93a7-a58e595ae77f
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server show \
+            --format json \
+            "${vmident:?}" \
+    | tee '/tmp/instance.json' \
+    | jq '.'
+
+    >   {
+    >     "OS-DCF:diskConfig": "MANUAL",
+    >     "OS-EXT-AZ:availability_zone": "nova",
+    >     "OS-EXT-STS:power_state": 1,
+    >     "OS-EXT-STS:task_state": null,
+    >     "OS-EXT-STS:vm_state": "active",
+    >     "OS-SRV-USG:launched_at": "2021-12-29T12:28:19.000000",
+    >     "OS-SRV-USG:terminated_at": null,
+    >     "accessIPv4": "",
+    >     "accessIPv6": "",
+    >     "addresses": {
+    >       "aglais-20211229-network": [
+    >         "10.56.0.15",
+    >         "128.232.227.232"
+    >       ]
+    >     },
+    >     "config_drive": "",
+    >     "created": "2021-12-29T12:28:09Z",
+    >     "flavor": "general.v1.small (20061eba-9e88-494c-95a3-41ed77721244)",
+    >     "hostId": "2afd69eb50bd1a6a3606cf1ca3aba28e7ca3e0a61dc37e8d09802fdd",
+    >     "id": "225dd9ee-d809-4824-93a7-a58e595ae77f",
+    >     "image": "Fedora-30-1.2 (ade3a5aa-a6a3-4761-8eed-083e5ce1f117)",
+    >     "key_name": "aglais-20211229-keypair",
+    >     "name": "aglais-20211229-machine",
+    >     "progress": 0,
+    >     "project_id": "08e24c6d87f94740aa59c172462ed927",
+    >     "properties": {},
+    >     "security_groups": [
+    >       {
+    >         "name": "aglais-20211229-security"
+    >       }
+    >     ],
+    >     "status": "ACTIVE",
+    >     "updated": "2021-12-29T12:28:19Z",
+    >     "user_id": "98169f87de174ad4ac98c32e59646488",
+    >     "volumes_attached": []
+    >   }
+
+    vmname=$(
+        jq -r '.name' '/tmp/instance.json'
+        )
+
+    vmident=$(
+        jq -r '.id' '/tmp/instance.json'
+        )
+
+    jq '.addresses | to_entries' '/tmp/instance.json'
+
+    >   [
+    >     {
+    >       "key": "aglais-20211229-network",
+    >       "value": [
+    >         "10.56.0.15",
+    >         "128.232.227.232"
+    >       ]
+    >     }
+    >   ]
+
+    internalip=10.56.0.15
+    externalip=128.232.227.232
+
+# -----------------------------------------------------
+# List the available shares.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud 'gaia-prod' \
+        share list
+
+    >   +--------------------------------------+-----------------------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | ID                                   | Name                        |  Size | Share Proto | Status    | Is Public | Share Type Name  | Host | Availability Zone |
+    >   +--------------------------------------+-----------------------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+    >   | 2e46b5a5-c5d9-44c0-b11c-310c222f4818 | aglais-data-gaia-dr2-6514   |   512 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | ca8231c3-1f5c-4ebf-8ec0-d3cfe2629976 | aglais-data-gaia-edr3-11932 |   540 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | d583565e-de86-46df-9969-f587e4d61a37 | aglais-data-gaia-edr3-2048  |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 9d745a5b-7d98-421c-a16e-d1ac9fdeebc8 | aglais-data-gaia-edr3-4096  |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 2e877d53-40b9-47e6-ae20-b6d3e1b9a9ae | aglais-data-gaia-edr3-8192  |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | ba66d6db-7d85-44c4-bb95-7410a000f6b7 | aglais-data-panstarrs-ps1   |   300 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | e65c0e26-957f-4ab0-94af-bb36b5a63285 | aglais-data-testing         |    10 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 9dc3016a-f010-48bc-89fc-a9cbd688b7cc | aglais-data-twomass-allsky  |    40 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 8f0b3452-3c66-4e65-8815-15eb73988b3e | aglais-data-wise-allwise    |   350 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 17310ca5-c9a6-43bb-987b-de543d453535 | aglais-test-data            |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | eeb95821-f8f5-40d0-a04f-ea9cbf6e538b | aglais-tools                |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 7b03dcf9-6806-44a0-b87f-56528b50338f | aglais-user-dcr             |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | 6852b819-7395-4786-80c0-06fa9cebcc65 | aglais-user-nch             | 10240 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | fe63568a-d90c-4fb0-8979-07504328809d | aglais-user-stv             |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   | ff351afd-1f06-4d02-9f53-cbe20b0676cc | aglais-user-zrq             |  1024 | CEPHFS      | available | True      | cephfsnativetype |      | nova              |
+    >   +--------------------------------------+-----------------------------+-------+-------------+-----------+-----------+------------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# Get the details of the target share..
+#[root@ansibler]
+
+    target=edr3-2048
+
+    openstack \
+        --os-cloud 'gaia-prod' \
+        share list \
+            --format json \
+    | jq '.[] | select(.Name | test("'${target:?}'"))'
+
+    >   {
+    >     "ID": "d583565e-de86-46df-9969-f587e4d61a37",
+    >     "Name": "aglais-data-gaia-edr3-2048",
+    >     "Size": 1024,
+    >     "Share Proto": "CEPHFS",
+    >     "Status": "available",
+    >     "Is Public": true,
+    >     "Share Type Name": "cephfsnativetype",
+    >     "Host": "",
+    >     "Availability Zone": "nova"
+    >   }
+
+    shareid=$(
+        openstack \
+            --os-cloud 'gaia-prod' \
+            share list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("'${target:?}'")) | .ID'
+        )
+
+    sharename=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share show \
+                --format json \
+                "${shareid:?}" \
+        | jq -r '.name'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share show \
+            --format json \
+            "${shareid:?}" \
+    | tee "/tmp/${sharename:?}-share.json"
+
+    locations=$(
+        jq '.export_locations' "/tmp/${sharename:?}-share.json"
+        )
+
+    cephnodes=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\1/
+            s/,/ /g
+            '
+            )
+
+    cephpath=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\2/
+            '
+            )
+
+    cephsize=$(
+        jq '.size' "/tmp/${sharename:?}-share.json"
+        )
+
+
+    cat << EOF
+Ceph path [${cephpath}]
+Ceph size [${cephsize}]
+EOF
+
+    for cephnode in ${cephnodes:?}
+    do
+        echo "Ceph node [${cephnode:?}]"
+    done
+
+    >   Ceph path [/volumes/_nogroup/622bb766-6ae2-4aa5-ad9c-536a71012245]
+    >   Ceph size [1024]
+
+    >   Ceph node [10.206.1.5:6789]
+    >   Ceph node [10.206.1.6:6789]
+    >   Ceph node [10.206.1.7:6789]
+
+
+# -----------------------------------------------------
+# Get details of the read only access rule.
+#[root@ansibler]
+
+    accessmode=ro
+
+    accessid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share access list \
+                --format json \
+                "${shareid:?}" \
+        | jq -r ".[] | select(.access_level == \"${accessmode:?}\") | .id"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access show \
+            --format json \
+            "${accessid:?}" \
+    | tee "/tmp/${buildname:?}-${accessmode:?}-share-access.json" \
+    | jq '{id, state, access_to, access_level, access_type}'
+
+    >   {
+    >     "id": "f6ad0bc0-29ec-4686-a35c-a766c1a259e0",
+    >     "state": "active",
+    >     "access_to": "aglais-gaia-edr3-20210510-ro",
+    >     "access_level": "ro",
+    >     "access_type": "cephx"
+    >   }
+
+    cephuser=$(
+        jq -r '.access_to' "/tmp/${buildname:?}-${accessmode:?}-share-access.json"
+        )
+
+    cephkey=$(
+        jq -r '.access_key' "/tmp/${buildname:?}-${accessmode:?}-share-access.json"
+        )
+
+    cat << EOF
+Ceph user [${cephuser:?}]
+Ceph key  [${cephkey:?}]
+EOF
+
+    >   Ceph user [aglais-gaia-edr3-20210510-ro]
+    >   Ceph key  [################]
+
+
+# -----------------------------------------------------
+# Check we can ssh onto the VM.
+#[root@ansibler]
+
+    sshuser=fedora
+    sshhost=128.232.227.232
+
+    ssh ${sshuser:?}@${sshhost:?} \
+        '
+        date
+        hostname
+        '
+
+    >   Thu Dec 30 17:26:40 UTC 2021
+    >   aglais-20211229-machine.novalocal
+
+
+# -----------------------------------------------------
+# Install the client library.
+#[root@ansibler]
+
+    ssh ${sshuser:?}@${sshhost:?} \
+        '
+        date
+        hostname
+        echo "----"
+        sudo dnf install -y ceph-common
+        '
+
+    >   ....
+    >   Installed:
+    >       ceph-common-2:14.2.9-1.fc30.x86_64
+    >       ....
+
+
+# -----------------------------------------------------
+# Create the Ceph config files.
+#[root@ansibler]
+
+    ssh ${sshuser:?}@${sshhost:?} \
+        "
+        cat > /tmp/cephcfg << EOF
+[client]
+    client quota = true
+    mon host = ${cephnodes:?}
+EOF
+        cat > /tmp/cephkey << EOF
+[client.${cephuser:?}]
+    key = ${cephkey:?}
+EOF
+        sudo mv /tmp/cephcfg /etc/ceph/ceph.conf
+        sudo mv /tmp/cephkey /etc/ceph/ceph.client.${cephuser:?}.keyring
+        "
+
+
+    ssh ${sshuser:?}@${sshhost:?} \
+        "
+        date
+        hostname
+        echo '----'
+        cat /etc/ceph/ceph.conf
+        echo '----'
+        cat /etc/ceph/ceph.client.${cephuser:?}.keyring
+        "
+
+    >   Thu Dec 30 18:19:18 UTC 2021
+    >   aglais-20211229-machine.novalocal
+    >   ----
+    >   [client]
+    >       client quota = true
+    >       mon host = 10.206.1.5:6789 10.206.1.6:6789 10.206.1.7:6789
+    >   ----
+    >   [client.aglais-gaia-edr3-20210510-ro]
+    >       key = ################
+
+
+# -----------------------------------------------------
+# Create the mount point.
+#[root@ansibler]
+
+    ssh ${sshuser:?}@${sshhost:?} \
+        "
+        date
+        hostname
+        sudo mkdir '/mnt/${sharename:?}'
+        sudo chgrp users '/mnt/${sharename:?}'
+        sudo chmod u+rw  '/mnt/${sharename:?}'
+        sudo touch '/mnt/${sharename:?}/mount-failed'
+        sudo chmod a-w '/mnt/${sharename:?}/mount-failed'
+        "
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Mount the share.
+#[root@ansibler]
+
+    mntopts=name=${cephuser:?},config=/etc/ceph/ceph.conf,async,auto,nodev,noexec,nosuid,_netdev,ro
+    mntowner=fedora
+    mntgroup=users
+    mntpath=/mnt/${sharename:?}
+    mntfrom=${cephnodes// /,}:${cephpath:?}
+
+    ssh ${sshuser:?}@${sshhost:?} \
+        "
+        date
+        hostname
+        echo '----'
+        sudo mount \
+            --verbose \
+            --types 'ceph' \
+            '${mntfrom:?}' \
+            '${mntpath:?}' \
+            --options '${mntopts:?}'
+        "
+
+    >   Thu Dec 30 18:53:04 UTC 2021
+    >   aglais-20211229-machine.novalocal
+    >   ----
+    >   parsing options: ro,nodev,noexec,nosuid,name=aglais-gaia-edr3-20210510-ro,_netdev
+    >   parsing options: ro,nodev,noexec,nosuid,name=aglais-gaia-edr3-20210510-ro,_netdev
+    >   mount error 110 = Connection timed out
+
+
+
+# -----------------------------------------------------
+# Check connection from VM to Ceph node
+#[root@ansibler]
+
+    ssh ${sshuser:?}@${sshhost:?} \
+        "
+        date
+        hostname
+        echo '----'
+        ping -c 10 10.206.1.5
+        "
+
+    >   Thu Dec 30 19:12:33 UTC 2021
+    >   aglais-20211229-machine.novalocal
+    >   ----
+    >   PING 10.206.1.5 (10.206.1.5) 56(84) bytes of data.
+    >   
+    >   --- 10.206.1.5 ping statistics ---
+    >   10 packets transmitted, 0 received, 100% packet loss, time 216ms
+
+
+    ssh fedora@zeppelin.gaia-dev.aglais.uk \
+        "
+        date
+        hostname
+        echo '----'
+        ping -c 10 10.206.1.5
+        "
+
+    >   Thu Dec 30 19:13:32 UTC 2021
+    >   gaia-dev-20211214-zeppelin.novalocal
+    >   ----
+    >   PING 10.206.1.5 (10.206.1.5) 56(84) bytes of data.
+    >   64 bytes from 10.206.1.5: icmp_seq=1 ttl=62 time=0.622 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=2 ttl=62 time=0.469 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=3 ttl=62 time=0.546 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=4 ttl=62 time=0.562 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=5 ttl=62 time=0.543 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=6 ttl=62 time=0.485 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=7 ttl=62 time=0.529 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=8 ttl=62 time=0.579 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=9 ttl=62 time=0.508 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=10 ttl=62 time=0.575 ms
+    >   
+    >   --- 10.206.1.5 ping statistics ---
+    >   10 packets transmitted, 10 received, 0% packet loss, time 249ms
+    >   rtt min/avg/max/mdev = 0.469/0.541/0.622/0.052 ms
+
+    #
+    # So there is something wronmg with our router configuration.
+    #
+
+
+
+# -----------------------------------------------------
+# Compare details of our routers.
+#[root@ansibler]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                      | Status | State | Project                          |
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+    >   | 8301a71a-fd3a-4346-88ee-9e082f37513b | gaia-dev-20211214-internal-network-router | ACTIVE | UP    | 08e24c6d87f94740aa59c172462ed927 |
+    >   | aa97ce08-2585-4361-8f47-80225a836b80 | aglais-20211230-ceph-router               | ACTIVE | UP    | 08e24c6d87f94740aa59c172462ed927 |
+    >   | c37360c9-c226-4ded-bbb9-ad2dd2a6e2e1 | aglais-20211229-router                    | ACTIVE | UP    | 08e24c6d87f94740aa59c172462ed927 |
+    >   | c7afa5e0-1ac4-4e84-99ca-7e33be2b071b | gaia-dev-20211214-cephfs-router           | ACTIVE | UP    | 08e24c6d87f94740aa59c172462ed927 |
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+
+    gaiamainrouterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("gaia-dev-[0-9]*-internal")) | .ID'
+        )
+
+    gaiacephrouterid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("gaia-dev-[0-9]*-cephfs")) | .ID'
+        )
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${gaiamainrouterid:?}" \
+    | tee "/tmp/gaia-main-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "name": "gaia-dev-20211214-internal-network-router",
+    >     "id": "8301a71a-fd3a-4346-88ee-9e082f37513b",
+    >     "external_gateway_info": {
+    >       "network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "273123bb-70f6-4f51-a406-7fc4b446532d",
+    >           "ip_address": "128.232.227.236"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "6712ce68-08fb-4916-ab5c-932146415706",
+    >         "ip_address": "10.10.0.1",
+    >         "subnet_id": "14aad2c6-9574-4c60-a784-e8d4830097b0"
+    >       }
+    >     ],
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.10.1.236",
+    >         "destination": "10.206.0.0/16"
+    >       }
+    >     ]
+    >   }
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${gaiacephrouterid:?}" \
+    | tee "/tmp/gaia-ceph-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "name": "gaia-dev-20211214-cephfs-router",
+    >     "id": "c7afa5e0-1ac4-4e84-99ca-7e33be2b071b",
+    >     "external_gateway_info": {
+    >       "network_id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290",
+    >           "ip_address": "10.218.2.72"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "cdfa2130-b431-4993-a8d4-718743fb502a",
+    >         "ip_address": "10.10.1.236",
+    >         "subnet_id": "14aad2c6-9574-4c60-a784-e8d4830097b0"
+    >       }
+    >     ],
+    >     "routes": []
+    >   }
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${aglaisrouterid:?}" \
+    | tee "/tmp/gaia-main-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "name": "aglais-20211229-router",
+    >     "id": "c37360c9-c226-4ded-bbb9-ad2dd2a6e2e1",
+    >     "external_gateway_info": {
+    >       "network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "273123bb-70f6-4f51-a406-7fc4b446532d",
+    >           "ip_address": "128.232.227.237"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "7c3bb5c7-0c29-4a18-8258-7dfe67fb77db",
+    >         "ip_address": "10.56.0.1",
+    >         "subnet_id": "6cce5474-78e1-416e-95d1-d269e7b88523"
+    >       }
+    >     ],
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.56.3.209",
+    >         "destination": "10.218.0.0/16"
+    >       }
+    >     ]
+    >   }
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${cephrouterid:?}" \
+    | tee "/tmp/gaia-ceph-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "name": "aglais-20211230-ceph-router",
+    >     "id": "aa97ce08-2585-4361-8f47-80225a836b80",
+    >     "external_gateway_info": {
+    >       "network_id": "ecb791d5-1022-447a-a79c-8f38a0f5c990",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "01b76c7c-3c1a-4c5c-9a5a-14bcf6c0c290",
+    >           "ip_address": "10.218.2.187"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "0ba232b8-480b-46e1-a7f1-5f26ee006823",
+    >         "ip_address": "10.56.3.209",
+    >         "subnet_id": "6cce5474-78e1-416e-95d1-d269e7b88523"
+    >       }
+    >     ],
+    >     "routes": []
+    >   }
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Comparing things side by side .. found a discrepancy.
+
+    The gaia-dev router has a route for 10.206.0.0.
+
+    >   {
+    >     "name": "gaia-dev-20211214-internal-network-router",
+    >     ....
+    >     ....
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.10.1.236",
+    >         "destination": "10.206.0.0/16"
+    >       }
+    >     ]
+    >   }
+
+    The router from these notes has a different route.
+
+    >   {
+    >     "name": "aglais-20211229-router",
+    >     ....
+    >     ....
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.56.3.209",
+    >         "destination": "10.218.0.0/16"
+    >       }
+    >     ]
+    >   }
+
+
+    We got the '10.218.0.0/16' cidr from the cumuls-internal network, but that isn't the cidr for the ceph nodes.
+    The node IP addresses reported by the Manila shares are 10.206.1.5, 10.206.1.6 and 10.206.1.7.
+    We don't actually know the subnet range, but we 'know' it is /16 from the example John Garbutt gave us back in 2019.
+
+
+# -----------------------------------------------------
+# Replace the Ceph network route on our local router.
+#[root@openstacker]
+
+    aglaissubnetportip=$(
+        jq -r ".fixed_ips[] | select(.subnet_id = \"${aglaissubnetid:?}\") | .ip_address" "/tmp/${buildname:?}-subnet-port.json"
+        )
+
+    # This is based on the node addresses returned by a share.
+    # This is NOT the subnet of the ceph network.
+    cephnetcidr=10.206.0.0/16
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router unset \
+            --route "destination=${cephsubnetcidr:?},gateway=${aglaissubnetportip:?}" \
+            "${aglaisrouterid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=${cephnetcidr:?},gateway=${aglaissubnetportip:?}" \
+            "${aglaisrouterid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${aglaisrouterid:?}" \
+    | tee "/tmp/gaia-ceph-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "name": "aglais-20211229-router",
+    >     "id": "c37360c9-c226-4ded-bbb9-ad2dd2a6e2e1",
+    >     "external_gateway_info": {
+    >       "network_id": "a929e8db-1bf4-4a5f-a80c-fabd39d06a26",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "273123bb-70f6-4f51-a406-7fc4b446532d",
+    >           "ip_address": "128.232.227.237"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "7c3bb5c7-0c29-4a18-8258-7dfe67fb77db",
+    >         "ip_address": "10.56.0.1",
+    >         "subnet_id": "6cce5474-78e1-416e-95d1-d269e7b88523"
+    >       }
+    >     ],
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.56.3.209",
+    >         "destination": "10.206.0.0/16"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Check connection from VM to Ceph node
+#[root@ansibler]
+
+    ssh ${sshuser:?}@${sshhost:?} \
+        "
+        date
+        hostname
+        echo '----'
+        ping -c 10 10.206.1.5
+        "
+
+    >   Thu Dec 30 20:00:32 UTC 2021
+    >   aglais-20211229-machine.novalocal
+    >   ----
+    >   PING 10.206.1.5 (10.206.1.5) 56(84) bytes of data.
+    >   64 bytes from 10.206.1.5: icmp_seq=1 ttl=62 time=2.08 ms
+    >   From 10.56.0.1: icmp_seq=2 Redirect Host(New nexthop: 10.56.3.209)
+    >   64 bytes from 10.206.1.5: icmp_seq=2 ttl=62 time=1.01 ms
+    >   From 10.56.0.1: icmp_seq=3 Redirect Host(New nexthop: 10.56.3.209)
+    >   64 bytes from 10.206.1.5: icmp_seq=3 ttl=62 time=0.670 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=4 ttl=62 time=1.11 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=5 ttl=62 time=0.650 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=6 ttl=62 time=0.690 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=7 ttl=62 time=0.593 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=8 ttl=62 time=0.596 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=9 ttl=62 time=0.579 ms
+    >   64 bytes from 10.206.1.5: icmp_seq=10 ttl=62 time=0.636 ms
+    >   
+    >   --- 10.206.1.5 ping statistics ---
+    >   10 packets transmitted, 10 received, 0% packet loss, time 167ms
+    >   rtt min/avg/max/mdev = 0.579/0.861/2.082/0.443 ms
+
+
+
+# -----------------------------------------------------
+# Try mounting the share again.
+#[root@ansibler]
+
+    mntopts=name=${cephuser:?},config=/etc/ceph/ceph.conf,async,auto,nodev,noexec,nosuid,_netdev,ro
+    mntowner=fedora
+    mntgroup=users
+    mntpath=/mnt/${sharename:?}
+    mntfrom=${cephnodes// /,}:${cephpath:?}
+
+    ssh ${sshuser:?}@${sshhost:?} \
+        "
+        date
+        hostname
+        echo '----'
+        sudo mount \
+            --verbose \
+            --types 'ceph' \
+            '${mntfrom:?}' \
+            '${mntpath:?}' \
+            --options '${mntopts:?}'
+        "
+
+    >   Thu Dec 30 20:01:19 UTC 2021
+    >   aglais-20211229-machine.novalocal
+    >   ----
+    >   parsing options: ro,nodev,noexec,nosuid,name=aglais-gaia-edr3-20210510-ro,config=/etc/ceph/ceph.conf,_netdev
+    >   parsing options: ro,nodev,noexec,nosuid,name=aglais-gaia-edr3-20210510-ro,config=/etc/ceph/ceph.conf,_netdev
+
+    #
+    # Looks good.
+    #
+
+
+# -----------------------------------------------------
+# Check the share contents .....
+#[root@ansibler]
+
+    ssh ${sshuser:?}@${sshhost:?} \
+        "
+        date
+        hostname
+        echo '----'
+        ls -al '${mntpath:?}'
+        echo '----'
+        df -h  '${mntpath:?}'
+        echo '----'
+        du -h -d 2 '${mntpath:?}'
+        echo '----'
+        "
+
+    >   Thu Dec 30 20:02:53 UTC 2021
+    >   aglais-20211229-machine.novalocal
+    >   ----
+    >   total 6
+    >   drwxr-xr-x  6 root root    8 May 14  2021 .
+    >   drwxr-xr-x. 3 root root 4096 Dec 30 18:24 ..
+    >   drwxr-xr-x  2 root root 2049 May 11  2021 GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   drwxr-xr-x  2 root root 2049 May 11  2021 GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   drwxr-xr-x  2 root root 2049 May 11  2021 GEDR3_2048_GAIASOURCE
+    >   drwxr-xr-x  2 root root 2049 May 11  2021 GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   lrwxrwxrwx  1 root root   35 May 14  2021 GEDR3_2MASSPSC_BEST_NEIGHBOURS -> GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   lrwxrwxrwx  1 root root   34 May 14  2021 GEDR3_ALLWISE_BEST_NEIGHBOURS -> GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   lrwxrwxrwx  1 root root   21 May 14  2021 GEDR3_GAIASOURCE -> GEDR3_2048_GAIASOURCE
+    >   lrwxrwxrwx  1 root root   30 May 14  2021 GEDR3_PS1_BEST_NEIGHBOURS -> GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   ----
+    >   Filesystem                                                                                              Size  Used Avail Use% Mounted on
+    >   10.206.1.5:6789,10.206.1.6:6789,10.206.1.7:6789:/volumes/_nogroup/622bb766-6ae2-4aa5-ad9c-536a71012245  1.0T  959G   66G  94% /mnt/aglais-data-gaia-edr3-2048
+    >   ----
+    >   163G    /mnt/aglais-data-gaia-edr3-2048/GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   60G     /mnt/aglais-data-gaia-edr3-2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   561G    /mnt/aglais-data-gaia-edr3-2048/GEDR3_2048_GAIASOURCE
+    >   177G    /mnt/aglais-data-gaia-edr3-2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   959G    /mnt/aglais-data-gaia-edr3-2048
+
+    #
+    # Yay ;-)
+    # All because we didn't 'know' the magic subnet range for the Ceph nodes.
+    #
+
+    #
+    # I don't yet know how to figure out the size of the target range.
+    # Presumably it is available from a router on the internal network .. ?
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Try running a rsync transfer from Edinburgh.
+#[user@trop03]
+
+
+    ssh fedora@128.232.227.232 \
+        "
+        date
+        hostname
+        echo '----'
+        ls -al '/mnt'
+        echo '----'
+        ls -al '/mnt/aglais-data-gaia-edr3-2048'
+        "
+
+    >   Thu Dec 30 20:20:45 UTC 2021
+    >   aglais-20211229-machine.novalocal
+    >   ----
+    >   total 8
+    >   drwxr-xr-x.  3 root root 4096 Dec 30 18:24 .
+    >   dr-xr-xr-x. 18 root root 4096 Dec 29 12:28 ..
+    >   drwxr-xr-x   6 root root    8 May 14  2021 aglais-data-gaia-edr3-2048
+    >   ----
+    >   total 6
+    >   drwxr-xr-x  6 root root    8 May 14  2021 .
+    >   drwxr-xr-x. 3 root root 4096 Dec 30 18:24 ..
+    >   drwxr-xr-x  2 root root 2049 May 11  2021 GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   drwxr-xr-x  2 root root 2049 May 11  2021 GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   drwxr-xr-x  2 root root 2049 May 11  2021 GEDR3_2048_GAIASOURCE
+    >   drwxr-xr-x  2 root root 2049 May 11  2021 GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   lrwxrwxrwx  1 root root   35 May 14  2021 GEDR3_2MASSPSC_BEST_NEIGHBOURS -> GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   lrwxrwxrwx  1 root root   34 May 14  2021 GEDR3_ALLWISE_BEST_NEIGHBOURS -> GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   lrwxrwxrwx  1 root root   21 May 14  2021 GEDR3_GAIASOURCE -> GEDR3_2048_GAIASOURCE
+    >   lrwxrwxrwx  1 root root   30 May 14  2021 GEDR3_PS1_BEST_NEIGHBOURS -> GEDR3_2048_PS1_BEST_NEIGHBOURS
+
+
+    mkdir /data2/gaia/datashares/aglais-data-gaia-edr3-2048
+
+
+    # First transfer based on size only.
+    #   --size-only \
+    rsync \
+        --stats \
+        --progress \
+        --human-readable \
+        --recursive \
+        --links \
+        --times \
+        --size-only \
+        "fedora@128.232.227.232:/mnt/aglais-data-gaia-edr3-2048/" \
+        "/data2/gaia/datashares/aglais-data-gaia-edr3-2048"
+
+    >   receiving incremental file list
+    >   aglais-data-gaia-edr3-2048/
+    >   aglais-data-gaia-edr3-2048/GEDR3_2MASSPSC_BEST_NEIGHBOURS -> GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   aglais-data-gaia-edr3-2048/GEDR3_ALLWISE_BEST_NEIGHBOURS -> GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   aglais-data-gaia-edr3-2048/GEDR3_GAIASOURCE -> GEDR3_2048_GAIASOURCE
+    >   aglais-data-gaia-edr3-2048/GEDR3_PS1_BEST_NEIGHBOURS -> GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   aglais-data-gaia-edr3-2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS/
+    >   aglais-data-gaia-edr3-2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS/_SUCCESS
+    >                 0 100%    0.00kB/s    0:00:00 (xfr#1, ir-chk=4097/4107)
+    >   aglais-data-gaia-edr3-2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS/part-00000-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00000.c000.snappy.parquet
+    >            31.05M 100%   14.76MB/s    0:00:02 (xfr#2, ir-chk=4096/4107)
+    >   aglais-data-gaia-edr3-2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS/part-00001-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00001.c000.snappy.parquet
+    >            31.10M 100%   14.43MB/s    0:00:02 (xfr#3, ir-chk=4095/4107)
+    >   aglais-data-gaia-edr3-2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS/part-00002-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00002.c000.snappy.parquet
+    >            31.20M 100%   26.45MB/s    0:00:01 (xfr#4, ir-chk=4094/4107)
+    >   aglais-data-gaia-edr3-2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS/part-00003-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00003.c000.snappy.parquet
+    >            31.12M 100%   23.44MB/s    0:00:01 (xfr#5, ir-chk=4093/4107)
+    >   ....
+    >   ....
+    >   aglais-data-gaia-edr3-2048/GEDR3_2048_PS1_BEST_NEIGHBOURS/part-02044-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_02044.c000.snappy.parquet
+    >            85.00M 100%   53.23MB/s    0:00:01 (xfr#8193, to-chk=3/8205)
+    >   aglais-data-gaia-edr3-2048/GEDR3_2048_PS1_BEST_NEIGHBOURS/part-02045-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_02045.c000.snappy.parquet
+    >            85.22M 100%   50.32MB/s    0:00:01 (xfr#8194, to-chk=2/8205)
+    >   aglais-data-gaia-edr3-2048/GEDR3_2048_PS1_BEST_NEIGHBOURS/part-02046-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_02046.c000.snappy.parquet
+    >            85.09M 100%   58.42MB/s    0:00:01 (xfr#8195, to-chk=1/8205)
+    >   aglais-data-gaia-edr3-2048/GEDR3_2048_PS1_BEST_NEIGHBOURS/part-02047-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_02047.c000.snappy.parquet
+    >            85.14M 100%   74.29MB/s    0:00:01 (xfr#8196, to-chk=0/8205)
+    >   
+    >   Number of files: 8,205 (reg: 8,196, dir: 5, link: 4)
+    >   Number of created files: 8,205 (reg: 8,196, dir: 5, link: 4)
+    >   Number of deleted files: 0
+    >   Number of regular files transferred: 8,196
+    >   Total file size: 1.03T bytes
+    >   Total transferred file size: 1.03T bytes
+    >   Literal data: 1.03T bytes
+    >   Matched data: 0 bytes
+    >   File list size: 675.35K
+    >   File list generation time: 0.001 seconds
+    >   File list transfer time: 0.000 seconds
+    >   Total bytes sent: 155.81K
+    >   Total bytes received: 1.03T
+    >   
+    >   sent 155.81K bytes  received 1.03T bytes  108.58M bytes/sec
+    >   total size is 1.03T  speedup is 1.00
+
+
+    # Second transfer to verify checksums.
+    #   --checksum \
+    rsync \
+        --stats \
+        --progress \
+        --human-readable \
+        --recursive \
+        --links \
+        --times \
+        --checksum \
+        "fedora@128.232.227.232:/mnt/aglais-data-gaia-edr3-2048/" \
+        "/data2/gaia/datashares/aglais-data-gaia-edr3-2048"
+
+
+    >   receiving incremental file list
+    >   ....
+    >   ....
+
+
+

@@ -322,6 +322,9 @@ then
 
 fi
 
+# -----------------------------------------------------
+# Install GaiaXpy
+
 pushd "/deployments/hadoop-yarn/ansible"
      ansible-playbook \
         --verbose \
@@ -329,4 +332,10 @@ pushd "/deployments/hadoop-yarn/ansible"
         "37-install-gaiaxpy.yml"
 popd
 
+
+
+# -----------------------------------------------------
+# Restart the Zeppelin service.
+
+    "${treetop:?}/hadoop-yarn/bin/restart-zeppelin.sh"
 

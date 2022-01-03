@@ -305,6 +305,23 @@
 
     done
 
+
+# -----------------------------------------------------
+# Restart the Zeppelin service.
+
+    "${treetop:?}/hadoop-yarn/bin/restart-zeppelin.sh"
+
+# -----------------------------------------------------
+# Install GaiaXpy
+
+pushd "/deployments/hadoop-yarn/ansible"
+     ansible-playbook \
+        --verbose \
+        --inventory "${inventory:?}" \
+        "37-install-gaiaxpy.yml"
+popd
+
+
 # -----------------------------------------------------
 # Run Benchmarks
 
@@ -321,12 +338,4 @@ then
     popd
 
 fi
-
-pushd "/deployments/hadoop-yarn/ansible"
-     ansible-playbook \
-        --verbose \
-        --inventory "${inventory:?}" \
-        "37-install-gaiaxpy.yml"
-popd
-
 

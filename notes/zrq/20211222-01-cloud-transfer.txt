@@ -1,0 +1,1106 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Transfer data shares into S3.
+        Sounds easy (sic)
+
+    Result:
+
+        A lot harder than expected.
+
+# -----------------------------------------------------
+# Create a new branch.
+#[user@desktop]
+
+    branchname=cloud-transfer
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        branchprev=$(git branch --show-current)
+        branchnext=$(date '+%Y%m%d')-zrq-${branchname:?}
+
+        git checkout master
+        git checkout -b "${branchnext:?}"
+
+        git push --set-upstream 'origin' "$(git branch --show-current)"
+
+    popd
+
+    >   Already on 'master'
+    >   Your branch is up to date with 'origin/master'.
+
+    >   Switched to a new branch '20211222-zrq-cloud-transfer'
+
+    >   Total 0 (delta 0), reused 0 (delta 0), pack-reused 0
+    >   remote:
+    >   remote: Create a pull request for '20211222-zrq-cloud-transfer' on GitHub by visiting:
+    >   remote:      https://github.com/Zarquan/aglais/pull/new/20211222-zrq-cloud-transfer
+    >   remote:
+    >   To github.com:Zarquan/aglais.git
+    >    * [new branch]      20211222-zrq-cloud-transfer -> 20211222-zrq-cloud-transfer
+    >   Branch '20211222-zrq-cloud-transfer' set up to track remote branch '20211222-zrq-cloud-transfer' from 'origin'.
+
+
+
+# -----------------------------------------------------
+
+    Need to create a short test script to validate all the Openstack functionality we need.
+
+    Horizon login
+    Create application tokens
+
+    Command line login
+    Create ssh keys
+
+    Create VM
+    Create Manila share
+
+    Create Manila router
+    Mount the Manila share
+
+    Copy some data in
+    Checksum the data
+
+    Create a cluster
+    CSI mount the share
+
+    Checksum the data
+
+
+# -----------------------------------------------------
+
+    Need to create copies of all our data from Manila to Echo.
+
+    1) How many directories do we have ?
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-dev
+
+# -----------------------------------------------------
+# Re-create our Ansible vars file.
+# TODO This should have been saved somewhere by the deploy process.
+#[root@ansibler]
+
+    configyml='/tmp/aglais-config.yml'
+    statusyml='/tmp/aglais-status.yml'
+
+    cat > "${statusyml:?}" << EOF
+aglais:
+  status:
+    deployment:
+      type: hadoop-yarn
+      conf: zeppelin-28.180-spark-6.27.45
+      name: gaia-dev-20211214
+      date: 20211214T114345
+  spec:
+    openstack:
+      cloud: gaia-dev
+EOF
+
+    ln -sf \
+        "${statusyml:?}" \
+        '/tmp/ansible-vars.yml'
+
+
+# -----------------------------------------------------
+# Read the config settings.
+#[root@ansibler]
+
+    # TODO shell script to read these automatically
+
+    deployconf=$(
+        yq eval \
+            '.aglais.status.deployment.conf' \
+            "${statusyml:?}"
+        )
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            "${statusyml:?}"
+        )
+
+    deploydate=$(
+        yq eval \
+            '.aglais.status.deployment.date' \
+            "${statusyml:?}"
+        )
+
+# -----------------------------------------------------
+# Delete any existing known hosts file..
+# Temp fix until we get a better solution.
+# https://github.com/wfau/aglais/issues/401
+#[root@ansibler]
+
+    rm -f "${HOME}/.ssh/known_hosts"
+
+
+# -----------------------------------------------------
+# Run the Ansible ssh playbook.
+#[root@ansibler]
+
+    pushd '/deployments/hadoop-yarn/ansible'
+
+        ansible-playbook \
+            --inventory "config/${deployconf}.yml" \
+            '05-config-ssh.yml'
+
+        ansible-playbook \
+            --inventory "config/${deployconf}.yml" \
+            "08-ping-test.yml"
+
+    popd
+
+
+
+# -----------------------------------------------------
+# Inventory of what data we have where ....
+#[use@zeppelin]
+
+    du -h /user/stv/
+
+    >   0       /user/stv/
+
+
+    du -h /user/zrq/
+
+    >   38K     /user/zrq/transfer
+    >   163G    /user/zrq/repartitioned/GEDR3_PS1_BEST_NEIGHBOURS
+    >   177G    /user/zrq/repartitioned/GEDR3_ALLWISE_BEST_NEIGHBOURS
+    >   60G     /user/zrq/repartitioned/GEDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   561G    /user/zrq/repartitioned/GEDR3
+    >   959G    /user/zrq/repartitioned
+    >   885K    /user/zrq/notebooks/2G12WBTNA
+    >   147K    /user/zrq/notebooks/2FYNT4SNN
+    >   36K     /user/zrq/notebooks/2FXC6JJXP
+    >   41K     /user/zrq/notebooks/2FZ7K752E
+    >   733K    /user/zrq/notebooks/2FZV4XS7E
+    >   74K     /user/zrq/notebooks/2FXG62VN8
+    >   205K    /user/zrq/notebooks/2FZ7RBU7R
+    >   2.1M    /user/zrq/notebooks
+    >   471M    /user/zrq/owncloud/test1
+    >   471M    /user/zrq/owncloud
+    >   12G     /user/zrq/zeppelin/logs
+    >   12G     /user/zrq/zeppelin
+    >   971G    /user/zrq/
+
+
+    #
+    # Nothing I need to keep
+    #
+
+
+# -----------------------------------------------------
+# Inventory of what data we have where ....
+#[use@zeppelin]
+
+    du -h /user/nch/
+
+    >   8.9M    /user/nch/PARQUET/AXS/2MASS
+    >   9.4M    /user/nch/PARQUET/AXS/GEDR3
+    >   19M     /user/nch/PARQUET/AXS
+    >   21G     /user/nch/PARQUET/HPX12_BUCKETS/PS1_BEST_NEIGHBOURS
+    >   543G    /user/nch/PARQUET/HPX12_BUCKETS/GEDR3
+    >   564G    /user/nch/PARQUET/HPX12_BUCKETS
+    >   163G    /user/nch/PARQUET/REPARTITIONED/GEDR3_PS1_BEST_NEIGHBOURS
+    >   177G    /user/nch/PARQUET/REPARTITIONED/GEDR3_ALLWISE_BEST_NEIGHBOURS
+    >   60G     /user/nch/PARQUET/REPARTITIONED/GEDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   399G    /user/nch/PARQUET/REPARTITIONED
+    >   21G     /user/nch/PARQUET/TESTS/PS1_BEST_NEIGHBOURS
+    >   343G    /user/nch/PARQUET/TESTS/ALLWISE
+    >   37G     /user/nch/PARQUET/TESTS/2MASS
+    >   273G    /user/nch/PARQUET/TESTS/PS1
+    >   537G    /user/nch/PARQUET/TESTS/GEDR3
+    >   1.2T    /user/nch/PARQUET/TESTS
+    >   1.1G    /user/nch/PARQUET/SOURCEID_BUCKETS/GEDR3_PS1_BEST_NEIGHBOURS
+    >   253M    /user/nch/PARQUET/SOURCEID_BUCKETS/PS1_BEST_NEIGHBOURS
+    >   556G    /user/nch/PARQUET/SOURCEID_BUCKETS/GEDR3
+    >   558G    /user/nch/PARQUET/SOURCEID_BUCKETS
+    >   2.7T    /user/nch/PARQUET
+    >   60G     /user/nch/CSV/PS1_BEST_NEIGHBOURS
+    >   1.2T    /user/nch/CSV/ALLWISE/irsa.ipac.caltech.edu/data/download/wise-allwise
+    >   1.2T    /user/nch/CSV/ALLWISE/irsa.ipac.caltech.edu/data/download
+    >   1.2T    /user/nch/CSV/ALLWISE/irsa.ipac.caltech.edu/data
+    >   1.2T    /user/nch/CSV/ALLWISE/irsa.ipac.caltech.edu
+    >   1.2T    /user/nch/CSV/ALLWISE
+    >   145G    /user/nch/CSV/2MASS
+    >   960G    /user/nch/CSV/PS1
+    >   1.5T    /user/nch/CSV/GEDR3
+    >   46G     /user/nch/CSV/ALLWISE_BEST_NEIGHBOURS
+    >   29G     /user/nch/CSV/2MASS_BEST_NEIGHBOURS
+    >   3.8T    /user/nch/CSV
+    >   6.5T    /user/nch/
+
+
+
+    ls -al /user/nch/
+
+    >   drwxrwxr-x  9 nch    nch         11 Mar 28  2021 CSV
+    >   drwxrwxr-x  7 nch    nch          5 Mar 31  2021 PARQUET
+    >   -rw-rw-r--  1 fedora fedora 2230799 Dec 14 14:08 source-counts-hpx7.asc
+    >   -rw-rw-r--  1 nch    nch        401 Oct 30  2020 test.log
+    >   -rw-r--r--  1 fedora fedora  432547 Nov 19 13:52 XP_CONTINUOUS_RAW.csv
+    >   -rw-r--r--  1 fedora fedora   93811 Nov 22 15:16 XP_SAMPLED_RAW.csv
+
+
+    ls -al /user/nch/PARQUET
+
+    >   drwxrwxr-x 6 nch    nch    4 Jan 19  2021 AXS
+    >   drwxr-xr-x 4 nch    nch    2 Jan 29  2021 HPX12_BUCKETS
+    >   drwxr-xr-x 6 fedora fedora 4 Mar 31  2021 REPARTITIONED
+    >   drwxr-xr-x 5 nch    nch    3 Mar 15  2021 SOURCEID_BUCKETS
+    >   drwxrwxr-x 7 nch    nch    5 Jan 28  2021 TESTS
+
+
+    ls -al /user/nch/PARQUET/AXS
+
+    >   drwxrwxr-x 2 nch nch 218 Jan 19  2021 2MASS
+    >   drwxrwxr-x 2 nch nch   0 Jan 11  2021 ALLWISE
+    >   drwxrwxr-x 2 nch nch 120 Jan 19  2021 GEDR3
+    >   drwxrwxr-x 2 nch nch   0 Jan 11  2021 PS1
+
+    ls -al /user/nch/PARQUET/AXS/2MASS
+    >   parquet files
+
+    ls -al /user/nch/PARQUET/AXS/ALLWISE
+    >   empty
+
+    ls -al /user/nch/PARQUET/AXS/GEDR3
+    >   parquet files
+
+
+    ls -al /user/nch/PARQUET/HPX12_BUCKETS
+
+    >   drwxrwxr-x 2 nch nch 4098 Jan 29  2021 GEDR3
+    >   drwxrwxr-x 2 nch nch 4098 Jan 24  2021 PS1_BEST_NEIGHBOURS
+
+    ls -al /user/nch/PARQUET/HPX12_BUCKETS/GEDR3
+    >   parquet files
+
+    ls -al /user/nch/PARQUET/HPX12_BUCKETS/PS1_BEST_NEIGHBOURS
+    >   parquet files
+
+
+    ls -al /user/nch/PARQUET/REPARTITIONED
+
+    >   drwxr-xr-x 2 fedora fedora    0 May  5  2021 GEDR3
+    >   drwxr-xr-x 2 fedora fedora 2049 Mar 31  2021 GEDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   drwxr-xr-x 2 fedora fedora 2049 Apr  1  2021 GEDR3_ALLWISE_BEST_NEIGHBOURS
+    >   drwxr-xr-x 2 fedora fedora 2049 Mar 31  2021 GEDR3_PS1_BEST_NEIGHBOURS
+
+
+    ls -al /user/nch/PARQUET/REPARTITIONED/GEDR3
+    >   empty
+
+    ls -al /user/nch/PARQUET/REPARTITIONED/GEDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   parquet files
+
+    ls -al /user/nch/PARQUET/REPARTITIONED/GEDR3_ALLWISE_BEST_NEIGHBOURS
+    >   parquet files
+
+    ls -al /user/nch/PARQUET/REPARTITIONED/GEDR3_PS1_BEST_NEIGHBOURS
+    >   parquet files
+
+
+    ls -al /user/nch/PARQUET/TESTS
+
+    >   drwxrwxr-x 2 nch nch  2374 Dec 15  2020 2MASS
+    >   drwxrwxr-x 2 nch nch 18270 Dec 21  2020 ALLWISE
+    >   drwxrwxr-x 2 nch nch 23866 Dec 12  2020 GEDR3
+    >   drwxrwxr-x 2 nch nch 15468 Dec 14  2020 PS1
+    >   drwxrwxr-x 2 nch nch  4098 Jan 29  2021 PS1_BEST_NEIGHBOURS
+
+    ls -al /user/nch/PARQUET/TESTS/2MASS
+    >   parquet files
+
+    ls -al /user/nch/PARQUET/TESTS/ALLWISE
+    >   parquet files
+
+    ls -al /user/nch/PARQUET/TESTS/GEDR3
+    >   parquet files
+
+    ls -al /user/nch/PARQUET/TESTS/PS1
+    >   parquet files
+
+    ls -al /user/nch/PARQUET/TESTS/PS1_BEST_NEIGHBOURS
+    >   parquet files
+
+
+    ls -al /user/nch/PARQUET/SOURCEID_BUCKETS
+
+    >   drwxrwxr-x 2 nch nch 4098 Mar 15  2021 GEDR3
+    >   drwxrwxr-x 2 nch nch 4098 Mar 15  2021 GEDR3_PS1_BEST_NEIGHBOURS
+    >   drwxrwxr-x 2 nch nch 4098 Mar  4  2021 PS1_BEST_NEIGHBOURS
+
+    ls -al /user/nch/PARQUET/SOURCEID_BUCKETS/GEDR3
+    >   parquet files
+
+    ls -al /user/nch/PARQUET/SOURCEID_BUCKETS/GEDR3_PS1_BEST_NEIGHBOURS
+    >   parquet files
+
+    ls -al /user/nch/PARQUET/SOURCEID_BUCKETS/PS1_BEST_NEIGHBOURS
+    >   parquet files
+
+
+
+    ls -al /user/nch/CSV
+
+    >   drwxrwxr-x 2 nch    nch             93 Dec  1  2020 2MASS
+    >   drwxr-xr-x 2 fedora fedora          48 Mar 28  2021 2MASS_BEST_NEIGHBOURS
+    >   drwxrwxr-x 3 nch    nch              3 Dec 15  2020 ALLWISE
+    >   drwxr-xr-x 2 fedora fedora          67 Mar 28  2021 ALLWISE_BEST_NEIGHBOURS
+    >   drwxrwxr-x 2 nch    nch           3387 Dec  9  2020 GEDR3
+    >   -rw-rw-r-- 1 nch    nch          19123 Jan 21  2021 MapUidByFileName_PS1_csv.log
+    >   -rw-rw-r-- 1 nch    nch           5536 Jan 20  2021 MapUidByFileNum_PS1.log
+    >   drwxrwxr-x 2 nch    nch            760 Dec  2  2020 PS1
+    >   -rw-rw-r-- 1 nch    nch     8563054266 Jan 20  2021 ps1BestNeighbour.idx
+    >   drwxrwxr-x 2 nch    nch             96 Jan 20  2021 PS1_BEST_NEIGHBOURS
+    >   -rw-rw-r-- 1 nch    nch    17271961965 Jan 21  2021 ps1.idx
+
+    ls -al /user/nch/CSV/2MASS
+    > cvs files
+
+    ls -al /user/nch/CSV/2MASS_BEST_NEIGHBOURS
+    > cvs files
+
+    ls -al /user/nch/CSV/ALLWISE
+
+    >   -rw-r--r-- 1 nch nch   4702 Dec 15  2020 allwise_wget_bz2.sh
+    >   drwxrwxr-x 3 nch nch      1 Dec 15  2020 irsa.ipac.caltech.edu
+    >   -rw-rw-r-- 1 nch nch 172271 Dec 15  2020 wget-log
+
+    ls -al /user/nch/CSV/ALLWISE/irsa.ipac.caltech.edu
+    ls -al /user/nch/CSV/ALLWISE/irsa.ipac.caltech.edu/data
+    ls -al /user/nch/CSV/ALLWISE/irsa.ipac.caltech.edu/data/download
+    ls -al /user/nch/CSV/ALLWISE/irsa.ipac.caltech.edu/data/download/wise-allwise
+    > cvs files
+
+    ls -al /user/nch/CSV/ALLWISE_BEST_NEIGHBOURS
+    > cvs files
+
+    ls -al /user/nch/CSV/GEDR3
+    > cvs files
+
+    ls -al /user/nch/CSV/PS1
+    > log files
+
+    ls -al /user/nch/CSV/PS1_BEST_NEIGHBOURS
+    > cvs files
+
+
+    #
+    # I think almost all of this is working files from the partitioning.
+    # Emailed Nigel to check if we need to keep this.
+    #
+
+
+# -----------------------------------------------------
+# Inventory of what data we have where ....
+#[use@zeppelin]
+
+    du -h /user/dcr/
+
+    >   0       /user/dcr/ML_cuts/highSNR_PS1_final
+    >   1.5K    /user/dcr/ML_cuts/highSNR_PS1_optimised/standard_normalisation_model/metadata
+    >   4.0K    /user/dcr/ML_cuts/highSNR_PS1_optimised/standard_normalisation_model/data
+    >   5.5K    /user/dcr/ML_cuts/highSNR_PS1_optimised/standard_normalisation_model
+    >   5.5K    /user/dcr/ML_cuts/highSNR_PS1_optimised
+    >   1.5K    /user/dcr/ML_cuts/low_1kpc/MultilayerPerceptronClassifier/metadata
+    >   109K    /user/dcr/ML_cuts/low_1kpc/MultilayerPerceptronClassifier/data
+    >   111K    /user/dcr/ML_cuts/low_1kpc/MultilayerPerceptronClassifier
+    >   1.5K    /user/dcr/ML_cuts/low_1kpc/standard_normalisation_model/metadata
+    >   4.0K    /user/dcr/ML_cuts/low_1kpc/standard_normalisation_model/data
+    >   5.5K    /user/dcr/ML_cuts/low_1kpc/standard_normalisation_model
+    >   116K    /user/dcr/ML_cuts/low_1kpc
+    >   34G     /user/dcr/ML_cuts/results/allDataMatchPS1.parquet
+    >   34G     /user/dcr/ML_cuts/results
+    >   1.5K    /user/dcr/ML_cuts/highSNR_PS1/MultilayerPerceptronClassifier/metadata
+    >   110K    /user/dcr/ML_cuts/highSNR_PS1/MultilayerPerceptronClassifier/data
+    >   111K    /user/dcr/ML_cuts/highSNR_PS1/MultilayerPerceptronClassifier
+    >   1.5K    /user/dcr/ML_cuts/highSNR_PS1/standard_normalisation_model/metadata
+    >   4.0K    /user/dcr/ML_cuts/highSNR_PS1/standard_normalisation_model/data
+    >   5.5K    /user/dcr/ML_cuts/highSNR_PS1/standard_normalisation_model
+    >   117K    /user/dcr/ML_cuts/highSNR_PS1
+    >   1.5K    /user/dcr/ML_cuts/lowSNR_PS1_optimised/MultilayerPerceptronClassifier/metadata
+    >   109K    /user/dcr/ML_cuts/lowSNR_PS1_optimised/MultilayerPerceptronClassifier/data
+    >   111K    /user/dcr/ML_cuts/lowSNR_PS1_optimised/MultilayerPerceptronClassifier
+    >   111K    /user/dcr/ML_cuts/lowSNR_PS1_optimised
+    >   10K     /user/dcr/ML_cuts/plots/data
+    >   279M    /user/dcr/ML_cuts/plots
+    >   1.5K    /user/dcr/ML_cuts/highSNR_PS1_noSNR/MultilayerPerceptronClassifier/metadata
+    >   109K    /user/dcr/ML_cuts/highSNR_PS1_noSNR/MultilayerPerceptronClassifier/data
+    >   111K    /user/dcr/ML_cuts/highSNR_PS1_noSNR/MultilayerPerceptronClassifier
+    >   1.5K    /user/dcr/ML_cuts/highSNR_PS1_noSNR/standard_normalisation_model/metadata
+    >   4.0K    /user/dcr/ML_cuts/highSNR_PS1_noSNR/standard_normalisation_model/data
+    >   5.5K    /user/dcr/ML_cuts/highSNR_PS1_noSNR/standard_normalisation_model
+    >   116K    /user/dcr/ML_cuts/highSNR_PS1_noSNR
+    >   1.5K    /user/dcr/ML_cuts/lowSNR_PS1/MultilayerPerceptronClassifier/metadata
+    >   109K    /user/dcr/ML_cuts/lowSNR_PS1/MultilayerPerceptronClassifier/data
+    >   111K    /user/dcr/ML_cuts/lowSNR_PS1/MultilayerPerceptronClassifier
+    >   1.5K    /user/dcr/ML_cuts/lowSNR_PS1/standard_normalisation_model/metadata
+    >   4.0K    /user/dcr/ML_cuts/lowSNR_PS1/standard_normalisation_model/data
+    >   5.5K    /user/dcr/ML_cuts/lowSNR_PS1/standard_normalisation_model
+    >   116K    /user/dcr/ML_cuts/lowSNR_PS1
+    >   1.5K    /user/dcr/ML_cuts/lowSNR_noLimits/MultilayerPerceptronClassifier/metadata
+    >   109K    /user/dcr/ML_cuts/lowSNR_noLimits/MultilayerPerceptronClassifier/data
+    >   111K    /user/dcr/ML_cuts/lowSNR_noLimits/MultilayerPerceptronClassifier
+    >   1.5K    /user/dcr/ML_cuts/lowSNR_noLimits/standard_normalisation_model/metadata
+    >   4.0K    /user/dcr/ML_cuts/lowSNR_noLimits/standard_normalisation_model/data
+    >   5.5K    /user/dcr/ML_cuts/lowSNR_noLimits/standard_normalisation_model
+    >   116K    /user/dcr/ML_cuts/lowSNR_noLimits
+    >   1.5K    /user/dcr/ML_cuts/highSNR_noSNR/MultilayerPerceptronClassifier/metadata
+    >   109K    /user/dcr/ML_cuts/highSNR_noSNR/MultilayerPerceptronClassifier/data
+    >   111K    /user/dcr/ML_cuts/highSNR_noSNR/MultilayerPerceptronClassifier
+    >   1.5K    /user/dcr/ML_cuts/highSNR_noSNR/standard_normalisation_model/metadata
+    >   4.0K    /user/dcr/ML_cuts/highSNR_noSNR/standard_normalisation_model/data
+    >   5.5K    /user/dcr/ML_cuts/highSNR_noSNR/standard_normalisation_model
+    >   116K    /user/dcr/ML_cuts/highSNR_noSNR
+    >   1.5K    /user/dcr/ML_cuts/highSNR_noLimits/MultilayerPerceptronClassifier/metadata
+    >   110K    /user/dcr/ML_cuts/highSNR_noLimits/MultilayerPerceptronClassifier/data
+    >   111K    /user/dcr/ML_cuts/highSNR_noLimits/MultilayerPerceptronClassifier
+    >   1.5K    /user/dcr/ML_cuts/highSNR_noLimits/standard_normalisation_model/metadata
+    >   4.0K    /user/dcr/ML_cuts/highSNR_noLimits/standard_normalisation_model/data
+    >   5.5K    /user/dcr/ML_cuts/highSNR_noLimits/standard_normalisation_model
+    >   117K    /user/dcr/ML_cuts/highSNR_noLimits
+    >   34G     /user/dcr/ML_cuts
+
+    >   0       /user/dcr/CNN/model/assets
+    >   165K    /user/dcr/CNN/model/variables
+    >   335K    /user/dcr/CNN/model
+    >   335K    /user/dcr/CNN
+    >   0       /user/dcr/HDBSCAN/results
+    >   92M     /user/dcr/HDBSCAN/plots/spacial_gif
+    >   0       /user/dcr/HDBSCAN/plots/data
+    >   92M     /user/dcr/HDBSCAN/plots
+    >   0       /user/dcr/HDBSCAN/models
+    >   92M     /user/dcr/HDBSCAN
+
+    >   0       /user/dcr/WD_detection/results
+    >   4.5K    /user/dcr/WD_detection/plots/edr3_WDs/data
+    >   24M     /user/dcr/WD_detection/plots/edr3_WDs
+    >   4.5K    /user/dcr/WD_detection/plots/data
+    >   112M    /user/dcr/WD_detection/plots
+    >   0       /user/dcr/WD_detection/edr3_WDs_no_background
+    >   1.5K    /user/dcr/WD_detection/models/randomForest_WD_detection/standard_normalisation_model/metadata
+    >   4.0K    /user/dcr/WD_detection/models/randomForest_WD_detection/standard_normalisation_model/data
+    >   5.5K    /user/dcr/WD_detection/models/randomForest_WD_detection/standard_normalisation_model
+    >   2.0K    /user/dcr/WD_detection/models/randomForest_WD_detection/randomForestClassifier/metadata
+    >   1.7M    /user/dcr/WD_detection/models/randomForest_WD_detection/randomForestClassifier/data
+    >   601K    /user/dcr/WD_detection/models/randomForest_WD_detection/randomForestClassifier/treesMetadata
+    >   2.3M    /user/dcr/WD_detection/models/randomForest_WD_detection/randomForestClassifier
+    >   2.3M    /user/dcr/WD_detection/models/randomForest_WD_detection
+    >   2.0K    /user/dcr/WD_detection/models/randomForest_optimised/metadata
+    >   913K    /user/dcr/WD_detection/models/randomForest_optimised/data
+    >   301K    /user/dcr/WD_detection/models/randomForest_optimised/treesMetadata
+    >   1.2M    /user/dcr/WD_detection/models/randomForest_optimised
+    >   1.5K    /user/dcr/WD_detection/models/edr3_WDs_no_background/standard_normalisation_model/metadata
+    >   4.0K    /user/dcr/WD_detection/models/edr3_WDs_no_background/standard_normalisation_model/data
+    >   5.5K    /user/dcr/WD_detection/models/edr3_WDs_no_background/standard_normalisation_model
+    >   2.0K    /user/dcr/WD_detection/models/edr3_WDs_no_background/randomForestClassifier/metadata
+    >   2.2M    /user/dcr/WD_detection/models/edr3_WDs_no_background/randomForestClassifier/data
+    >   601K    /user/dcr/WD_detection/models/edr3_WDs_no_background/randomForestClassifier/treesMetadata
+    >   2.7M    /user/dcr/WD_detection/models/edr3_WDs_no_background/randomForestClassifier
+    >   2.8M    /user/dcr/WD_detection/models/edr3_WDs_no_background
+    >   6.2M    /user/dcr/WD_detection/models
+    >   118M    /user/dcr/WD_detection
+
+    >   837M    /user/dcr/data
+
+    >   35G     /user/dcr/
+
+
+    #
+    # Almost all the data is in one directory.
+    #
+
+    du -h /user/dcr/ML_cuts/results/allDataMatchPS1.parquet
+
+    >   34G     /user/dcr/ML_cuts/results/allDataMatchPS1.parquet
+
+
+    #
+    # Some medium sized directories ..
+    #
+
+    du -h /user/dcr/data
+
+    >   837M    /user/dcr/data
+
+
+    du -h /user/dcr/ML_cuts/plots
+
+    >   279M    /user/dcr/ML_cuts/plots
+
+
+
+
+    #
+    # Everything else would probably fit in a single tar.gz
+    #
+
+    du -h \
+        --exclude /user/dcr/data \
+        --exclude /user/dcr/ML_cuts/plots \
+        --exclude /user/dcr/ML_cuts/results/allDataMatchPS1.parquet \
+        /user/dcr
+
+
+    >   92M    /user/dcr/HDBSCAN/plots/spacial_gif
+    >   92M    /user/dcr/HDBSCAN/plots
+    >   92M    /user/dcr/HDBSCAN
+    >   ....
+    >   24M    /user/dcr/WD_detection/plots/edr3_WDs
+    >   ....
+    >   112M    /user/dcr/WD_detection/plots
+    >   ....
+    >   2.3M    /user/dcr/WD_detection/models/randomForest_WD_detection/randomForestClassifier
+    >   2.3M    /user/dcr/WD_detection/models/randomForest_WD_detection
+    >   ....
+    >   1.2M    /user/dcr/WD_detection/models/randomForest_optimised
+    >   ....
+    >   2.2M    /user/dcr/WD_detection/models/edr3_WDs_no_background/randomForestClassifier/data
+    >   ....
+    >   2.7M    /user/dcr/WD_detection/models/edr3_WDs_no_background/randomForestClassifier
+    >   2.8M    /user/dcr/WD_detection/models/edr3_WDs_no_background
+    >   6.2M    /user/dcr/WD_detection/models
+    >   118M    /user/dcr/WD_detection
+    >   211M    /user/dcr
+
+
+    #
+    # Nothing for Dave or Stelios.
+    # Assume Nigel's data isn't on the list.
+    # Concentrate on making a backup of Dennis's data.
+    #
+
+
+
+# -----------------------------------------------------
+# Main data shares are listed in yml config file.
+#[use@zeppelin]
+
+    treetop=/deployments
+    sharelist="${treetop:?}/common/manila/datashares.yaml"
+    testhost=zeppelin
+
+    for shareid in $(
+        yq eval '.datashares.[].id' "${sharelist}"
+        )
+    do
+
+        checkbase=$(
+            yq eval ".datashares.[] | select(.id == \"${shareid}\").mountpath" "${sharelist}"
+            )
+        checknum=$(
+            yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums | length" "${sharelist}"
+            )
+
+        for (( i=0; i<checknum; i++ ))
+        do
+            checkpath=$(
+                yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums[${i}].path" "${sharelist}"
+                )
+            checkcount=$(
+                yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums[${i}].count" "${sharelist}"
+                )
+            checkhash=$(
+                yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums[${i}].md5sum" "${sharelist}"
+                )
+
+            sharepath=${checkbase}/${checkpath}
+            bucketname=${sharepath//\//-}
+
+            # Trim leading and tailing '-'
+            bucketname=${bucketname/#-data/data}
+            bucketname=${bucketname/%-/}
+
+            echo ""
+            echo "Share path  [${sharepath}]"
+            echo "Bucket name [${bucketname}]"
+
+        done
+    done
+
+    >   Share path  [/data/gaia/GDR2_6514/GDR2_6514_GAIASOURCE]
+    >   Bucket name [data-gaia-GDR2_6514-GDR2_6514_GAIASOURCE]
+    >   
+    >   Share path  [/data/gaia/GEDR3_11932/GEDR3_11932_GAIASOURCE]
+    >   Bucket name [data-gaia-GEDR3_11932-GEDR3_11932_GAIASOURCE]
+    >   
+    >   Share path  [/data/gaia/GEDR3_2048/GEDR3_2048_GAIASOURCE]
+    >   Bucket name [data-gaia-GEDR3_2048-GEDR3_2048_GAIASOURCE]
+    >   
+    >   Share path  [/data/gaia/GEDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS]
+    >   Bucket name [data-gaia-GEDR3_2048-GEDR3_2048_PS1_BEST_NEIGHBOURS]
+    >   
+    >   Share path  [/data/gaia/GEDR3_2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS]
+    >   Bucket name [data-gaia-GEDR3_2048-GEDR3_2048_ALLWISE_BEST_NEIGHBOURS]
+    >   
+    >   Share path  [/data/gaia/GEDR3_2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS]
+    >   Bucket name [data-gaia-GEDR3_2048-GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS]
+    >   
+    >   Share path  [/data/gaia/GEDR3_4096/GEDR3_4096_GAIASOURCE]
+    >   Bucket name [data-gaia-GEDR3_4096-GEDR3_4096_GAIASOURCE]
+    >   
+    >   Share path  [/data/gaia/GEDR3_4096/GEDR3_4096_PS1_BEST_NEIGHBOURS]
+    >   Bucket name [data-gaia-GEDR3_4096-GEDR3_4096_PS1_BEST_NEIGHBOURS]
+    >   
+    >   Share path  [/data/gaia/GEDR3_4096/GEDR3_4096_ALLWISE_BEST_NEIGHBOURS]
+    >   Bucket name [data-gaia-GEDR3_4096-GEDR3_4096_ALLWISE_BEST_NEIGHBOURS]
+    >   
+    >   Share path  [/data/gaia/GEDR3_4096/GEDR3_4096_2MASSPSC_BEST_NEIGHBOURS]
+    >   Bucket name [data-gaia-GEDR3_4096-GEDR3_4096_2MASSPSC_BEST_NEIGHBOURS]
+    >   
+    >   Share path  [/data/gaia/GEDR3_8192/GEDR3_8192_GAIASOURCE]
+    >   Bucket name [data-gaia-GEDR3_8192-GEDR3_8192_GAIASOURCE]
+    >   
+    >   Share path  [/data/gaia/GEDR3_8192/GEDR3_8192_PS1_BEST_NEIGHBOURS]
+    >   Bucket name [data-gaia-GEDR3_8192-GEDR3_8192_PS1_BEST_NEIGHBOURS]
+    >   
+    >   Share path  [/data/gaia/GEDR3_8192/GEDR3_8192_ALLWISE_BEST_NEIGHBOURS]
+    >   Bucket name [data-gaia-GEDR3_8192-GEDR3_8192_ALLWISE_BEST_NEIGHBOURS]
+    >   
+    >   Share path  [/data/gaia/GEDR3_8192/GEDR3_8192_2MASSPSC_BEST_NEIGHBOURS]
+    >   Bucket name [data-gaia-GEDR3_8192-GEDR3_8192_2MASSPSC_BEST_NEIGHBOURS]
+    >   
+    >   Share path  [/data/wise/ALLWISE/]
+    >   Bucket name [data-wise-ALLWISE]
+    >   
+    >   Share path  [/data/panstarrs/PS1/]
+    >   Bucket name [data-panstarrs-PS1]
+    >   
+    >   Share path  [/data/twomass/2MASSPSC/]
+    >   Bucket name [data-twomass-2MASSPSC]
+
+
+    #
+    # Create an Echo bucket for each directory.
+    # Transfer the contents ...
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+    # Alternative, just copy everything ...
+
+    For each share.
+        Create a bucket.
+
+        For each path.
+            Create the file name and push the contents.
+
+
+
+# -----------------------------------------------------
+# Install our secret handler.
+#[user@zeppelin]
+
+    if [ ! -e "${HOME}/bin" ]
+    then
+        mkdir "${HOME}/bin"
+    fi
+
+    cat > "${HOME}/bin/secret" << 'EOF'
+ssh -n \
+    'secretserver' \
+    "bin/secret '${1}'"
+EOF
+
+    chmod u+x "${HOME}/bin/secret"
+
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        mkdir "${HOME}/.ssh"
+    fi
+
+    cat >> "${HOME}/.ssh/config" << 'EOF'
+Host secretserver
+  User     Zarquan
+  Hostname data.metagrid.co.uk
+  PubkeyAcceptedKeyTypes +ssh-rsa
+EOF
+
+    chmod 'u=rw,g=,o=' "${HOME}/.ssh/config"
+
+    ssh-keyscan 'data.metagrid.co.uk' >> "${HOME}/.ssh/known_hosts"
+
+    secret frog
+
+    >   Green Frog
+
+
+# -----------------------------------------------------
+# Install the S3 client.
+#[user@zeppelin]
+
+    sudo dnf install s3cmd
+
+    >   Installed:
+    >       s3cmd-2.0.2-3.fc30.noarch
+
+
+# -----------------------------------------------------
+# Configure our S3 client.
+# https://linux.die.net/man/1/s3cmd
+# https://s3tools.org/kb/item14.htm
+# https://www.digitalocean.com/docs/spaces/resources/s3cmd/
+# https://support.arcticcloud.com/portal/kb/articles/managing-object-storage-using-the-s3cmd-interface
+# https://docs.ceph.com/en/latest/radosgw/s3/commons/#bucket-and-host-name
+#[user@zeppelin]
+
+    s3cmd \
+        --configure \
+        --host $(secret echo.endpoint) \
+        --host-bucket $(secret echo.template) \
+        --access_key $(secret echo.access_key) \
+        --secret_key $(secret echo.secret_key)
+
+    >   New settings:
+    >     Access Key: ##########
+    >     Secret Key: ##########
+    >     Default Region: US
+    >     S3 Endpoint: s3.echo.stfc.ac.uk
+    >     DNS-style bucket+hostname:port template for accessing a bucket: s3.echo.stfc.ac.uk/%(bucket)
+    >     Encryption password:
+    >     Path to GPG program: /usr/bin/gpg
+    >     Use HTTPS protocol: True
+    >     HTTP Proxy server name:
+    >     HTTP Proxy server port: 0
+
+
+# -----------------------------------------------------
+# List our buckets.
+#[user@zeppelin]
+
+    s3cmd \
+        ls
+
+
+    >   2021-02-28 02:44  s3://gaia-edr3
+
+
+# -----------------------------------------------------
+# Sync our local copy of each share with our bucket.
+# https://s3tools.org/usage
+#[user@zeppelin]
+
+    sharename=aglais-user-zrq
+    sharebase=/user/zrq
+
+    cat << EOF
+Share name [${sharename:?}]
+Share base [${sharebase:?}]
+EOF
+
+    # Create the bucket
+    s3cmd mb "s3://${sharename:?}"
+
+    >   Bucket 's3://aglais-user-zrq/' created
+
+
+    # Sync the contents
+    s3cmd sync \
+        --stats \
+        --verbose \
+        --progress \
+        --recursive \
+        --check-md5 \
+        "${sharebase:?}" \
+        "s3://${sharename:?}"
+
+
+    #
+    # First attempt -
+    # Looong priod with no output, then the VM shutdown !?
+
+    #
+    # Second attempt -
+    # Looong priod with no output ....
+
+
+    >   INFO: No cache file found, creating it.
+    >   INFO: Compiling list of local files...
+    >   INFO: Running stat() and reading/calculating MD5 values on 8266 files, this may take some time...
+    >   ....
+    >   INFO: [1000/8266]
+    >   INFO: [2000/8266]
+    >   INFO: [3000/8266]
+    >   INFO: [4000/8266]
+    >   INFO: [5000/8266]
+    >   INFO: [6000/8266]
+    >   INFO: [7000/8266]
+    >   INFO: [8000/8266]
+    >   INFO: Retrieving list of remote files for s3://aglais-user-zrq/zrq ...
+    >   INFO: Found 8266 local files, 0 remote files
+    >   INFO: Verifying attributes...
+    >   INFO: Summary: 8266 local files to upload, 0 files to remote copy, 0 remote files to delete
+    >   upload: '/user/zrq/frog' -> 's3://aglais-user-zrq/zrq/frog'  [1 of 8266]
+    >    0 of 0     0% in    0s     0.00 B/s  done
+    >   upload: '/user/zrq/index.html' -> 's3://aglais-user-zrq/zrq/index.html'  [2 of 8266]
+    >    4660 of 4660   100% in    0s    54.21 KB/s  done
+    >   upload: '/user/zrq/notebooks/2FXC6JJXP/note.json' -> 's3://aglais-user-zrq/zrq/notebooks/2FXC6JJXP/note.json'  [3 of 8266]
+    >    36032 of 36032   100% in    0s   336.04 KB/s  done
+    >   upload: '/user/zrq/notebooks/2FXG62VN8/note.json' -> 's3://aglais-user-zrq/zrq/notebooks/2FXG62VN8/note.json'  [4 of 8266]
+    >    74833 of 74833   100% in    0s   289.24 KB/s  done
+    >   upload: '/user/zrq/notebooks/2FYNT4SNN/note.json' -> 's3://aglais-user-zrq/zrq/notebooks/2FYNT4SNN/note.json'  [5 of 8266]
+    >    150302 of 150302   100% in    0s  1069.64 KB/s  done
+    >   upload: '/user/zrq/notebooks/2FZ7K752E/note.json' -> 's3://aglais-user-zrq/zrq/notebooks/2FZ7K752E/note.json'  [6 of 8266]
+    >    41442 of 41442   100% in    0s   410.96 KB/s  done
+    >   ....
+
+    #
+    # Before 2nd ttansfer started
+    #
+
+    >   ....
+    >   upload: '/user/zrq/repartitioned/GEDR3/part-00808-061dbeeb-75b5-41c3-9d01-422766759ddd_00808.c000.snappy.parquet' -> 's3://aglais-user-zrq/zrq/repartitioned/GEDR3/part-00808-061dbeeb-75b5-41c3-9d01-422766759ddd_00808.c000.snappy.parquet'  [part 16 of 19, 15MB] [831 of 8266]
+    >    15728640 of 15728640   100% in    0s    25.62 MB/s  done
+    >   upload: '/user/zrq/repartitioned/GEDR3/part-00808-061dbeeb-75b5-41c3-9d01-422766759ddd_00808.c000.snappy.parquet' -> 's3://aglais-user-zrq/zrq/repartitioned/GEDR3/part-00808-061dbeeb-75b5-41c3-9d01-422766759ddd_00808.c000.snappy.parquet'  [part 17 of 19, 15MB] [831 of 8266]
+    >    15728640 of 15728640   100% in    0s    17.08 MB/s  done
+    >   upload: '/user/zrq/repartitioned/GEDR3/part-00808-061dbeeb-75b5-41c3-9d01-422766759ddd_00808.c000.snappy.parquet' -> 's3://aglais-user-zrq/zrq/repartitioned/GEDR3/part-00808-061dbeeb-75b5-41c3-9d01-422766759ddd_00808.c000.snappy.parquet'  [part 18 of 19, 15MB] [831 of 8266]
+    >    15728640 of 15728640   100% in    0s    20.74 MB/s  done
+    >   upload: '/user/zrq/repartitioned/GEDR3/part-00808-061dbeeb-75b5-41c3-9d01-422766759ddd_00808.c000.snappy.parquet' -> 's3://aglais-user-zrq/zrq/repartitioned/GEDR3/part-00808-061dbeeb-75b5-41c3-9d01-422766759ddd_00808.c000.snappy.parquet'  [part 19 of 19, 10MB] [831 of 8266]
+    >    10721115 of 10721115   100% in    0s    13.91 MB/s  done
+    >   ....
+
+    #
+    # After 2nd ttansfer started
+    #
+
+    >   ....
+    >   upload: '/user/zrq/repartitioned/GEDR3/part-00811-061dbeeb-75b5-41c3-9d01-422766759ddd_00811.c000.snappy.parquet' -> 's3://aglais-user-zrq/zrq/repartitioned/GEDR3/part-00811-061dbeeb-75b5-41c3-9d01-422766759ddd_00811.c000.snappy.parquet'  [part 5 of 19, 15MB] [834 of 8266]
+    >    15728640 of 15728640   100% in    0s    20.28 MB/s  done
+    >   upload: '/user/zrq/repartitioned/GEDR3/part-00811-061dbeeb-75b5-41c3-9d01-422766759ddd_00811.c000.snappy.parquet' -> 's3://aglais-user-zrq/zrq/repartitioned/GEDR3/part-00811-061dbeeb-75b5-41c3-9d01-422766759ddd_00811.c000.snappy.parquet'  [part 6 of 19, 15MB] [834 of 8266]
+    >    15728640 of 15728640   100% in    0s    17.40 MB/s  done
+    >   upload: '/user/zrq/repartitioned/GEDR3/part-00811-061dbeeb-75b5-41c3-9d01-422766759ddd_00811.c000.snappy.parquet' -> 's3://aglais-user-zrq/zrq/repartitioned/GEDR3/part-00811-061dbeeb-75b5-41c3-9d01-422766759ddd_00811.c000.snappy.parquet'  [part 7 of 19, 15MB] [834 of 8266]
+    >    15728640 of 15728640   100% in    0s    20.80 MB/s  done
+    >   upload: '/user/zrq/repartitioned/GEDR3/part-00811-061dbeeb-75b5-41c3-9d01-422766759ddd_00811.c000.snappy.parquet' -> 's3://aglais-user-zrq/zrq/repartitioned/GEDR3/part-00811-061dbeeb-75b5-41c3-9d01-422766759ddd_00811.c000.snappy.parquet'  [part 8 of 19, 15MB] [834 of 8266]
+    >    15728640 of 15728640   100% in    0s    20.10 MB/s  done
+    >   ....
+
+
+    >   ....
+    >   upload: '/user/zrq/repartitioned/GEDR3/part-00830-061dbeeb-75b5-41c3-9d01-422766759ddd_00830.c000.snappy.parquet' -> 's3://aglais-user-zrq/zrq/repartitioned/GEDR3/part-00830-061dbeeb-75b5-41c3-9d01-422766759ddd_00830.c000.snappy.parquet'  [part 17 of 19, 15MB] [853 of 8266]
+    >       65536 of 15728640     0% in    0s   761.21 KB/s^CERROR:
+    >   Upload of '/user/zrq/repartitioned/GEDR3/part-00830-061dbeeb-75b5-41c3-9d01-422766759ddd_00830.c000.snappy.parquet' part 17 failed. Use
+    >     /usr/bin/s3cmd abortmp s3://aglais-user-zrq/zrq/repartitioned/GEDR3/part-00830-061dbeeb-75b5-41c3-9d01-422766759ddd_00830.c000.snappy.parquet 2~wr6G1WjHsT3nfSPhXXgt9Vt01quAwKE
+    >   to abort the upload, or
+    >     /usr/bin/s3cmd --upload-id 2~wr6G1WjHsT3nfSPhXXgt9Vt01quAwKE put ...
+    >   to continue the upload.
+    >   See ya!
+    >   ....
+
+
+
+
+# -----------------------------------------------------
+# Sync Nigel's data.
+# https://s3tools.org/usage
+#[user@zeppelin]
+
+    sharename=aglais-user-nch
+    sharebase=/user/nch
+
+    cat << EOF
+Share name [${sharename:?}]
+Share base [${sharebase:?}]
+EOF
+
+    # Create the bucket
+    s3cmd mb "s3://${sharename:?}"
+
+    >   Bucket 's3://aglais-user-nch/' created
+
+
+    # Sync the contents
+    s3cmd sync \
+        --stats \
+        --verbose \
+        --progress \
+        --recursive \
+        --check-md5 \
+        "${sharebase:?}" \
+        "s3://${sharename:?}"
+
+    >   INFO: No cache file found, creating it.
+    >   INFO: Compiling list of local files...
+    >   INFO: Running stat() and reading/calculating MD5 values on 95565 files, this may take some time...
+    >   ....
+    >   ....
+
+    >   ....
+    >   ....
+
+    >   ....
+    >   ....
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Sync the data directories.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash
+
+        sharelist=/deployments/common/manila/datashares.yaml
+        testhost=zeppelin
+
+        for shareid in $(
+            yq eval '.datashares.[].id' "${sharelist}"
+            )
+        do
+
+            sharename=$(
+                yq eval ".datashares.[] | select(.id == \"${shareid}\").sharename" "${sharelist}"
+                )
+            sharepath=$(
+                yq eval ".datashares.[] | select(.id == \"${shareid}\").mountpath" "${sharelist}"
+                )
+
+            echo ""
+            echo "-----------------------------------------------------"
+            echo "Share name [${sharename:?}]"
+            echo "Share path [${sharepath:?}]"
+
+            # Create the bucket
+            ssh zrq@zeppelin \
+                "
+                s3cmd mb 's3://${sharename:?}'
+                "
+
+            # Sync the contents
+            ssh zrq@zeppelin \
+                "
+                s3cmd sync \
+                    --stats \
+                    --verbose \
+                    --progress \
+                    --recursive \
+                    --check-md5 \
+                    '${sharepath:?}' \
+                    's3://${sharename:?}'
+            "
+
+        done
+
+
+    >   -----------------------------------------------------
+    >   Share name [aglais-data-gaia-dr2-6514]
+    >   Share path [/data/gaia/GDR2_6514]
+    >   Bucket 's3://aglais-data-gaia-dr2-6514/' created
+    >   INFO: No cache file found, creating it.
+    >   INFO: Compiling list of local files...
+    >   INFO: Running stat() and reading/calculating MD5 values on 6514 files, this may take some time...
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# https://www.digitalocean.com/community/tutorials/how-to-route-web-traffic-securely-without-a-vpn-using-a-socks-tunnel
+# Running 'htop' on the Zeppelin node to keep the connection alive.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh \
+                -t \
+                -D "3000"  \
+                zeppelin \
+                    "
+                    htop
+                    "
+            '
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Grafana UI using FoxyProxy SOCKS proxy.
+#[user@desktop]
+
+    firefox --new-window 'http://monitor:3000/login' &
+
+        Create our Prometheus data source.
+        http://monitor:3000/datasources/new
+
+            URL: http://monitor:9090/
+            scrape: 1s
+
+        Import our dashboards from local disc.
+        http://monitor:3000/dashboard/import
+
+            deployments/common/grafana/20210705-02-grafana-dash.json
+            deployments/common/grafana/node-exporter-v20201010-1633446087511.json
+
+            http://monitor:3000/d/34S3C8k7z/my-first-dash&refresh=5s
+            http://monitor:3000/d/xfpJB9FGz/1-node-exporter-for-prometheus-dashboard-en-v20201010?orgId=1&refresh=5s
+
+
+
+
+
+

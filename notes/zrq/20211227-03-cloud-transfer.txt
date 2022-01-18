@@ -1,0 +1,1137 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Create a VM instance for testing ..
+
+    Result:
+
+        Work in progress ..,
+
+# -----------------------------------------------------
+# Login using the command line client ..
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-arcus-eval
+    buildname="aglais-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
+
+
+# -----------------------------------------------------
+# Create our SSH key.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +------------+-------------------------------------------------+------+
+    >   | Name       | Fingerprint                                     | Type |
+    >   +------------+-------------------------------------------------+------+
+    >   | pfb29-test | be:b5:48:f6:fe:a2:90:ec:9d:c4:50:d9:26:24:ee:08 | ssh  |
+    >   +------------+-------------------------------------------------+------+
+
+
+    # Create a ssh keypair
+    wget \
+        -O '/tmp/aglais-keypair.pub' \
+        'https://raw.githubusercontent.com/wfau/aglais/master/deployments/common/ssh/aglais-team-keys'
+
+    >   ....
+    >   ....
+    >   2021-12-28 12:37:36 (6.53 MB/s) - ‘/tmp/aglais-team-keys.pub’ saved [1770/1770]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair create \
+            --format json \
+            --public-key '/tmp/aglais-keypair.pub' \
+            "${buildname}-keypair" \
+    | tee '/tmp/aglais-keypair.json'
+
+    >   {
+    >     "created_at": null,
+    >     "fingerprint": "2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16",
+    >     "id": "aglais-20211228-keypair",
+    >     "is_deleted": null,
+    >     "name": "aglais-20211228-keypair",
+    >     "type": "ssh",
+    >     "user_id": "5fa0c97a6dd14e01a3c7d91dad5c6b17"
+    >   }
+
+
+    keypair=$(
+        jq -r '.id' '/tmp/aglais-keypair.json'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair show \
+            --format json \
+            "${keypair:?}"
+
+    >   {
+    >     "created_at": "2021-12-28T12:55:32.000000",
+    >     "fingerprint": "2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16",
+    >     "id": "aglais-20211228-keypair",
+    >     "is_deleted": false,
+    >     "name": "aglais-20211228-keypair",
+    >     "private_key": null,
+    >     "type": "ssh",
+    >     "user_id": "5fa0c97a6dd14e01a3c7d91dad5c6b17"
+    >   }
+
+# -----------------------------------------------------
+# Create our internal network, subnet and router.
+# https://docs.openstack.org/ocata/user-guide/cli-create-and-manage-networks.html
+#[root@ansibler]
+
+    subnetblock='10.56.0.0/16'
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network create \
+            --format json \
+            "${buildname:?}-network" \
+    | jq '.' \
+    | tee '/tmp/aglais-network.json'
+
+    aglaisnetworkid=$(
+        jq -r '.id' '/tmp/aglais-network.json'
+        )
+
+    >   {
+    >     ....
+    >     ....
+    >     "id": "98bb4fc3-61b5-4019-ae31-05fd76ca3252",
+    >     ....
+    >     ....
+    >     "name": "aglais-20211228-network",
+    >     ....
+    >     ....
+    >     "status": "ACTIVE",
+    >     "subnets": [],
+    >     ....
+    >     ....
+    >   }
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet create \
+            --format json \
+            "${buildname:?}-subnet" \
+            --network "${aglaisnetworkid:?}" \
+            --subnet-range "${subnetblock:?}" \
+    | jq '.' \
+    | tee '/tmp/aglais-subnet.json'
+
+    aglaissubnetid=$(
+        jq -r '.id' '/tmp/aglais-subnet.json'
+        )
+
+    >   {
+    >     "allocation_pools": [
+    >       {
+    >         "start": "10.56.0.2",
+    >         "end": "10.56.255.254"
+    >       }
+    >     ],
+    >     "cidr": "10.56.0.0/16",
+    >     ....
+    >     ....
+    >     "gateway_ip": "10.56.0.1",
+    >     "host_routes": [],
+    >     "id": "562c23b1-45f7-481e-bc68-63f01f57d278",
+    >     ....
+    >     "name": "aglais-20211228-subnet",
+    >     "network_id": "98bb4fc3-61b5-4019-ae31-05fd76ca3252",
+    >     ....
+    >   }
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router create \
+            --format json \
+            "${buildname:?}-router" \
+    | jq '.' \
+    | tee '/tmp/aglais-router.json'
+
+    aglaisrouterid=$(
+        jq -r '.id' '/tmp/aglais-router.json'
+        )
+
+    >   {
+    >     ....
+    >     "id": "c809f79d-c5a3-438a-8ece-338abfc32e64",
+    >     "name": "aglais-20211228-router",
+    >     ....
+    >     "routes": [],
+    >     ....
+    >   }
+
+
+# -----------------------------------------------------
+# Link our router to the public internet and our private subnet.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+    >   | ID                                   | Name                    | Subnets                              |
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+    >   | 2f2b65d0-5996-49d3-b2a1-b36191abde63 | pfb29-test              | ca54eb70-d6fd-4550-bdc1-149f80da8efd |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                  | 5699fb5d-8316-4b88-b889-b05c8a1ec975 |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet           | 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42 |
+    >   | 98bb4fc3-61b5-4019-ae31-05fd76ca3252 | aglais-20211228-network | 562c23b1-45f7-481e-bc68-63f01f57d278 |
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+
+
+    internet=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name == "CUDN-Internet") | .ID
+            '
+        )
+
+    # Link our router to the public internet.
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            "${aglaisrouterid:?}" \
+            --external-gateway \
+                "${internet:?}"
+
+    # Link our router to our private subnet.
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router add subnet \
+            "${aglaisrouterid:?}" \
+            "${aglaissubnetid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${aglaisrouterid:?}" \
+    | tee '/tmp/aglais-router.json' \
+    | jq '.'
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2021-12-28T13:04:14Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "57add367-d205-4030-a929-d75617a7c63e",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42",
+    >           "ip_address": "128.232.222.87"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "c809f79d-c5a3-438a-8ece-338abfc32e64",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "23bb554a-4d8e-45c6-acf9-ba8ebcfab727",
+    >         "ip_address": "10.56.0.1",
+    >         "subnet_id": "562c23b1-45f7-481e-bc68-63f01f57d278"
+    >       }
+    >     ],
+    >     "name": "aglais-20211228-router",
+    >     "project_id": "e216e6b502134b6185380be6ccd0bf09",
+    >     "revision_number": 9,
+    >     "routes": [],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2021-12-28T14:21:01Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Get the ID of the Fedora image.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image list
+
+    >   +--------------------------------------+------------------------------+--------+
+    >   | ID                                   | Name                         | Status |
+    >   +--------------------------------------+------------------------------+--------+
+    >   ....
+    >   ....
+    >   | 1779f380-780d-40d8-8052-b3acb91ed530 | Fedora-31-1.9                | active |
+    >   | e62a71df-4bd2-4498-9eae-058ff476b5ad | Fedora-33-1.2                | active |
+    >   | e5c23082-cc34-4213-ad31-ff4684657691 | Fedora-34.1.2                | active |
+    >   | dcb41a5f-868a-4880-9fd5-04b95ab97c47 | FedoraAtomic29-20191126      | active |
+    >   | a079781f-80b7-4d89-95ae-ef65bfb0834f | FedoraCoreOS33               | active |
+    >   | 191d3d4d-60cc-4b87-b4a7-0a03cc48a51e | FedoraCoreOS34               | active |
+    >   ....
+    >   ....
+    >   +--------------------------------------+------------------------------+--------+
+
+    imageid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            image list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("Fedora-34.1.2")) | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Get the flavor ID.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list
+
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+    >   | ID                                   | Name         |   RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+    >   | 2e5dc624-1d3b-4da7-8107-cc2dd4cb5073 | vm.v1.large  | 32768 |   60 |         0 |     8 | True      |
+    >   | 6793b213-5efa-4b51-96bf-1340ff066499 | vm.v1.xsmall |  2048 |   20 |         0 |     1 | True      |
+    >   | 698a8d46-eceb-4c55-91ff-38286bf9eabb | vm.v1.tiny   |  1024 |   10 |         0 |     1 | True      |
+    >   | 6b56d6e9-5397-4543-87fb-e0c0b6d47961 | vm.v1.small  | 16384 |   20 |         0 |     4 | True      |
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+
+
+    flavorid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "vm.v1.small") | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Create our virtual machine instance.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server create \
+            --format json \
+            --image "${imageid:?}" \
+            --flavor "${flavorid:?}" \
+            --network "${aglaisnetworkid:?}" \
+            --key-name "${keypair:?}" \
+            "${buildname:?}-machine" \
+    | tee '/tmp/aglais-machine.json' \
+    | jq '.'
+
+    >   {
+    >     ....
+    >     ....
+    >     "accessIPv4": "",
+    >     "accessIPv6": "",
+    >     "addresses": {},
+    >     "adminPass": "",
+    >     "config_drive": "",
+    >     "created": "2021-12-28T15:25:21Z",
+    >     "flavor": "vm.v1.small (6b56d6e9-5397-4543-87fb-e0c0b6d47961)",
+    >     "hostId": "",
+    >     "id": "27f99cd3-da73-45e5-a2ca-302e8c363308",
+    >     "image": "Fedora-34.1.2 (e5c23082-cc34-4213-ad31-ff4684657691)",
+    >     "key_name": "aglais-20211228-keypair",
+    >     "name": "aglais-20211228-machine",
+    >     "progress": 0,
+    >     "project_id": "e216e6b502134b6185380be6ccd0bf09",
+    >     "properties": {},
+    >     "security_groups": [
+    >       {
+    >         "name": "default"
+    >       }
+    >     ],
+    >     "status": "BUILD",
+    >     "updated": "2021-12-28T15:25:22Z",
+    >     "user_id": "5fa0c97a6dd14e01a3c7d91dad5c6b17",
+    >     "volumes_attached": []
+    >   }
+
+    vmident=$(
+        jq -r '.id' '/tmp/aglais-machine.json'
+        )
+
+
+# -----------------------------------------------------
+# Create a public IP address and attach it to our VM.
+#[root@ansibler]
+
+    floatip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            floating ip \
+            create \
+            --format json \
+            "${internet:?}" \
+        | jq -r '.floating_ip_address'
+        )
+
+    netname=$(
+        jq -r '.name' '/tmp/aglais-network.json'
+        )
+
+    privateip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${vmident:?}" \
+        | jq -r ".addresses.\"${netname:?}\"[0]"
+        )
+
+cat << EOF
+Public  IP [${floatip}]
+Private IP [${privateip}]
+EOF
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server add \
+            floating ip \
+            --fixed-ip-address "${privateip:?}" \
+            "${vmident:?}" \
+            "${floatip:?}"
+
+    >   Public  IP [128.232.222.125]
+    >   Private IP [10.56.0.46]
+
+
+# -----------------------------------------------------
+# Add a new security group to our VM.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group create \
+            --format json \
+            'External SSH' \
+    | tee /tmp/aglais-security.json \
+    | jq '.'
+
+    >   {
+    >     ....
+    >     "id": "037f9159-8896-46de-9a2f-f9129a7fa914",
+    >     "name": "External SSH",
+    >     ....
+    >     "rules": [
+    >       {
+    >         "direction": "egress",
+    >         "protocol": null,
+    >         ....
+    >         "ethertype": "IPv6",
+    >         ....
+    >       },
+    >       {
+    >         "direction": "egress",
+    >         "protocol": null,
+    >         ....
+    >         "ethertype": "IPv4",
+    >         ....
+    >       }
+    >     ],
+    >     "stateful": null,
+    >     "tags": [],
+    >     "updated_at": "2021-12-28T14:43:05Z"
+    >   }
+    >   ....
+
+
+    secgroupid=$(
+        jq -r '.id' /tmp/aglais-security.json
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --dst-port   22 \
+            --protocol  'tcp' \
+            --ethertype 'IPv4' \
+            "${secgroupid:?}"
+
+    portid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            port list \
+                --format json \
+                --server "${vmident:?}" \
+        | jq -r '.[0] | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        port set \
+            --security-group "${secgroupid:?}" \
+            "${portid:?}"
+
+
+# -----------------------------------------------------
+# Test ssh access.
+#[root@ansibler]
+
+    ssh \
+        fedora@${floatip:?} \
+        '
+        hostname
+        date
+        '
+
+    >   aglais-20211228-machine
+    >   Tue Dec 28 16:04:17 UTC 2021
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[root@ansibler]
+
+    # This is older than cumulus.
+    export OS_SHARE_API_VERSION=2.46
+
+    >   Version 2.51 is not supported by the API. Minimum is 2.0 and maximum is 2.46. (HTTP 406) (Request-ID: req-19e757f4-31b3-4f31-bd0d-5affcc90f7e2)
+
+
+# -----------------------------------------------------
+# Create a share type (based on data from cumulus).
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share type list
+
+    >   -
+
+
+    openstack \
+        --os-cloud 'gaia-dev' \
+        share type list
+
+    >   +--------------------------------------+------------------+------------+------------+--------------------------------------+--------------------------------------------+-------------+
+    >   | id                                   | name             | visibility | is_default | required_extra_specs                 | optional_extra_specs                       | description |
+    >   +--------------------------------------+------------------+------------+------------+--------------------------------------+--------------------------------------------+-------------+
+    >   | 5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8 | cephfsnativetype | public     | False      | driver_handles_share_servers : False | create_share_from_snapshot_support : False | None        |
+    >   |                                      |                  |            |            |                                      | mount_snapshot_support : False             |             |
+    >   |                                      |                  |            |            |                                      | revert_to_snapshot_support : False         |             |
+    >   |                                      |                  |            |            |                                      | snapshot_support : False                   |             |
+    >   +--------------------------------------+------------------+------------+------------+--------------------------------------+--------------------------------------------+-------------+
+
+    openstack \
+        --os-cloud 'gaia-dev' \
+        share type show \
+            '5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8'
+
+    >   +----------------------+--------------------------------------------+
+    >   | Field                | Value                                      |
+    >   +----------------------+--------------------------------------------+
+    >   | id                   | 5d0f58c5-ed21-4e1f-91bb-fe1a49deb5d8       |
+    >   | name                 | cephfsnativetype                           |
+    >   | visibility           | public                                     |
+    >   | is_default           | False                                      |
+    >   | required_extra_specs | driver_handles_share_servers : False       |
+    >   | optional_extra_specs | create_share_from_snapshot_support : False |
+    >   |                      | mount_snapshot_support : False             |
+    >   |                      | revert_to_snapshot_support : False         |
+    >   |                      | snapshot_support : False                   |
+    >   | description          | None                                       |
+    >   +----------------------+--------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share type create \
+            --format json \
+            --description '' \
+            --snapshot-support 'False' \
+            --create-share-from-snapshot-support 'False' \
+            --revert-to-snapshot-support 'False' \
+            --mount-snapshot-support 'False' \
+            --public 'True' \
+           "${buildname:?}-sharetype" \
+           'False'
+
+    >   Access was denied to this resource. (HTTP 403) (Request-ID: req-010af535-3655-4046-ac2a-8742ad24f258)
+
+    #
+    # Need to be able to create at least one of these ...
+    #
+
+# -----------------------------------------------------
+# Check the quotas.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share quota show
+
+    >   +-----------------------+----------------------------------+
+    >   | Field                 | Value                            |
+    >   +-----------------------+----------------------------------+
+    >   | gigabytes             | 50                               |
+    >   | id                    | e216e6b502134b6185380be6ccd0bf09 |
+    >   | share_group_snapshots | 50                               |
+    >   | share_groups          | 50                               |
+    >   | share_networks        | 0                                |
+    >   | shares                | 1                                |
+    >   | snapshot_gigabytes    | 0                                |
+    >   | snapshots             | 0                                |
+    >   +-----------------------+----------------------------------+
+
+
+    #
+    # Need to increase these.
+    # Minimum space is 10T
+    # Minimum count is 15+
+    #
+
+    openstack \
+        --os-cloud 'gaia-dev' \
+        share quota show
+
+    >   +-----------------------+----------------------------------+
+    >   | Field                 | Value                            |
+    >   +-----------------------+----------------------------------+
+    >   | gigabytes             | 30000                            |
+    >   | id                    | 08e24c6d87f94740aa59c172462ed927 |
+    >   | share_group_snapshots | 50                               |
+    >   | share_groups          | 50                               |
+    >   | share_networks        | 10                               |
+    >   | shares                | 100                              |
+    >   | snapshot_gigabytes    | 10                               |
+    >   | snapshots             | 10                               |
+    >   +-----------------------+----------------------------------+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Emailed system admin and he created a share type and increased the quotas.
+    Thanks Paul :-)
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the quotas.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share quota show
+
+    >   +-----------------------+----------------------------------+
+    >   | Field                 | Value                            |
+    >   +-----------------------+----------------------------------+
+    >   | gigabytes             | 30000                            |
+    >   | id                    | e216e6b502134b6185380be6ccd0bf09 |
+    >   | share_group_snapshots | 50                               |
+    >   | share_groups          | 50                               |
+    >   | share_networks        | 0                                |
+    >   | shares                | 100                              |
+    >   | snapshot_gigabytes    | 10                               |
+    >   | snapshots             | 10                               |
+    >   +-----------------------+----------------------------------+
+
+
+# -----------------------------------------------------
+# Check the share types.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share type list
+
+    >   +--------------------------------------+---------------+------------+------------+--------------------------------------+--------------------------------------------+---------------+
+    >   | id                                   | name          | visibility | is_default | required_extra_specs                 | optional_extra_specs                       | description   |
+    >   +--------------------------------------+---------------+------------+------------+--------------------------------------+--------------------------------------------+---------------+
+    >   | 12668f5c-44e4-4b63-abf1-c56002ccc424 | ceph01_cephfs | private    | False      | driver_handles_share_servers : False | create_share_from_snapshot_support : False | CephFS-Ceph01 |
+    >   |                                      |               |            |            |                                      | mount_snapshot_support : False             |               |
+    >   |                                      |               |            |            |                                      | revert_to_snapshot_support : False         |               |
+    >   |                                      |               |            |            |                                      | snapshot_support : False                   |               |
+    >   +--------------------------------------+---------------+------------+------------+--------------------------------------+--------------------------------------------+---------------+
+
+
+# -----------------------------------------------------
+# Create a Manila share.
+#[root@ansibler]
+
+    sharesize=512
+    sharename=${buildname:?}-test-share
+    sharetype=ceph01_cephfs
+    sharezone=nova
+    shareprotocol=CEPHFS
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name "${sharename:?}" \
+            --share-type "${sharetype:?}" \
+            --availability-zone "${sharezone:?}" \
+            "${shareprotocol:?}" \
+            "${sharesize:?}" \
+    | tee "/tmp/${sharename:?}-share.json" \
+    | jq '.'
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2021-12-29T04:47:28.000000",
+    >     "description": null,
+    >     "has_replicas": false,
+    >     "id": "af19610e-0524-4ffa-83b5-6db5305f72d5",
+    >     "is_public": false,
+    >     "metadata": {},
+    >     "mount_snapshot_support": false,
+    >     "name": "aglais-20211229-test-share",
+    >     "project_id": "e216e6b502134b6185380be6ccd0bf09",
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "12668f5c-44e4-4b63-abf1-c56002ccc424",
+    >     "share_type_name": "ceph01_cephfs",
+    >     "size": 512,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "creating",
+    >     "task_state": null,
+    >     "user_id": "5fa0c97a6dd14e01a3c7d91dad5c6b17",
+    >     "volume_type": "ceph01_cephfs"
+    >   }
+
+
+    shareid=$(
+        jq -r '.id' "/tmp/${sharename:?}-share.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+            share show \
+                --format json \
+                "${shareid:?}" \
+    | jq '{id, name, size, status }'
+
+    >   {
+    >     "id": "af19610e-0524-4ffa-83b5-6db5305f72d5",
+    >     "name": "aglais-20211229-test-share",
+    >     "size": 512,
+    >     "status": "available"
+    >   }
+
+
+# -----------------------------------------------------
+# Add access rules to the share.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro" \
+    | jq '{id, access_to, access_level, access_type}'
+
+
+    >   {
+    >     "id": "7e331da1-a744-4ebb-8c74-16227326748a",
+    >     "access_to": "aglais-20211229-test-share-ro",
+    >     "access_level": "ro",
+    >     "access_type": "cephx"
+    >   }
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw" \
+    | jq '{id, access_to, access_level, access_type}'
+
+
+    >   {
+    >     "id": "578e70df-1553-4fe9-adf7-da14074b4845",
+    >     "access_to": "aglais-20211229-test-share-rw",
+    >     "access_level": "rw",
+    >     "access_type": "cephx"
+    >   }
+
+
+# -----------------------------------------------------
+# List the routers.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                   | Status | State | Project                          |
+    >   +--------------------------------------+------------------------+--------+-------+----------------------------------+
+    >   | c809f79d-c5a3-438a-8ece-338abfc32e64 | aglais-20211228-router | ACTIVE | UP    | e216e6b502134b6185380be6ccd0bf09 |
+    >   | c87e4464-ae32-4329-a001-cb5542b28a97 | pfb29-test             | ACTIVE | UP    | e216e6b502134b6185380be6ccd0bf09 |
+    >   +--------------------------------------+------------------------+--------+-------+----------------------------------+
+
+
+# -----------------------------------------------------
+# List the networks.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+    >   | ID                                   | Name                    | Subnets                              |
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+    >   | 2f2b65d0-5996-49d3-b2a1-b36191abde63 | pfb29-test              | ca54eb70-d6fd-4550-bdc1-149f80da8efd |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                  | 5699fb5d-8316-4b88-b889-b05c8a1ec975 |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet           | 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42 |
+    >   | 98bb4fc3-61b5-4019-ae31-05fd76ca3252 | aglais-20211228-network | 562c23b1-45f7-481e-bc68-63f01f57d278 |
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+
+# -----------------------------------------------------
+# List the subnets.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+------------------------+--------------------------------------+--------------+
+    >   | ID                                   | Name                   | Network                              | Subnet       |
+    >   +--------------------------------------+------------------------+--------------------------------------+--------------+
+    >   | 562c23b1-45f7-481e-bc68-63f01f57d278 | aglais-20211228-subnet | 98bb4fc3-61b5-4019-ae31-05fd76ca3252 | 10.56.0.0/16 |
+    >   | 5699fb5d-8316-4b88-b889-b05c8a1ec975 | cephfs                 | 410920fb-5714-4447-b26a-e7b06092fc62 | 10.9.0.0/16  |
+    >   | ca54eb70-d6fd-4550-bdc1-149f80da8efd | pfb29-test             | 2f2b65d0-5996-49d3-b2a1-b36191abde63 | 10.0.0.0/24  |
+    >   +--------------------------------------+------------------------+--------------------------------------+--------------+
+
+
+# -----------------------------------------------------
+# Get our project ID.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        project list \
+        --my-projects
+
+    >   +----------------------------------+---------------+
+    >   | ID                               | Name          |
+    >   +----------------------------------+---------------+
+    >   | e216e6b502134b6185380be6ccd0bf09 | iris-gaia-dev |
+    >   +----------------------------------+---------------+
+
+
+    projectid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            project list \
+                --my-projects \
+                --format json \
+        | jq -r '.[0] | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Create a new router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router create \
+            --format json \
+            --enable \
+            --project "${projectid:?}" \
+            "${buildname:?}-ceph-router" \
+    | tee "/tmp/${buildname:?}-ceph-router.json" \
+    | jq '.'
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [],
+    >     "created_at": "2021-12-29T04:59:11Z",
+    >     "description": "",
+    >     "external_gateway_info": null,
+    >     "flavor_id": null,
+    >     "id": "5df4f14e-4441-4e76-8a23-a9f1699a1dd6",
+    >     "name": "aglais-20211229-ceph-router",
+    >     "project_id": "e216e6b502134b6185380be6ccd0bf09",
+    >     "revision_number": 2,
+    >     "routes": [],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2021-12-29T04:59:11Z"
+    >   }
+
+    cephrouterid=$(
+        jq -r '.id' "/tmp/${buildname:?}-ceph-router.json"
+        )
+
+
+# -----------------------------------------------------
+# Get details of the Ceph network.
+#[root@openstacker]
+
+    cephnetworkid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+            --format json \
+        | jq -r '.[] | select(.Name == "cephfs") | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network show \
+            --format json \
+            "${cephnetworkid:?}" \
+    | tee "/tmp/ceph-network.json" \
+    | jq '.'
+
+    cephsubnetid=$(
+        jq -r '.subnets[0]' "/tmp/ceph-network.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet show \
+            --format json \
+            "${cephsubnetid:?}" \
+    | tee "/tmp/ceph-subnet.json" \
+    | jq '.'
+
+    cephsubnetcidr=$(
+        jq -r '.cidr' "/tmp/ceph-subnet.json"
+        )
+
+# -----------------------------------------------------
+# Set the router's external gateway to point to the cephfs network.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --external-gateway "${cephnetworkid:?}" \
+            "${cephrouterid:?}"
+
+
+# -----------------------------------------------------
+# Create a network port for our local subnet.
+#[root@openstacker]
+
+cat << EOF
+Local network [${aglaisnetworkid}]
+Local subnet  [${aglaissubnetid}]
+EOF
+
+    >   Local network [98bb4fc3-61b5-4019-ae31-05fd76ca3252]
+    >   Local subnet  [562c23b1-45f7-481e-bc68-63f01f57d278]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        port create \
+            --format json \
+            --network "${aglaisnetworkid:?}" \
+            --fixed-ip "subnet=${aglaissubnetid:?}" \
+        "${buildname:?}-subnet-port" \
+    | tee "/tmp/${buildname:?}-subnet-port.json" \
+    | jq '{network_id, fixed_ips}'
+
+    >   {
+    >     "network_id": "98bb4fc3-61b5-4019-ae31-05fd76ca3252",
+    >     "fixed_ips": [
+    >       {
+    >         "subnet_id": "562c23b1-45f7-481e-bc68-63f01f57d278",
+    >         "ip_address": "10.56.0.250"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Add our local subnet port to our Ceph router.
+#[root@openstacker]
+
+    subnetportid=$(
+        jq -r '.id' "/tmp/${buildname:?}-subnet-port.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router add port \
+            "${cephrouterid:?}" \
+            "${subnetportid:?}"
+
+
+# -----------------------------------------------------
+# Add a route for the Ceph network to our local router.
+#[root@openstacker]
+
+    subnetportip=$(
+        jq -r ".fixed_ips[] | select(.subnet_id = \"${aglaissubnetid:?}\") | .ip_address" "/tmp/${buildname:?}-subnet-port.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=${cephsubnetcidr:?},gateway=${subnetportip:?}" \
+            "${aglaisrouterid:?}"
+
+
+# -----------------------------------------------------
+# Get details of the Ceph router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${cephrouterid:?}" \
+    | jq '{external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "external_gateway_info": {
+    >       "network_id": "410920fb-5714-4447-b26a-e7b06092fc62",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "5699fb5d-8316-4b88-b889-b05c8a1ec975",
+    >           "ip_address": "10.9.1.46"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "769150a5-5f62-4374-a71f-223d0ac4672b",
+    >         "ip_address": "10.56.0.250",
+    >         "subnet_id": "562c23b1-45f7-481e-bc68-63f01f57d278"
+    >       }
+    >     ],
+    >     "routes": []
+    >   }
+
+
+# -----------------------------------------------------
+# Get details of our local router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${aglaisrouterid:?}" \
+    | jq '{external_gateway_info, interfaces_info, routes}'
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    #############################
+
+    notes/zrq/20201013-02-ceph-router.txt
+    notes/zrq/20201012-03-ceph-mount.txt
+    notes/zrq/20201027-02-ceph-router.txt
+
+
+
+

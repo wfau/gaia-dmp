@@ -1,0 +1,968 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Repeat the sequence using the same image as Paul.
+
+    Result:
+
+        Work in progress ..
+
+
+# -----------------------------------------------------
+# Login using the command line client ..
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-arcus-eval
+    buildname="aglais-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
+
+
+# -----------------------------------------------------
+# Create our SSH keypair.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +------------+-------------------------------------------------+------+
+    >   | Name       | Fingerprint                                     | Type |
+    >   +------------+-------------------------------------------------+------+
+    >   | pfb29-test | be:b5:48:f6:fe:a2:90:ec:9d:c4:50:d9:26:24:ee:08 | ssh  |
+    >   +------------+-------------------------------------------------+------+
+
+
+    wget \
+        -O "/tmp/${buildname:?}-keypair.pub" \
+        'https://raw.githubusercontent.com/wfau/aglais/master/deployments/common/ssh/aglais-team-keys'
+
+    >   ....
+    >   ....
+    >   2021-12-29 13:22:25 (6.51 MB/s) - ‘/tmp/aglais-20211229-keypair.pub’ saved [1770/1770]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair create \
+            --format json \
+            --public-key "/tmp/${buildname:?}-keypair.pub" \
+            "${buildname}-keypair" \
+    | tee "/tmp/${buildname:?}-keypair.json" \
+    | jq '{id, name, fingerprint}'
+
+    >   {
+    >     "id": "aglais-20211229-keypair",
+    >     "name": "aglais-20211229-keypair",
+    >     "fingerprint": "2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16"
+    >   }
+
+    aglaiskeypair=$(
+        jq -r '.id' "/tmp/${buildname:?}-keypair.json"
+        )
+
+
+# -----------------------------------------------------
+# Create our internal network, subnet and router.
+# https://docs.openstack.org/ocata/user-guide/cli-create-and-manage-networks.html
+#[root@ansibler]
+
+    aglaissubnetblock='10.56.0.0/16'
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network create \
+            --format json \
+            "${buildname:?}-network" \
+    | tee "/tmp/${buildname:?}-network.json" \
+    | jq '{name, id, subnets}'
+
+    aglaisnetworkid=$(
+        jq -r '.id' "/tmp/${buildname:?}-network.json"
+        )
+
+    >   {
+    >     "name": "aglais-20211229-network",
+    >     "id": "3cfe1703-a3d5-46e6-93b0-a7a3579bd291",
+    >     "subnets": []
+    >   }
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet create \
+            --format json \
+            "${buildname:?}-subnet" \
+            --network "${aglaisnetworkid:?}" \
+            --subnet-range "${aglaissubnetblock:?}" \
+    | tee "/tmp/${buildname:?}-subnet.json" \
+    | jq '{name, id, cidr, gateway_ip, allocation_pools}'
+
+    aglaissubnetid=$(
+        jq -r '.id' "/tmp/${buildname:?}-subnet.json"
+        )
+
+    >   {
+    >     "name": "aglais-20211229-subnet",
+    >     "id": "6b6b3d17-1d6e-46be-b616-61b43f820733",
+    >     "cidr": "10.56.0.0/16",
+    >     "gateway_ip": "10.56.0.1",
+    >     "allocation_pools": [
+    >       {
+    >         "start": "10.56.0.2",
+    >         "end": "10.56.255.254"
+    >       }
+    >     ]
+    >   }
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router create \
+            --format json \
+            "${buildname:?}-router" \
+    | tee "/tmp/${buildname:?}-router.json" \
+    | jq '{name, id, routes}'
+
+    aglaisrouterid=$(
+        jq -r '.id' "/tmp/${buildname:?}-router.json"
+        )
+
+    >   {
+    >     "name": "aglais-20211229-router",
+    >     "id": "8df14093-543e-4099-a5e7-d44c237a000f",
+    >     "routes": []
+    >   }
+
+
+
+# -----------------------------------------------------
+# Link our router to the public internet and our private subnet.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+    >   | ID                                   | Name                    | Subnets                              |
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+    >   | 2f2b65d0-5996-49d3-b2a1-b36191abde63 | pfb29-test              | ca54eb70-d6fd-4550-bdc1-149f80da8efd |
+    >   | 3cfe1703-a3d5-46e6-93b0-a7a3579bd291 | aglais-20211229-network | 6b6b3d17-1d6e-46be-b616-61b43f820733 |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                  | 5699fb5d-8316-4b88-b889-b05c8a1ec975 |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet           | 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42 |
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+
+    internet=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name == "CUDN-Internet") | .ID
+            '
+        )
+
+    # Link our router to the public internet.
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            "${aglaisrouterid:?}" \
+            --external-gateway \
+                "${internet:?}"
+
+    # Link our router to our private subnet.
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router add subnet \
+            "${aglaisrouterid:?}" \
+            "${aglaissubnetid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${aglaisrouterid:?}" \
+    | tee "/tmp/${buildname:?}-router.json" \
+    | jq '{name, id, routes, interfaces_info, external_gateway_info}'
+
+    >   {
+    >     "name": "aglais-20211229-router",
+    >     "id": "8df14093-543e-4099-a5e7-d44c237a000f",
+    >     "routes": [],
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "0e1c3291-4537-4f57-8ce9-1e6e9f6b9d94",
+    >         "ip_address": "10.56.0.1",
+    >         "subnet_id": "6b6b3d17-1d6e-46be-b616-61b43f820733"
+    >       }
+    >     ],
+    >     "external_gateway_info": {
+    >       "network_id": "57add367-d205-4030-a929-d75617a7c63e",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42",
+    >           "ip_address": "128.232.222.185"
+    >         }
+    >       ]
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Get the ID of the Fedora image.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image list
+
+    >   +--------------------------------------+------------------------------+--------+
+    >   | ID                                   | Name                         | Status |
+    >   +--------------------------------------+------------------------------+--------+
+    >   | c6f804c9-838e-4f93-acb4-f9c0e5f8f081 | AlmaLinux-8.5                | active |
+    >   ....
+    >   ....
+    >   +--------------------------------------+------------------------------+--------+
+
+    imageid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            image list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("AlmaLinux-8.5")) | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Get the flavor ID.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list
+
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+    >   | ID                                   | Name         |   RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+    >   | 2e5dc624-1d3b-4da7-8107-cc2dd4cb5073 | vm.v1.large  | 32768 |   60 |         0 |     8 | True      |
+    >   | 6793b213-5efa-4b51-96bf-1340ff066499 | vm.v1.xsmall |  2048 |   20 |         0 |     1 | True      |
+    >   | 698a8d46-eceb-4c55-91ff-38286bf9eabb | vm.v1.tiny   |  1024 |   10 |         0 |     1 | True      |
+    >   | 6b56d6e9-5397-4543-87fb-e0c0b6d47961 | vm.v1.small  | 16384 |   20 |         0 |     4 | True      |
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+
+    flavorid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "vm.v1.small") | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Create a security group for our VM.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group create \
+            --format json \
+            "${buildname:?}-security" \
+    | tee "/tmp/${buildname:?}-security.json" \
+    | jq '{name, id}'
+
+    >   {
+    >     "name": "aglais-20211229-security",
+    >     "id": "f13f3d15-7e14-4f4c-878d-afa63f9da7e0"
+    >   }
+
+    secgroupid=$(
+        jq -r '.id' "/tmp/${buildname:?}-security.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --dst-port   22 \
+            --protocol  'tcp' \
+            --ethertype 'IPv4' \
+            "${secgroupid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --dst-port   22 \
+            --protocol  'tcp' \
+            --ethertype 'IPv6' \
+            "${secgroupid:?}"
+
+
+# -----------------------------------------------------
+# Create our virtual machine instance.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server create \
+            --format json \
+            --image "${imageid:?}" \
+            --flavor "${flavorid:?}" \
+            --network "${aglaisnetworkid:?}" \
+            --key-name "${aglaiskeypair:?}" \
+            --security-group "${secgroupid:?}" \
+            "${buildname:?}-machine" \
+    | tee "/tmp/${buildname:?}-machine.json" \
+    | jq '{name, id, status, flavor, image, key_name}'
+
+    vmident=$(
+        jq -r '.id' "/tmp/${buildname:?}-machine.json"
+        )
+
+    >   {
+    >     "name": "aglais-20211229-machine",
+    >     "id": "b0e61d0c-5682-459c-9d28-9ac5e4ecc335",
+    >     "status": "BUILD",
+    >     "flavor": "vm.v1.small (6b56d6e9-5397-4543-87fb-e0c0b6d47961)",
+    >     "image": "AlmaLinux-8.5 (c6f804c9-838e-4f93-acb4-f9c0e5f8f081)",
+    >     "key_name": "aglais-20211229-keypair"
+    >   }
+
+
+# -----------------------------------------------------
+# Create a public IP address and attach it to our VM.
+#[root@ansibler]
+
+    floatip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            floating ip \
+            create \
+            --format json \
+            "${internet:?}" \
+        | jq -r '.floating_ip_address'
+        )
+
+    privateip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${vmident:?}" \
+        | jq -r ".addresses.\"${buildname:?}-network\"[0]"
+        )
+
+cat << EOF
+Public  IP [${floatip}]
+Private IP [${privateip}]
+EOF
+
+    >   Public  IP [128.232.222.227]
+    >   Private IP [10.56.2.4]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server add \
+            floating ip \
+            --fixed-ip-address "${privateip:?}" \
+            "${vmident:?}" \
+            "${floatip:?}"
+
+
+# -----------------------------------------------------
+# Test ssh access.
+#[root@ansibler]
+
+    ssh -v \
+        user@${floatip:?} \
+        '
+        hostname
+        date
+        '
+
+    >   OpenSSH_8.6p1, OpenSSL 1.1.1k  FIPS 25 Mar 2021
+    >   debug1: Reading configuration data /etc/ssh/ssh_config
+    >   debug1: Reading configuration data /etc/ssh/ssh_config.d/50-redhat.conf
+    >   debug1: Reading configuration data /etc/crypto-policies/back-ends/openssh.config
+    >   debug1: configuration requests final Match pass
+    >   debug1: re-parsing configuration
+    >   debug1: Reading configuration data /etc/ssh/ssh_config
+    >   debug1: Reading configuration data /etc/ssh/ssh_config.d/50-redhat.conf
+    >   debug1: Reading configuration data /etc/crypto-policies/back-ends/openssh.config
+    >   debug1: Connecting to 128.232.222.227 [128.232.222.227] port 22.
+    >   
+    >   debug1: connect to address 128.232.222.227 port 22: Connection refused
+    >   ssh: connect to host 128.232.222.227 port 22: Connection refused
+
+    #
+    # Fails again.
+    #
+
+    #
+    # What if we create the VM using Paul's security group ?
+    #
+
+
+# -----------------------------------------------------
+# Identify Paul's security group.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group list
+
+    >   +--------------------------------------+--------------------------+--------------------------+----------------------------------+------+
+    >   | ID                                   | Name                     | Description              | Project                          | Tags |
+    >   +--------------------------------------+--------------------------+--------------------------+----------------------------------+------+
+    >   | 037f9159-8896-46de-9a2f-f9129a7fa914 | External SSH             | External SSH             | e216e6b502134b6185380be6ccd0bf09 | []   |
+    >   | 1646ba2a-90c9-4649-8348-5ed8e356130f | default                  | Default security group   | e216e6b502134b6185380be6ccd0bf09 | []   |
+    >   | 53d66fe1-14fc-4655-b658-ccaf8ad844cb | aglais-20211229-security | aglais-20211229-security | e216e6b502134b6185380be6ccd0bf09 | []   |
+    >   | 76a1e1a7-079b-44a0-ae71-9e7bfc6ca025 | aglais-20211229-security | aglais-20211229-security | e216e6b502134b6185380be6ccd0bf09 | []   |
+    >   | c31752e6-ad0e-4a63-965e-89bdb27572f3 | pfb29-test               |                          | e216e6b502134b6185380be6ccd0bf09 | []   |
+    >   | f13f3d15-7e14-4f4c-878d-afa63f9da7e0 | aglais-20211229-security | aglais-20211229-security | e216e6b502134b6185380be6ccd0bf09 | []   |
+    >   +--------------------------------------+--------------------------+--------------------------+----------------------------------+------+
+
+    secgroupid=c31752e6-ad0e-4a63-965e-89bdb27572f3
+
+# -----------------------------------------------------
+# Create our virtual machine instance.
+#[root@ansibler]
+
+    testname=aglais-001
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server create \
+            --format json \
+            --image "${imageid:?}" \
+            --flavor "${flavorid:?}" \
+            --network "${aglaisnetworkid:?}" \
+            --key-name "${aglaiskeypair:?}" \
+            --security-group "${secgroupid:?}" \
+            "${testname:?}-machine" \
+    | tee "/tmp/${buildname:?}-machine.json" \
+    | jq '{name, id, status, flavor, image, key_name}'
+
+    vmident=$(
+        jq -r '.id' "/tmp/${buildname:?}-machine.json"
+        )
+
+    >   {
+    >     "name": "aglais-001-machine",
+    >     "id": "ea15b979-f2a4-48c9-9572-044376482ac3",
+    >     "status": "BUILD",
+    >     "flavor": "vm.v1.small (6b56d6e9-5397-4543-87fb-e0c0b6d47961)",
+    >     "image": "AlmaLinux-8.5 (c6f804c9-838e-4f93-acb4-f9c0e5f8f081)",
+    >     "key_name": "aglais-20211229-keypair"
+    >   }
+
+
+# -----------------------------------------------------
+# Create a public IP address and attach it to our VM.
+#[root@ansibler]
+
+    floatip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            floating ip \
+            create \
+            --format json \
+            "${internet:?}" \
+        | jq -r '.floating_ip_address'
+        )
+
+    privateip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${vmident:?}" \
+        | jq -r ".addresses.\"${buildname:?}-network\"[0]"
+        )
+
+cat << EOF
+Public  IP [${floatip}]
+Private IP [${privateip}]
+EOF
+
+    >   Public  IP [128.232.222.124]
+    >   Private IP [10.56.0.43]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server add \
+            floating ip \
+            --fixed-ip-address "${privateip:?}" \
+            "${vmident:?}" \
+            "${floatip:?}"
+
+
+# -----------------------------------------------------
+# Test ssh access.
+#[root@ansibler]
+
+    ssh -v \
+        user@${floatip:?} \
+        '
+        hostname
+        date
+        '
+
+    >   ....
+    >   ....
+    >   debug1: Connecting to 128.232.222.124 [128.232.222.124] port 22.
+    >   debug1: connect to address 128.232.222.124 port 22: Connection refused
+    >   ssh: connect to host 128.232.222.124 port 22: Connection refused
+
+    #
+    # Fails again.
+    #
+
+    #
+    # What if we create the VM using Paul's network ?
+    #
+
+
+# -----------------------------------------------------
+# Identify Paul's network.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+    >   | ID                                   | Name                    | Subnets                              |
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+    >   | 2f2b65d0-5996-49d3-b2a1-b36191abde63 | pfb29-test              | ca54eb70-d6fd-4550-bdc1-149f80da8efd |
+    >   | 3cfe1703-a3d5-46e6-93b0-a7a3579bd291 | aglais-20211229-network | 6b6b3d17-1d6e-46be-b616-61b43f820733 |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                  | 5699fb5d-8316-4b88-b889-b05c8a1ec975 |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet           | 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42 |
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+
+    aglaisnetworkid=2f2b65d0-5996-49d3-b2a1-b36191abde63
+
+# -----------------------------------------------------
+# Create our virtual machine instance.
+#[root@ansibler]
+
+    testname=aglais-002
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server create \
+            --format json \
+            --image "${imageid:?}" \
+            --flavor "${flavorid:?}" \
+            --network "${aglaisnetworkid:?}" \
+            --key-name "${aglaiskeypair:?}" \
+            --security-group "${secgroupid:?}" \
+            "${testname:?}-machine" \
+    | tee "/tmp/${buildname:?}-machine.json" \
+    | jq '{name, id, status, flavor, image, key_name}'
+
+    vmident=$(
+        jq -r '.id' "/tmp/${buildname:?}-machine.json"
+        )
+
+    >   {
+    >     "name": "aglais-002-machine",
+    >     "id": "1c1c3740-057a-49a9-9f17-4586f8d31e56",
+    >     "status": "BUILD",
+    >     "flavor": "vm.v1.small (6b56d6e9-5397-4543-87fb-e0c0b6d47961)",
+    >     "image": "AlmaLinux-8.5 (c6f804c9-838e-4f93-acb4-f9c0e5f8f081)",
+    >     "key_name": "aglais-20211229-keypair"
+    >   }
+
+
+# -----------------------------------------------------
+# Create a public IP address and attach it to our VM.
+#[root@ansibler]
+
+    networkname=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network show \
+                --format json \
+                "${aglaisnetworkid:?}" \
+        | jq -r '.name'
+        )
+
+    floatip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            floating ip \
+            create \
+            --format json \
+            "${internet:?}" \
+        | jq -r '.floating_ip_address'
+        )
+
+    privateip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${vmident:?}" \
+        | jq -r ".addresses.\"${networkname:?}\"[0]"
+        )
+
+cat << EOF
+Public  IP [${floatip}]
+Private IP [${privateip}]
+EOF
+
+    >   Public  IP [128.232.222.155]
+    >   Private IP [10.0.0.231]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server add \
+            floating ip \
+            --fixed-ip-address "${privateip:?}" \
+            "${vmident:?}" \
+            "${floatip:?}"
+
+
+# -----------------------------------------------------
+# Test ssh access.
+#[root@ansibler]
+
+    ssh -v \
+        user@${floatip:?} \
+        '
+        hostname
+        date
+        '
+
+    >   ....
+    >   ....
+    >   debug1: Connecting to 128.232.222.155 [128.232.222.155] port 22.
+    >   debug1: Connection established.
+    >   ....
+    >   ....
+
+    #
+    # OK, so Paul's network works, ours doesn't.
+    #
+
+
+
+# -----------------------------------------------------
+# Compare networks.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+    >   | ID                                   | Name                    | Subnets                              |
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+    >   | 2f2b65d0-5996-49d3-b2a1-b36191abde63 | pfb29-test              | ca54eb70-d6fd-4550-bdc1-149f80da8efd |
+    >   | 3cfe1703-a3d5-46e6-93b0-a7a3579bd291 | aglais-20211229-network | 6b6b3d17-1d6e-46be-b616-61b43f820733 |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                  | 5699fb5d-8316-4b88-b889-b05c8a1ec975 |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet           | 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42 |
+    >   +--------------------------------------+-------------------------+--------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network show \
+            '2f2b65d0-5996-49d3-b2a1-b36191abde63'
+
+    >   +---------------------------+--------------------------------------+
+    >   | Field                     | Value                                |
+    >   +---------------------------+--------------------------------------+
+    >   | admin_state_up            | UP                                   |
+    >   | availability_zone_hints   |                                      |
+    >   | availability_zones        | nova                                 |
+    >   | created_at                | 2021-12-23T22:05:06Z                 |
+    >   | description               |                                      |
+    >   | dns_domain                |                                      |
+    >   | id                        | 2f2b65d0-5996-49d3-b2a1-b36191abde63 |
+    >   | ipv4_address_scope        | None                                 |
+    >   | ipv6_address_scope        | None                                 |
+    >   | is_default                | None                                 |
+    >   | is_vlan_transparent       | None                                 |
+    >   | mtu                       | 1450                                 |
+    >   | name                      | pfb29-test                           |
+    >   | port_security_enabled     | True                                 |
+    >   | project_id                | e216e6b502134b6185380be6ccd0bf09     |
+    >   | provider:network_type     | None                                 |
+    >   | provider:physical_network | None                                 |
+    >   | provider:segmentation_id  | None                                 |
+    >   | qos_policy_id             | None                                 |
+    >   | revision_number           | 2                                    |
+    >   | router:external           | Internal                             |
+    >   | segments                  | None                                 |
+    >   | shared                    | False                                |
+    >   | status                    | ACTIVE                               |
+    >   | subnets                   | ca54eb70-d6fd-4550-bdc1-149f80da8efd |
+    >   | tags                      |                                      |
+    >   | updated_at                | 2021-12-23T22:05:06Z                 |
+    >   +---------------------------+--------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network show \
+            '3cfe1703-a3d5-46e6-93b0-a7a3579bd291'
+
+    >   +---------------------------+--------------------------------------+
+    >   | Field                     | Value                                |
+    >   +---------------------------+--------------------------------------+
+    >   | admin_state_up            | UP                                   |
+    >   | availability_zone_hints   |                                      |
+    >   | availability_zones        | nova                                 |
+    >   | created_at                | 2021-12-29T13:23:03Z                 |
+    >   | description               |                                      |
+    >   | dns_domain                |                                      |
+    >   | id                        | 3cfe1703-a3d5-46e6-93b0-a7a3579bd291 |
+    >   | ipv4_address_scope        | None                                 |
+    >   | ipv6_address_scope        | None                                 |
+    >   | is_default                | None                                 |
+    >   | is_vlan_transparent       | None                                 |
+    >   | mtu                       | 1450                                 |
+    >   | name                      | aglais-20211229-network              |
+    >   | port_security_enabled     | True                                 |
+    >   | project_id                | e216e6b502134b6185380be6ccd0bf09     |
+    >   | provider:network_type     | None                                 |
+    >   | provider:physical_network | None                                 |
+    >   | provider:segmentation_id  | None                                 |
+    >   | qos_policy_id             | None                                 |
+    >   | revision_number           | 2                                    |
+    >   | router:external           | Internal                             |
+    >   | segments                  | None                                 |
+    >   | shared                    | False                                |
+    >   | status                    | ACTIVE                               |
+    >   | subnets                   | 6b6b3d17-1d6e-46be-b616-61b43f820733 |
+    >   | tags                      |                                      |
+    >   | updated_at                | 2021-12-29T13:23:19Z                 |
+    >   +---------------------------+--------------------------------------+
+
+
+# -----------------------------------------------------
+# Compare subnets.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+------------------------+--------------------------------------+--------------+
+    >   | ID                                   | Name                   | Network                              | Subnet       |
+    >   +--------------------------------------+------------------------+--------------------------------------+--------------+
+    >   | 5699fb5d-8316-4b88-b889-b05c8a1ec975 | cephfs                 | 410920fb-5714-4447-b26a-e7b06092fc62 | 10.9.0.0/16  |
+    >   | 6b6b3d17-1d6e-46be-b616-61b43f820733 | aglais-20211229-subnet | 3cfe1703-a3d5-46e6-93b0-a7a3579bd291 | 10.56.0.0/16 |
+    >   | ca54eb70-d6fd-4550-bdc1-149f80da8efd | pfb29-test             | 2f2b65d0-5996-49d3-b2a1-b36191abde63 | 10.0.0.0/24  |
+    >   +--------------------------------------+------------------------+--------------------------------------+--------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet show \
+            'ca54eb70-d6fd-4550-bdc1-149f80da8efd'
+
+    >   +----------------------+--------------------------------------+
+    >   | Field                | Value                                |
+    >   +----------------------+--------------------------------------+
+    >   | allocation_pools     | 10.0.0.2-10.0.0.254                  |
+    >   | cidr                 | 10.0.0.0/24                          |
+    >   | created_at           | 2021-12-23T22:05:06Z                 |
+    >   | description          |                                      |
+    >   | dns_nameservers      | 131.111.12.20, 131.111.8.42          |
+    >   | dns_publish_fixed_ip | None                                 |
+    >   | enable_dhcp          | True                                 |
+    >   | gateway_ip           | 10.0.0.1                             |
+    >   | host_routes          |                                      |
+    >   | id                   | ca54eb70-d6fd-4550-bdc1-149f80da8efd |
+    >   | ip_version           | 4                                    |
+    >   | ipv6_address_mode    | None                                 |
+    >   | ipv6_ra_mode         | None                                 |
+    >   | name                 | pfb29-test                           |
+    >   | network_id           | 2f2b65d0-5996-49d3-b2a1-b36191abde63 |
+    >   | prefix_length        | None                                 |
+    >   | project_id           | e216e6b502134b6185380be6ccd0bf09     |
+    >   | revision_number      | 0                                    |
+    >   | segment_id           | None                                 |
+    >   | service_types        |                                      |
+    >   | subnetpool_id        | None                                 |
+    >   | tags                 |                                      |
+    >   | updated_at           | 2021-12-23T22:05:06Z                 |
+    >   +----------------------+--------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet show \
+            '6b6b3d17-1d6e-46be-b616-61b43f820733'
+
+    >   +----------------------+--------------------------------------+
+    >   | Field                | Value                                |
+    >   +----------------------+--------------------------------------+
+    >   | allocation_pools     | 10.56.0.2-10.56.255.254              |
+    >   | cidr                 | 10.56.0.0/16                         |
+    >   | created_at           | 2021-12-29T13:23:19Z                 |
+    >   | description          |                                      |
+    >   | dns_nameservers      |                                      |
+    >   | dns_publish_fixed_ip | None                                 |
+    >   | enable_dhcp          | True                                 |
+    >   | gateway_ip           | 10.56.0.1                            |
+    >   | host_routes          |                                      |
+    >   | id                   | 6b6b3d17-1d6e-46be-b616-61b43f820733 |
+    >   | ip_version           | 4                                    |
+    >   | ipv6_address_mode    | None                                 |
+    >   | ipv6_ra_mode         | None                                 |
+    >   | name                 | aglais-20211229-subnet               |
+    >   | network_id           | 3cfe1703-a3d5-46e6-93b0-a7a3579bd291 |
+    >   | prefix_length        | None                                 |
+    >   | project_id           | e216e6b502134b6185380be6ccd0bf09     |
+    >   | revision_number      | 0                                    |
+    >   | segment_id           | None                                 |
+    >   | service_types        |                                      |
+    >   | subnetpool_id        | None                                 |
+    >   | tags                 |                                      |
+    >   | updated_at           | 2021-12-29T13:23:19Z                 |
+    >   +----------------------+--------------------------------------+
+
+    #
+    # Difference in the size of the subnet /24 and /16
+    # Paul's has dns servers set, ours doesn't.
+    #
+
+
+# -----------------------------------------------------
+# Compare routers.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                   | Status | State | Project                          |
+    >   +--------------------------------------+------------------------+--------+-------+----------------------------------+
+    >   | 8df14093-543e-4099-a5e7-d44c237a000f | aglais-20211229-router | ACTIVE | UP    | e216e6b502134b6185380be6ccd0bf09 |
+    >   | c87e4464-ae32-4329-a001-cb5542b28a97 | pfb29-test             | ACTIVE | UP    | e216e6b502134b6185380be6ccd0bf09 |
+    >   +--------------------------------------+------------------------+--------+-------+----------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            'c87e4464-ae32-4329-a001-cb5542b28a97'
+
+    >   +-------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | Field                   | Value                                                                                                                                                                                       |
+    >   +-------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | admin_state_up          | UP                                                                                                                                                                                          |
+    >   | availability_zone_hints |                                                                                                                                                                                             |
+    >   | availability_zones      | nova                                                                                                                                                                                        |
+    >   | created_at              | 2021-12-23T22:05:25Z                                                                                                                                                                        |
+    >   | description             |                                                                                                                                                                                             |
+    >   | external_gateway_info   | {"network_id": "57add367-d205-4030-a929-d75617a7c63e", "enable_snat": true, "external_fixed_ips": [{"subnet_id": "3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42", "ip_address": "128.232.222.223"}]} |
+    >   | flavor_id               | None                                                                                                                                                                                        |
+    >   | id                      | c87e4464-ae32-4329-a001-cb5542b28a97                                                                                                                                                        |
+    >   | interfaces_info         | [{"port_id": "2631aaa3-0890-4150-bcd9-eca6b19d4e00", "ip_address": "10.0.0.1", "subnet_id": "ca54eb70-d6fd-4550-bdc1-149f80da8efd"}]                                                        |
+    >   | name                    | pfb29-test                                                                                                                                                                                  |
+    >   | project_id              | e216e6b502134b6185380be6ccd0bf09                                                                                                                                                            |
+    >   | revision_number         | 9                                                                                                                                                                                           |
+    >   | routes                  |                                                                                                                                                                                             |
+    >   | status                  | ACTIVE                                                                                                                                                                                      |
+    >   | tags                    |                                                                                                                                                                                             |
+    >   | updated_at              | 2021-12-23T22:06:07Z                                                                                                                                                                        |
+    >   +-------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            '8df14093-543e-4099-a5e7-d44c237a000f'
+
+    >   +-------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | Field                   | Value                                                                                                                                                                                       |
+    >   +-------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | admin_state_up          | UP                                                                                                                                                                                          |
+    >   | availability_zone_hints |                                                                                                                                                                                             |
+    >   | availability_zones      | nova                                                                                                                                                                                        |
+    >   | created_at              | 2021-12-29T13:24:11Z                                                                                                                                                                        |
+    >   | description             |                                                                                                                                                                                             |
+    >   | external_gateway_info   | {"network_id": "57add367-d205-4030-a929-d75617a7c63e", "enable_snat": true, "external_fixed_ips": [{"subnet_id": "3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42", "ip_address": "128.232.222.185"}]} |
+    >   | flavor_id               | None                                                                                                                                                                                        |
+    >   | id                      | 8df14093-543e-4099-a5e7-d44c237a000f                                                                                                                                                        |
+    >   | interfaces_info         | [{"port_id": "0e1c3291-4537-4f57-8ce9-1e6e9f6b9d94", "ip_address": "10.56.0.1", "subnet_id": "6b6b3d17-1d6e-46be-b616-61b43f820733"}]                                                       |
+    >   | name                    | aglais-20211229-router                                                                                                                                                                      |
+    >   | project_id              | e216e6b502134b6185380be6ccd0bf09                                                                                                                                                            |
+    >   | revision_number         | 9                                                                                                                                                                                           |
+    >   | routes                  |                                                                                                                                                                                             |
+    >   | status                  | ACTIVE                                                                                                                                                                                      |
+    >   | tags                    |                                                                                                                                                                                             |
+    >   | updated_at              | 2021-12-29T13:25:09Z                                                                                                                                                                        |
+    >   +-------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+
+    #
+    # Is there a conflict having a /16 and /24 subnets ?
+    # Try again, assigning a /24 block to our subnet.
+    #
+
+    #
+    # Test a Fedora image on Paul's network.
+    # Test the Manila shares on Paul's network.
+    #
+
+
+
+

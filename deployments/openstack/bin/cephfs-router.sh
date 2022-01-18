@@ -43,8 +43,9 @@
     echo "---- ---- ----"
 
     routername="${buildname:?}-cephfs-router"
-    gatewayname='cumulus-internal'
-
+#TODO Move the hard coded name and CIDR into a config file.
+    cephnetname='cephfs'
+    cephnetcidr='10.4.0.0/16'
 
 # -----------------------------------------------------
 # Get our project ID.
@@ -87,14 +88,14 @@
 
 
 # -----------------------------------------------------
-# Set the router's external gateway.
+# Connect our router to the Ceph network.
 
     gatewayid=$(
         openstack \
             --os-cloud "${cloudname:?}" \
             network list \
                 --format json \
-        | jq -r '.[] | select(.Name == "'${gatewayname:?}'") | .ID'
+        | jq -r '.[] | select(.Name == "'${cephnetname:?}'") | .ID'
         )
 
     openstack \
@@ -189,7 +190,7 @@
     openstack \
         --os-cloud "${cloudname:?}" \
         router set \
-            --route "destination=10.206.0.0/16,gateway=${subnetportip:?}" \
+            --route "destination=${cephnetcidr:?}/16,gateway=${subnetportip:?}" \
             "${clusterrouterid:?}"
 
 # -----------------------------------------------------

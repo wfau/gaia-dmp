@@ -295,6 +295,8 @@
 
 # -----------------------------------------------------
 # Delete any extra networks.
+# TODO Configurable list of networks to ignore ?
+# TODO COnfig file for the Arcus cloud ..
 
     echo ""
     echo "---- ----"
@@ -306,9 +308,9 @@
             network list \
                 --format json \
         | jq -r '.[] | select(
-            (.Name != "internet")
+            (.Name != "CUDN-Internet")
             and
-            (.Name != "cumulus-internal")
+            (.Name != "ceph")
             ) | .ID'
         )
     do

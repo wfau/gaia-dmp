@@ -43,47 +43,56 @@
     echo "---- ---- ----"
 
     routername="${buildname:?}-cephfs-router"
-#TODO Move the hard coded name and CIDR into a config file.
-    cephnetname='cephfs'
-    cephnetcidr='10.4.0.0/16'
+
+    cephnetname=$(
+        yq eval \
+            ".openstack.networks.cephnet.name" \
+            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
+        )
+    cephnetcidr=$(
+        yq eval \
+            ".openstack.networks.cephnet.cidr" \
+            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
+        )
+
 
 # -----------------------------------------------------
 # Get our project ID.
-
-    projectname="iris-${cloudname:?}"
-
-    projectid=$(
-        openstack \
-            --os-cloud "${cloudname:?}" \
-            project list \
-                --format json \
-        | jq -r '.[] | select(.Name == "'${projectname:?}'") | .ID'
-        )
-
-    echo ""
-    echo "---- ----"
-    echo "Project [${projectname}]"
-    echo "Project [${projectid}]"
-
+#
+#   projectname="iris-${cloudname:?}"#
+#
+#   projectid=$(
+#       openstack \
+#           --os-cloud "${cloudname:?}" \
+#           project list \
+#               --format json \
+#       | jq -r '.[] | select(.Name == "'${projectname:?}'") | .ID'
+#       )
+#
+#   echo ""
+#   echo "---- ----"
+#   echo "Project [${projectname}]"
+#   echo "Project [${projectid}]"
+#
 
 # -----------------------------------------------------
 # Create a new router.
+# --project "${projectid:?}" \
 
     openstack \
         --os-cloud "${cloudname:?}" \
         router create \
             --format json \
             --enable \
-            --project "${projectid:?}" \
             "${routername:?}" \
-    > "/tmp/ceph-router.json"
+    > '/tmp/ceph-router.json'
 
     cephroutername=$(
-        jq -r '. | .name' "/tmp/ceph-router.json"
+        jq -r '. | .name' '/tmp/ceph-router.json'
         )
 
     cephrouterid=$(
-        jq -r '. | .id' "/tmp/ceph-router.json"
+        jq -r '. | .id' '/tmp/ceph-router.json'
         )
 
 
@@ -190,7 +199,7 @@
     openstack \
         --os-cloud "${cloudname:?}" \
         router set \
-            --route "destination=${cephnetcidr:?}/16,gateway=${subnetportip:?}" \
+            --route "destination=${cephnetcidr:?},gateway=${subnetportip:?}" \
             "${clusterrouterid:?}"
 
 # -----------------------------------------------------

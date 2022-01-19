@@ -37,6 +37,7 @@
     echo "Path [${binpath}]"
     echo "Tree [${treetop}]"
 
+    cloudbase='arcus'
     cloudname=${1:?}
     buildname="aglais-$(date '+%Y%m%d')"
     builddate="$(date '+%Y%m%d:%H%M%S')"
@@ -73,11 +74,30 @@
 
     yq eval \
         --inplace \
-        ".aglais.spec.openstack.cloud = \"${cloudname}\"" \
+        ".aglais.spec.openstack.cloud.base = \"${cloudbase}\"" \
         "${statusyml:?}"
 
+    yq eval \
+        --inplace \
+        ".aglais.spec.openstack.cloud.name = \"${cloudname}\"" \
+        "${statusyml:?}"
+
+#rm '/usr/bin/yq'
+#wget -O '/usr/bin/yq' 'https://github.com/mikefarah/yq/releases/download/v4.16.2/yq_linux_amd64'
+#chmod a+x '/usr/bin/yq'
+#
+#    cloudconfig="${treetop:?}/common/openstack/config/${cloudbase:?}.yml"  yq eval \
+#        ".aglais.spec.openstack.cloud.config |= load(strenv(cloudconfig))" \
+#        "${statusyml:?}"
+#
+#    yq eval-all \
+#        "" \
+#        "${statusyml:?}" \
+#        "${treetop:?}/common/openstack/config/${cloudbase:?}.yml"
+
     echo "---- ---- ----"
-    echo "Config yml [${configyml}]"
+#   echo "Config yml [${configyml}]"
+    echo "Cloud base [${cloudbase}]"
     echo "Cloud name [${cloudname}]"
     echo "Build name [${buildname}]"
     echo "---- ---- ----"
@@ -87,22 +107,11 @@
     echo "---- ---- ----"
 
 # -----------------------------------------------------
-# Create our Ansible include vars file.
+# Link our Ansible vars filea.
 
     ln -sf "${statusyml}" '/tmp/ansible-vars.yml'
 
-#
-#    cat > /tmp/ansible-vars.yml << EOF
-#aglais:
-#  version: 1.0
-#  spec:
-#    deployment:
-#        name: '${deployname:?}'
-#    openstack:
-#        cloud: '${cloudname:?}'
-#
-#
-#EOF
+#   ln -sf "${treetop:?}/common/openstack/config/${cloudbase:?}.yml" '/tmp/openstack-vars.yml'
 
 # -----------------------------------------------------
 # Delete any existing known hosts file..
@@ -112,13 +121,16 @@
     rm -f "${HOME}/.ssh/known_hosts"
 
 # -----------------------------------------------------
+# Select the Ansible inventory.
+
+    inventory="${treetop:?}/hadoop-yarn/ansible/config/${deployconf:?}.yml"
+
+# -----------------------------------------------------
 # Create the machines, deploy Hadoop and Spark.
 
     echo ""
     echo "---- ----"
     echo "Running Ansible deploy"
-
-    inventory="config/${deployconf:?}.yml"
 
     pushd "${treetop:?}/hadoop-yarn/ansible"
 
@@ -176,6 +188,9 @@
         echo ""
         echo "Share [${shareid:?}]"
 
+        sharecloud=$(
+            yq eval ".datashares.[] | select(.id == \"${shareid:?}\").cloudname"  "${sharelist:?}"
+            )
         sharename=$(
             yq eval ".datashares.[] | select(.id == \"${shareid:?}\").sharename"  "${sharelist:?}"
             )
@@ -184,8 +199,8 @@
             )
 
         "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
-            'gaia-prod' \
             "${inventory:?}" \
+            "${sharecloud:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
             "${mounthost:?}" \
@@ -288,6 +303,9 @@
         echo ""
         echo "Share [${shareid:?}]"
 
+        sharecloud=$(
+            yq eval ".datashares.[] | select(.id == \"${shareid:?}\").cloudname"  "${sharelist:?}"
+            )
         sharename=$(
             yq eval ".usershares.[] | select(.id == \"${shareid:?}\").sharename" "${sharelist:?}"
             )
@@ -296,8 +314,8 @@
             )
 
         "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
-            'gaia-prod' \
             "${inventory:?}" \
+            "${sharecloud:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
             "${mounthost:?}" \

@@ -296,7 +296,7 @@
 # -----------------------------------------------------
 # Delete any extra networks.
 # TODO Configurable list of networks to ignore ?
-# TODO COnfig file for the Arcus cloud ..
+# https://stackoverflow.com/questions/44563115/how-to-use-jq-to-filter-select-items-not-in-list
 
     echo ""
     echo "---- ----"
@@ -310,7 +310,7 @@
         | jq -r '.[] | select(
             (.Name != "CUDN-Internet")
             and
-            (.Name != "ceph")
+            (.Name != "cephfs")
             ) | .ID'
         )
     do

@@ -34,16 +34,16 @@
     echo "Path [${binpath}]"
     echo "Tree [${treetop}]"
 
-    cloudname=${1:?}
-    inventory=${2:?}
+    inventory=${1:?}
+    sharecloud=${2:?}
     sharename=${3:?}
     mountpath=${4:?}
     mounthost=${5:-'zeppelin:masters:workers'}
     mountmode=${6:-'ro'}
 
     echo "---- ---- ----"
-    echo "Cloud name [${cloudname}]"
-    echo "Hosts file [${inventory}]"
+    echo "Inventory  [${inventory}]"
+    echo "Cloud name [${sharecloud}]"
     echo "Share name [${sharename}]"
     echo "Mount path [${mountpath}]"
     echo "Mount host [${mounthost}]"
@@ -67,11 +67,11 @@
 # Identify the Manila share.
 # TODO Move this to an openstack script.
 
-    echo "Target [${cloudname}][${sharename}]"
+    echo "Target [${sharecloud}][${sharename}]"
 
     shareid=$(
         openstack \
-            --os-cloud "${cloudname:?}" \
+            --os-cloud "${sharecloud:?}" \
             share list \
                 --format json \
         | jq -r '.[] | select( .Name == "'${sharename:?}'") | .ID'
@@ -84,7 +84,7 @@
 # TODO Move this to an openstack script.
 
     openstack \
-        --os-cloud "${cloudname:?}" \
+        --os-cloud "${sharecloud:?}" \
         share show \
             --format json \
             "${shareid:?}" \
@@ -133,7 +133,7 @@
 
     accessrule=$(
         openstack \
-            --os-cloud "${cloudname:?}" \
+            --os-cloud "${sharecloud:?}" \
             share access list \
                 --format json \
                 "${shareid:?}" \
@@ -141,7 +141,7 @@
         )
 
     openstack \
-        --os-cloud "${cloudname:?}" \
+        --os-cloud "${sharecloud:?}" \
         share access show \
             --format json \
             "${accessrule:?}" \

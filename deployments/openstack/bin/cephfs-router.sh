@@ -162,6 +162,32 @@
             "${cephrouterid:?}" \
             "${subnetportid:?}"
 
+
+# -----------------------------------------------------
+# Add a route for the hidden Ceph network to our Ceph router.
+
+    # openstack.networks.cephinner.link: '10.9.0.1'
+    # openstack.networks.cephinner.cidr: '10.4.200.0/24'
+
+    innercidr=$(
+        yq eval \
+            ".openstack.networks.cephinner.cidr" \
+            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
+        )
+
+    innerlink=$(
+        yq eval \
+            ".openstack.networks.cephinner.link" \
+            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=${innercidr:?},gateway=${innerlink:?}" \
+            "${cephrouterid:?}"
+
+
 # -----------------------------------------------------
 # Get details of the Ceph router.
 
@@ -217,29 +243,5 @@
             "${clusterrouterid:?}" \
     | jq '{external_gateway_info, interfaces_info, routes}'
 
-
-# -----------------------------------------------------
-# Add a route for the Ceph network to our cluster router.
-
-    # openstack.networks.cephinner.link: '10.9.0.1'
-    # openstack.networks.cephinner.cidr: '10.4.200.0/24'
-
-    innercidr=$(
-        yq eval \
-            ".openstack.networks.cephinner.cidr" \
-            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
-        )
-
-    innerlink=$(
-        yq eval \
-            ".openstack.networks.cephinner.link" \
-            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
-        )
-
-    openstack \
-        --os-cloud "${cloudname:?}" \
-        router set \
-            --route "destination=${innercidr:?},gateway=${innerlink:?}" \
-            "${cephrouterid:?}"
 
 

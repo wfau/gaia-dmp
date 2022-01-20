@@ -203,7 +203,7 @@
             "${clusterrouterid:?}"
 
 # -----------------------------------------------------
-# Get details of the cluster router.
+# Get details of our cluster router.
 
     echo ""
     echo "---- ----"
@@ -216,5 +216,30 @@
             --format json \
             "${clusterrouterid:?}" \
     | jq '{external_gateway_info, interfaces_info, routes}'
+
+
+# -----------------------------------------------------
+# Add a route for the Ceph network to our cluster router.
+
+    # openstack.networks.cephinner.link: '10.9.0.1'
+    # openstack.networks.cephinner.cidr: '10.4.200.0/24'
+
+    innercidr=$(
+        yq eval \
+            ".openstack.networks.cephinner.cidr" \
+            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
+        )
+
+    innerlink=$(
+        yq eval \
+            ".openstack.networks.cephinner.link" \
+            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=${innercidr:?},gateway=${innerlink:?}" \
+            "${cephrouterid:?}"
 
 

@@ -304,7 +304,7 @@
         echo "Share [${shareid:?}]"
 
         sharecloud=$(
-            yq eval ".datashares.[] | select(.id == \"${shareid:?}\").cloudname"  "${sharelist:?}"
+            yq eval ".usershares.[] | select(.id == \"${shareid:?}\").cloudname"  "${sharelist:?}"
             )
         sharename=$(
             yq eval ".usershares.[] | select(.id == \"${shareid:?}\").sharename" "${sharelist:?}"

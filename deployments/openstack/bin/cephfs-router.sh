@@ -46,12 +46,12 @@
 
     cephnetname=$(
         yq eval \
-            ".openstack.networks.cephnet.name" \
+            ".openstack.networks.cephouter.name" \
             "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
         )
     cephnetcidr=$(
         yq eval \
-            ".openstack.networks.cephnet.cidr" \
+            ".openstack.networks.cephinner.cidr" \
             "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
         )
 

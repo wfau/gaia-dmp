@@ -1,0 +1,434 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#  
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+- Target install and experiment with running a Vault Service
+   
+   Follow tutorial here: https://computingforgeeks.com/install-and-configure-vault-server-linux/
+
+- Result
+
+  [Success]
+
+
+# The following was run on an Ubuntu 18.04 VM on Openstack (Not at Cambridge)
+# All the instructions (except for the tunneling at the end of the notes) were run as the ubuntu user on that VM
+
+# ----------------------
+# Get Vault precompiled
+
+wget https://releases.hashicorp.com/vault/1.6.1/vault_1.6.1_linux_amd64.zip
+
+
+# ---------------------------------
+# Unzip and move vault to /usr/bin
+
+unzip vault_1.6.1_linux_amd64.zip
+  > Archive:  vault_1.6.1_linux_amd64.zip
+    > inflating: vault                   
+sudo mv vault /usr/bin
+
+
+# ----------------------
+# Check version 
+
+vault --version
+> Vault v1.6.1
+
+vault
+
+    > 
+	Usage: vault <command> [args]
+
+	Common commands:
+	    read        Read data and retrieves secrets
+	    write       Write data, configuration, and secrets
+	    delete      Delete secrets and configuration
+	    list        List data or secrets
+	    login       Authenticate locally
+	    agent       Start a Vault agent
+	    server      Start a Vault server
+	    status      Print seal and HA status
+	    unwrap      Unwrap a wrapped secret
+
+	Other commands:
+	    audit          Interact with audit devices
+	    auth           Interact with auth methods
+	    debug          Runs the debug command
+	    kv             Interact with Vault's Key-Value storage
+	    lease          Interact with leases
+	    monitor        Stream log messages from a Vault server
+	    namespace      Interact with namespaces
+	    operator       Perform operator-specific tasks
+	    path-help      Retrieve API help for paths
+	    plugin         Interact with Vault plugins and catalog
+	    policy         Interact with policies
+	    print          Prints runtime configurations
+	    secrets        Interact with secrets engines
+	    ssh            Initiate an SSH session
+	    token          Interact with tokens
+
+
+# -----------------------------------
+# Enable command autocompletion.
+
+vault -autocomplete-install
+complete -C /usr/local/bin/vault vault
+
+
+# -----------------------------------
+# Create Vault data directories.
+
+sudo mkdir /etc/vault
+sudo mkdir -p /var/lib/vault/data
+
+
+# -----------------------------------
+# Create user named vault.
+
+sudo useradd --system --home /etc/vault --shell /bin/false vault
+sudo chown -R vault:vault /etc/vault /var/lib/vault/
+
+
+
+# --------------------------------------------------------------------------
+# Create Vault /etc/vault/config.hcl file.
+
+touch /etc/vault/config.hcl
+
+
+# --------------------------------------------------------------------------
+# Add basic configuration settings for Vault to /etc/vault/config.hcl file.
+
+cat <<EOF | sudo tee /etc/vault/config.hcl
+disable_cache = true
+disable_mlock = true
+ui = true
+listener "tcp" {
+   address          = "0.0.0.0:8200"
+   tls_disable      = 1
+}
+storage "file" {
+   path  = "/var/lib/vault/data"
+ }
+api_addr         = "http://0.0.0.0:8200"
+max_lease_ttl         = "10h"
+default_lease_ttl    = "10h"
+cluster_name         = "vault"
+raw_storage_endpoint     = true
+disable_sealwrap     = true
+disable_printable_check = true
+EOF
+
+
+# -----------------------------------------------------------------
+# Create a Vault service file at /etc/systemd/system/vault.service.
+
+cat <<EOF | sudo tee /etc/systemd/system/vault.service
+[Unit]
+Description="HashiCorp Vault - A tool for managing secrets"
+Documentation=https://www.vaultproject.io/docs/
+Requires=network-online.target
+After=network-online.target
+ConditionFileNotEmpty=/etc/vault/config.hcl
+
+[Service]
+User=vault
+Group=vault
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+SecureBits=keep-caps
+AmbientCapabilities=CAP_IPC_LOCK
+NoNewPrivileges=yes
+ExecStart=/usr/local/bin/vault server -config=/etc/vault/config.hcl
+ExecReload=/bin/kill --signal HUP 
+KillMode=process
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+StartLimitBurst=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+
+# ---------------------------------------------------------
+# Start and enable vault service to start on system boot.
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now vault
+
+
+# ----------------------------
+# Check Vault service status
+
+systemctl status vault
+
+    > 
+	● vault.service - "HashiCorp Vault - A tool for managing secrets"
+	   Loaded: loaded (/etc/systemd/system/vault.service; enabled; vendor preset: enabled)
+	   Active: active (running) since Fri 2022-01-21 14:11:12 UTC; 17s ago
+	     Docs: https://www.vaultproject.io/docs/
+	 Main PID: 463259 (vault)
+	    Tasks: 8 (limit: 2360)
+	   CGroup: /system.slice/vault.service
+		   └─463259 /usr/local/bin/vault server -config=/etc/vault/config.hcl
+
+	Jan 21 14:11:12 lsp-dev-test vault[463259]:               Go Version: go1.15.4
+	Jan 21 14:11:12 lsp-dev-test vault[463259]:               Listener 1: tcp (addr: "0.0.0.0:8200", cluster address: "0.0.0.0:8201", max_request_duration: "1m30s", max_request_size: "33554432", tls: "disabled
+	Jan 21 14:11:12 lsp-dev-test vault[463259]:                Log Level: info
+	Jan 21 14:11:12 lsp-dev-test vault[463259]:                    Mlock: supported: true, enabled: false
+	Jan 21 14:11:12 lsp-dev-test vault[463259]:            Recovery Mode: false
+	Jan 21 14:11:12 lsp-dev-test vault[463259]:                  Storage: file
+	Jan 21 14:11:12 lsp-dev-test vault[463259]:                  Version: Vault v1.6.1
+	Jan 21 14:11:12 lsp-dev-test vault[463259]:              Version Sha: 6d2db3f033e02e70202bef9ec896360062b88b03
+	Jan 21 14:11:12 lsp-dev-test vault[463259]: ==> Vault server started! Log data will stream in below:
+	Jan 21 14:11:12 lsp-dev-test vault[463259]: 2022-01-21T14:11:12.257Z [INFO]  proxy environment: http_proxy= https_proxy= no_proxy=
+
+
+# -----------------------------------------------
+# Initialize Vault Server
+
+export VAULT_ADDR=http://127.0.0.1:8200
+echo "export VAULT_ADDR=http://127.0.0.1:8200" >> ~/.bashrc
+
+# Start initialization with the default options by running the command below:
+
+sudo rm -rf  /var/lib/vault/data/*
+vault operator init > /etc/vault/init.file
+
+# Access Vault UI in http://127.0.0.1:8200/ui
+
+# When running Vault initialization the output looks like this: 
+vault operator init 
+
+   > 
+
+	Unseal Key 1: ...
+	Unseal Key 2: ...
+	Unseal Key 3: ...
+	Unseal Key 4: ...
+	Unseal Key 5: ...
+
+	Initial Root Token: ....
+
+	Vault initialized with 5 key shares and a key threshold of 3. Please securely
+	distribute the key shares printed above. When the Vault is re-sealed,
+	restarted, or stopped, you must supply at least 3 of these keys to unseal it
+	before it can start servicing requests.
+
+	Vault does not store the generated master key. Without at least 3 key to
+	reconstruct the master key, Vault will remain permanently sealed!
+
+	It is possible to generate new unseal keys, provided you have a quorum of
+	existing unseal keys shares. See "vault operator rekey" for more information.
+
+
+# ------------------------------------
+# Check Vault status
+
+vault status
+Key             Value
+---             -----
+Seal Type       shamir
+Initialized     true
+Sealed          false
+Total Shares    5
+Threshold       3
+Version         1.6.1
+Storage Type    file
+Cluster Name    vault
+Cluster ID      e44510d4-2d5a-2d87-2058-c0743e21efe6
+HA Enabled      false
+
+
+# --------------------------------------------------------------
+# Set VAULT TOKEN so that we can make changes from the vault cli
+
+export VAULT_TOKEN=".." # Use root token here
+
+
+# -----------------------------------------
+# Enable some auth methods
+
+vault auth enable approle
+>  Success! Enabled approle auth method at: approle/
+
+vault auth enable kubernetes
+> Success! Enabled kubernetes auth method at: kubernetes/
+
+vault auth enable userpass
+> Success! Enabled userpass auth method at: userpass/
+
+vault auth enable ldap
+> Success! Enabled ldap auth method at: ldap/
+
+
+# ---------------------
+# Get vault auth list
+
+vault auth list
+
+
+Path           Type          Accessor                    Description
+----           ----          --------                    -----------
+approle/       approle       auth_approle_f8d15e00       n/a
+kubernetes/    kubernetes    auth_kubernetes_79e0fef8    n/a
+ldap/          ldap          auth_ldap_92e2b060          n/a
+token/         token         auth_token_ad970e93         token based credentials
+userpass/      userpass      auth_userpass_107d2bdd      n/a
+
+# --------------------------------------
+# Get list of secrets (and their paths)
+# Note that we need to use the path of the secret when creating a secret for that type (i.e. kv -> kv/)
+
+vault secrets list
+
+Path          Type         Accessor              Description
+----          ----         --------              -----------
+cubbyhole/    cubbyhole    cubbyhole_4c01fdb2    per-token private secret storage
+identity/     identity     identity_cb7a982e     identity store
+kv/           kv           kv_f88becfc           n/a
+sys/          system       system_775ae1ee       system endpoints used for control, policy and debugging
+
+
+
+# --------------------------------
+# Show description for vault -kv
+
+vault kv -help 
+Usage: vault kv <subcommand> [options] [args]
+
+  This command has subcommands for interacting with Vault's key-value
+  store. Here are some simple examples, and more detailed examples are
+  available in the subcommands or the documentation.
+
+  Create or update the key named "foo" in the "secret" mount with the value
+  "bar=baz":
+
+      $ vault kv put secret/foo bar=baz
+
+  Read this value back:
+
+      $ vault kv get secret/foo
+
+  Get metadata for the key:
+
+      $ vault kv metadata get secret/foo
+	  
+  Get a specific version of the key:
+
+      $ vault kv get -version=1 secret/foo
+
+  Please see the individual subcommand help for detailed usage information.
+
+Subcommands:
+    delete               Deletes versions in the KV store
+    destroy              Permanently removes one or more versions in the KV store
+    enable-versioning    Turns on versioning for a KV store
+    get                  Retrieves data from the KV store
+    list                 List data or secrets
+    metadata             Interact with Vault's Key-Value storage
+    patch                Sets or updates data in the KV store without overwriting
+    put                  Sets or updates data in the KV store
+    rollback             Rolls back to a previous version of data
+    undelete             Undeletes versions in the KV store
+
+
+
+# ---------------------------------------
+# Create and Access two secrets in kv/
+
+vault kv put kv/databases/db1 username=DBAdmin
+
+ >
+	Key              Value
+	---              -----
+	created_time     2022-01-21T15:30:46.462834686Z
+	deletion_time    n/a
+	destroyed        false
+	version          1
+
+vault kv put kv/databases/db1 password=StrongPassword
+
+ > 
+
+	Key              Value
+	---              -----
+	created_time     2022-01-21T15:30:53.644419292Z
+	deletion_time    n/a
+	destroyed        false
+	version          2
+
+
+# Get our secret
+
+vault kv get kv/databases/db1 
+
+ > 
+	====== Metadata ======
+	Key              Value
+	---              -----
+	created_time     2022-01-21T15:30:53.644419292Z
+	deletion_time    n/a
+	destroyed        false
+	version          2
+
+	====== Data ======
+	Key         Value
+	---         -----
+	password    StrongPassword
+
+
+# Get a specific field from a secret
+
+vault kv get -field=password  kv/databases/db1
+
+> StrongPassword
+
+
+# ----------------------------------------
+# Access the VAULT UI from local machine
+# user@desktop
+
+ssh -L '8200:localhost:8200' ubuntu@lsp-dev-test
+
+firefox http://localhost:8200/ui &
+
+# To login, Paste our “Unseal Keys” one by one to Unseal vault. We can get the keys on /etc/vault/init.file.
+
+cat /etc/vault/init.file
+# Example:
+> 
+ Unseal Key 1: bNxZRU3azPZtzXje... /FFtUN7
+ Unseal Key 2: kChe6UJ5+BnkU6Uj......1dLX8v/OMabz+uPtly
+ Unseal Key 3: MIRYhY1zQXZ.......BXM7hPHrqyEVQ7tCi
+
+...
+
+
+# Navigate the UI.. (We see list of auth methods, secrets etc..)

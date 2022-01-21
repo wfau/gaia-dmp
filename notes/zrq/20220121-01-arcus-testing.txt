@@ -1,0 +1,400 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Test a full deployment on the Arcus cloud.
+        Downgrade to Fedora 31 to avoid compatibility issues with iPython and Python-3.8.
+
+    Result:
+
+        Work in progress
+
+
+# -----------------------------------------------------
+# Change the Fedora version
+#[user@desktop]
+
+    gedit "${AGLAIS_CODE:?}/deployments/hadoop-yarn/ansible/config/zeppelin-27.45-spark-6.27.45.yml
+
+        # VM image
+    -   baseimage: 'Fedora-33-1.2'
+    +   baseimage: 'Fedora-31-1.9'
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud and configuration.
+#[root@ansibler]
+
+    cloudname=iris-gaia-red
+
+    configname=zeppelin-27.45-spark-6.27.45
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}" \
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+# Using 'prod' to skip the built-in tests.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            'prod' \
+        | tee /tmp/create-all.log
+
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}"
+        ln -s "zeppelin-0.10.0-bin-all" "zeppelin"
+
+            pushd "zeppelin"
+
+                # Manual edit to add names and passwords
+                vi conf/shiro.ini
+
+                # Restart Zeppelin for the changes to take.
+                bin/zeppelin-daemon.sh restart
+
+            popd
+        popd
+    exit
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# https://www.digitalocean.com/community/tutorials/how-to-route-web-traffic-securely-without-a-vpn-using-a-socks-tunnel
+# Running 'htop' on the Zeppelin node to keep the connection alive.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh \
+                -t \
+                -D "3000"  \
+                zeppelin \
+                    "
+                    htop
+                    "
+            '
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin UI using FoxyProxy SOCKS proxy.
+#[user@desktop]
+
+    firefox \
+        'http://zeppelin:8080/' \
+        'http://master01:8088/cluster' \
+        'http://monitor:3000/login' \
+        &
+
+    firefox \
+        'http://monitor:3000/datasources/new' \
+        'http://monitor:3000/dashboard/import' \
+        'http://monitor:3000/dashboard/import' \
+        &
+
+        Create our Prometheus data source.
+        http://monitor:3000/datasources/new
+
+            URL: http://monitor:9090/
+            scrape: 1s
+
+        Import our dashboards from local disc.
+        http://monitor:3000/dashboard/import
+
+            deployments/common/grafana/20210705-02-grafana-dash.json
+            deployments/common/grafana/node-exporter-v20201010-1633446087511.json
+
+            http://monitor:3000/d/34S3C8k7z/my-first-dash&refresh=5s
+            http://monitor:3000/d/xfpJB9FGz/1-node-exporter-for-prometheus-dashboard-en-v20201010?orgId=1&refresh=5s
+
+
+# -----------------------------------------------------
+# Check the notebooks are loaded.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            ls -al notebook
+
+        popd
+    exit
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Add our secret function to the ansibler container.
+#[root@ansibler]
+
+    # TODO Move this into the Ansible setup.
+    # TODO Move our secrets onto our infra-ops server.
+
+    if [ ! -e "${HOME}/bin" ]
+    then
+        mkdir "${HOME}/bin"
+    fi
+
+    cat > "${HOME}/bin/secret" << 'EOF'
+ssh -n \
+    'secretserver' \
+    "bin/secret '${1}'"
+EOF
+
+    chmod u+x "${HOME}/bin/secret"
+
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        mkdir "${HOME}/.ssh"
+    fi
+
+    cat >> "${HOME}/.ssh/config" << 'EOF'
+Host secretserver
+  User     Zarquan
+  Hostname data.metagrid.co.uk
+  PubkeyAcceptedKeyTypes +ssh-rsa
+EOF
+
+    ssh-keyscan 'data.metagrid.co.uk' >> "${HOME}/.ssh/known_hosts"
+
+    secret frog
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    cloudname=$(
+        yq eval \
+            '.aglais.spec.openstack.cloud.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r ".addresses | .\"${deployname}-internal-network\" | .[1]"
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Update our DuckDNS record.
+#[root@ansibler]
+
+    duckhost=aglais-dev
+    duckipv4=${zeppelinip:?}
+    ducktoken=$(secret 'aglais.duckdns.token')
+
+    curl "https://www.duckdns.org/update/${duckhost:?}/${ducktoken:?}/${duckipv4:?}"
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Add bind-utils to the client.
+# https://github.com/wfau/atolmis/issues/17
+#[root@ansibler]
+
+    dnf -y install bind-utils
+
+    >   ....
+    >   Installed:
+    >     bind-libs-32:9.16.21-1.fc34.x86_64
+    >     bind-license-32:9.16.21-1.fc34.noarch
+    >     bind-utils-32:9.16.21-1.fc34.x86_64
+
+
+# -----------------------------------------------------
+# Check the DuckDNS record.
+#[root@ansibler]
+
+    dig "${duckhost:?}.duckdns.org"
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the 'aglais.uk' public DNS records.
+#[root@ansibler]
+
+    dig "dev.aglais.uk"
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Load our tests scripts.
+#[root@ansibler]
+
+    zeppelinhost=dev.aglais.uk
+    zeppelinport=8080
+    zeppelinurl=http://${zeppelinhost:?}:${zeppelinport:?}
+
+    source /deployments/zeppelin/test/bin/rest-tests.sh
+
+
+# -----------------------------------------------------
+# Login to Zeppelin as a normal user.
+#[root@ansibler]
+
+    gaiauser=$(secret aglais.zeppelin.gaiauser)
+    gaiapass=$(secret aglais.zeppelin.gaiapass)
+
+    zeplogin "${gaiauser:?}" "${gaiapass}"
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Run the SetUp notebook.
+#[root@ansibler]
+
+    noteid=2GP53P3PZ
+
+    zepnbclear     ${noteid}
+    zepnbexecstep  ${noteid}
+    zepnbstatus    ${noteid}
+    zepnbtotaltime ${noteid}
+
+

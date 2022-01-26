@@ -1,0 +1,424 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Test a full deployment on the Arcus cloud ..
+
+    Result:
+
+        Fails to mount the CephFS shares.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud and configuration.
+#[root@ansibler]
+
+    cloudname=iris-gaia-red
+
+    configname=zeppelin-27.45-spark-6.27.45
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}" \
+
+    >   real    3m51.799s
+    >   user    1m22.112s
+    >   sys     0m10.563s
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+# Using 'prod' to skip the built-in tests.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            'prod' \
+        | tee /tmp/create-all.log
+
+    >   ....
+    >   ....
+
+
+    >   ....
+    >   Share [/data/gaia/GDR2_6514/GDR2_6514_GAIASOURCE]
+    >   Count [FAIL][6514][0]
+    >   Hash  [FAIL][eac3b823f896299905deeb15c22f9c60][d41d8cd98f00b204e9800998ecf8427e]
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the share contents.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        echo "----"
+        ls -al /data/twomass/2MASSPSC/
+        echo "----"
+        df -h  /data/twomass/2MASSPSC/
+        '
+
+    >   Thu Jan 20 06:06:34 UTC 2022
+    >   iris-gaia-red-20220120-zeppelin
+    >   ----
+    >   total 8
+    >   drwxr-xr-x. 2 root root 4096 Jan 20 05:51 .
+    >   drwxr-xr-x. 3 root root 4096 Jan 20 05:51 ..
+    >   ----
+    >   Filesystem      Size  Used Avail Use% Mounted on
+    >   /dev/vda1        20G  6.0G   13G  32% /
+
+
+# -----------------------------------------------------
+# See if we can reach one of the CephFS server nodes.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        echo "----"
+        ping -c 5 10.4.200.17
+        '
+
+    >   Thu Jan 20 06:10:12 UTC 2022
+    >   iris-gaia-red-20220120-zeppelin
+    >   ----
+    >   PING 10.4.200.17 (10.4.200.17) 56(84) bytes of data.
+    >   From 10.10.1.130 icmp_seq=1 Destination Net Unreachable
+    >   From 10.10.0.1 icmp_seq=2 Redirect Host(New nexthop: 130.1.10.10)
+    >   From 10.10.1.130 icmp_seq=2 Destination Net Unreachable
+    >   From 10.10.1.130 icmp_seq=3 Destination Net Unreachable
+    >   From 10.10.1.130 icmp_seq=4 Destination Net Unreachable
+    >   
+    >   --- 10.4.200.17 ping statistics ---
+    >   4 packets transmitted, 0 received, +5 errors, 100% packet loss, time 3060ms
+
+
+# -----------------------------------------------------
+# See if we can reach one of the CephFS server nodes.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        echo "----"
+        traceroute 10.4.200.17
+        '
+
+    >   Thu Jan 20 06:31:00 UTC 2022
+    >   iris-gaia-red-20220120-zeppelin
+    >   ----
+    >   traceroute to 10.4.200.17 (10.4.200.17), 30 hops max, 60 byte packets
+    >    1  host-10-10-0-1 (10.10.0.1)  0.419 ms  0.780 ms  0.436 ms
+    >    2  host-10-10-1-130 (10.10.1.130)  2.453 ms !N  2.117 ms !N *
+
+
+# -----------------------------------------------------
+# Check the cephfs network, router.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+-----------------------------------------+--------------------------------------+
+    >   | ID                                   | Name                                    | Subnets                              |
+    >   +--------------------------------------+-----------------------------------------+--------------------------------------+
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                                  | 5699fb5d-8316-4b88-b889-b05c8a1ec975 |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet                           | 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42 |
+    >   | d16ed478-8d6c-49c3-b769-df77cc2d4ee4 | iris-gaia-red-20220120-internal-network | ee450257-1131-46f2-b44b-c132ce1c19a8 |
+    >   +--------------------------------------+-----------------------------------------+--------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+----------------------------------------+--------------------------------------+--------------+
+    >   | ID                                   | Name                                   | Network                              | Subnet       |
+    >   +--------------------------------------+----------------------------------------+--------------------------------------+--------------+
+    >   | ee450257-1131-46f2-b44b-c132ce1c19a8 | iris-gaia-red-20220120-internal-subnet | d16ed478-8d6c-49c3-b769-df77cc2d4ee4 | 10.10.0.0/16 |
+    >   +--------------------------------------+----------------------------------------+--------------------------------------+--------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+----------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                   | Status | State | Project                          |
+    >   +--------------------------------------+----------------------------------------+--------+-------+----------------------------------+
+    >   | 76f8034d-1bb1-4d88-b8e7-47679dfff3a1 | iris-gaia-red-20220120-internal-router | ACTIVE | UP    | 0dd8cc5ee5a7455c8748cc06d04c93c3 |
+    >   | f608c03a-4e5e-4c0a-83bb-16cfa9708bff | iris-gaia-red-20220120-cephfs-router   | ACTIVE | UP    | 0dd8cc5ee5a7455c8748cc06d04c93c3 |
+    >   +--------------------------------------+----------------------------------------+--------+-------+----------------------------------+
+
+
+# -----------------------------------------------------
+# Get details for our main router.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            76f8034d-1bb1-4d88-b8e7-47679dfff3a1
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2022-01-20T05:18:04Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "57add367-d205-4030-a929-d75617a7c63e",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42",
+    >           "ip_address": "128.232.222.179"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "76f8034d-1bb1-4d88-b8e7-47679dfff3a1",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "8dbbb4c5-4f68-4c2e-b6b8-f46bfd7a2b5b",
+    >         "ip_address": "10.10.0.1",
+    >         "subnet_id": "ee450257-1131-46f2-b44b-c132ce1c19a8"
+    >       }
+    >     ],
+    >     "name": "iris-gaia-red-20220120-internal-router",
+    >     "project_id": "0dd8cc5ee5a7455c8748cc06d04c93c3",
+    >     "revision_number": 10,
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.10.1.130",
+    >         "destination": "10.4.0.0/16"
+    >       }
+    >     ],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2022-01-20T05:47:21Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Get details for our Ceph router.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            f608c03a-4e5e-4c0a-83bb-16cfa9708bff
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2022-01-20T05:46:39Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "410920fb-5714-4447-b26a-e7b06092fc62",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "5699fb5d-8316-4b88-b889-b05c8a1ec975",
+    >           "ip_address": "10.9.1.122"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "f608c03a-4e5e-4c0a-83bb-16cfa9708bff",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "cf055065-db68-4f70-84e3-b98b2cfc35f7",
+    >         "ip_address": "10.10.1.130",
+    >         "subnet_id": "ee450257-1131-46f2-b44b-c132ce1c19a8"
+    >       }
+    >     ],
+    >     "name": "iris-gaia-red-20220120-cephfs-router",
+    >     "project_id": "0dd8cc5ee5a7455c8748cc06d04c93c3",
+    >     "revision_number": 9,
+    >     "routes": [],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2022-01-20T05:47:10Z"
+    >   }
+
+
+# -----------------------------------------------------
+# Get details for Ceph router in Paul's example.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud 'iris-gaia-data' \
+        router show \
+            --format json \
+            426f6903-de06-4954-ae3a-9dfbde3f18a7
+
+    >   
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone_hints": [],
+    >     "availability_zones": [
+    >       "nova"
+    >     ],
+    >     "created_at": "2021-12-29T14:59:36Z",
+    >     "description": "",
+    >     "external_gateway_info": {
+    >       "network_id": "410920fb-5714-4447-b26a-e7b06092fc62",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "5699fb5d-8316-4b88-b889-b05c8a1ec975",
+    >           "ip_address": "10.9.1.172"
+    >         }
+    >       ]
+    >     },
+    >     "flavor_id": null,
+    >     "id": "426f6903-de06-4954-ae3a-9dfbde3f18a7",
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "f8de437c-245f-4f4f-b5fa-8680a62c16e4",
+    >         "ip_address": "10.0.0.103",
+    >         "subnet_id": "ca54eb70-d6fd-4550-bdc1-149f80da8efd"
+    >       }
+    >     ],
+    >     "name": "pfb29-ceph-router",
+    >     "project_id": "e216e6b502134b6185380be6ccd0bf09",
+    >     "revision_number": 12,
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.9.0.1",
+    >         "destination": "10.4.200.0/24"
+    >       }
+    >     ],
+    >     "status": "ACTIVE",
+    >     "tags": [],
+    >     "updated_at": "2021-12-31T22:18:17Z"
+    >   }
+
+    #
+    # He has an extra static route ..
+    #
+
+    >   ....
+    >   "routes": [
+    >     {
+    >       "nexthop": "10.9.0.1",
+    >       "destination": "10.4.200.0/24"
+    >     }
+    >   ],
+    >   ....
+
+
+# -----------------------------------------------------
+# Try adding the static route to our CephFS router.
+#[root@ansibler]
+
+    gatewayip=10.9.0.1
+    targetcidr=10.4.200.0/24
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=${targetcidr:?},gateway=${gatewayip:?}" \
+            'f608c03a-4e5e-4c0a-83bb-16cfa9708bff'
+
+
+# -----------------------------------------------------
+# See if we can reach one of the CephFS server nodes.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        echo "----"
+        ping -c 5 10.4.200.17
+        '
+
+    >   Thu Jan 20 06:45:47 UTC 2022
+    >   iris-gaia-red-20220120-zeppelin
+    >   ----
+    >   PING 10.4.200.17 (10.4.200.17) 56(84) bytes of data.
+    >   64 bytes from 10.4.200.17: icmp_seq=1 ttl=62 time=3.12 ms
+    >   From 10.10.0.1 icmp_seq=2 Redirect Host(New nexthop: 130.1.10.10)
+    >   64 bytes from 10.4.200.17: icmp_seq=2 ttl=62 time=0.514 ms
+    >   64 bytes from 10.4.200.17: icmp_seq=3 ttl=62 time=0.637 ms
+    >   64 bytes from 10.4.200.17: icmp_seq=4 ttl=62 time=0.386 ms
+    >   
+    >   --- 10.4.200.17 ping statistics ---
+    >   4 packets transmitted, 4 received, +1 errors, 0% packet loss, time 3047ms
+    >   rtt min/avg/max/mdev = 0.386/1.165/3.123/1.133 ms
+
+    #
+    # So how can we automate this ?
+    #
+

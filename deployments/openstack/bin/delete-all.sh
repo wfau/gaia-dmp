@@ -295,6 +295,8 @@
 
 # -----------------------------------------------------
 # Delete any extra networks.
+# TODO Configurable list of networks to ignore ?
+# https://stackoverflow.com/questions/44563115/how-to-use-jq-to-filter-select-items-not-in-list
 
     echo ""
     echo "---- ----"
@@ -306,9 +308,9 @@
             network list \
                 --format json \
         | jq -r '.[] | select(
-            (.Name != "internet")
+            (.Name != "CUDN-Internet")
             and
-            (.Name != "cumulus-internal")
+            (.Name != "cephfs")
             ) | .ID'
         )
     do

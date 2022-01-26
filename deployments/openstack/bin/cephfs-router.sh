@@ -43,58 +43,68 @@
     echo "---- ---- ----"
 
     routername="${buildname:?}-cephfs-router"
-    gatewayname='cumulus-internal'
+
+    cephnetname=$(
+        yq eval \
+            ".openstack.networks.cephouter.name" \
+            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
+        )
+    cephnetcidr=$(
+        yq eval \
+            ".openstack.networks.cephinner.cidr" \
+            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
+        )
 
 
 # -----------------------------------------------------
 # Get our project ID.
-
-    projectname="iris-${cloudname:?}"
-
-    projectid=$(
-        openstack \
-            --os-cloud "${cloudname:?}" \
-            project list \
-                --format json \
-        | jq -r '.[] | select(.Name == "'${projectname:?}'") | .ID'
-        )
-
-    echo ""
-    echo "---- ----"
-    echo "Project [${projectname}]"
-    echo "Project [${projectid}]"
-
+#
+#   projectname="iris-${cloudname:?}"#
+#
+#   projectid=$(
+#       openstack \
+#           --os-cloud "${cloudname:?}" \
+#           project list \
+#               --format json \
+#       | jq -r '.[] | select(.Name == "'${projectname:?}'") | .ID'
+#       )
+#
+#   echo ""
+#   echo "---- ----"
+#   echo "Project [${projectname}]"
+#   echo "Project [${projectid}]"
+#
 
 # -----------------------------------------------------
 # Create a new router.
+# --project "${projectid:?}" \
 
     openstack \
         --os-cloud "${cloudname:?}" \
         router create \
             --format json \
             --enable \
-            --project "${projectid:?}" \
             "${routername:?}" \
-    > "/tmp/ceph-router.json"
+    > '/tmp/ceph-router.json'
 
     cephroutername=$(
-        jq -r '. | .name' "/tmp/ceph-router.json"
+        jq -r '. | .name' '/tmp/ceph-router.json'
         )
 
     cephrouterid=$(
-        jq -r '. | .id' "/tmp/ceph-router.json"
+        jq -r '. | .id' '/tmp/ceph-router.json'
         )
 
 
 # -----------------------------------------------------
-# Set the router's external gateway.
+# Connect our router to the Ceph network.
 
     gatewayid=$(
         openstack \
             --os-cloud "${cloudname:?}" \
             network list \
                 --format json \
-        | jq -r '.[] | select(.Name == "'${gatewayname:?}'") | .ID'
+        | jq -r '.[] | select(.Name == "'${cephnetname:?}'") | .ID'
         )
 
     openstack \
@@ -152,6 +162,32 @@
             "${cephrouterid:?}" \
             "${subnetportid:?}"
 
+
+# -----------------------------------------------------
+# Add a route for the hidden Ceph network to our Ceph router.
+
+    # openstack.networks.cephinner.link: '10.9.0.1'
+    # openstack.networks.cephinner.cidr: '10.4.200.0/24'
+
+    innercidr=$(
+        yq eval \
+            ".openstack.networks.cephinner.cidr" \
+            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
+        )
+
+    innerlink=$(
+        yq eval \
+            ".openstack.networks.cephinner.link" \
+            "${treetop:?}/hadoop-yarn/ansible/config/openstack.yml"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=${innercidr:?},gateway=${innerlink:?}" \
+            "${cephrouterid:?}"
+
+
 # -----------------------------------------------------
 # Get details of the Ceph router.
 
@@ -189,11 +225,11 @@
     openstack \
         --os-cloud "${cloudname:?}" \
         router set \
-            --route "destination=10.206.0.0/16,gateway=${subnetportip:?}" \
+            --route "destination=${cephnetcidr:?},gateway=${subnetportip:?}" \
             "${clusterrouterid:?}"
 
 # -----------------------------------------------------
-# Get details of the cluster router.
+# Get details of our cluster router.
 
     echo ""
     echo "---- ----"
@@ -206,5 +242,6 @@
             --format json \
             "${clusterrouterid:?}" \
     | jq '{external_gateway_info, interfaces_info, routes}'
+
 
 

@@ -1,0 +1,358 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        First attempt at a live deploy on the Arcus cloud.
+
+    Result:
+
+        FAIL
+
+        One of the tests failed, but the build completes as normal.
+
+        * The build should fail if a test fails.
+        * There doesn't seem to be an easy way to find out why it failed.
+        * According to our notes the same configuration passed 10 days ago.
+
+
+# -----------------------------------------------------
+# Fetch upstream changes.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        git checkout master
+
+        git fetch upstream
+
+        git merge upstream/master
+
+        git push
+
+    popd
+
+# -----------------------------------------------------
+# Create a new branch.
+#[user@desktop]
+
+    branchname=arcus-deploy
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        branchprev=$(git branch --show-current)
+        branchnext=$(date '+%Y%m%d')-zrq-${branchname:?}
+
+        git checkout master
+        git checkout -b "${branchnext:?}"
+
+        ....
+        ....
+        ....
+
+        git push --set-upstream 'origin' "$(git branch --show-current)"
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud and configuration.
+#[root@ansibler]
+
+    cloudname=iris-gaia-green
+    configname=zeppelin-27.45-spark-6.27.45
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}" \
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+# Using 'test' to run the built-in tests.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            'test' \
+        | tee /tmp/create-all.log
+
+
+
+    >   real    176m3.019s
+    >   user    38m3.965s
+    >   sys     7m7.727s
+
+
+# -----------------------------------------------------
+# Parse the test results as JSON.
+#[root@ansibler]
+
+    jq '.' \
+        '/tmp/test-result.json'
+
+    >   parse error: Invalid numeric literal at line 1, column 5
+
+
+    cat \
+        '/tmp/test-result.json'
+
+
+    >   Test completed after: 7951.73 seconds
+    >   {'SetUp': {'totaltime': '46.49', 'status': 'SLOW',
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete the first line and parse the test results as JSON.
+#[root@ansibler]
+
+    sed '1 d' \
+        '/tmp/test-result.json' \
+    | jq '.'
+
+    >   parse error: Invalid numeric literal at line 1, column 9
+
+
+# -----------------------------------------------------
+# Delete the first line, remove quotes from numbers, fix empty msg, replace quotes with double quotes and then parse the test results as JSON.
+#[root@ansibler]
+
+    sed "
+        1 d
+        s/'\([0-9.]*\)'/\1/g
+        s/:[[:space:]],/: '',/g
+        s/'/\"/g
+        " \
+        '/tmp/test-result.json' \
+    | jq '.'
+
+    >   {
+    >     "SetUp": {
+    >       "totaltime": 46.49,
+    >       "status": "SLOW",
+    >       "msg": "",
+    >       "valid": "TRUE"
+    >     },
+    >     "Mean_proper_motions_over_the_sky": {
+    >       "totaltime": 46.76,
+    >       "status": "SUCCESS",
+    >       "msg": "",
+    >       "valid": "TRUE"
+    >     },
+    >     "Source_counts_over_the_sky.json": {
+    >       "totaltime": 16.14,
+    >       "status": "SUCCESS",
+    >       "msg": "",
+    >       "valid": "TRUE"
+    >     },
+    >     "Good_astrometric_solutions_via_ML_Random_Forrest_classifier": {
+    >       "totaltime": 524.01,
+    >       "status": "SLOW",
+    >       "msg": "",
+    >       "valid": "TRUE"
+    >     },
+    >     "QC_cuts_dev.json": {
+    >       "totaltime": 4281.39,
+    >       "status": "SUCCESS",
+    >       "msg": "",
+    >       "valid": "TRUE"
+    >     },
+    >     "WD_detection_dev.json": {
+    >       "totaltime": 3036.94,
+    >       "status": "ERROR",
+    >       "msg": "",
+    >       "valid": "TRUE"
+    >     }
+    >   }
+
+    *** One of the tests failed, but the build passed !? ***
+    No idea _why_ WD_detection_dev.json failed though.
+
+    A single status value with two meanings, did the test PASS or FAIL, and how fast it was is confusing.
+    I guess status=SLOW means status=SUCCESS and speed=SLOW ?
+    It makes it just that bit harder to detect if all the tests passed.
+
+
+# -----------------------------------------------------
+# Looks like there might be some test results in /tmp ?
+#[root@ansibler]
+
+    ls -al /tmp
+
+    >   ....
+    >   -rw-r--r--.  1 root root    49864 Jan 31 15:08 4VZG2YTQ9K.json
+    >   -rw-r--r--.  1 root root    29324 Jan 31 14:59 7DGJO6LMTG.json
+    >   -rw-r--r--.  1 root root    38304 Jan 31 14:57 A5VX9DR16Y.json
+    >   -rw-r--r--.  1 root root    52858 Jan 31 16:19 I9ATGT2S3L.json
+    >   -rw-r--r--.  1 root root     6466 Jan 31 14:58 KTZV0UOVEX.json
+    >   -rw-r--r--.  1 root root     6456 Jan 31 14:59 ZF2EAKWZ09.json
+    >   ....
+
+
+    jq '.' /tmp/4VZG2YTQ9K.json
+
+    >   {
+    >     "paragraphs": [
+    >       {
+    >         "text": "....",
+    >         "user": "gaiauser",
+    >         "dateUpdated": "2021-10-13T14:25:10+0000",
+    >       },
+    >   ....
+    >   ....
+
+
+    #
+    # Not the results, just the notebooks before they are executed :-(
+    #
+
+  jq '.paragraphs[] | .status' /tmp/4VZG2YTQ9K.json
+
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+    >   "READY"
+
+    #
+    # According to our notes, the same tests passed 10 days ago.
+    # What has changed in the mean time ?
+    #
+
+    >   ....
+    >   ....
+    >   TASK [Run benchmarker] *****************************************************************************************************************************************
+    >   changed: [localhost] =>
+    >       {
+    >       "changed": true,
+    >       "cmd": "python3 /tmp/run-test.py | tee /tmp/test-result.json",
+    >       "delta": "2:34:49.699823",
+    >       "end": "2022-01-21 06:57:49.976395",
+    >       "rc": 0,
+    >       "start": "2022-01-21 04:23:00.276572",
+    >       "stderr": "",
+    >       "stderr_lines": [],
+    >       "stdout":
+    >           "Test completed after: 9289.35 seconds
+    >               {
+    >               'SetUp': {
+    >                   'totaltime': '46.45',
+    >                   'status': 'SLOW',
+    >                   'msg': '',
+    >                   'valid': 'TRUE'
+    >                   },
+    >               'Mean_proper_motions_over_the_sky': {
+    >                   'totaltime': '48.80',
+    >                   'status': 'SUCCESS',
+    >                   'msg': '',
+    >                   'valid': 'TRUE'
+    >                   },
+    >               'Source_counts_over_the_sky.json': {
+    >                   'totaltime': '15.97',
+    >                   'status': 'SUCCESS',
+    >                   'msg': '',
+    >                   'valid': 'TRUE'
+    >                   },
+    >               'Good_astrometric_solutions_via_ML_Random_Forrest_classifier': {
+    >                   'totaltime': '517.42',
+    >                   'status': 'SLOW',
+    >                   'msg': '',
+    >                   'valid': 'TRUE'
+    >                   },
+    >               'QC_cuts_dev.json': {
+    >                   'totaltime': '4307.06',
+    >                   'status': 'SUCCESS',
+    >                   'msg': '',
+    >                   'valid': 'TRUE'
+    >                   },
+    >               'WD_detection_dev.json': {
+    >                   'totaltime': '4353.65',
+    >                   'status': 'SLOW',
+    >                   'msg': '',
+    >                   'valid': 'TRUE'
+    >                   }
+    >               }
+    >           ",
+    >       "stdout_lines": [
+    >           "Test completed after: 9289.35 seconds",
+    >           "...."
+    >           ]
+    >       }
+

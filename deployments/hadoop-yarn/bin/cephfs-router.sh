@@ -49,7 +49,7 @@
         --os-cloud "${cloudname:?}" \
         router list \
             --format json \
-    | jq '.[] | select(.Name == "'${buildname}'-internal-network-router")' \
+    | jq '.[] | select(.Name == "'${buildname}'-internal-router")' \
     > '/tmp/cluster-router.json'
 
 
@@ -60,7 +60,7 @@
         --os-cloud "${cloudname:?}" \
         subnet list \
             --format json \
-    | jq '.[] | select(.Name == "'${buildname}'-internal-network-subnet")' \
+    | jq '.[] | select(.Name == "'${buildname}'-internal-subnet")' \
     > '/tmp/cluster-subnet.json'
 
 

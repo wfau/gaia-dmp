@@ -1,0 +1,1144 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Repeat the sequence using Paul's network.
+
+    Result:
+
+        Work in progress ..
+
+
+# -----------------------------------------------------
+# Login using the command line client ..
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudname=gaia-arcus-eval
+    buildname="aglais-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
+
+
+# -----------------------------------------------------
+# Create our SSH keypair.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+    >   +-------------------------+-------------------------------------------------+------+
+    >   | Name                    | Fingerprint                                     | Type |
+    >   +-------------------------+-------------------------------------------------+------+
+    >   | pfb29-test              | be:b5:48:f6:fe:a2:90:ec:9d:c4:50:d9:26:24:ee:08 | ssh  |
+    >   +-------------------------+-------------------------------------------------+------+
+
+
+    wget \
+        -O "/tmp/${buildname:?}-keypair.pub" \
+        'https://raw.githubusercontent.com/wfau/aglais/master/deployments/common/ssh/aglais-team-keys'
+
+    >   ....
+    >   ....
+    >   2021-12-29 14:33:45 (5.52 MB/s) - ‘/tmp/aglais-20211229-keypair.pub’ saved [1770/1770]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair create \
+            --format json \
+            --public-key "/tmp/${buildname:?}-keypair.pub" \
+            "${buildname}-keypair" \
+    | tee "/tmp/${buildname:?}-keypair.json" \
+    | jq '{id, name, fingerprint}'
+
+
+    aglaiskeypair=$(
+        jq -r '.id' "/tmp/${buildname:?}-keypair.json"
+        )
+
+    >   {
+    >     "id": "aglais-20211229-keypair",
+    >     "name": "aglais-20211229-keypair",
+    >     "fingerprint": "2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16"
+    >   }
+
+
+# -----------------------------------------------------
+# Identify Paul's network.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+---------------+--------------------------------------+
+    >   | ID                                   | Name          | Subnets                              |
+    >   +--------------------------------------+---------------+--------------------------------------+
+    >   | 2f2b65d0-5996-49d3-b2a1-b36191abde63 | pfb29-test    | ca54eb70-d6fd-4550-bdc1-149f80da8efd |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs        | 5699fb5d-8316-4b88-b889-b05c8a1ec975 |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet | 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42 |
+    >   +--------------------------------------+---------------+--------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+------------+--------------------------------------+-------------+
+    >   | ID                                   | Name       | Network                              | Subnet      |
+    >   +--------------------------------------+------------+--------------------------------------+-------------+
+    >   | 5699fb5d-8316-4b88-b889-b05c8a1ec975 | cephfs     | 410920fb-5714-4447-b26a-e7b06092fc62 | 10.9.0.0/16 |
+    >   | ca54eb70-d6fd-4550-bdc1-149f80da8efd | pfb29-test | 2f2b65d0-5996-49d3-b2a1-b36191abde63 | 10.0.0.0/24 |
+    >   +--------------------------------------+------------+--------------------------------------+-------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+-----------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                        | Status | State | Project                          |
+    >   +--------------------------------------+-----------------------------+--------+-------+----------------------------------+
+    >   | c87e4464-ae32-4329-a001-cb5542b28a97 | pfb29-test                  | ACTIVE | UP    | e216e6b502134b6185380be6ccd0bf09 |
+    >   +--------------------------------------+-----------------------------+--------+-------+----------------------------------+
+
+    aglaisnetworkid=2f2b65d0-5996-49d3-b2a1-b36191abde63
+    aglaissubnetid=ca54eb70-d6fd-4550-bdc1-149f80da8efd
+    aglaisrouterid=c87e4464-ae32-4329-a001-cb5542b28a97
+
+# -----------------------------------------------------
+# Get the ID of the Fedora image.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image list
+
+    >   +--------------------------------------+------------------------------+--------+
+    >   | ID                                   | Name                         | Status |
+    >   +--------------------------------------+------------------------------+--------+
+    >   ....
+    >   | 1779f380-780d-40d8-8052-b3acb91ed530 | Fedora-31-1.9                | active |
+    >   | e62a71df-4bd2-4498-9eae-058ff476b5ad | Fedora-33-1.2                | active |
+    >   | e5c23082-cc34-4213-ad31-ff4684657691 | Fedora-34.1.2                | active |
+    >   | dcb41a5f-868a-4880-9fd5-04b95ab97c47 | FedoraAtomic29-20191126      | active |
+    >   | a079781f-80b7-4d89-95ae-ef65bfb0834f | FedoraCoreOS33               | active |
+    >   | 191d3d4d-60cc-4b87-b4a7-0a03cc48a51e | FedoraCoreOS34               | active |
+    >   ....
+    >   +--------------------------------------+------------------------------+--------+
+
+    imageid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            image list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("Fedora-34.1.2")) | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Get the flavor ID.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list
+
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+    >   | ID                                   | Name         |   RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+    >   | 2e5dc624-1d3b-4da7-8107-cc2dd4cb5073 | vm.v1.large  | 32768 |   60 |         0 |     8 | True      |
+    >   | 6793b213-5efa-4b51-96bf-1340ff066499 | vm.v1.xsmall |  2048 |   20 |         0 |     1 | True      |
+    >   | 698a8d46-eceb-4c55-91ff-38286bf9eabb | vm.v1.tiny   |  1024 |   10 |         0 |     1 | True      |
+    >   | 6b56d6e9-5397-4543-87fb-e0c0b6d47961 | vm.v1.small  | 16384 |   20 |         0 |     4 | True      |
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+
+    flavorid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "vm.v1.small") | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Create a security group for our VM.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group create \
+            --format json \
+            "${buildname:?}-security" \
+    | tee "/tmp/${buildname:?}-security.json" \
+    | jq '{name, id}'
+
+    >   {
+    >     "name": "aglais-20211229-security",
+    >     "id": "3e1ca45a-ce9f-4bc4-86c3-c4e1b2fc1ec0"
+    >   }
+
+    aglaissecgroupid=$(
+        jq -r '.id' "/tmp/${buildname:?}-security.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --dst-port   22 \
+            --protocol  'tcp' \
+            --ethertype 'IPv4' \
+            "${aglaissecgroupid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --dst-port   22 \
+            --protocol  'tcp' \
+            --ethertype 'IPv6' \
+            "${aglaissecgroupid:?}"
+
+
+# -----------------------------------------------------
+# Create our virtual machine instance.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server create \
+            --format json \
+            --image "${imageid:?}" \
+            --flavor "${flavorid:?}" \
+            --network "${aglaisnetworkid:?}" \
+            --key-name "${aglaiskeypair:?}" \
+            --security-group "${aglaissecgroupid:?}" \
+            "${buildname:?}-machine" \
+    | tee "/tmp/${buildname:?}-machine.json" \
+    | jq '{name, id, status, flavor, image, key_name}'
+
+    vmident=$(
+        jq -r '.id' "/tmp/${buildname:?}-machine.json"
+        )
+
+    >   {
+    >     "name": "aglais-20211229-machine",
+    >     "id": "f7800318-a6cd-46f6-8b58-506354b13b77",
+    >     "status": "BUILD",
+    >     "flavor": "vm.v1.small (6b56d6e9-5397-4543-87fb-e0c0b6d47961)",
+    >     "image": "Fedora-34.1.2 (e5c23082-cc34-4213-ad31-ff4684657691)",
+    >     "key_name": "aglais-20211229-keypair"
+    >   }
+
+
+# -----------------------------------------------------
+# Create a public IP address and attach it to our VM.
+#[root@ansibler]
+
+    internet=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name == "CUDN-Internet") | .ID
+            '
+        )
+
+    floatip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            floating ip \
+            create \
+            --format json \
+            "${internet:?}" \
+        | jq -r '.floating_ip_address'
+        )
+
+    networkname=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network show \
+                --format json \
+                "${aglaisnetworkid:?}" \
+        | jq -r '.name'
+        )
+
+    privateip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${vmident:?}" \
+        | jq -r ".addresses.\"${networkname:?}\"[0]"
+        )
+
+cat << EOF
+Public  IP [${floatip}]
+Private IP [${privateip}]
+EOF
+
+    >   Public  IP [128.232.222.74]
+    >   Private IP [10.0.0.140]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server add \
+            floating ip \
+            --fixed-ip-address "${privateip:?}" \
+            "${vmident:?}" \
+            "${floatip:?}"
+
+
+# -----------------------------------------------------
+# Test ssh access.
+#[root@ansibler]
+
+    ssh -v \
+        fedora@${floatip:?} \
+        '
+        hostname
+        date
+        '
+
+    >   ....
+    >   ....
+    >   debug1: Connecting to 128.232.222.74 [128.232.222.74] port 22.
+    >   debug1: Connection established.
+    >   ....
+    >   ....
+
+    #
+    # OK - using Paul's network works.
+    # Can we add a Ceph share to it ..
+    #
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[root@ansibler]
+
+    # This is older than cumulus.
+    export OS_SHARE_API_VERSION=2.46
+
+    >   Version 2.51 is not supported by the API. Minimum is 2.0 and maximum is 2.46. (HTTP 406) (Request-ID: req-19e757f4-31b3-4f31-bd0d-5affcc90f7e2)
+
+
+# -----------------------------------------------------
+# Check the available quota.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share quota show
+
+    >   +-----------------------+----------------------------------+
+    >   | Field                 | Value                            |
+    >   +-----------------------+----------------------------------+
+    >   | gigabytes             | 30000                            |
+    >   | id                    | e216e6b502134b6185380be6ccd0bf09 |
+    >   | share_group_snapshots | 50                               |
+    >   | share_groups          | 50                               |
+    >   | share_networks        | 0                                |
+    >   | shares                | 100                              |
+    >   | snapshot_gigabytes    | 10                               |
+    >   | snapshots             | 10                               |
+    >   +-----------------------+----------------------------------+
+
+
+# -----------------------------------------------------
+# Check the available share types.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share type list
+
+    >   +--------------------------------------+---------------+------------+------------+--------------------------------------+--------------------------------------------+---------------+
+    >   | id                                   | name          | visibility | is_default | required_extra_specs                 | optional_extra_specs                       | description   |
+    >   +--------------------------------------+---------------+------------+------------+--------------------------------------+--------------------------------------------+---------------+
+    >   | 12668f5c-44e4-4b63-abf1-c56002ccc424 | ceph01_cephfs | private    | False      | driver_handles_share_servers : False | create_share_from_snapshot_support : False | CephFS-Ceph01 |
+    >   |                                      |               |            |            |                                      | mount_snapshot_support : False             |               |
+    >   |                                      |               |            |            |                                      | revert_to_snapshot_support : False         |               |
+    >   |                                      |               |            |            |                                      | snapshot_support : False                   |               |
+    >   +--------------------------------------+---------------+------------+------------+--------------------------------------+--------------------------------------------+---------------+
+
+
+# -----------------------------------------------------
+# Create a Manila share.
+#[root@ansibler]
+
+    sharesize=512
+    sharename=${buildname:?}-test-share
+    sharetype=ceph01_cephfs
+    sharezone=nova
+    shareprotocol=CEPHFS
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name "${sharename:?}" \
+            --share-type "${sharetype:?}" \
+            --availability-zone "${sharezone:?}" \
+            "${shareprotocol:?}" \
+            "${sharesize:?}" \
+    | tee "/tmp/${sharename:?}-share.json" \
+    | jq '{name, id, size, status}'
+
+    shareid=$(
+        jq -r '.id' "/tmp/${sharename:?}-share.json"
+        )
+
+    >   {
+    >     "name": "aglais-20211229-test-share",
+    >     "id": "07ddc595-226d-4805-99de-88aa6a7fd997",
+    >     "size": 512,
+    >     "status": "creating"
+    >   }
+
+
+# -----------------------------------------------------
+# Add access rules to the share.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro" \
+    | tee "/tmp/${buildname:?}-ro-share-access.json" \
+    | jq '{id, access_to, access_level, access_type}'
+
+    >   {
+    >     "id": "aa348f4e-83d5-4556-b309-9861111197cd",
+    >     "access_to": "aglais-20211229-test-share-ro",
+    >     "access_level": "ro",
+    >     "access_type": "cephx"
+    >   }
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw" \
+    | tee "/tmp/${buildname:?}-rw-share-access.json" \
+    | jq '{id, access_to, access_level, access_type}'
+
+
+    >   {
+    >     "id": "8740de43-eaab-46f3-9a3a-3877d810ff9d",
+    >     "access_to": "aglais-20211229-test-share-rw",
+    >     "access_level": "rw",
+    >     "access_type": "cephx"
+    >   }
+
+
+
+# -----------------------------------------------------
+# Get our project ID.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        project list \
+        --my-projects
+
+    >   +----------------------------------+---------------+
+    >   | ID                               | Name          |
+    >   +----------------------------------+---------------+
+    >   | e216e6b502134b6185380be6ccd0bf09 | iris-gaia-dev |
+    >   +----------------------------------+---------------+
+
+    projectid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            project list \
+                --my-projects \
+                --format json \
+        | jq -r '.[0] | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Create a new router to link to the Ceph network.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router create \
+            --format json \
+            --enable \
+            --project "${projectid:?}" \
+            "${buildname:?}-ceph-router" \
+    | tee "/tmp/${buildname:?}-ceph-router.json" \
+    | jq '{name, id, status, routes}'
+
+    cephrouterid=$(
+        jq -r '.id' "/tmp/${buildname:?}-ceph-router.json"
+        )
+
+    >   {
+    >     "name": "aglais-20211229-ceph-router",
+    >     "id": "426f6903-de06-4954-ae3a-9dfbde3f18a7",
+    >     "status": "ACTIVE",
+    >     "routes": []
+    >   }
+
+# -----------------------------------------------------
+# Get the details of the Ceph network.
+#[root@openstacker]
+
+    cephnetworkid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+            --format json \
+        | jq -r '.[] | select(.Name == "cephfs") | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network show \
+            --format json \
+            "${cephnetworkid:?}" \
+    | tee "/tmp/ceph-network.json" \
+    | jq '{name, id, subnets}'
+
+    >   {
+    >     "name": "cephfs",
+    >     "id": "410920fb-5714-4447-b26a-e7b06092fc62",
+    >     "subnets": [
+    >       "5699fb5d-8316-4b88-b889-b05c8a1ec975"
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Get the details of the Ceph subnet.
+#[root@openstacker]
+
+    cephsubnetid=$(
+        jq -r '.subnets[0]' "/tmp/ceph-network.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet show \
+            --format json \
+            "${cephsubnetid:?}" \
+    | tee "/tmp/ceph-subnet.json" \
+    | jq '{name, id, cidr, allocation_pools}'
+
+    cephsubnetcidr=$(
+        jq -r '.cidr' "/tmp/ceph-subnet.json"
+        )
+
+    >   {
+    >     "name": "cephfs",
+    >     "id": "5699fb5d-8316-4b88-b889-b05c8a1ec975",
+    >     "cidr": "10.9.0.0/16",
+    >     "allocation_pools": [
+    >       {
+    >         "start": "10.9.1.1",
+    >         "end": "10.9.1.254"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Set the Ceph router's external gateway to point to the cephfs network.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --external-gateway "${cephnetworkid:?}" \
+            "${cephrouterid:?}"
+
+
+# -----------------------------------------------------
+# Create a port on our local subnet.
+#[root@openstacker]
+
+cat << EOF
+Local network [${aglaisnetworkid}]
+Local subnet  [${aglaissubnetid}]
+EOF
+
+    >   Local network [2f2b65d0-5996-49d3-b2a1-b36191abde63]
+    >   Local subnet  [ca54eb70-d6fd-4550-bdc1-149f80da8efd]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        port create \
+            --format json \
+            --network "${aglaisnetworkid:?}" \
+            --fixed-ip "subnet=${aglaissubnetid:?}" \
+        "${buildname:?}-subnet-port" \
+    | tee "/tmp/${buildname:?}-subnet-port.json" \
+    | jq '{name, id, network_id, fixed_ips}'
+
+    aglaissubnetportid=$(
+        jq -r '.id' "/tmp/${buildname:?}-subnet-port.json"
+        )
+
+    >   {
+    >     "name": "aglais-20211229-subnet-port",
+    >     "id": "f8de437c-245f-4f4f-b5fa-8680a62c16e4",
+    >     "network_id": "2f2b65d0-5996-49d3-b2a1-b36191abde63",
+    >     "fixed_ips": [
+    >       {
+    >         "subnet_id": "ca54eb70-d6fd-4550-bdc1-149f80da8efd",
+    >         "ip_address": "10.0.0.103"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Add our subnet port to our Ceph router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router add port \
+            "${cephrouterid:?}" \
+            "${aglaissubnetportid:?}"
+
+
+# -----------------------------------------------------
+# Add a route for the Ceph network to our local router.
+#[root@openstacker]
+
+    aglaissubnetportip=$(
+        jq -r ".fixed_ips[] | select(.subnet_id = \"${aglaissubnetid:?}\") | .ip_address" "/tmp/${buildname:?}-subnet-port.json"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            --route "destination=${cephsubnetcidr:?},gateway=${aglaissubnetportip:?}" \
+            "${aglaisrouterid:?}"
+
+
+# -----------------------------------------------------
+# Check the details of our local router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${aglaisrouterid:?}" \
+    | tee "/tmp/${buildname:?}-aglais-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "name": "pfb29-test",
+    >     "id": "c87e4464-ae32-4329-a001-cb5542b28a97",
+    >     "external_gateway_info": {
+    >       "network_id": "57add367-d205-4030-a929-d75617a7c63e",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42",
+    >           "ip_address": "128.232.222.223"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "2631aaa3-0890-4150-bcd9-eca6b19d4e00",
+    >         "ip_address": "10.0.0.1",
+    >         "subnet_id": "ca54eb70-d6fd-4550-bdc1-149f80da8efd"
+    >       }
+    >     ],
+    >     "routes": [
+    >       {
+    >         "nexthop": "10.0.0.103",
+    >         "destination": "10.9.0.0/16"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Check the details of our Ceph router.
+#[root@openstacker]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${cephrouterid:?}" \
+    | tee "/tmp/${buildname:?}-ceph-router.json" \
+    | jq '{name, id, external_gateway_info, interfaces_info, routes}'
+
+    >   {
+    >     "name": "aglais-20211229-ceph-router",
+    >     "id": "426f6903-de06-4954-ae3a-9dfbde3f18a7",
+    >     "external_gateway_info": {
+    >       "network_id": "410920fb-5714-4447-b26a-e7b06092fc62",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "5699fb5d-8316-4b88-b889-b05c8a1ec975",
+    >           "ip_address": "10.9.1.172"
+    >         }
+    >       ]
+    >     },
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "f8de437c-245f-4f4f-b5fa-8680a62c16e4",
+    >         "ip_address": "10.0.0.103",
+    >         "subnet_id": "ca54eb70-d6fd-4550-bdc1-149f80da8efd"
+    >       }
+    >     ],
+    >     "routes": []
+    >   }
+
+
+
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+#[root@ansibler]
+
+    # This is older than cumulus.
+    export OS_SHARE_API_VERSION=2.46
+
+    >   Version 2.51 is not supported by the API. Minimum is 2.0 and maximum is 2.46. (HTTP 406) (Request-ID: req-19e757f4-31b3-4f31-bd0d-5affcc90f7e2)
+
+
+# -----------------------------------------------------
+# Check the available quota.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share quota show
+
+    >   +-----------------------+----------------------------------+
+    >   | Field                 | Value                            |
+    >   +-----------------------+----------------------------------+
+    >   | gigabytes             | 30000                            |
+    >   | id                    | e216e6b502134b6185380be6ccd0bf09 |
+    >   | share_group_snapshots | 50                               |
+    >   | share_groups          | 50                               |
+    >   | share_networks        | 0                                |
+    >   | shares                | 100                              |
+    >   | snapshot_gigabytes    | 10                               |
+    >   | snapshots             | 10                               |
+    >   +-----------------------+----------------------------------+
+
+
+# -----------------------------------------------------
+# Check the available share types.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share type list
+
+    >   +--------------------------------------+---------------+------------+------------+--------------------------------------+--------------------------------------------+---------------+
+    >   | id                                   | name          | visibility | is_default | required_extra_specs                 | optional_extra_specs                       | description   |
+    >   +--------------------------------------+---------------+------------+------------+--------------------------------------+--------------------------------------------+---------------+
+    >   | 12668f5c-44e4-4b63-abf1-c56002ccc424 | ceph01_cephfs | private    | False      | driver_handles_share_servers : False | create_share_from_snapshot_support : False | CephFS-Ceph01 |
+    >   |                                      |               |            |            |                                      | mount_snapshot_support : False             |               |
+    >   |                                      |               |            |            |                                      | revert_to_snapshot_support : False         |               |
+    >   |                                      |               |            |            |                                      | snapshot_support : False                   |               |
+    >   +--------------------------------------+---------------+------------+------------+--------------------------------------+--------------------------------------------+---------------+
+
+
+# -----------------------------------------------------
+# Create a Manila share.
+#[root@ansibler]
+
+    sharesize=512
+    sharename=${buildname:?}-test-share
+    sharetype=ceph01_cephfs
+    sharezone=nova
+    shareprotocol=CEPHFS
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share create \
+            --format json \
+            --name "${sharename:?}" \
+            --share-type "${sharetype:?}" \
+            --availability-zone "${sharezone:?}" \
+            "${shareprotocol:?}" \
+            "${sharesize:?}" \
+    | tee "/tmp/${sharename:?}-share.json" \
+    | jq '{name, id, size, status}'
+
+    shareid=$(
+        jq -r '.id' "/tmp/${sharename:?}-share.json"
+        )
+
+    >   {
+    >     "name": "aglais-20211229-test-share",
+    >     "id": "03f8adb8-2764-4871-b1ef-6436663e9c19",
+    >     "size": 512,
+    >     "status": "creating"
+    >   }
+
+
+# -----------------------------------------------------
+# Add access rules to the share.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-ro" \
+    | tee "/tmp/${sharename:?}-ro-access.json" \
+    | jq '{id, state, access_to, access_level, access_type}'
+
+    >   {
+    >     "id": "1c220b26-7501-4619-bd7d-c9cfa691801c",
+    >     "access_to": "aglais-20211229-test-share-ro",
+    >     "access_level": "ro",
+    >     "access_type": "cephx"
+    >   }
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid:?}" \
+            'cephx' \
+            "${sharename:?}-rw" \
+    | tee "/tmp/${buildname:?}-rw-share-access.json" \
+    | jq '{id, state, access_to, access_level, access_type}'
+
+
+    >   {
+    >     "id": "47e6494f-5175-4d3d-8119-b4304b870d61",
+    >     "access_to": "aglais-20211229-test-share-rw",
+    >     "access_level": "rw",
+    >     "access_type": "cephx"
+    >   }
+
+
+# -----------------------------------------------------
+# Get details of the Ceph export location for our share.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share show \
+            --format json \
+            "${shareid:?}" \
+    | tee "/tmp/${sharename:?}-share.json"
+
+    locations=$(
+        jq '.export_locations' "/tmp/${sharename:?}-share.json"
+        )
+
+    cephnodes=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\1/
+            s/,/ /g
+            '
+            )
+
+    cephpath=$(
+        echo "${locations:?}" |
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\2/
+            '
+            )
+
+    cephsize=$(
+        jq '.size' "/tmp/${sharename:?}-share.json"
+        )
+
+
+    cat << EOF
+Ceph path [${cephpath}]
+Ceph size [${cephsize}]
+EOF
+
+    for cephnode in ${cephnodes:?}
+    do
+        echo "Ceph node [${cephnode:?}]"
+    done
+
+    >   Ceph path [/volumes/_nogroup/d2336b5b-e314-4aab-b14f-2bfe394c680a]
+    >   Ceph size [512]
+
+    >   Ceph node [10.4.200.9:6789]
+    >   Ceph node [10.4.200.13:6789]
+    >   Ceph node [10.4.200.17:6789]
+
+
+# -----------------------------------------------------
+# Get details of the read write access rule.
+#[root@ansibler]
+
+    accessmode=rw
+
+    accessid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            share access list \
+                --format json \
+                "${shareid:?}" \
+        | jq -r ".[] | select(.access_level == \"${accessmode:?}\") | .id"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share access show \
+            --format json \
+            "${accessid:?}" \
+    | tee "/tmp/${buildname:?}-${accessmode:?}-share-access.json" \
+    | jq '{id, state, access_to, access_level, access_type}'
+
+    >   {
+    >     "id": "47e6494f-5175-4d3d-8119-b4304b870d61",
+    >     "state": "active",
+    >     "access_to": "aglais-20211229-test-share-rw",
+    >     "access_level": "rw",
+    >     "access_type": "cephx"
+    >   }
+
+    cephuser=$(
+        jq -r '.access_to' "/tmp/${buildname:?}-${accessmode:?}-share-access.json"
+        )
+
+    cephkey=$(
+        jq -r '.access_key' "/tmp/${buildname:?}-${accessmode:?}-share-access.json"
+        )
+
+    cat << EOF
+Ceph user [${cephuser:?}]
+Ceph key  [${cephkey:?}]
+EOF
+
+    >   Ceph user [aglais-20211229-test-share-rw]
+    >   Ceph key  [AQDL6MthaTlWDhAAYRueoz2cPYk4tM37V1GNbQ==]
+
+
+# -----------------------------------------------------
+# Install the Ceph libraries.
+#[root@ansibler]
+
+    ssh fedora@${floatip:?} \
+        "
+        date
+        hostname
+        sudo dnf install -y 'ceph' 'ceph-common'
+        "
+
+    >   Wed Dec 29 15:34:43 UTC 2021
+    >   aglais-20211229-machine
+    >   ....
+    >   ....
+    >   Installed:
+    >       ....
+    >       ceph-common-2:16.2.7-1.fc34.x86_64
+    >       ....
+
+
+# -----------------------------------------------------
+# Create the CephFS config files.
+#[root@ansibler]
+
+    ssh fedora@${floatip:?} \
+        "
+        date
+        hostname
+        cat > /tmp/cephcfg << EOF
+[client]
+    client quota = true
+    mon host = ${cephnodes:?}
+EOF
+        cat > /tmp/cephkey << EOF
+[client.${cephuser:?}]
+    key = ${cephkey:?}
+EOF
+        sudo mv /tmp/cephcfg /etc/ceph/ceph.conf
+        sudo mv /tmp/cephkey /etc/ceph/ceph.client.${cephuser:?}.keyring
+        "
+
+
+    ssh fedora@${floatip:?} \
+        "
+        date
+        hostname
+        echo '----'
+        cat /etc/ceph/ceph.conf
+        echo '----'
+        cat /etc/ceph/ceph.client.${cephuser:?}.keyring
+        "
+
+    >   Wed Dec 29 15:45:18 UTC 2021
+    >   aglais-20211229-machine
+    >   ----
+    >   [client]
+    >       client quota = true
+    >       mon host = 10.4.200.9:6789 10.4.200.13:6789 10.4.200.17:6789
+    >   ----
+    >   [client.aglais-20211229-test-share-rw]
+    >       key = AQDL6MthaTlWDhAAYRueoz2cPYk4tM37V1GNbQ==
+
+
+# -----------------------------------------------------
+# Create the CephFS fstab entry.
+#[root@ansibler]
+
+    mntopts=name=${cephuser:?},async,auto,nodev,noexec,nosuid,_netdev,rw
+    mntowner=fedora
+    mntgroup=users
+    mntpath=/mnt/test
+    mntfrom=${cephnodes// /,}:${cephpath:?}
+
+    ssh fedora@${floatip:?} \
+        "
+        date
+        hostname
+        sudo mkdir '${mntpath:?}'
+        sudo touch '${mntpath:?}/mount-failed'
+        "
+
+    ssh fedora@${floatip:?} \
+        "
+        date
+        hostname
+        echo '----'
+        echo '${mntfrom:?}'
+        echo '${mntpath:?}'
+        echo '${mntopts:?}'
+        echo '----'
+        sudo mount \
+            --verbose \
+            --types 'ceph' \
+            '${mntfrom:?}' \
+            '${mntpath:?}' \
+            --options '${mntopts:?}'
+        "
+
+    >   Wed Dec 29 18:36:44 UTC 2021
+    >   aglais-20211229-machine
+    >   ----
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/d2336b5b-e314-4aab-b14f-2bfe394c680a
+    >   /mnt/test
+    >   name=aglais-20211229-test-share-rw,async,auto,nodev,noexec,nosuid,_netdev,rw
+    >   ----
+    >   parsing options: rw,nodev,noexec,nosuid,name=aglais-20211229-test-share-rw,_netdev
+    >   mount.ceph: options "name=aglais-20211229-test-share-rw" will pass to kernel.
+    >   mount error: no mds server is up or the cluster is laggy
+
+    #
+    # At this point I notice that the IP addresses for the CephFS nodes are wrong.
+    # 10.4.200.9, 10.4.200.13 and 10.4.200.17.
+    # .. but the ceph network subnet is 10.9.0.0/16.
+    #
+
+    #
+    # So where did the CephFS node addresses come from ?
+    #
+
+# -----------------------------------------------------
+# Check the details of the CephFS share.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share show \
+            --format json \
+            "${shareid:?}" \
+    | jq -r '.export_locations'
+
+    >   path = 10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/d2336b5b-e314-4aab-b14f-2bfe394c680a
+    >   id = 26ea1683-5bc7-405d-8ce3-04ee2e0df060
+    >   preferred = False
+
+
+    #
+    # Two issues to figure out.
+    # 1) The IP addresses given in the Ceph share 'export_locations' (10.4.200.9) don't match the 'ceph' network subnet (10.9.0.0/16).
+    # 2) VMs attached to our router are not reachable. VMs attached Paul's router are reachable.
+    #
+
+    #
+    # TODO
+    # Clean and build again.
+    # Create a new network, router and subnet.
+    # Create two VMs, one attached to our router and one attached to Paul's.
+    # Create a CephFS share and compare the 'export_locations' with the 'ceph' network subnet (10.9.0.0/16).
+    #
+
+
+

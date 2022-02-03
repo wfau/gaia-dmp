@@ -258,9 +258,9 @@
             subnet list \
                 --format json \
         | jq -r '.[] | select(
-            (.Name != "internet")
+            (.Name != "CUDN-Internet")
             and
-            (.Name != "cumulus-internal")
+            (.Name != "cephfs")
             ) | .ID'
         )
     do
@@ -357,7 +357,7 @@
             --os-cloud "${cloudname:?}" \
             keypair list \
                 --format json \
-        | jq -r '.[] | select(.Name | startswith("'${cloudname:?}'")) | .Name'
+        | jq -r '.[] | select(.Name | startswith("aglais")) | .Name'
         )
     do
         echo "- Deleting key [${keyname:?}]"

@@ -1,0 +1,495 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Repeat the same build sequence on iris-gaia-blue to compare.
+
+        * Create our network and router.
+        * Create a new VM.
+        * Assign a floating IP address.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Login using the command line client ..
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudcolour=blue
+    cloudname=iris-gaia-${cloudcolour:?}
+    buildname="aglais-${cloudcolour:?}-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}" \
+
+    >   real    2m0.256s
+    >   user    0m45.323s
+    >   sys     0m5.709s
+
+
+# -----------------------------------------------------
+# Create our SSH keypair.
+#[root@ansibler]
+
+
+    wget \
+        -O "/tmp/${buildname:?}-keypair.pub" \
+        'https://raw.githubusercontent.com/wfau/aglais/master/deployments/common/ssh/aglais-team-keys'
+
+    >   ....
+    >   ....
+    >   2022-02-03 05:14:41 (5.87 MB/s) - ‘/tmp/aglais-blue-20220203-keypair.pub’ saved [1770/1770]
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair create \
+            --format json \
+            --public-key "/tmp/${buildname:?}-keypair.pub" \
+            "${buildname}-keypair" \
+    | tee "/tmp/${buildname:?}-keypair.json" \
+    | jq '{id, name, fingerprint}'
+
+    aglaiskeypair=$(
+        jq -r '.id' "/tmp/${buildname:?}-keypair.json"
+        )
+
+    >   {
+    >     "id": "aglais-blue-20220203-keypair",
+    >     "name": "aglais-blue-20220203-keypair",
+    >     "fingerprint": "2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16"
+    >   }
+
+
+# -----------------------------------------------------
+# Create our internal network, subnet and router.
+# https://docs.openstack.org/ocata/user-guide/cli-create-and-manage-networks.html
+#[root@ansibler]
+
+    aglaissubnetblock='10.20.0.0/24'
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network create \
+            --format json \
+            "${buildname:?}-network" \
+    | tee "/tmp/${buildname:?}-network.json" \
+    | jq '{name, id, subnets}'
+
+    aglaisnetworkid=$(
+        jq -r '.id' "/tmp/${buildname:?}-network.json"
+        )
+
+    >   {
+    >     "name": "aglais-blue-20220203-network",
+    >     "id": "9c1ebd17-f8c1-4af2-9b66-52e8af23218a",
+    >     "subnets": []
+    >   }
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet create \
+            --format json \
+            "${buildname:?}-subnet" \
+            --network "${aglaisnetworkid:?}" \
+            --dns-nameserver "131.111.12.20" \
+            --dns-nameserver "131.111.8.42" \
+            --subnet-range "${aglaissubnetblock:?}" \
+    | tee "/tmp/${buildname:?}-subnet.json" \
+    | jq '{name, id, cidr, gateway_ip, dns_nameservers, allocation_pools}'
+
+    aglaissubnetid=$(
+        jq -r '.id' "/tmp/${buildname:?}-subnet.json"
+        )
+
+    >   {
+    >     "name": "aglais-blue-20220203-subnet",
+    >     "id": "6ee34c59-b3a7-40b0-9b43-c86da92531d6",
+    >     "cidr": "10.20.0.0/24",
+    >     "gateway_ip": "10.20.0.1",
+    >     "dns_nameservers": [
+    >       "131.111.12.20",
+    >       "131.111.8.42"
+    >     ],
+    >     "allocation_pools": [
+    >       {
+    >         "start": "10.20.0.2",
+    >         "end": "10.20.0.254"
+    >       }
+    >     ]
+    >   }
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router create \
+            --format json \
+            "${buildname:?}-router" \
+    | tee "/tmp/${buildname:?}-router.json" \
+    | jq '{name, id, routes}'
+
+    aglaisrouterid=$(
+        jq -r '.id' "/tmp/${buildname:?}-router.json"
+        )
+
+    >   {
+    >     "name": "aglais-blue-20220203-router",
+    >     "id": "9ff03485-a565-49c2-b777-57b9fc9e82a9",
+    >     "routes": []
+    >   }
+
+
+# -----------------------------------------------------
+# Link our router to the public internet and our private subnet.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+------------------------------+--------------------------------------+
+    >   | ID                                   | Name                         | Subnets                              |
+    >   +--------------------------------------+------------------------------+--------------------------------------+
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                       | 5699fb5d-8316-4b88-b889-b05c8a1ec975 |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet                | 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42 |
+    >   | 9c1ebd17-f8c1-4af2-9b66-52e8af23218a | aglais-blue-20220203-network | 6ee34c59-b3a7-40b0-9b43-c86da92531d6 |
+    >   +--------------------------------------+------------------------------+--------------------------------------+
+
+    internet=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+                --format json \
+        | jq -r '
+            .[] | select(.Name == "CUDN-Internet") | .ID
+            '
+        )
+
+    # Link our router to the public internet.
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router set \
+            "${aglaisrouterid:?}" \
+            --external-gateway \
+                "${internet:?}"
+
+    # Link our router to our private subnet.
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router add subnet \
+            "${aglaisrouterid:?}" \
+            "${aglaissubnetid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            --format json \
+            "${aglaisrouterid:?}" \
+    | tee "/tmp/${buildname:?}-router.json" \
+    | jq '{name, id, routes, interfaces_info, external_gateway_info}'
+
+    >   {
+    >     "name": "aglais-blue-20220203-router",
+    >     "id": "9ff03485-a565-49c2-b777-57b9fc9e82a9",
+    >     "routes": [],
+    >     "interfaces_info": [
+    >       {
+    >         "port_id": "563d74d1-34a5-4386-a675-95624e2b3fa3",
+    >         "ip_address": "10.20.0.1",
+    >         "subnet_id": "6ee34c59-b3a7-40b0-9b43-c86da92531d6"
+    >       }
+    >     ],
+    >     "external_gateway_info": {
+    >       "network_id": "57add367-d205-4030-a929-d75617a7c63e",
+    >       "enable_snat": true,
+    >       "external_fixed_ips": [
+    >         {
+    >           "subnet_id": "3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42",
+    >           "ip_address": "128.232.222.119"
+    >         }
+    >       ]
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Get the ID of the Fedora image.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image list
+
+    >   +--------------------------------------+------------------------------+--------+
+    >   | ID                                   | Name                         | Status |
+    >   +--------------------------------------+------------------------------+--------+
+    >   ....
+    >   ....
+    >   | 1779f380-780d-40d8-8052-b3acb91ed530 | Fedora-31-1.9                | active |
+    >   | e62a71df-4bd2-4498-9eae-058ff476b5ad | Fedora-33-1.2                | active |
+    >   | e5c23082-cc34-4213-ad31-ff4684657691 | Fedora-34.1.2                | active |
+    >   | dcb41a5f-868a-4880-9fd5-04b95ab97c47 | FedoraAtomic29-20191126      | active |
+    >   | a079781f-80b7-4d89-95ae-ef65bfb0834f | FedoraCoreOS33               | active |
+    >   | 191d3d4d-60cc-4b87-b4a7-0a03cc48a51e | FedoraCoreOS34               | active |
+    >   ....
+    >   ....
+    >   +--------------------------------------+------------------------------+--------+
+    >
+
+    imageid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            image list \
+                --format json \
+        | jq -r '.[] | select(.Name | test("Fedora-34.1.2")) | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Get the flavor ID.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list
+
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+    >   | ID                                   | Name         |   RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+    >   | 2e5dc624-1d3b-4da7-8107-cc2dd4cb5073 | vm.v1.large  | 32768 |   60 |         0 |     8 | True      |
+    >   | 6793b213-5efa-4b51-96bf-1340ff066499 | vm.v1.xsmall |  2048 |   20 |         0 |     1 | True      |
+    >   | 698a8d46-eceb-4c55-91ff-38286bf9eabb | vm.v1.tiny   |  1024 |   10 |         0 |     1 | True      |
+    >   | 6b56d6e9-5397-4543-87fb-e0c0b6d47961 | vm.v1.small  | 16384 |   20 |         0 |     4 | True      |
+    >   +--------------------------------------+--------------+-------+------+-----------+-------+-----------+
+
+    flavorid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            flavor list \
+                --format json \
+        | jq -r '.[] | select(.Name == "vm.v1.tiny") | .ID'
+        )
+
+
+# -----------------------------------------------------
+# Create a security group for our VM.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group create \
+            --format json \
+            "${buildname:?}-security" \
+    | tee "/tmp/${buildname:?}-security.json" \
+    | jq '{name, id}'
+
+    aglaissecgroupid=$(
+        jq -r '.id' "/tmp/${buildname:?}-security.json"
+        )
+
+    >   {
+    >     "name": "aglais-blue-20220203-security",
+    >     "id": "fcae8976-04cd-4ec7-aac4-17bcc42e206a"
+    >   }
+
+
+#   openstack \
+#       --os-cloud "${cloudname:?}" \
+#       security group rule create \
+#           --egress \
+#           --ethertype 'IPv4' \
+#           --remote-ip '0.0.0.0/0' \
+#           "${aglaissecgroupid:?}"
+#
+#   openstack \
+#       --os-cloud "${cloudname:?}" \
+#       security group rule create \
+#           --egress \
+#           --ethertype 'IPv6' \
+#           --remote-ip '::/0' \
+#           "${aglaissecgroupid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --dst-port   22 \
+            --protocol  'tcp' \
+            --ethertype 'IPv4' \
+            "${aglaissecgroupid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --dst-port   22 \
+            --protocol  'tcp' \
+            --ethertype 'IPv6' \
+            "${aglaissecgroupid:?}"
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule list \
+            "${aglaissecgroupid:?}"
+
+    >   +--------------------------------------+-------------+-----------+-----------+------------+-----------+-----------------------+----------------------+
+    >   | ID                                   | IP Protocol | Ethertype | IP Range  | Port Range | Direction | Remote Security Group | Remote Address Group |
+    >   +--------------------------------------+-------------+-----------+-----------+------------+-----------+-----------------------+----------------------+
+    >   | 9b0fa0b5-d05c-4d86-9671-c0585de017fd | None        | IPv6      | ::/0      |            | egress    | None                  | None                 |
+    >   | d3acd5d4-5a75-4e51-b86a-91ed5a622087 | tcp         | IPv4      | 0.0.0.0/0 | 22:22      | ingress   | None                  | None                 |
+    >   | d4593cc7-d051-479d-9deb-10a45a39c665 | tcp         | IPv6      | ::/0      | 22:22      | ingress   | None                  | None                 |
+    >   | ff34a753-e54a-4d2e-96a8-4801a3b8deb1 | None        | IPv4      | 0.0.0.0/0 |            | egress    | None                  | None                 |
+    >   +--------------------------------------+-------------+-----------+-----------+------------+-----------+-----------------------+----------------------+
+
+
+# -----------------------------------------------------
+# Create our virtual machine.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server create \
+            --format json \
+            --image "${imageid:?}" \
+            --flavor "${flavorid:?}" \
+            --network "${aglaisnetworkid:?}" \
+            --key-name "${aglaiskeypair:?}" \
+            --security-group "${aglaissecgroupid:?}" \
+            "${buildname:?}-machine" \
+    | tee "/tmp/${buildname:?}-machine.json" \
+    | jq '{name, id, status, flavor, image, key_name}'
+
+    vmident=$(
+        jq -r '.id' "/tmp/${buildname:?}-machine.json"
+        )
+
+    >   {
+    >     "name": "aglais-blue-20220203-machine",
+    >     "id": "9463960e-3f44-48f2-9df1-9f1a73afea36",
+    >     "status": "BUILD",
+    >     "flavor": "vm.v1.tiny (698a8d46-eceb-4c55-91ff-38286bf9eabb)",
+    >     "image": "Fedora-34.1.2 (e5c23082-cc34-4213-ad31-ff4684657691)",
+    >     "key_name": "aglais-blue-20220203-keypair"
+    >   }
+
+
+# -----------------------------------------------------
+# Create a public IP address and attach it to our VM.
+#[root@ansibler]
+
+    floatip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            floating ip \
+            create \
+            --format json \
+            "${internet:?}" \
+        | jq -r '.floating_ip_address'
+        )
+
+    networkname=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network show \
+                --format json \
+                "${aglaisnetworkid:?}" \
+        | jq -r '.name'
+        )
+
+    privateip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${vmident:?}" \
+        | jq -r ".addresses.\"${networkname:?}\"[0]"
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server add \
+            floating ip \
+            --fixed-ip-address "${privateip:?}" \
+            "${vmident:?}" \
+            "${floatip:?}"
+
+cat << EOF
+Public  IP [${floatip}]
+Private IP [${privateip}]
+EOF
+
+    >   Public  IP [128.232.222.74]
+    >   Private IP [10.20.0.194]
+
+
+# -----------------------------------------------------
+# Test ssh access.
+#[root@ansibler]
+
+    ssh \
+        fedora@${floatip:?} \
+        '
+        hostname
+        date
+        '
+
+    >   ssh: connect to host 128.232.222.74 port 22: Connection refused
+

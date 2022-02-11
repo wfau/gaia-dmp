@@ -66,7 +66,7 @@ echo "Running multi user test"
         ansible-playbook \
             --verbose \
             --inventory "${inventory:?}" \
-            --extra-vars "testlevel=$testlevel concurrent=True num_users=4" \
+            --extra-vars "testlevel=$testlevel concurrent=$concurrent num_users=$num_users" \
             "36-run-benchmark.yml" \
 
     popd
@@ -80,7 +80,7 @@ else
         ansible-playbook \
             --verbose \
             --inventory "${inventory:?}" \
-            --extra-vars "testlevel=$testlevel concurrent=False num_users=1"  \
+	    --extra-vars "testlevel=$testlevel concurrent=$concurrent num_users=$num_users"  \
             "36-run-benchmark.yml"
 
     popd

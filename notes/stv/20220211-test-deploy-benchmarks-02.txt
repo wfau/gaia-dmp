@@ -1,0 +1,374 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Run Test Deploy, and Benchmarks as a separate step to the create-all script
+
+    Result:
+  
+        SUCCESS
+          - We can now run test as a separate step to create-all, and we can spawn different type of tests (quick, basic, full, multiuser)
+          - However it seems after the first two users start running notebooks, any notebook of other users after that don't start until the first two are complete 
+
+
+
+# -----------------------------------------------------
+# Fetch target branch
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+      	git checkout 'issue/refactor-testing'
+
+    popd
+
+	
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler10 \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+
+# -----------------------------------------------------
+# Set the cloud and configuration.
+#[root@ansibler]
+
+    cloudname=iris-gaia-red
+
+    configname=zeppelin-27.45-spark-6.27.45
+
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+        > Done
+
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}"   \
+        | tee /tmp/create-all.log
+
+
+        > 
+	real	63m14.009s
+	user	12m49.646s
+	sys	3m32.242s
+
+
+
+# -----------------------------------------------------
+# Run Quick test
+#[root@ansibler]
+
+    num_users=1
+    concurrent=False
+    test_level=quick
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "${test_level:?}"  \
+	     ${concurrent:?}  \
+	     ${num_users:?}  \
+        | tee /tmp/run-tests-quick.log
+
+
+
+
+	# Results
+
+
+	[{
+		'SetUp': {
+			'totaltime': '48.48',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Mean_proper_motions_over_the_sky': {
+			'totaltime': '77.24',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Source_counts_over_the_sky.json': {
+			'totaltime': '32.25',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Library_Validation.json': {
+			'totaltime': '9.33',
+			'status': 'SUCCESS',
+			'msg': '',
+			'valid': 'TRUE'
+		}
+	}]
+
+
+
+# -----------------------------------------------------
+# Run Basic test
+#[root@ansibler]
+
+    test_level="basic"
+
+    # Restart Zeppelin
+    time \
+        /deployments/hadoop-yarn/bin/restart-zeppelin.sh
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "${test_level:?}"  \
+	     ${concurrent:?}  \
+	     ${num_users:?}  \
+        | tee /tmp/run-tests-basic.log
+
+
+	# Results:
+
+
+	[{
+		'SetUp': {
+			'totaltime': '43.41',
+			'status': 'SUCCESS',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Mean_proper_motions_over_the_sky': {
+			'totaltime': '68.86',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Source_counts_over_the_sky.json': {
+			'totaltime': '30.14',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Good_astrometric_solutions_via_ML_Random_Forrest_classifier': {
+			'totaltime': '552.17',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Library_Validation.json': {
+			'totaltime': '8.35',
+			'status': 'SUCCESS',
+			'msg': '',
+			'valid': 'TRUE'
+		}
+	}]
+
+
+# -----------------------------------------------------
+# Run Multi User test
+#[root@ansibler]
+
+    num_users=3
+    concurrent=True
+    test_level="multiuser"
+
+    # Restart Zeppelin
+    time \
+        /deployments/hadoop-yarn/bin/restart-zeppelin.sh
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "${test_level:?}"  \
+	     ${concurrent:?}  \
+	     ${num_users:?}  \
+        | tee /tmp/run-tests-multiuser.log	
+
+
+
+         # Results:
+
+         # User 1
+
+         {
+		'SetUp': {
+			'totaltime': '52.30',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Mean_proper_motions_over_the_sky': {
+			'totaltime': '76.22',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Source_counts_over_the_sky.json': {
+			'totaltime': '28.48',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Good_astrometric_solutions_via_ML_Random_Forrest_classifier': {
+			'totaltime': '835.24',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Library_Validation.json': {
+			'totaltime': '9.23',
+			'status': 'SUCCESS',
+			'msg': '',
+			'valid': 'TRUE'
+		}
+	}
+
+
+        # User 2
+
+        {
+		'SetUp': {
+			'totaltime': '1061.51',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Mean_proper_motions_over_the_sky': {
+			'totaltime': '61.46',
+			'status': 'SUCCESS',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Source_counts_over_the_sky.json': {
+			'totaltime': '24.41',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Good_astrometric_solutions_via_ML_Random_Forrest_classifier': {
+			'totaltime': '583.35',
+			'status': 'SUCCESS',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Library_Validation.json': {
+			'totaltime': '8.82',
+			'status': 'SUCCESS',
+			'msg': '',
+			'valid': 'TRUE'
+		}
+	}
+
+        # User 3
+
+        {
+		'SetUp': {
+			'totaltime': '45.85',
+			'status': 'SUCCESS',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Mean_proper_motions_over_the_sky': {
+			'totaltime': '83.07',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Source_counts_over_the_sky.json': {
+			'totaltime': '29.31',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Good_astrometric_solutions_via_ML_Random_Forrest_classifier': {
+			'totaltime': '836.12',
+			'status': 'SLOW',
+			'msg': '',
+			'valid': 'TRUE'
+		},
+		'Library_Validation.json': {
+			'totaltime': '9.07',
+			'status': 'SUCCESS',
+			'msg': '',
+			'valid': 'TRUE'
+		}
+	}
+
+
+
+# -----------------------------------------------------
+# Run Full test
+#[root@ansibler]
+
+    num_users=1
+    concurrent=False
+    test_level="full"
+ 
+    # Restart Zeppelin
+    time \
+        /deployments/hadoop-yarn/bin/restart-zeppelin.sh
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "${test_level:?}"  \
+	     ${concurrent:?}  \
+	     ${num_users:?}  \
+        | tee /tmp/run-tests-full.log
+
+
+	# Running...

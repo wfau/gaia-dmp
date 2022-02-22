@@ -46,8 +46,6 @@
     deployname="${cloudname:?}-$(date '+%Y%m%d')"
     deploydate=$(date '+%Y%m%dT%H%M%S')
 
-    deploytype="${3:-prod}"
-
     configyml='/tmp/aglais-config.yml'
     statusyml='/tmp/aglais-status.yml'
     touch "${statusyml:?}"
@@ -340,20 +338,4 @@ pushd "/deployments/hadoop-yarn/ansible"
 popd
 #
 
-# -----------------------------------------------------
-# Run Benchmarks
-
-if [[ "$deploytype" == "test" ]]
-then
-
-    pushd "/deployments/hadoop-yarn/ansible"
-
-        ansible-playbook \
-            --verbose \
-            --inventory "${inventory:?}" \
-            "36-run-benchmark.yml"
-
-    popd
-
-fi
 

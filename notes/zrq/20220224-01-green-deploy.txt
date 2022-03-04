@@ -1,0 +1,865 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        New deployment on green cloud.
+
+    Result:
+
+        FAIL
+        Zeppelin locks up running "5d kinematic clustering" notebook.
+        Last available stats
+            cpu is 100% on 4 cores
+            memory is 41G of 42G
+            swap is 0
+        SSH access fails
+        HTTP access fails
+
+        Passes all the other tests, so is this a qualified pass ?
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# https://www.digitalocean.com/community/tutorials/how-to-route-web-traffic-securely-without-a-vpn-using-a-socks-tunnel
+# Running 'htop' on the Zeppelin node to keep the connection alive.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh \
+                -t \
+                -D "3000"  \
+                zeppelin \
+                    "
+                    htop
+                    "
+            '
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin UI using FoxyProxy SOCKS proxy.
+#[user@desktop]
+
+    firefox \
+        'http://zeppelin:8080/' \
+        'http://master01:8088/cluster' \
+        'http://monitor:3000/login' \
+        &
+
+    firefox \
+        'http://monitor:3000/datasources/new' \
+        'http://monitor:3000/dashboard/import' \
+        'http://monitor:3000/dashboard/import' \
+        &
+
+        Create our Prometheus data source.
+        http://monitor:3000/datasources/new
+
+            URL: http://monitor:9090/
+            scrape: 1s
+
+        Import our dashboards from local disc.
+        http://monitor:3000/dashboard/import
+
+            deployments/common/grafana/20210705-02-grafana-dash.json
+            deployments/common/grafana/node-exporter-v20201010-1633446087511.json
+
+            http://monitor:3000/d/34S3C8k7z/my-first-dash&refresh=5s
+            http://monitor:3000/d/xfpJB9FGz/1-node-exporter-for-prometheus-dashboard-en-v20201010?orgId=1&refresh=5s
+
+
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-27.45-spark-6.27.45
+    >         name: iris-gaia-green-20220224
+    >         date: 20220224T044403
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+# TODO Install this fragment from a secret.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}"
+        ln -s "zeppelin-0.10.0-bin-all" "zeppelin"
+
+            pushd "zeppelin"
+
+                # Manual edit to add names and passwords
+                vi conf/shiro.ini
+
+                # Restart Zeppelin for the changes to take.
+                bin/zeppelin-daemon.sh restart
+
+            popd
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+    #
+    # We REALLY need to replace this.
+    #
+
+
+# -----------------------------------------------------
+# Add the notebooks from github.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-old
+
+	        git clone git@github.com:wfau/aglais-notebooks.git notebook
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+    >   Cloning into 'notebook'...
+    >   The authenticity of host 'github.com (140.82.121.3)' can't be established.
+    >   ECDSA key fingerprint is SHA256:p2QAMXNIC1TJYWeIOttrVc98/R1BUFWu3/LiyKgUfQM.
+    >   Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+    >   Warning: Permanently added 'github.com,140.82.121.3' (ECDSA) to the list of known hosts.
+    >   remote: Enumerating objects: 603, done.
+    >   remote: Counting objects: 100% (603/603), done.
+    >   remote: Compressing objects: 100% (269/269), done.
+    >   remote: Total 603 (delta 212), reused 534 (delta 149), pack-reused 0
+    >   Receiving objects: 100% (603/603), 54.37 MiB | 6.49 MiB/s, done.
+    >   Resolving deltas: 100% (212/212), done.
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add our secret function to the ansibler container.
+# TODO Move our secrets to a service in the data cloud.
+#[root@ansibler]
+
+    # TODO Move this into the Ansible setup.
+    # TODO Move our secrets onto our infra-ops server.
+
+    if [ ! -e "${HOME}/bin" ]
+    then
+        mkdir "${HOME}/bin"
+    fi
+
+    cat > "${HOME}/bin/secret" << 'EOF'
+ssh -n \
+    'secretserver' \
+    "bin/secret '${1}'"
+EOF
+
+    chmod u+x "${HOME}/bin/secret"
+
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        mkdir "${HOME}/.ssh"
+    fi
+
+    cat >> "${HOME}/.ssh/config" << 'EOF'
+Host secretserver
+  User     Zarquan
+  Hostname data.metagrid.co.uk
+  PubkeyAcceptedKeyTypes +ssh-rsa
+EOF
+
+    ssh-keyscan 'data.metagrid.co.uk' >> "${HOME}/.ssh/known_hosts"
+
+    secret frog
+
+    >   Green Frog
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    cloudname=$(
+        yq eval \
+            '.aglais.spec.openstack.cloud.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r ".addresses | .\"${deployname}-internal-network\" | .[1]"
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [3ace02f6-35c6-4704-ae53-a3aee72e24ff]
+    >   Zeppelin IP [128.232.222.221]
+
+
+# -----------------------------------------------------
+# Update our DuckDNS record.
+#[root@ansibler]
+
+    # Note - this DNS record is no longer used.
+    # DuckDNS is limited to 5 records only, so we need to be selective.
+    # There isn't a strong case for using the aglais-test and aglais-dev names.
+    # Development and testing doesn't need to use a public DNS name.
+    # So we only need the three colours, aglais-red, aglais-green, aglais-blue and the live deployment, aglais-live.
+
+    # TL;DR; skip this step, aglais-test isn't used.
+
+    duckhost=aglais-test
+    duckipv4=${zeppelinip:?}
+    ducktoken=$(secret 'aglais.duckdns.token')
+
+    curl "https://www.duckdns.org/update/${duckhost:?}/${ducktoken:?}/${duckipv4:?}"
+
+    >   OK
+
+
+# -----------------------------------------------------
+# Add bind-utils to the client.
+# TODO Add this to our client container.
+# https://github.com/wfau/atolmis/issues/17
+#[root@ansibler]
+
+    dnf -y install bind-utils
+
+    >   ....
+    >   Installed:
+    >     bind-libs-32:9.16.21-1.fc34.x86_64
+    >     bind-license-32:9.16.21-1.fc34.noarch
+    >     bind-utils-32:9.16.21-1.fc34.x86_64
+
+
+# -----------------------------------------------------
+# Check the DuckDNS record.
+#[root@ansibler]
+
+    dig "${duckhost:?}.duckdns.org"
+
+    >   ;; ANSWER SECTION:
+    >   aglais-test.duckdns.org. 60	IN	A	128.232.222.221
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login via Firefox and run the public examples.
+
+    Setup
+
+        Looks OK ..
+
+
+# -----------------------------------------------------
+
+    Source counts over the sky
+
+        Lots of warning messages when plotting the results.
+        Not a good look for a public example.
+
+    >   WARNING: IERSStaleWarning: leap-second file is expired. [astropy.utils.iers.iers]
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:920: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. This has been deprecated since 3.3 and in 3.6, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = mpl.cm.get_cmap("viridis").copy()
+    >     newcm.set_over(newcm(1.0))
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:921: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. This has been deprecated since 3.3 and in 3.6, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = mpl.cm.get_cmap("viridis").copy()
+    >     newcm.set_under(bgcolor)
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:922: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. This has been deprecated since 3.3 and in 3.6, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = mpl.cm.get_cmap("viridis").copy()
+    >     newcm.set_bad(badcolor)
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:211: MatplotlibDeprecationWarning: Passing parameters norm and vmin/vmax simultaneously is deprecated since 3.3 and will become an error two minor releases later. Please pass vmin/vmax directly to the norm when creating it.
+    >     **kwds
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:543: UserWarning: 0.0 180.0 -180.0 180.0
+    >     pmin / dtor, pmax / dtor, mmin / dtor, mmax / dtor
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:658: UserWarning: The interval between parallels is 30 deg -0.00'.
+    >     vdeg, varcmin
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:666: UserWarning: The interval between meridians is 30 deg -0.00'.
+    >     vdeg, varcmin
+
+
+        Why is a public example writing to Nigel's home directory ?
+
+    >   f = open('/user/nch/source-counts-hpx%d.asc'%(healpix_level), mode = 'w')
+    >   f.write('# hpx%did count\n'%(healpix_level))
+    >   for i in range(len(array_data)): f.write('%d %d\n'%(i, array_data[i]))
+    >   f.close()
+
+# -----------------------------------------------------
+
+    Mean proper motions over the sky
+
+        Looks OK ..
+
+        Do we need the explicit cache directives ?
+
+    >   ....
+    >   df = spark.sql(query).cache()
+    >   ....
+    >   ....
+    >   sqlContext.clearCache()
+
+# -----------------------------------------------------
+
+    Random Forrest classifier
+
+        Training step took 2min56sec
+        Garfana dash shows iowait peaks at 48%
+
+
+# -----------------------------------------------------
+
+    5d kinematic clustering
+
+        Defining the data set took 6min18sec
+        Garfana dash shows iowait peaks at 48%
+
+        Do we need the explicit cache directives ?
+
+    >   ....
+    >   df_lsr_cut = df.select("*").where("udf_lsr_cut(ra, dec, parallax, pmra, pmdec) = 1").cache()
+    >   ....
+
+        Given this is public example of best practice.
+        If we do need the cache directive, do we also need matching call to clear() at the end ?
+
+
+        Running HDBSCAN clusterer
+        Took 3+hrs
+        Grafana shows
+            disc use at 0%
+            cpu use at 15%
+        htop shows
+            cpu is 100% on 3 cores, 0% on 23 cores
+            memory is 30G of 42G
+            swap is 0
+            ...
+            cpu is 100% on 4 cores, 0% on 22 cores
+            memory is 40G of 42G
+            swap is 0
+            ...
+            cpu is 100% on 4 cores, 0% on 22 cores
+            memory is 41G of 42G
+            swap is 0
+            ...
+
+        Not conclusive, but at one stage it looked like one of those 100% cores might be due to Prometheus nodeexporter, not Zeppelin hdbscan.
+
+        11:27
+            Zeppelin node locked up.
+            ssh tunnel blocked
+            ssh login hangs
+            last entry in Grafana plots was 11:04
+
+        Horizon GUI, console display shows lots of Ceph errors.
+
+            ....
+            [24413.279710] ceph: Can't lookup inode 1 (err: -13)
+            [24459.176242] ceph: Can't lookup inode 1 (err: -13)
+            ....
+
+            Looks like a known (harmless) warning
+            https://tracker.ceph.com/issues/44546
+
+        My guess is this notebook used all the available memory and the VM is locked up.
+        Looks like single user running a large task can kill the Zeppelin node.
+        Not good.
+
+        So, system is locked up.
+        No way to connect.
+
+        Way too easy to cause this.
+        Need to limit the maximum memory Zeppelin can take to prevent the VM from locking up.
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+        Looks like the Zeppelin task killed itself.
+
+    >   ....
+    >   Fail to execute line 82: clusterer = hdbscan.HDBSCAN(min_cluster_size=40, min_samples=25, prediction_data=True, allow_single_cluster=False, cluster_selection_method='leaf', gen_min_span_tree=True).fit(hdbscan_pandas_df)
+    >   Traceback (most recent call last):
+    >     File "/tmp/1645688343373-0/zeppelin_python.py", line 158, in <module>
+    >       exec(code, _zcUserQueryNameSpace)
+    >     File "<stdin>", line 82, in <module>
+    >     File "/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py", line 919, in fit
+    >       self._min_spanning_tree) = hdbscan(X, **kwargs)
+    >     File "/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py", line 615, in hdbscan
+    >       core_dist_n_jobs, **kwargs)
+    >     File "/usr/local/lib/python3.7/site-packages/joblib/memory.py", line 349, in __call__
+    >       return self.func(*args, **kwargs)
+    >     File "/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py", line 278, in _hdbscan_boruvka_kdtree
+    >       n_jobs=core_dist_n_jobs, **kwargs)
+    >     File "hdbscan/_hdbscan_boruvka.pyx", line 392, in hdbscan._hdbscan_boruvka.KDTreeBoruvkaAlgorithm.__init__
+    >     File "hdbscan/_hdbscan_boruvka.pyx", line 426, in hdbscan._hdbscan_boruvka.KDTreeBoruvkaAlgorithm._compute_bounds
+    >     File "/usr/local/lib/python3.7/site-packages/joblib/parallel.py", line 1056, in __call__
+    >       self.retrieve()
+    >     File "/usr/local/lib/python3.7/site-packages/joblib/parallel.py", line 935, in retrieve
+    >       self._output.extend(job.get(timeout=self.timeout))
+    >     File "/usr/local/lib/python3.7/site-packages/joblib/_parallel_backends.py", line 542, in wrap_future_result
+    >       return future.result(timeout=timeout)
+    >     File "/usr/lib64/python3.7/concurrent/futures/_base.py", line 435, in result
+    >       return self.__get_result()
+    >     File "/usr/lib64/python3.7/concurrent/futures/_base.py", line 384, in __get_result
+    >       raise self._exception
+    >   joblib.externals.loky.process_executor.TerminatedWorkerError: A worker process managed by the executor was unexpectedly terminated. This could be caused by a segmentation fault while calling the function or by an excessive memory usage causing the Operating System to kill the worker.
+    >
+    >   The exit codes of the workers are {SIGKILL(-9)}
+    >   ERROR
+
+    >   Took 3 hrs 48 min 29 sec. Last updated by zrq at February 24 2022, 11:58:54 AM.
+
+
+    Spark application is still listed as RUNNING.
+    Need a whole day to trace through the logs for this.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Run the simple tests again to check.
+    (*) interesting - I just ran the tests and they worked.
+    I didn't need to run setup again, so the Zeppelin context survived.
+
+# -----------------------------------------------------
+
+    Source counts over the sky
+    Same issues as before.
+    Key cell took 41 sec. Last updated by zrq at February 24 2022, 12:17:33 PM.
+    Grafana shows iowait peaked at 17%
+
+# -----------------------------------------------------
+
+    Mean proper motions over the sky
+    Looks good.
+    Key cell took 40 sec. Last updated by zrq at February 24 2022, 12:19:15 PM.
+    Grafana shows iowait peaked at 18%
+
+# -----------------------------------------------------
+
+    Random Forrest classifier
+    Looks good
+    Key cell took 3 min 1 sec. Last updated by zrq at February 24 2022, 12:29:21 PM.
+    Grafana shows iowait peaked at 50%
+
+# -----------------------------------------------------
+
+    5d kinematic clustering
+
+        12:52
+            started
+        13:51
+            100% on 4 cpu
+            33G/42G memory
+        14:56
+            100% on 4 cpu
+            40G/42G memory
+        15:22
+            failed
+            41G/42G memory
+        15:33
+            SSH and HTTP access locked up
+        15:43
+            SSH and HTTP access locked up
+        15:58
+            SSH access restored
+
+        Notebook fails with error message:
+
+    >   Fail to execute line 82: clusterer = hdbscan.HDBSCAN(min_cluster_size=40, min_samples=25, prediction_data=True, allow_single_cluster=False, cluster_selection_method='leaf', gen_min_span_tree=True).fit(hdbscan_pandas_df)
+    >   Traceback (most recent call last):
+    >     File "/tmp/1645688343373-0/zeppelin_python.py", line 158, in <module>
+    >       exec(code, _zcUserQueryNameSpace)
+    >     File "<stdin>", line 82, in <module>
+    >     File "/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py", line 919, in fit
+    >       self._min_spanning_tree) = hdbscan(X, **kwargs)
+    >     File "/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py", line 615, in hdbscan
+    >       core_dist_n_jobs, **kwargs)
+    >     File "/usr/local/lib/python3.7/site-packages/joblib/memory.py", line 349, in __call__
+    >       return self.func(*args, **kwargs)
+    >     File "/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py", line 278, in _hdbscan_boruvka_kdtree
+    >       n_jobs=core_dist_n_jobs, **kwargs)
+    >     File "hdbscan/_hdbscan_boruvka.pyx", line 392, in hdbscan._hdbscan_boruvka.KDTreeBoruvkaAlgorithm.__init__
+    >     File "hdbscan/_hdbscan_boruvka.pyx", line 426, in hdbscan._hdbscan_boruvka.KDTreeBoruvkaAlgorithm._compute_bounds
+    >     File "/usr/local/lib/python3.7/site-packages/joblib/parallel.py", line 1056, in __call__
+    >       self.retrieve()
+    >     File "/usr/local/lib/python3.7/site-packages/joblib/parallel.py", line 935, in retrieve
+    >       self._output.extend(job.get(timeout=self.timeout))
+    >     File "/usr/local/lib/python3.7/site-packages/joblib/_parallel_backends.py", line 542, in wrap_future_result
+    >       return future.result(timeout=timeout)
+    >     File "/usr/lib64/python3.7/concurrent/futures/_base.py", line 435, in result
+    >       return self.__get_result()
+    >     File "/usr/lib64/python3.7/concurrent/futures/_base.py", line 384, in __get_result
+    >       raise self._exception
+    >   joblib.externals.loky.process_executor.TerminatedWorkerError: A worker process managed by the executor was unexpectedly terminated. This could be caused by a segmentation fault while calling the function or by an excessive memory usage causing the Operating System to kill the worker.
+    >
+    >   The exit codes of the workers are {SIGKILL(-9)}
+
+# -----------------------------------------------------
+
+    Source counts over the sky
+    Same issues as before.
+    Key cell took 42 sec. Last updated by zrq at February 24 2022, 4:29:20 PM.
+    Grafana shows iowait peaked at 18%
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Why wasn't the overloading lockup issue caught in previous testing ?
+    Try more tests ...
+
+# -----------------------------------------------------
+# Quick test, single user, concurrent=True, just to check.
+#[root@ansibler]
+
+    numusers=1
+    concurrent=True
+    testlevel=quick
+    testdate=$(date '+%Y%m%d-%H%M%S')
+
+    time \
+        /deployments/hadoop-yarn/bin/restart-zeppelin.sh
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}"  \
+            "${configname:?}" \
+            "${testlevel:?}"  \
+	        "${concurrent:?}" \
+	        "${numusers:?}"  \
+        | tee /tmp/test-${testlevel:?}-${testdate:?}.log
+
+    sed "
+        1,3 d
+        s/'\([0-9.]*\)'/\1/g
+        s/:[[:space:]],/: '',/g
+        s/'/\"/g
+        " \
+        '/tmp/test-result.json' \
+    | jq '.' \
+    | tee /tmp/test-${testlevel:?}-${testdate:?}.json
+
+    >   real    3m15.942s
+    >   user    0m56.738s
+    >   sys     0m7.715s
+
+    >   [
+    >     {
+    >       "SetUp": {
+    >         "totaltime": 44.73,
+    >         "status": "SUCCESS",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Mean_proper_motions_over_the_sky": {
+    >         "totaltime": 77.07,
+    >         "status": "SLOW",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Source_counts_over_the_sky.json": {
+    >         "totaltime": 29.13,
+    >         "status": "SLOW",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Library_Validation.json": {
+    >         "totaltime": 8.3,
+    >         "status": "SUCCESS",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       }
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Basic test, single user, concurrent=True.
+#[root@ansibler]
+
+    numusers=1
+    concurrent=True
+    testlevel=basic
+    testdate=$(date '+%Y%m%d-%H%M%S')
+
+    time \
+        /deployments/hadoop-yarn/bin/restart-zeppelin.sh
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}"  \
+            "${configname:?}" \
+            "${testlevel:?}"  \
+	        "${concurrent:?}" \
+	        "${numusers:?}"  \
+        | tee /tmp/test-${testlevel:?}-${testdate:?}.log
+
+    sed "
+        1,3 d
+        s/'\([0-9.]*\)'/\1/g
+        s/:[[:space:]],/: '',/g
+        s/'/\"/g
+        " \
+        '/tmp/test-result.json' \
+    | jq '.' \
+    | tee /tmp/test-${testlevel:?}-${testdate:?}.json
+
+    >   real	11m31.910s
+    >   user	2m19.254s
+    >   sys	0m14.954s
+
+    >   [
+    >     {
+    >       "SetUp": {
+    >         "totaltime": 41.54,
+    >         "status": "SUCCESS",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Mean_proper_motions_over_the_sky": {
+    >         "totaltime": 42.26,
+    >         "status": "SUCCESS",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Source_counts_over_the_sky.json": {
+    >         "totaltime": 14.4,
+    >         "status": "SUCCESS",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Good_astrometric_solutions_via_ML_Random_Forrest_classifier": {
+    >         "totaltime": 554.07,
+    >         "status": "SLOW",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Library_Validation.json": {
+    >         "totaltime": 7.08,
+    >         "status": "SUCCESS",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       }
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Full test, single user, concurrent=True.
+#[root@ansibler]
+
+    numusers=1
+    concurrent=True
+    testlevel=full
+    testdate=$(date '+%Y%m%d-%H%M%S')
+
+    time \
+        /deployments/hadoop-yarn/bin/restart-zeppelin.sh
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}"  \
+            "${configname:?}" \
+            "${testlevel:?}"  \
+	        "${concurrent:?}" \
+	        "${numusers:?}"  \
+        | tee /tmp/test-${testlevel:?}-${testdate:?}.log
+
+    sed "
+        1,3 d
+        s/'\([0-9.]*\)'/\1/g
+        s/:[[:space:]],/: '',/g
+        s/'/\"/g
+        " \
+        '/tmp/test-result.json' \
+    | jq '.' \
+    | tee /tmp/test-${testlevel:?}-${testdate:?}.json
+
+
+    >   real	191m4.783s
+    >   user	33m21.462s
+    >   sys	2m59.111s
+
+    >   [
+    >     {
+    >       "SetUp": {
+    >         "totaltime": 41.13,
+    >         "status": "SUCCESS",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Mean_proper_motions_over_the_sky": {
+    >         "totaltime": 77.42,
+    >         "status": "SLOW",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Source_counts_over_the_sky.json": {
+    >         "totaltime": 30.18,
+    >         "status": "SLOW",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Good_astrometric_solutions_via_ML_Random_Forrest_classifier": {
+    >         "totaltime": 761.66,
+    >         "status": "SLOW",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "QC_cuts_dev.json": {
+    >         "totaltime": 5939.79,
+    >         "status": "SLOW",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "WD_detection_dev.json": {
+    >         "totaltime": 4570.26,
+    >         "status": "SLOW",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       },
+    >       "Library_Validation.json": {
+    >         "totaltime": 8.03,
+    >         "status": "SUCCESS",
+    >         "msg": "",
+    >         "valid": "TRUE"
+    >       }
+    >     }
+    >   ]
+
+
+
+
+# -----------------------------------------------------
+
+Issues so far ....
+
+
+    Source counts over the sky example has warnings
+
+        MatplotlibDeprecationWarning
+
+    5d kinematic clustering example locks up Zeppelin VM for an hour
+
+        Need to prevent this, or make it recover sooner.
+
+    The 'all' test configuration doesn't include hdbscan from public examples
+
+        If it did, the tests wouldn't pass.
+
+    Test suite uses hard coded usernames and passwords stored in public source code - should be random generated when needed
+    Test suite uses hard coded limit of 3 user accounts - should be 100+ accounts generated automagically
+    Test suite uses simple ASCII for usernames and passwords - should use the whole range, including punctuation, numbers and spaces.
+
+    Test script fails becase 'false' is not 'False'
+    Test script failes but Ansible tasts reports success.
+
+    Test output is not valid JSON
+        Need to skip first three lines
+
+    Test output is not valid JSON
+        Need to process with sed
+
+    Concurrent test param is redundant
+
+        numusers=2 and concurrent=False is the same as numusers=1
+        numusers=1 is the same as numusers=2 and concurrent=False
+
+        Simpler to just have numusers
+
+        # Looks like with concurrent=false it will ignore the num_users and just run a single test.
+        # https://github.com/wfau/aglais-testing/blob/f9d60969521f74bd12de37508953ce23f54ee0f2/aglais_benchmark/aglais_benchmark.py#L126-L135
+
+    multiuser test cofig is redundant
+
+        In the code the difference between [multiuser] and [quick, basic, full] is just a different echo statement.
+        https://github.com/wfau/aglais/blob/560da17dc540e28be2f32a140b77844664a3493a/deployments/hadoop-yarn/bin/run-tests.sh#L59-L88
+
+        The only difference I can see is a different test config.
+        https://github.com/wfau/aglais/blob/master/deployments/zeppelin/test/config/multiuser.json
+        In which case, why not run [quick, basic, full] concurrently and drop the [multiuser] option ?
+
+    valid and msg fields are redundant
+
+        What information do the valid and msg fields provide ?
+        It looks like valid is always TRUE and msg is always blank.
+
+    Testing notes always restart Zeppelin - is this needed every time ?
+
+    Ansible test script installs git and then pip installs aglais-testing.
+    Better to have this outside the test ?
+
+
+
+
+
+

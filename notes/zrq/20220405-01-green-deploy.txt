@@ -1,0 +1,740 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+
+
+
+    Target:
+
+        New deployment to include recent changes.
+        Previous deployment was left for too long.
+        Better to do a new deploy to include any new changes.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Update from upstream.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        git checkout master
+
+    >   Switched to branch 'master'
+    >   Your branch is up to date with 'origin/master'.
+
+
+        git pull
+
+    >   Already up to date.
+
+
+        git fetch upstream
+
+    >   ....
+    >   dependabot branches for Mavem/Spring classes
+    >   ....
+
+
+        git merge upstream/master
+
+    >   Already up to date.
+
+
+        git status
+
+    >   On branch master
+    >   Your branch is up to date with 'origin/master'.
+
+
+        git push
+
+    >   Everything up-to-date
+
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a new branch.
+#[user@desktop]
+
+    branchname=green-deploy
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        branchprev=$(git branch --show-current)
+        branchnext=$(date '+%Y%m%d')-zrq-${branchname:?}
+
+        git checkout master
+        git checkout -b "${branchnext:?}"
+
+    >   ....
+    >   ....
+    >   Switched to a new branch '20220405-zrq-green-deploy'
+
+
+        git push --set-upstream 'origin' "$(git branch --show-current)"
+
+    >   Total 0 (delta 0), reused 0 (delta 0), pack-reused 0
+    >   ....
+    >   ....
+    >   To github.com:Zarquan/aglais.git
+    >    * [new branch]      20220405-zrq-green-deploy -> 20220405-zrq-green-deploy
+    >   Branch '20220405-zrq-green-deploy' set up to track remote branch '20220405-zrq-green-deploy' from 'origin'.
+
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-green'
+    configname=zeppelin-54.86-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m49.883s
+    >   user    1m22.669s
+    >   sys     0m10.308s
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >   real    45m43.002s
+    >   user    13m38.706s
+    >   sys     4m40.533s
+
+
+# -----------------------------------------------------
+# Quick test with one user.
+#[root@ansibler]
+
+    numusers=1
+    testlevel=quick
+
+    concurrent=True
+    testdate=$(date '+%Y%m%d-%H%M%S')
+
+    time \
+        /deployments/hadoop-yarn/bin/restart-zeppelin.sh
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}"  \
+            "${configname:?}" \
+            "${testlevel:?}"  \
+	        "${concurrent:?}" \
+	        "${numusers:?}"  \
+        | tee /tmp/test-${testlevel:?}-${testdate:?}.log
+
+    sed "
+        1,3 d
+        s/\"/#/g
+        s/'\(-\{0,1\}[0-9.]\{1,\}\)'/\1/g
+        s/:[[:space:]]*\([a-zA-Z]\{1,\}\)\([,}]\)/:'\1'\2/g
+        s/:[[:space:]]*\([,}]\),/: ''\1/g
+        s/'/\"/g
+        " \
+        '/tmp/test-result.json' \
+    | jq '.' \
+    | tee /tmp/test-${testlevel:?}-${testdate:?}.json
+
+    >   real    4m31.421s
+    >   user    2m23.445s
+    >   sys     0m18.696s
+
+    >   [
+    >     {
+    >       "GaiaDMPSetup": {
+    >         "result": "PASS",
+    >         "outputs": {
+    >           "valid": "True"
+    >         },
+    >         "time": {
+    >           "result": "FAST",
+    >           "elapsed": 38.33,
+    >           "expected": 45,
+    >           "percent": -14.83,
+    >           "start": "2022-04-05T11:58:14.380142",
+    >           "finish": "2022-04-05T11:58:52.707000"
+    >         },
+    >         "logs": ""
+    >       },
+    >       "Mean_proper_motions_over_the_sky": {
+    >         "result": "PASS",
+    >         "outputs": {
+    >           "valid": "True"
+    >         },
+    >         "time": {
+    >           "result": "SLOW",
+    >           "elapsed": 58.95,
+    >           "expected": 55,
+    >           "percent": 7.17,
+    >           "start": "2022-04-05T11:58:52.707182",
+    >           "finish": "2022-04-05T11:59:51.652730"
+    >         },
+    >         "logs": ""
+    >       },
+    >       "Source_counts_over_the_sky.json": {
+    >         "result": "PASS",
+    >         "outputs": {
+    >           "valid": "True"
+    >         },
+    >         "time": {
+    >           "result": "FAST",
+    >           "elapsed": 18.51,
+    >           "expected": 22,
+    >           "percent": -15.87,
+    >           "start": "2022-04-05T11:59:51.653446",
+    >           "finish": "2022-04-05T12:00:10.161426"
+    >         },
+    >         "logs": ""
+    >       },
+    >       "Library_Validation.json": {
+    >         "result": "PASS",
+    >         "outputs": {
+    >           "valid": "True"
+    >         },
+    >         "time": {
+    >           "result": "FAST",
+    >           "elapsed": 8.27,
+    >           "expected": 60,
+    >           "percent": -86.21,
+    >           "start": "2022-04-05T12:00:10.161963",
+    >           "finish": "2022-04-05T12:00:18.436787"
+    >         },
+    >         "logs": ""
+    >       }
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# Running 'htop' on the Zeppelin node to keep the connection alive.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh \
+                -t \
+                -D "3000"  \
+                zeppelin \
+                    "
+                    htop
+                    "
+            '
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin UI using FoxyProxy SOCKS proxy.
+#[user@desktop]
+
+    firefox \
+        'http://zeppelin:8080/' \
+        'http://master01:8088/cluster' \
+        'http://monitor:3000/login' \
+        &
+
+    firefox \
+        'http://monitor:3000/datasources/new' \
+        'http://monitor:3000/dashboard/import' \
+        'http://monitor:3000/dashboard/import' \
+        &
+
+        Create our Prometheus data source.
+        http://monitor:3000/datasources/new
+
+            URL: http://monitor:9090/
+            scrape: 1s
+
+        Import our dashboards from local disc.
+        http://monitor:3000/dashboard/import
+
+            deployments/common/grafana/20210705-02-grafana-dash.json
+            deployments/common/grafana/node-exporter-v20201010-1633446087511.json
+
+            http://monitor:3000/d/34S3C8k7z/my-first-dash&refresh=5s
+            http://monitor:3000/d/xfpJB9FGz/1-node-exporter-for-prometheus-dashboard-en-v20201010?orgId=1&refresh=5s
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Monitor IO performance.
+# https://haydenjames.io/what-is-iowait-and-linux-performance
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler \
+            bash -c \
+            '
+            ssh \
+                -t \
+                worker02 \
+                    "
+                    sudo dnf install -y sysstat
+                    iostat -xm 2
+                    "
+            '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-green-20220405
+    >         date: 20220405T110609
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+
+
+# -----------------------------------------------------
+# Add the Zeppelin user accounts.
+# TODO Install this fragment from a secret.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd "${HOME}"
+        ln -s "zeppelin-0.10.0-bin-all" "zeppelin"
+
+            pushd "zeppelin"
+
+                # Manual edit to add names and passwords
+                vi conf/shiro.ini
+
+                # Restart Zeppelin for the changes to take.
+                bin/zeppelin-daemon.sh restart
+
+            popd
+        popd
+    exit
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+    #
+    # We REALLY need to replace this.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Save the current notebooks from our live server to local disc.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_HOME}"
+        pushd backups
+
+            backupdate=$(date '+%Y%m%d')
+
+            scp -r fedora@live.aglais.uk:zeppelin/notebook notebook-${backupdate:?}
+
+    >   ....
+    >   ....
+    >   PYXJTCNBHR.json_2GZD8REWD.zpln                100%  200KB   4.2MB/s   00:00
+    >   K15QY1RZO3.json_2GW6RBS2D.zpln                100%   12KB 639.2KB/s   00:00
+    >   LICENSE                                       100%   34KB   1.6MB/s   00:00
+    >   README.md                                     100%  145     7.4KB/s   00:00
+
+            du -h -d 1 notebook-${backupdate:?}
+
+    >   3.2M    notebook-20220405/Public Examples
+    >   31M     notebook-20220405/Users
+    >   99M     notebook-20220405/.git
+    >   14M     notebook-20220405/tmp
+    >   145M    notebook-20220405
+
+
+            du -h -d 2 notebook-${backupdate:?}
+
+    >   3.2M    notebook-20220405/Public Examples
+    >   12K     notebook-20220405/Users/zrq
+    >   27M     notebook-20220405/Users/dcr
+    >   3.7M    notebook-20220405/Users/nch
+    >   31M     notebook-20220405/Users
+    >   98M     notebook-20220405/.git/objects
+    >   20K     notebook-20220405/.git/refs
+    >   0       notebook-20220405/.git/branches
+    >   32K     notebook-20220405/.git/logs
+    >   4.0K    notebook-20220405/.git/info
+    >   32K     notebook-20220405/.git/hooks
+    >   99M     notebook-20220405/.git
+    >   14M     notebook-20220405/tmp
+    >   145M    notebook-20220405
+
+
+    # Tidy up
+    pushd notebook-${backupdate:?}
+
+        # Delete the tmp folder created by our tests.
+        rm -rf tmp
+
+        # Delete the upstream reference to github.
+        git remote -v
+
+    >   origin	git@github.com:wfau/aglais-notebooks.git (fetch)
+    >   origin	git@github.com:wfau/aglais-notebooks.git (push)
+
+
+        git remote remove origin
+        git remote -v
+
+    >   -
+
+
+# -----------------------------------------------------
+# Transfer a copy of our notebooks from the live server.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /home/fedora/zeppelin
+
+            mv -b notebook \
+               notebook-old
+
+            scp -r fedora@live.aglais.uk:zeppelin/notebook notebook
+
+    >   ....
+    >   ....
+    >   PYXJTCNBHR.json_2GZD8REWD.zpln                                                                                                                                    100%  200KB  71.4MB/s   00:00
+    >   K15QY1RZO3.json_2GW6RBS2D.zpln                                                                                                                                    100%   12KB  14.6MB/s   00:00
+    >   LICENSE                                                                                                                                                           100%   34KB  32.7MB/s   00:00
+    >   README.md                                                                                                                                                         100%  145   243.4KB/s   00:00
+
+
+            # Delete the tmp folder created by our tests.
+            pushd notebook
+                rm -rf tmp
+            popd
+
+
+            # Delete the upstream reference to github.
+            pushd notebook
+                git remote -v
+                git remote remove origin
+            popd
+
+    >   origin	git@github.com:wfau/aglais-notebooks.git (fetch)
+    >   origin	git@github.com:wfau/aglais-notebooks.git (push)
+
+	        bin/zeppelin-daemon.sh restart
+
+        popd
+    exit
+
+    #
+    # This gives us a set of notebooks in local git, but not linked to GitHub.
+    # Need to setup a backup process using rsync.
+    #
+
+# -----------------------------------------------------
+# Add our secret function to the ansibler container.
+# TODO Move our secrets to a service in the data cloud.
+#[root@ansibler]
+
+    # TODO Move this into the Ansible setup.
+    # TODO Move our secrets onto our infra-ops server.
+
+    if [ ! -e "${HOME}/bin" ]
+    then
+        mkdir "${HOME}/bin"
+    fi
+
+    cat > "${HOME}/bin/secret" << 'EOF'
+ssh -n \
+    'secretserver' \
+    "bin/secret '${1}'"
+EOF
+
+    chmod u+x "${HOME}/bin/secret"
+
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        mkdir "${HOME}/.ssh"
+    fi
+
+    cat >> "${HOME}/.ssh/config" << 'EOF'
+Host secretserver
+  User     Zarquan
+  Hostname data.metagrid.co.uk
+  PubkeyAcceptedKeyTypes +ssh-rsa
+EOF
+
+    ssh-keyscan 'data.metagrid.co.uk' >> "${HOME}/.ssh/known_hosts"
+
+    secret frog
+
+    >   Green Frog
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    cloudname=$(
+        yq eval \
+            '.aglais.spec.openstack.cloud.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r ".addresses | .\"${deployname}-internal-network\" | .[1]"
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [6352ab1a-00de-4263-aa8d-013eec66d360]
+    >   Zeppelin IP [128.232.222.206]
+
+
+# -----------------------------------------------------
+# Add bind-utils to the client.
+# TODO Add this to our client container.
+# https://github.com/wfau/atolmis/issues/17
+#[root@ansibler]
+
+    dnf -y install bind-utils
+
+    >   ....
+    >   Installed:
+    >     bind-libs-32:9.16.21-1.fc34.x86_64
+    >     bind-license-32:9.16.21-1.fc34.noarch
+    >     bind-utils-32:9.16.21-1.fc34.x86_64
+
+
+# -----------------------------------------------------
+# Update our DuckDNS records.
+#[root@ansibler]
+
+    ducktoken=$(secret 'aglais.duckdns.token')
+
+    curl "https://www.duckdns.org/update/${cloudname:?}/${ducktoken:?}/${zeppelinip:?}"
+
+    >   OK
+
+
+# -----------------------------------------------------
+# Check the DuckDNS record.
+#[root@ansibler]
+
+    dig "${cloudname:?}.duckdns.org"
+
+    >   ;; ANSWER SECTION:
+    >   iris-gaia-green.duckdns.org. 60	IN	A	128.232.222.206
+
+
+    dig "${cloudname:?}.aglais.uk"
+
+    >   ;; ANSWER SECTION:
+    >   iris-gaia-green.aglais.uk. 600	IN	CNAME	iris-gaia-green.duckdns.org.
+    >   iris-gaia-green.duckdns.org. 48	IN	A	128.232.222.206
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Edit the public examples to use gaiadmpsetup.
+#[user@desktop]
+
+    firefox \
+        'http://zeppelin:8080/' \
+        &
+
+
+    >   %spark.pyspark
+    >   import gaiadmpsetup
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Login via the colour specific DNS name and test.
+#[user@desktop]
+
+    firefox \
+        'http://iris-gaia-green.aglais.uk:8080/'
+
+
+    ....
+    ....
+    ....
+
+    Looks good.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Update our DuckDNS record.
+#[root@ansibler]
+
+    duckname=aglais-live
+    ducktoken=$(secret 'aglais.duckdns.token')
+
+    curl "https://www.duckdns.org/update/${duckname:?}/${ducktoken:?}/${zeppelinip:?}"
+
+    >   OK
+
+
+# -----------------------------------------------------
+# Check the DuckDNS record.
+#[root@ansibler]
+
+    dig 'aglais-live.duckdns.org'
+
+    >   ;; ANSWER SECTION:
+    >   aglais-live.duckdns.org. 60	IN	A	128.232.222.206
+
+
+    dig 'live.aglais.uk'
+
+    >   ;; ANSWER SECTION:
+    >   live.aglais.uk.		600	IN	CNAME	aglais-live.duckdns.org.
+    >   aglais-live.duckdns.org. 40	IN	A	128.232.222.206
+
+
+    dig 'zeppelin.aglais.uk'
+
+    >   ;; ANSWER SECTION:
+    >   zeppelin.aglais.uk.	600	IN	CNAME	aglais-live.duckdns.org.
+    >   aglais-live.duckdns.org. 18	IN	A	128.232.222.206
+
+
+    dig 'zeppelin.gaia-dmp.uk'
+
+    >   ;; ANSWER SECTION:
+    >   zeppelin.gaia-dmp.uk.	600	IN	CNAME	live.aglais.uk.
+    >   live.aglais.uk.		566	IN	CNAME	aglais-live.duckdns.org.
+    >   aglais-live.duckdns.org. 6	IN	A	128.232.222.206
+
+
+
+# -----------------------------------------------------
+# Stop Zeppelin on the old system.
+#[root@ansibler]
+
+    ssh fedora@iris-gaia-blue.aglais.uk \
+        '
+        date
+        hostname
+        /home/fedora/zeppelin/bin/zeppelin-daemon.sh stop
+        '
+
+    >   Tue Apr  5 15:52:50 UTC 2022
+    >   iris-gaia-blue-20220309-zeppelin
+    >   Zeppelin stop                                              [  OK  ]
+
+
+
+

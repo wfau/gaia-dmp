@@ -46,6 +46,8 @@
     deployname="${cloudname:?}-$(date '+%Y%m%d')"
     deploydate=$(date '+%Y%m%dT%H%M%S')
 
+    deploytype="${3:-prod}"
+
     configyml='/tmp/aglais-config.yml'
     statusyml='/tmp/aglais-status.yml'
     touch "${statusyml:?}"
@@ -137,6 +139,30 @@
             "create-all.yml"
 
     popd
+
+# Create the Zeppelin Shiro Database.
+
+    echo ""
+    echo "---- ----"
+    echo "Creating Zeppelin Shiro database"
+
+    pushd "${treetop:?}/hadoop-yarn/ansible"
+
+        if [ "${deploytype}" == "test" ]
+        then
+            ansible-playbook \
+                --inventory "${inventory:?}" \
+                --extra-vars "users_import_file=auth-test.sql" \
+                "38-install-user-db.yml"
+        else
+            ansible-playbook \
+                --inventory "${inventory:?}" \
+                --extra-vars "users_import_file=auth.sql" \
+                "38-install-user-db.yml"
+        fi
+
+    popd
+
 
 
 # -----------------------------------------------------

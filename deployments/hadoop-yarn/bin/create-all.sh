@@ -140,29 +140,6 @@
 
     popd
 
-# Create the Zeppelin Shiro Database.
-
-    echo ""
-    echo "---- ----"
-    echo "Creating Zeppelin Shiro database"
-
-    pushd "${treetop:?}/hadoop-yarn/ansible"
-
-        if [ "${deploytype}" == "test" ]
-        then
-            ansible-playbook \
-                --inventory "${inventory:?}" \
-                --extra-vars "users_import_file=auth-test.sql" \
-                "38-install-user-db.yml"
-        else
-            ansible-playbook \
-                --inventory "${inventory:?}" \
-                --extra-vars "users_import_file=auth.sql" \
-                "38-install-user-db.yml"
-        fi
-
-    popd
-
 
 
 # -----------------------------------------------------

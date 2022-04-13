@@ -1,0 +1,260 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Run Test Deploy, and Benchmarks
+
+    Result:
+  
+
+
+
+# -----------------------------------------------------
+# Fetch target branch
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+      	git checkout 'feature/shiro-jdbc'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+
+# -----------------------------------------------------
+# Set the cloud and configuration.
+#[root@ansibler]
+
+    cloudname=iris-gaia-red
+
+    configname=zeppelin-26.43-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+        > Done
+
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}"   \
+            "test"\
+        | tee /tmp/create-all.log
+
+
+        > Done
+
+
+# -----------------------------------------------------
+# Validate that MySQL users were created
+#[fedora@zeppelin]
+
+mysql -u zeppelin -p 
+
+USE zeppelin;
+
+SELECT * FROM users;
++------------+----------------------------------------------------------------------------------------------+---------------+
+| username   | password                                                                                     | password_salt |
++------------+----------------------------------------------------------------------------------------------+---------------+
+| gaiauser1  | $shiro1$SHA-256$axaB+8cNE5B1oe4w58=             ...                                          | NULL          |
+| gaiauser2  | $shiro1$SHA-256$oJS912hLLnMsjGKHA=               ...                                         | NULL          |
+| gaiauser3  | $shiro1$SHA-256$500sWCurgQLtfF+JJ4Nvoztdv850=     ...                                        | NULL          |
+
+....
+
+10 rows in set (0.00 sec)
+
+
+# -----------------------------------------------------
+# Validate that we can login to Zeppelin as 'gaiauser1'
+# [firefox]
+
+1. Login [Success]
+2. Create a test notebook [Success]
+3. Log out and Log in again, Test that we can see the notebook we created [Success]
+4. Create new user in database, check that we can login without restarting Zeppelin [Success]
+
+	# --------------------------------------------
+	# Generate a SHA256 password for our new user
+	# fedora@zeppelin
+
+		sudo yum install java
+		wget https://repo1.maven.org/maven2/org/apache/shiro/tools/shiro-tools-hasher/1.9.0/shiro-tools-hasher-1.9.0-cli.jar
+
+		java -jar shiro-tools-hasher-1.9.0-cli.jar -p
+		> Password to hash: 
+		..
+
+	        mysql -u root -p
+         	
+                  > INSERT INTO users (username, password) VALUES ('gaiauser11', '$shiro1$SHA-256$50....TWCqeXXcmv1v+yZ0X+JHPWYeQ=');
+                  > INSERT INTO user_roles (username, role_name) VALUES ('gaiauser11', 'admin'); 
+
+
+        # Login with new uer (gaiauser11)
+        # Login successful
+
+5. Check that the new user can edit admin protected configurations in Zeppelin (e.g. Changing and Restarting Interpreters) [Success]
+
+
+# -------------------------------------------------------------------------------
+# Run Basic Test
+#
+#[root@ansibler]
+
+
+    cloudname=iris-gaia-red
+    configname=zeppelin-26.43-spark-6.26.43
+    num_users=1
+    concurrent=True
+    test_level="basic"
+
+    # Restart Zeppelin
+    time \
+        /deployments/hadoop-yarn/bin/restart-zeppelin.sh
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "${test_level:?}"  \
+	     ${concurrent:?}  \
+	     ${num_users:?}  \
+        | tee /tmp/run-tests-basic.log	
+
+
+# -----------------------------------------
+# Results:
+
+[{
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '40.46',
+			'expected': '45.00',
+			'percent': '-10.08',
+			'start': '2022-04-12T17:23:14.374285',
+			'finish': '2022-04-12T17:23:54.836146'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '61.23',
+			'expected': '55.00',
+			'percent': '11.33',
+			'start': '2022-04-12T17:23:54.836589',
+			'finish': '2022-04-12T17:24:56.065486'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '22.86',
+			'expected': '22.00',
+			'percent': '3.90',
+			'start': '2022-04-12T17:24:56.066137',
+			'finish': '2022-04-12T17:25:18.924135'
+		},
+		'logs': ''
+	},
+	'Good_astrometric_solutions_via_ML_Random_Forrest_classifier': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '582.73',
+			'expected': '500.00',
+			'percent': '16.55',
+			'start': '2022-04-12T17:25:18.924987',
+			'finish': '2022-04-12T17:35:01.656447'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '8.71',
+			'expected': '60.00',
+			'percent': '-85.48',
+			'start': '2022-04-12T17:35:01.656611',
+			'finish': '2022-04-12T17:35:10.371314'
+		},
+		'logs': ''
+	}
+}]

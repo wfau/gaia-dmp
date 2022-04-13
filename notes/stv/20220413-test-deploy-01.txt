@@ -1,0 +1,328 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Run Test Deploy, and Benchmarks
+
+    Result:
+  
+
+
+
+# -----------------------------------------------------
+# Fetch target branch
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+      	git checkout 'feature/shiro-jdbc'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+
+# -----------------------------------------------------
+# Set the cloud and configuration.
+#[root@ansibler]
+
+    cloudname=iris-gaia-red
+
+    configname=zeppelin-26.43-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+        > Done
+
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}"   \
+        | tee /tmp/create-all.log
+
+
+        > Done
+
+# -----------------------------------------------------
+# Create (test) users.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-users.sh \
+            "${cloudname:?}" \
+            "${configname:?}"   \
+            "test"   \
+        | tee /tmp/create-users.log
+
+
+# -----------------------------------------------------
+# Validate that MySQL users were created
+#[fedora@zeppelin]
+
+mysql -u zeppelin -p 
+
+USE zeppelin;
+
+SELECT * FROM users;
++------------+----------------------------------------------------------------------------------------------+---------------+
+| username   | password                                                                                     | password_salt |
++------------+----------------------------------------------------------------------------------------------+---------------+
+| gaiauser1  | $shiro1$SHA-256$axaB+8cNE5B1oe4w58=             ...                                          | NULL          |
+| gaiauser2  | $shiro1$SHA-256$oJS912hLLnMsjGKHA=               ...                                         | NULL          |
+| gaiauser3  | $shiro1$SHA-256$500sWCurgQLtfF+JJ4Nvoztdv850=     ...                                        | NULL          |
+
+....
+
+10 rows in set (0.00 sec)
+
+
+# -----------------------------------------------------
+# Validate that we can login to Zeppelin as 'gaiauser1'
+# [firefox]
+
+1. Login [Success]
+2. Create a test notebook [Success]
+3. Log out and Log in again, Test that we can see the notebook we created [Success]
+4. Create new user in database, check that we can login without restarting Zeppelin [Success]
+
+	# --------------------------------------------
+	# Generate a SHA256 password for our new user
+	# fedora@zeppelin
+
+		sudo yum install java
+		wget https://repo1.maven.org/maven2/org/apache/shiro/tools/shiro-tools-hasher/1.9.0/shiro-tools-hasher-1.9.0-cli.jar
+
+		java -jar shiro-tools-hasher-1.9.0-cli.jar -p
+		> Password to hash: 
+		..
+
+	        mysql -u root -p
+         	
+                  > INSERT INTO users (username, password) VALUES ('gaiauser11', '$shiro1$SHA-256$50....TWCqeXXcmv1v+yZ0X+JHPWYeQ=');
+                  > INSERT INTO user_roles (username, role_name) VALUES ('gaiauser11', 'admin'); 
+
+
+        # Login with new uer (gaiauser11)
+        # Login successful
+
+5. Check that the new user can edit admin protected configurations in Zeppelin (e.g. Changing and Restarting Interpreters) [Success]
+
+
+# -------------------------------------------------------------------------------
+# Run Basic Test
+#
+#[root@ansibler]
+
+
+    cloudname=iris-gaia-red
+    configname=zeppelin-26.43-spark-6.26.43
+    num_users=1
+    concurrent=True
+    test_level="basic"
+
+    # Restart Zeppelin
+    time \
+        /deployments/hadoop-yarn/bin/restart-zeppelin.sh
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "${test_level:?}"  \
+	     ${concurrent:?}  \
+	     ${num_users:?}  \
+        | tee /tmp/run-tests-basic.log	
+
+
+# -----------------------------------------
+# Results:
+
+[[{
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '39.93',
+			'expected': '45.00',
+			'percent': '-11.27',
+			'start': '2022-04-13T11:36:13.038304',
+			'finish': '2022-04-13T11:36:52.968214'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '56.25',
+			'expected': '55.00',
+			'percent': '2.28',
+			'start': '2022-04-13T11:36:52.968493',
+			'finish': '2022-04-13T11:37:49.221184'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '20.04',
+			'expected': '22.00',
+			'percent': '-8.89',
+			'start': '2022-04-13T11:37:49.221431',
+			'finish': '2022-04-13T11:38:09.264861'
+		},
+		'logs': ''
+	},
+	'Good_astrometric_solutions_via_ML_Random_Forrest_classifier': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '543.62',
+			'expected': '500.00',
+			'percent': '8.72',
+			'start': '2022-04-13T11:38:09.265237',
+			'finish': '2022-04-13T11:47:12.880706'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '8.29',
+			'expected': '60.00',
+			'percent': '-86.18',
+			'start': '2022-04-13T11:47:12.880919',
+			'finish': '2022-04-13T11:47:21.175598'
+		},
+		'logs': ''
+	}
+}]
+
+
+
+# -----------------------------------------------------
+# Repeat deploy, this time create (prod users)
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+        > Done
+
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}"   \
+        | tee /tmp/create-all.log
+
+
+        > Done
+
+# -----------------------------------------------------
+# Create (prod) users.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-users.sh \
+            "${cloudname:?}" \
+            "${configname:?}"   \
+            "prod"   \
+        | tee /tmp/create-users.log
+
+
+
+# -----------------------------------------------------
+# Import aglais notebooks
+#[fedora@zeppelin]
+   pushd /home/fedora/zeppelin-0.10.0-bin-all
+	   rm -r notebook/
+	   git clone https://github.com/wfau/aglais-notebooks notebook
+	   ./bin/zeppelin-daemon.sh restart
+   popd
+
+
+# Login as gaiauser1 [Success]
+# Create notebook (only accessible to gaiauser1 by default) [Success]
+# Logout, Login as stv / Ensure gaiauser1's notebook is not accessible [Success]

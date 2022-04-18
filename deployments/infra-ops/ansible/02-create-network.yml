@@ -1,0 +1,100 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+- name: "Create our internal network"
+  gather_facts: false
+  hosts: localhost
+  vars:
+    netname: "infraops"
+    netconf: "{{ openstack.networks[netname] }}"
+  vars_files:
+    - "config/aglais.yml"
+    - "../../hadoop-yarn/ansible/config/ansible.yml"
+    - "../../hadoop-yarn/ansible/config/openstack.yml"
+  tasks:
+
+    # https://stackoverflow.com/a/56146697
+    - name: "Include our status file [{{ statusfile }}]"
+      include_vars:
+        file: "{{statusfile}}"
+
+    - name: "Create our {{ netname }} network"
+      os_network:
+        cloud: "{{ cloudname }}"
+        state: 'present'
+        name: "{{ netconf.name }}"
+        shared:   false
+        external: false
+      register:
+        agnetwork
+
+    - name: "Create a subnet for our {{ netname }} network"
+      os_subnet:
+        cloud: "{{ cloudname }}"
+        state: 'present'
+        name: "{{ netconf.subnet.name }}"
+        network_name: "{{ agnetwork.network.name }}"
+        cidr: "{{ openstack.networks.infraops.cidr }}"
+      register:
+        agsubnet
+
+    - name: "Create a router for our {{ netname }} network"
+      os_router:
+        cloud: "{{ cloudname }}"
+        state: 'present'
+        name: "{{ netconf.router.name }}"
+        network: "{{ openstack.networks.external.name }}"
+        interfaces:
+          - net:    "{{ agnetwork.network.name }}"
+            subnet: "{{ agsubnet.subnet.name }}"
+      register:
+        agrouter
+
+#   - ansible.builtin.debug:
+#       var: agnetwork
+#
+#   - ansible.builtin.debug:
+#       var: agsubnet
+#
+#   - ansible.builtin.debug:
+#       var: agrouter
+
+    - name: "Update our status file [{{ statusfile }}]"
+      ansible.builtin.shell: |
+        yq eval \
+          --inplace \
+          '
+          .aglais.spec.openstack.networks.{{netname}} = {
+            "id": "{{ agnetwork.network.id }}",
+            "name": "{{ agnetwork.network.name }}",
+            "subnet": {
+                "id": "{{ agsubnet.subnet.id }}",
+                "name": "{{ agsubnet.subnet.name }}",
+                "cidr": "{{ agsubnet.subnet.cidr }}"
+                },
+            "router": {
+                "id": "{{ agrouter.router.id }}",
+                "name": "{{ agrouter.router.name }}"
+                }
+            }
+          ' '{{ statusfile }}'
+

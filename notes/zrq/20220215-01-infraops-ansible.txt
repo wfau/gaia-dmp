@@ -1,0 +1,251 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Create infra-ops server to store local git repositories.
+
+    Result:
+
+        Work interrupted by USS strike action.
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target cloud.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-data'
+
+
+# -----------------------------------------------------
+# Configuration settings.
+#[root@ansibler]
+
+    buildname="aglais-$(date '+%Y%m%d')"
+    builddate="$(date '+%Y%m%d:%H%M%S')"
+
+    deployconf="${2:-infra-ops-01}"
+    deployname="${cloudname:?}-$(date '+%Y%m%d')"
+    deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    configyml='/tmp/aglais-config.yml'
+    statusyml='/tmp/aglais-status.yml'
+    rm -f "${statusyml:?}"
+    touch "${statusyml:?}"
+
+    yq eval \
+        --inplace \
+        "
+        (.aglais.status.deployment.type = \"hadoop-yarn\") |
+        (.aglais.status.deployment.conf = \"${deployconf}\") |
+        (.aglais.status.deployment.name = \"${deployname}\") |
+        (.aglais.status.deployment.date = \"${deploydate}\") |
+        (.aglais.spec.openstack.cloud.base = \"${cloudbase}\") |
+        (.aglais.spec.openstack.cloud.name = \"${cloudname}\")
+        " "${statusyml:?}"
+
+cat << EOF
+---- ---- ----
+Cloud base [${cloudbase}]
+Cloud name [${cloudname}]
+Build name [${buildname}]
+---- ---- ----
+Deploy conf [${deployconf}]
+Deploy name [${deployname}]
+Deploy date [${deploydate}]
+---- ---- ----
+EOF
+
+    >   Cloud base [arcus]
+    >   Cloud name [iris-gaia-data]
+    >   Build name [aglais-20220215]
+    >   ---- ---- ----
+    >   Deploy conf [infra-ops-01]
+    >   Deploy name [iris-gaia-data-20220215]
+    >   Deploy date [20220215T125831]
+    >   ---- ---- ----
+
+
+# -----------------------------------------------------
+# Delete any existing known hosts file..
+# Temp fix until we get a better solution.
+# https://github.com/wfau/aglais/issues/401
+
+    rm -f "${HOME}/.ssh/known_hosts"
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    rm -f "${statusyml:?}"
+    touch "${statusyml:?}"
+
+    yq eval \
+        --inplace \
+        "
+        (.aglais.status.deployment.type = \"hadoop-yarn\") |
+        (.aglais.status.deployment.conf = \"${deployconf}\") |
+        (.aglais.status.deployment.name = \"${deployname}\") |
+        (.aglais.status.deployment.date = \"${deploydate}\") |
+        (.aglais.spec.openstack.cloud.base = \"${cloudbase}\") |
+        (.aglais.spec.openstack.cloud.name = \"${cloudname}\")
+        " "${statusyml:?}"
+
+# -----------------------------------------------------
+# Create things one step at a time.
+#[root@ansibler]
+
+    pushd "/deployments/infra-ops/ansible"
+
+         ansible-playbook \
+            --inventory 'hosts.yml' \
+            "01-create-keypair.yml"
+
+         ansible-playbook \
+            --inventory 'hosts.yml' \
+            "02-create-network.yml"
+
+         ansible-playbook \
+            --inventory 'hosts.yml' \
+            "03-create-security.yml"
+
+         ansible-playbook \
+            --inventory 'hosts.yml' \
+            "04-create-celatum.yml"
+
+         ansible-playbook \
+            --inventory 'hosts.yml' \
+            "05-create-gitstore.yml"
+
+    popd
+
+
+# -----------------------------------------------------
+# Display the current status.
+#[root@ansibler]
+
+    cat /tmp/aglais-status.yml
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: infra-ops-01
+    >         name: iris-gaia-data-20220215
+    >         date: 20220215T125831
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-data
+    >         keypair:
+    >           name: iris-gaia-data-20220215-keypair
+    >           fingerprint: 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16
+    >         networks:
+    >           internal:
+    >             network:
+    >               id: 0844d22f-b863-4d17-8c2d-21ca9b9becba
+    >               name: iris-gaia-data-20220215-infraops-network
+    >             subnet:
+    >               id: d12707a7-ca29-415a-bd72-153aec1c36c6
+    >               name: iris-gaia-data-20220215-infraops-subnet
+    >               cidr: 10.12.0.0/16
+    >             router:
+    >               id: 1a110f8a-afb5-46cf-bc78-708f5d13bfcb
+    >               name: iris-gaia-data-20220215-infraops-router
+    >         security:
+    >           ssh:
+    >             name: iris-gaia-data-20220215-ssh-security
+    >             id: 4a754627-d09b-48df-8b6d-2cdbdd5e4c02
+    >         hosts:
+    >           celatum:
+    >             name: iris-gaia-data-20220215-celatum
+    >             id: 385a6b3d-e6fc-4f6a-8d49-3ade25e72c99
+    >             address:
+    >               internal: 10.12.3.28
+    >               external: 128.232.222.115
+    >           gitstore:
+    >             name: iris-gaia-data-20220215-gitstore
+    >             id: 6bcee22e-21d8-47af-ac8b-2944432fe993
+    >             address:
+    >               internal: 10.12.1.48
+
+    # This represents one deployment.
+    # What if we have deployments on data and green ?
+    # What is the difference between status and spec ?
+
+    aglais:
+      deployments:
+        iris-gaia-data-20220215:
+          type: infra-ops
+          conf: infra-ops-01
+          name: iris-gaia-data-20220215
+          date: 20220215T125831
+          openstack:
+            cloud:
+            keypair:
+            networks:
+            security:
+            hosts:
+
+    #
+    # Start with gitstore
+    # Simple git repository for gaiaxpy (svn-git) notebooks (git) and users (git).
+    #
+
+
+
+
+
+

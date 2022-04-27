@@ -1,4 +1,4 @@
-#!/bin/sh
+	#!/bin/sh
 #
 # <meta:header>
 #   <meta:licence>
@@ -45,8 +45,6 @@
     deployconf="${2:-medium-04}"
     deployname="${cloudname:?}-$(date '+%Y%m%d')"
     deploydate=$(date '+%Y%m%dT%H%M%S')
-
-    deploytype="${3:-prod}"
 
     configyml='/tmp/aglais-config.yml'
     statusyml='/tmp/aglais-status.yml'

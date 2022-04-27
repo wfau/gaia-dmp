@@ -39,13 +39,13 @@
     deployconf="${2:?}"
 
     inventory="${treetop:?}/hadoop-yarn/ansible/config/${deployconf:?}.yml"
-    deploytype="${3:-prod}"
+    authtype="${3:-prod}"
 
 
 
     echo "---- ---- ----"
     echo "Deploy conf [${deployconf}]"
-    echo "Deploy Type [${deploytype}]"
+    echo "Auth Type [${authtype}]"
     echo "---- ---- ----"
 
 
@@ -57,9 +57,12 @@
 
     pushd "${treetop:?}/hadoop-yarn/ansible"
 
+        if [ "${authtype}" != "prod" ]
+        then
             ansible-playbook \
                 --inventory "${inventory:?}" \
                 "38-install-user-db.yml"
+        fi
     popd
 
 
@@ -69,18 +72,24 @@
     pushd "${treetop:?}/hadoop-yarn/ansible"
 
 
-        if [ "${deploytype}" == "test" ]
+        if [ "${authtype}" == "test" ]
         then
             ansible-playbook \
                 --inventory "${inventory:?}" \
                 --extra-vars "users_import_file=auth-test.sql" \
                 "39-import-users.yml"
-        else
+        elif [ "${authtype}" == "jdbc" ]
+        then
             ansible-playbook \
                 --inventory "${inventory:?}" \
                 --extra-vars "users_import_file=auth.sql" \
                 "39-import-users.yml"
+        else
+            ansible-playbook \
+                --inventory "${inventory:?}" \
+                "40-create-shiro-file.yml"
         fi
+
 
     popd
 

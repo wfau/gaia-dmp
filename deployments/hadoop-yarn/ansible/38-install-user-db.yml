@@ -1,0 +1,165 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+---
+- name: "Install MySQL Database for Zeppelin/Shiro"
+  hosts: zeppelin
+  become: true
+  gather_facts: false
+  vars_files:
+    - config/ansible.yml
+    - config/hadoop.yml
+    - /tmp/ansible-vars.yml
+    - config/zeppelin.yml
+  vars:
+    zeppelinshiro: |
+            [main]
+            ds = com.mysql.cj.jdbc.MysqlDataSource
+            ds.serverName = localhost
+            ds.databaseName = zeppelin
+            ds.user = zeppelin
+            ds.password = {{ mysql_zeppelin_password }}
+
+            jdbcRealm = org.apache.shiro.realm.jdbc.JdbcRealm
+            ps = org.apache.shiro.authc.credential.DefaultPasswordService
+            pm = org.apache.shiro.authc.credential.PasswordMatcher
+            pm.passwordService = $ps
+
+            jdbcRealm.dataSource = $ds
+            jdbcRealm.credentialsMatcher = $pm
+            shiro.loginUrl = /api/login
+
+            sessionManager = org.apache.shiro.web.session.mgt.DefaultWebSessionManager
+            cookie = org.apache.shiro.web.servlet.SimpleCookie
+            cookie.name = JSESSIONID
+            cookie.httpOnly = true
+            sessionManager.sessionIdCookie = $cookie
+            securityManager.sessionManager = $sessionManager
+            securityManager.sessionManager.globalSessionTimeout = 86400000
+
+
+            [urls]
+            /** = authc
+            /api/version = anon
+            /api/interpreter/setting/restart/** = authc
+            /api/interpreter/** = authc, roles[admin]
+            /api/configurations/** = authc, roles[admin]
+            /api/credential/** = authc, roles[admin]
+
+            [roles]
+            user = *
+            admin = *
+
+  tasks:
+
+   - set_fact:
+       mysql_root_password: "{{ lookup('password','/dev/null chars=ascii_letters,digits,hexdigits length=20') }}!"
+       mysql_zeppelin_password: "{{ lookup('password','/dev/null chars=ascii_letters,digits,hexdigits length=20') }}!"
+
+   - name: "Enable MySQL Community release repo"
+     yum:
+       disable_gpg_check: True
+       name: https://repo.mysql.com//mysql80-community-release-fc31-1.noarch.rpm
+       state: present
+
+   - name: "Get MySQL Connector jar"
+     get_url:
+       url: https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.28/mysql-connector-java-8.0.28.jar
+       dest: "{{zephome}}/lib/mysql-connector-java-8.0.28.jar"
+
+   - name: "Install MySQL Server"
+     yum: name=mysql-server state=installed
+
+   - name: "Install MySQL-devel"
+     yum: name=mysql-devel state=installed
+
+   - name: "Make sure pymysql is present"
+     pip:
+       name: pymysql
+       state: present
+
+   - name: "reload systemd"
+     command: systemctl daemon-reload
+
+   - name: "Start the MySQL service"
+     service: 
+       name: mysqld
+       state: started
+       enabled: yes
+       daemon_reload: yes
+
+   - name: "Find temporary password"
+     shell: "echo `grep 'temporary.*root@localhost' /var/log/mysqld.log | sed
+'s/.*root@localhost: //'`"
+     register: mysql_root_password_temp
+     tags: register
+
+   - name: "Update expired root user password"
+     shell: 'mysql -e "ALTER USER ''root''@''localhost'' IDENTIFIED WITH mysql_native_password BY ''{{ mysql_root_password }}''" --connect-expired-password -uroot -p"{{ mysql_root_password_temp.stdout }}"'
+
+   - name: "Create MySQL config"
+     become: true
+     blockinfile:
+       dest:  '/root/.my.cnf'
+       state: present
+       owner: 'root'
+       group: 'root'
+       mode:  'u=rw,g=r,o=r'
+       create: true
+       insertafter: 'EOF'
+       block: |
+         [client]
+         user=root
+         password={{ mysql_root_password }}
+         [client2]
+         user=root
+         password={{ mysql_zeppelin_password }}
+         [mysqld]
+         bind-address            = 0.0.0.0
+
+   - name: "Create Zeppelin database"
+     mysql_db: name=zeppelin state=present login_user=root login_password={{ mysql_root_password }}
+
+   - name: "Create MySQL Zeppelin user with appropriate privileges"
+     mysql_user:	
+       name: zeppelin
+       password: '{{ mysql_zeppelin_password }}'
+       priv: "zeppelin.*:ALL"
+       state: present
+
+   - name: "Create a Zeppelin Shiro Configuration"
+     copy:
+       owner: "{{zepuser}}"
+       group: "{{zepuser}}"
+       mode:  'u=rw,g=r,o=r'
+       dest:  "{{zephome}}/conf/shiro.ini"
+       content: "{{ zeppelinshiro }}"
+     tags:
+       - always
+
+   - name: "Copy Create SQL file to Zeppelin"
+     copy: src="{{ playbook_dir | dirname | dirname }}/common/zeppelin/sql/create.sql" dest=/tmp
+
+   - name: "Create User SQL database"
+     mysql_db: name=zeppelin state=import target=/tmp/create.sql
+
+

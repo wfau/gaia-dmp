@@ -1,0 +1,200 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Thoughts on how to handle user accounts.
+
+
+    Shell scripts to create and delete user accounts.
+
+        create-user ....
+        delete-user ....
+
+    Need to be safe.
+    Create script checks for existing user and skips.
+    Delete script checks for safety catch preventing us deleting real accounts.
+
+    Almost everything about out users can be pubic.
+    The only real secrets arethe password hashes.
+
+    YAML format for describing users
+
+    users:
+        - name: "albert"
+          uid:  2049,
+          uuid: "7ac3dc18-f53c-4076-88b2-bcf4171d5b76",
+          lock: true,
+          test: false,
+          home: "/home/albert",
+          data: "/user/albert"
+          pass:
+              hash:
+                  algorithm: "SHA-256"
+                  secret: "148518cb-1dc5-49df-a1b2-42cec8a3e547"
+
+        - name: "test-21"
+          uid:  3051,
+          uuid: "0a44662b-b3fa-4834-aa2e-fe49807412e9",
+          lock: false,
+          test: true,
+          home: "/home/test-21",
+          data: "/test/test-21"
+          pass:
+              text: "super secret"
+              hash:
+                  algorithm: "SHA-256"
+                  secret: "148518cb-1dc5-49df-a1b2-42cec8a3e547"
+
+        - name: "test-22"
+          uid:  3052,
+          uuid: "5a8c6ac4-5ddc-4546-a3bd-282979b9599e",
+          lock: false,
+          test: true,
+          home: "/home/test-22",
+          data: "/test/test-22"
+          pass:
+              text: "super secret"
+              hash:
+                  algorithm: "SHA-256"
+                  secret: "148518cb-1dc5-49df-a1b2-42cec8a3e547"
+
+
+    The password 'secret' is not the hash value itself, it is the index into our secret database.
+    To get Albert's password hash, we need to look it up in our secrets database.
+
+        password=$(
+            secret "148518cb-1dc5-49df-a1b2-42cec8a3e547"
+            )
+
+    This minimises the amount of data in the secrets and would fit quite easily into the simple ssh based secret function we have now.
+
+    If a user account doesn't have a password value or hash, then a new one is generated at deployment time and returned in the JSON output returned by the function.
+
+    Deleting accounts needs lock=false and (test=true or interactive confirmation) to go ahead.
+
+    Users need 2 data directories.
+    User's home directory needs to be private.
+    Does not need to be shared witrh worker nodes.
+    Space limited using quotas
+
+        /home/<username>
+
+    User data needs to be shared via Manila so that the worker nodes can access the data.
+
+    Checking this is the case:
+
+        fedora@iris-gaia-green-20220405-worker01
+
+            grep -r '/data/gaia' /var/hadoop/logs/*
+
+--START--
+....
+/var/hadoop/logs/application_1649158781282_0002/container_1649158781282_0002_01_000078/stderr:2022-04-05 13:17:11,957 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/GEDR3/GEDR3_GAIASOURCE/part-01804-061dbeeb-75b5-41c3-9d01-422766759ddd_01804.c000.snappy.parquet, range: 0-293846081, partition values: [empty row]
+/var/hadoop/logs/application_1649158781282_0002/container_1649158781282_0002_01_000078/stderr:2022-04-05 13:17:12,207 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/GEDR3/GEDR3_GAIASOURCE/part-01821-061dbeeb-75b5-41c3-9d01-422766759ddd_01821.c000.snappy.parquet, range: 0-294046672, partition values: [empty row]
+/var/hadoop/logs/application_1649158781282_0002/container_1649158781282_0002_01_000078/stderr:2022-04-05 13:17:12,404 INFO datasources.FileScanRDD: Reading File path: file:///data/gaia/GEDR3/GEDR3_GAIASOURCE/part-01841-061dbeeb-75b5-41c3-9d01-422766759ddd_01841.c000.snappy.parquet, range: 0-294279487, partition values: [empty row]
+....
+--END--
+
+    Specifically:
+
+--START--
+....
+Reading File path: file:///data/gaia/GEDR3/GEDR3_GAIASOURCE/part-01841-061dbeeb-75b5-41c3-9d01-422766759ddd_01841.c000.snappy.parquet
+....
+--END--
+
+    So if the user wants to store data in their data directories, the worker nodes will need to be able to access them.
+    Which means the user's data directories need to be shared.
+    Just adding the user's data directories to /user will fail as soon as they try to access the data in a Spark job.
+
+    We need the user's data to be shared..
+    Either part of a huge uber-share, or as separate shares.
+
+    The huge-uber share has advantages.
+
+        Simple `mkdir` works to create user's directories within the share.
+        Simpler to mount one large share than multiple smaller ones.
+
+    The huge-uber share has dis-advantages.
+
+        The size will need to be allocated at the start.
+        We haven't tested being able to grow a share, although it is in theory possible.
+        We might need to unmount during the resize ?
+        (*) actually, we might have done a re-size in the past, need to check ..
+
+        As this grows to multi-terrabyte size it will become harder to backup.
+        I don't know the details of CephFS works, but I'm guessing that putting everything through one share creates a potential bottle neck.
+
+        We would have to use some kind of quotas system to control the amount of space that people use.
+
+        CephFS has quotas, but it looks like they are per client (VM) rather than per user.
+        https://docs.ceph.com/en/latest/cephfs/quota/
+
+        Could still do something with that.
+        Apply a quota to a directory and use uid/gid to restrict who can write to it.
+        Potentially another performance hit ? Would need to test and measure to see.
+
+    Individual shares has advantages.
+
+        If we create individual shares per user accounmt, then size of each of the shares is smaller.
+        The smaller size makes it easier to manage backups.
+
+    Individual shares has dis-advantages.
+
+        Lots of shares increases the client-server traffic.
+        Potentially another performance hit ? Would need to test and measure to see.
+
+        Creating the user shares needs the Openstack credentials.
+        Which means the best place to do this is on the openstack-client container.
+        That is easy enough to do during deployment build time, but we need to make it easier to re-connect a new openstack-client container after a build.
+
+        To do that we need to store the details of the Openstack components on the zeppelin node itself, probably in /root.
+        We have started doing this for the data deployment, so we can copy and adapt the existing code.
+
+    I think we need acombinations of things.
+
+        Every user gets a Unix account, with name and uid.
+        Every user gets a /home/<name> directory, limited by quota to <n> Mbytes.
+        User's home is protected space for data access credentials for services like DropBox, OwnCloud and STFC Echo.
+
+        Science users get a separate CephFS share mounted at /user/<name>.
+        The share is limited to a specific size and permissions set to make it read/write to the user.
+        Within users /data directory there is a /public directory which is exposed by our websever.
+
+        Creating a new science user creates a new share.
+
+        Test users get space on a common CephFS share mounted at /test/<name>.
+        The create/delete scripts will delete test users and test data without confirmation.
+        Anything outside that /test directory requires manual confirmation.
+
+
+
+
+
+
+

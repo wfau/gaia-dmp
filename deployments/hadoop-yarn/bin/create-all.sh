@@ -214,8 +214,6 @@
     pushd "/deployments/hadoop-yarn/ansible"
 
         ansible-playbook \
-            --verbose \
-            --verbose \
             --inventory "${inventory:?}" \
             "61-data-links.yml"
 
@@ -330,13 +328,12 @@
 
 # -----------------------------------------------------
 # Install GaiaXpy
-#
-pushd "/deployments/hadoop-yarn/ansible"
-     ansible-playbook \
-        --verbose \
-        --inventory "${inventory:?}" \
-        "37-install-gaiaxpy.yml"
-popd
-#
 
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "${inventory:?}" \
+            "37-install-gaiaxpy.yml"
+
+    popd
 

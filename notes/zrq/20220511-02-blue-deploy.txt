@@ -1,0 +1,531 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+
+    Target:
+
+        Test deployment to debug recent changes.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-blue'
+    configname=zeppelin-54.86-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m22.997s
+    >   user    1m30.479s
+    >   sys     0m9.980s
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >   real    32m37.591s
+    >   user    9m40.683s
+    >   sys     2m22.807s
+
+
+# -----------------------------------------------------
+# Add a simple symlink for Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        ln -s zeppelin-0.10.0-bin-all zeppelin
+        '
+
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+    >   PLAY RECAP *********************************************************************
+    >   zeppelin                   : ok=11   changed=7    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+    >   real    0m33.924s
+    >   user    0m9.664s
+    >   sys     0m2.012s
+
+
+# -----------------------------------------------------
+# Hash our tester password.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        mkdir ~/shiro
+        pushd ~/shiro
+
+	        wget https://repo1.maven.org/maven2/org/apache/shiro/tools/shiro-tools-hasher/1.9.0/shiro-tools-hasher-1.9.0-cli.jar
+
+        popd
+        '
+
+    # Manual process because hasher won't read from console
+    ssh zeppelin
+
+        java -jar ~/shiro/shiro-tools-hasher-1.9.0-cli.jar -pnc
+
+
+
+    username='gamestop'
+    password='ahm5Rion see2Eegh'
+    passhash='$shiro1$SHA-256$500000$/gn0Ya40yIINQ7N0ctFebQ==$iHbcPiALiMKQSgAwNNuU4ydbzeFprGIfSVhKMEC4Yes='
+
+
+# -----------------------------------------------------
+# Add our tester account.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        mysql --execute \
+            '
+            use zeppelin ;
+            show tables ;
+            '
+        "
+
+    ssh zeppelin \
+        "
+        mysql --execute \
+            \"
+            use zeppelin ;
+            DELETE FROM users WHERE username = '${username:?}' ;
+            DELETE FROM user_roles WHERE username = '${username:?}' ;
+            \"
+        "
+
+    ssh zeppelin \
+        "
+        mysql --execute \
+            '
+            use zeppelin ;
+            INSERT INTO users (username, password) VALUES (\"${username:?}\", \"${passhash:?}\");
+            INSERT INTO user_roles (username, role_name) VALUES (\"${username:?}\", \"user\");
+            '
+        "
+
+    ssh zeppelin \
+        "
+        mysql --execute \
+            '
+            use zeppelin ;
+            SELECT * FROM users ;
+            SELECT * FROM user_roles ;
+            '
+        "
+
+    >   username	password	password_salt
+    >   gamestop	$shiro1$SHA-256$.....=	NULL
+    >   
+    >   username	role_name
+    >   gamestop	user
+
+# -----------------------------------------------------
+# Load our curl tests.
+#[root@ansibler]
+
+    zeppelinhost=128.232.222.174
+    zeppelinport=8080
+    zeppelinurl=http://${zeppelinhost:?}:${zeppelinport:?}
+
+    source /deployments/zeppelin/test/bin/rest-tests.sh
+
+
+# -----------------------------------------------------
+# Login to Zeppelin.
+#[root@ansibler]
+
+    zeplogin "${username:?}" "${password:?}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gamestop",
+    >       "ticket": "25ea5f23-1dca-462a-abd0-5974293f3f68",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Upgrade our account from user to admin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        mysql --execute \
+            '
+            use zeppelin ;
+            DELETE FROM user_roles WHERE username = \"${username:?}\";
+            INSERT INTO user_roles (username, role_name) VALUES (\"${username:?}\", \"user\");
+            INSERT INTO user_roles (username, role_name) VALUES (\"${username:?}\", \"admin\");
+            '
+        "
+
+    ssh zeppelin \
+        "
+        mysql --execute \
+            '
+            use zeppelin ;
+            SELECT * FROM users ;
+            SELECT * FROM user_roles ;
+            '
+        "
+
+    >   username	password	password_salt
+    >   gamestop	$shiro1$SHA-256$.....=	NULL
+    >   
+    >   username	role_name
+    >   gamestop	admin
+
+
+# -----------------------------------------------------
+# Login to Zeppelin.
+#[root@ansibler]
+
+    zeplogin "${username:?}" "${password:?}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gamestop",
+    >       "ticket": "25ea5f23-1dca-462a-abd0-5974293f3f68",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+    #
+    # Still listing us as 'user' not 'admin'.
+    # Try restarting Zeppelin
+    #
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+    rm -f /tmp/${username:?}.cookies
+
+    zeplogin "${username:?}" "${password:?}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gamestop",
+    >       "ticket": "457af920-e02b-4431-b296-b553fcc7cf08",
+    >       "roles": "[\"admin\",\"user\"]"
+    >     }
+    >   }
+
+    #
+    # IMPORTANT - Zeppelin caches user accounts.
+    # Inserting a new user works, because it forces a database query.
+    # Altering the role of an existing user uses cached data.
+    #
+
+# -----------------------------------------------------
+# Try listing the user accounts.
+#[root@ansibler]
+
+    zepcookies=/tmp/${username:?}.cookies
+
+    curl \
+        --silent \
+        --request 'POST' \
+        --cookie-jar "${zepcookies:?}" \
+        --data "userName=${username:?}" \
+        --data "password=${password:?}" \
+        "${zeppelinurl:?}/api/login" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gamestop",
+    >       "ticket": "70dc2413-9908-48d5-8e0d-72df2f1309d7",
+    >       "roles": "[\"admin\",\"user\"]"
+    >     }
+    >   }
+
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": [
+    >       {
+    >         "id": "2F2YS7PCE",
+    >         "path": "/Flink Tutorial/1. Flink Basics"
+    >       },
+    >       ....
+    >       ....
+    >       {
+    >         "id": "2GE79Y5FV",
+    >         "path": "/Spark Tutorial/8. PySpark Conda Env in Yarn Mode"
+    >       }
+    >     ]
+    >   }
+
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/configurations/all" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "zeppelin.notebook.azure.user": "user",
+    >       "zeppelin.war.tempdir": "webapps",
+    >       "zeppelin.helium.npm.installer.url": "http://registry.npmjs.org/",
+    >       "zeppelin.notebook.git.remote.username": "token",
+    >       "zeppelin.interpreter.remoterunner": "bin/interpreter.sh",
+    >       ....
+    >       ....
+    >       "zeppelin.interpreter.group.default": "spark",
+    >       "zeppelin.conf.dir": "/home/fedora/zeppelin-0.10.0-bin-all/conf",
+    >       "zeppelin.run.mode": "auto",
+    >       "zeppelin.interpreter.localRepo": "local-repo"
+    >     }
+    >   }
+
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/credential" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "userCredentials": {}
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Try creating a new user account.
+#[root@ansibler]
+
+    newuser='immutable'
+    newpass='juaz4Boo Quie8AhK'
+
+cat > /tmp/new-user.json << EOF
+{
+  "entity": "e1",
+  "username": "${newuser:?}",
+  "password": "${newpass:?}"
+}
+EOF
+
+    curl \
+        --verbose \
+        --cookie "${zepcookies:?}" \
+        --request 'PUT' \
+        --header  'Content-Type: application/json' \
+        --data '@/tmp/new-user.json' \
+        "${zeppelinurl:?}/api/credential"
+
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/credential" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "userCredentials": {
+    >         "e1": {
+    >           "username": "immutable",
+    >           "password": "juaz4Boo Quie8AhK"
+    >         }
+    >       }
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Try login using the new user account.
+#[root@ansibler]
+
+    rm -f "${zepcookies}"
+
+    curl \
+        --verbose \
+        --request 'POST' \
+        --cookie-jar "${zepcookies:?}" \
+        --data "userName=${newuser:?}" \
+        --data "password=${newpass:?}" \
+        "${zeppelinurl:?}/api/login" \
+    | jq '.'
+
+    >   {
+    >     "status": "FORBIDDEN",
+    >     "message": ""
+    >   }
+
+    #
+    # OK, possibly too good to be true ?
+    # Yep, credentials are something else entirely.
+    # https://zeppelin.apache.org/docs/latest/usage/interpreter/overview.html#credential-injection
+    # Useful, but not here.
+    # Worth a try ...
+    #
+
+
+# -----------------------------------------------------
+# Go back to doing it via SQL.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        java -jar ~/shiro/shiro-tools-hasher-1.9.0-cli.jar -pnc
+
+
+    newuser='immutable'
+    newpass='juaz4Boo Quie8AhK'
+    newhash='$shiro1$SHA-256$500000$4cB0QcXO7UB1sq7wQaFhLQ==$j1sEcSBGORYjw3yTRlUxbqZXSGOjXp/qLsaTFHwga/E='
+
+    ssh zeppelin \
+        "
+        mysql --execute \
+            '
+            use zeppelin ;
+            INSERT INTO users (username, password) VALUES (\"${newuser:?}\", \"${newhash:?}\");
+            INSERT INTO user_roles (username, role_name) VALUES (\"${newuser:?}\", \"user\");
+            '
+        "
+
+    rm -f "${zepcookies}"
+
+    curl \
+        --verbose \
+        --request 'POST' \
+        --cookie-jar "${zepcookies:?}" \
+        --data "userName=${newuser:?}" \
+        --data "password=${newpass:?}" \
+        "${zeppelinurl:?}/api/login" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "immutable",
+    >       "ticket": "6d52d89c-f8aa-4ae1-83f2-dc1cb94d9db8",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+    #
+    # So far so good ... the only crappy bit is hashing the passwords.
+    #
+
+# -----------------------------------------------------
+# The problem ...
+#[root@ansibler]
+
+    ssh zeppelin
+
+        echo -n 'juaz4Boo Quie8AhK' | java -jar ~/shiro/shiro-tools-hasher-1.9.0-cli.jar -pnc
+
+    >   Error: java.io.Console is not available on the current JVM.  Cannot read passwords.
+    >   ....
+    >   ....
+
+

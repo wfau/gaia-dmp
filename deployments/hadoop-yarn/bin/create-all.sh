@@ -173,153 +173,19 @@
 
 
 # -----------------------------------------------------
-# Mount the data shares.
-# Using a hard coded cloud name to make it portable.
+# Create our data shares.
 
-    sharelist="${treetop:?}/common/manila/datashares.yaml"
-    mountmode='ro'
-    mounthost='zeppelin:masters:workers'
-
-    for shareid in $(
-        yq eval '.datashares.[].id' "${sharelist:?}"
-        )
-    do
-        echo ""
-        echo "Share [${shareid:?}]"
-
-        sharecloud=$(
-            yq eval ".datashares.[] | select(.id == \"${shareid:?}\").cloudname"  "${sharelist:?}"
-            )
-        sharename=$(
-            yq eval ".datashares.[] | select(.id == \"${shareid:?}\").sharename"  "${sharelist:?}"
-            )
-        mountpath=$(
-            yq eval ".datashares.[] | select(.id == \"${shareid:?}\").mountpath"  "${sharelist:?}"
-            )
-
-        "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
-            "${inventory:?}" \
-            "${sharecloud:?}" \
-            "${sharename:?}" \
-            "${mountpath:?}" \
-            "${mounthost:?}" \
-            "${mountmode:?}"
-
-    done
-
-# -----------------------------------------------------
-# Add the data symlinks.
-# Needs to be done after the data shares have been mounted.
-
-    pushd "/deployments/hadoop-yarn/ansible"
-
-        ansible-playbook \
-            --inventory "${inventory:?}" \
-            "61-data-links.yml"
-
-    popd
+#    "${treetop:?}/hadoop-yarn/bin/create-data-shares.sh" \
+#        "${cloudname:?}" \
+#        "${deployname:?}"
 
 
 # -----------------------------------------------------
-# Check the data shares.
-# Using a hard coded cloud name to make it portable.
+# Create our user shares.
 
-    sharelist="${treetop:?}/common/manila/datashares.yaml"
-    testhost=zeppelin
-
-    for shareid in $(
-        yq eval '.datashares.[].id' "${sharelist}"
-        )
-    do
-
-        checkbase=$(
-            yq eval ".datashares.[] | select(.id == \"${shareid}\").mountpath" "${sharelist}"
-            )
-        checknum=$(
-            yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums | length" "${sharelist}"
-            )
-
-        for (( i=0; i<checknum; i++ ))
-        do
-            checkpath=$(
-                yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums[${i}].path" "${sharelist}"
-                )
-            checkcount=$(
-                yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums[${i}].count" "${sharelist}"
-                )
-            checkhash=$(
-                yq eval ".datashares.[] | select(.id == \"${shareid}\").checksums[${i}].md5sum" "${sharelist}"
-                )
-
-            echo ""
-            echo "Share [${checkbase}/${checkpath}]"
-
-            testcount=$(
-                ssh "${testhost:?}" \
-                    "
-                    ls -1 ${checkbase}/${checkpath} | wc -l
-                    "
-                )
-
-            if [ "${testcount}" == "${checkcount}" ]
-            then
-                echo "Count [PASS]"
-            else
-                echo "Count [FAIL][${checkcount}][${testcount}]"
-            fi
-
-            testhash=$(
-                ssh "${testhost:?}" \
-                    "
-                    ls -1 -v ${checkbase}/${checkpath} | md5sum | cut -d ' ' -f 1
-                    "
-                )
-
-            if [ "${testhash}" == "${checkhash}" ]
-            then
-                echo "Hash  [PASS]"
-            else
-                echo "Hash  [FAIL][${checkhash}][${testhash}]"
-            fi
-        done
-    done
-
-
-# -----------------------------------------------------
-# Mount the user shares.
-# Using a hard coded cloud name to make it portable.
-
-    sharelist="${treetop:?}/common/manila/usershares.yaml"
-    mountmode='rw'
-    mounthost='zeppelin:masters:workers'
-
-    for shareid in $(
-        yq eval ".usershares.[].id" "${sharelist:?}"
-        )
-    do
-        echo ""
-        echo "Share [${shareid:?}]"
-
-        sharecloud=$(
-            yq eval ".usershares.[] | select(.id == \"${shareid:?}\").cloudname"  "${sharelist:?}"
-            )
-        sharename=$(
-            yq eval ".usershares.[] | select(.id == \"${shareid:?}\").sharename" "${sharelist:?}"
-            )
-        mountpath=$(
-            yq eval ".usershares.[] | select(.id == \"${shareid:?}\").mountpath" "${sharelist:?}"
-            )
-
-        "${treetop:?}/hadoop-yarn/bin/cephfs-mount.sh" \
-            "${inventory:?}" \
-            "${sharecloud:?}" \
-            "${sharename:?}" \
-            "${mountpath:?}" \
-            "${mounthost:?}" \
-            "${mountmode:?}"
-
-    done
-
+#    "${treetop:?}/hadoop-yarn/bin/create-user-shares.sh" \
+#        "${cloudname:?}" \
+#        "${deployname:?}"
 
 # -----------------------------------------------------
 # Restart the Zeppelin service.
@@ -328,6 +194,7 @@
 
 # -----------------------------------------------------
 # Install GaiaXpy
+# TODO move this into create-all/yml
 
     pushd "/deployments/hadoop-yarn/ansible"
 

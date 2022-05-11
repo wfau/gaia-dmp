@@ -100,6 +100,79 @@
 
             mysqldump $DB_NAME -u root -p$DB_PASSWD --no-create-info  > {{zephome}}/auth.sql
 
+    create_hdfs_user: |
+            #!/bin/bash
+            # Setup HDFS user directory
+            NEW_USERNAME=$1
+
+            hdfs dfs -mkdir -p /user/$NEW_USERNAME
+            hdfs dfs -chown -R $NEW_USERNAME:supergroup /user/$NEW_USERNAME
+
+    create_mysql_user: |
+            #!/bin/bash
+            # Create MySQL user
+            NEW_USERNAME=$1
+            NEW_PASSWORD=$2
+            NEW_USER_ROLE=$3
+
+            DB_USER='zeppelin'
+            DB_PASSWD='{{ mysql_zeppelin_password }}'
+            DB_NAME='zeppelin'
+            USER_TABLE='users';
+            USER_ROLES_TABLE='user_roles'
+            
+            NEW_PASSWORD_ENCRYPTED="$(java -jar {{zephome}}/lib/shiro-tools-hasher-1.9.0-cli.jar -i 500000 -f shiro1 -a SHA-256 -gss 128 $NEW_PASSWORD)"
+
+            
+            mysql --user=$DB_USER --password=$DB_PASSWD $DB_NAME << EOF
+            INSERT INTO $USER_TABLE (username, password) VALUES ("$NEW_USERNAME", "$NEW_PASSWORD_ENCRYPTED");
+            INSERT INTO $USER_ROLES_TABLE (username, role_name) VALUES ("$NEW_USERNAME", "$NEW_USER_ROLE");
+            EOF
+            
+    create_unix_user: |
+            #!/bin/bash
+            # Add user
+            NEW_USERNAME=$1
+            NEW_UNIX_DIR="/home/$NEW_USERNAME"
+
+            sudo adduser $NEW_USERNAME
+            sudo mkdir -p $NEW_UNIX_DIR/.ssh
+            sudo ssh-keygen -t rsa -N '' -f $NEW_UNIX_DIR/.ssh/id_rsa
+            sudo su -c "cat /home/{{ zepuser }}/.ssh/id_rsa.pub >> $NEW_UNIX_DIR/.ssh/authorized_keys"
+            sudo usermod -a -G {{ zepusersgroup }} $NEW_USERNAME
+            sudo chown -R $NEW_USERNAME:$NEW_USERNAME $NEW_UNIX_DIR/.ssh
+            
+    create_notebook_clone: |
+            #!/bin/bash
+            NEW_USERNAME=$1
+            NEW_PASSWORD=$2
+            ZEPPELIN_URL=$3
+
+            # Setup Clone of notebooks
+            NEW_ZEPPELIN_DIR="{{zephome}}/notebook/Users/$NEW_USERNAME"
+            NEW_ZEPPELIN_EXAMPLES_DIR="Users/$NEW_USERNAME/examples"
+            mkdir -p $NEW_ZEPPELIN_DIR
+            mkdir -p $NEW_ZEPPELIN_DIR/examples
+            sudo chown -R {{ zepuser }}:{{ zepuser }} $NEW_ZEPPELIN_DIR
+
+            zepcookies=/tmp/${NEW_USERNAME}.cookies
+            
+            curl \
+            --silent \
+            --request 'POST' \
+            --cookie-jar "${zepcookies:?}" \
+            --data "userName=${NEW_USERNAME:?}" \
+            --data "password=${NEW_PASSWORD:?}" \
+            ${ZEPPELIN_URL:?}/api/login 
+            
+            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/1. Start Here'}"         --request POST         --cookie "${zepcookies:?}"         ${ZEPPELIN_URL:?}/api/notebook/2GRTQZFUM 
+            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/2. Data Holdings'}"         --request POST         --cookie "${zepcookies:?}"         ${ZEPPELIN_URL:?}/api/notebook/2GRA39HCN 
+            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/3. Source counts over the sky'}"         --request POST         --cookie "${zepcookies:?}"         ${ZEPPELIN_URL:?}/api/notebook/2GQ6WMH9W 
+            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/4. Mean proper motions over the sky'}"         --request POST         --cookie "${zepcookies:?}"         ${ZEPPELIN_URL:?}/api/notebook/2GSNYBDWB 
+            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/5. Working with cross-matched surveys'}"         --request POST         --cookie "${zepcookies:?}"         ${ZEPPELIN_URL:?}/api/notebook/2GZME59KY 
+            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/6. Good astrometric solutions via ML Random Forrest classifier'}"         --request POST         --cookie "${zepcookies:?}"         ${ZEPPELIN_URL:?}/api/notebook/2GQDKZ59J 
+            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/7. Tips and tricks'}"         --request POST         --cookie "${zepcookies:?}"         ${ZEPPELIN_URL:?}/api/notebook/2GVXKC266 
+    
     add_user: |
             #!/bin/bash
             printf "Create a new Zeppelin user"
@@ -115,49 +188,13 @@
             printf "\n"
             printf "User role: "
             read NEW_USER_ROLE
-            
-            
-            DB_USER='zeppelin'
-            DB_PASSWD='{{ mysql_zeppelin_password }}'
-            DB_NAME='zeppelin'
-            USER_TABLE='users';
-            USER_ROLES_TABLE='user_roles'
-            
-            NEW_PASSWORD_ENCRYPTED="$(java -jar {{zephome}}/lib/shiro-tools-hasher-1.9.0-cli.jar -i 500000 -f shiro1 -a SHA-256 -gss 128 $NEW_PASSWORD)"
-            zeppelinurl="http://{{ zepipaddress }}:8080"
-            
-            mysql --user=$DB_USER --password=$DB_PASSWD $DB_NAME << EOF
-            INSERT INTO $USER_TABLE (username, password) VALUES ("$NEW_USERNAME", "$NEW_PASSWORD_ENCRYPTED");
-            INSERT INTO $USER_ROLES_TABLE (username, role_name) VALUES ("$NEW_USERNAME", "$NEW_USER_ROLE");
-            EOF
-            
-            NEW_UNIX_DIR="/user/$NEW_USERNAME"
-            mkdir -p $NEW_UNIX_DIR
-            chmod 777 $NEW_UNIX_DIR
-            
-            NEW_ZEPPELIN_DIR="{{zephome}}/notebook/Users/$NEW_USERNAME"
-            NEW_ZEPPELIN_EXAMPLES_DIR="Users/$NEW_USERNAME/examples"
-            mkdir -p $NEW_ZEPPELIN_DIR
-            mkdir -p $NEW_ZEPPELIN_DIR/examples
-            chown -R fedora:fedora $NEW_ZEPPELIN_DIR
-            
-            zepcookies=/tmp/${NEW_USERNAME}.cookies
-            
-            curl \
-            --silent \
-            --request 'POST' \
-            --cookie-jar "${zepcookies:?}" \
-            --data "userName=${NEW_USERNAME:?}" \
-            --data "password=${NEW_PASSWORD:?}" \
-            ${zeppelinurl:?}/api/login 
-            
-            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/1. Start Here'}"         --request POST         --cookie "${zepcookies:?}"         ${zeppelinurl:?}/api/notebook/2GRTQZFUM 
-            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/2. Data Holdings'}"         --request POST         --cookie "${zepcookies:?}"         ${zeppelinurl:?}/api/notebook/2GRA39HCN 
-            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/3. Source counts over the sky'}"         --request POST         --cookie "${zepcookies:?}"         ${zeppelinurl:?}/api/notebook/2GQ6WMH9W 
-            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/4. Mean proper motions over the sky'}"         --request POST         --cookie "${zepcookies:?}"         ${zeppelinurl:?}/api/notebook/2GSNYBDWB 
-            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/5. Working with cross-matched surveys'}"         --request POST         --cookie "${zepcookies:?}"         ${zeppelinurl:?}/api/notebook/2GZME59KY 
-            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/6. Good astrometric solutions via ML Random Forrest classifier'}"         --request POST         --cookie "${zepcookies:?}"         ${zeppelinurl:?}/api/notebook/2GQDKZ59J 
-            curl -L         -H 'Content-Type: application/json'         -d "{'name': '${NEW_ZEPPELIN_EXAMPLES_DIR:?}/7. Tips and tricks'}"         --request POST         --cookie "${zepcookies:?}"         ${zeppelinurl:?}/api/notebook/2GVXKC266 
+
+            ZEPPELIN_URL="http://{{ zepipaddress }}:8080"
+
+            source {{zephome}}/bin/create_mysql_user.sh $NEW_USERNAME $NEW_PASSWORD $NEW_USER_ROLE
+            source {{zephome}}/bin/create_unix_user.sh $NEW_USERNAME
+            source {{zephome}}/bin/create_hdfs_user.sh $NEW_USERNAME
+            source {{zephome}}/bin/create_notebook_clone.sh $NEW_USERNAME $NEW_PASSWORD $ZEPPELIN_URL
 
   tasks:
 
@@ -257,24 +294,63 @@
        url: https://repo1.maven.org/maven2/org/apache/shiro/tools/shiro-tools-hasher/1.9.0/shiro-tools-hasher-1.9.0-cli.jar
        dest: "{{zephome}}/lib/shiro-tools-hasher-1.9.0-cli.jar"
 
-   - name: "Create add_users.sh script"
+   - name: "Create Scipt to export users"
      copy:
        owner: "{{zepuser}}"
        group: "{{zepuser}}"
        mode:  'u=rwx,g=rwx,o=rwx'
-       dest:  "{{zephome}}/scripts/export_users.sh"
+       dest:  "{{zephome}}/bin/export_users.sh"
        content: "{{ export_users }}"
      tags:
        - always
 
-   - name: "Create add_users.sh script"
+   - name: "Create Top-level script to add a new user"
      copy:
        owner: "{{zepuser}}"
        group: "{{zepuser}}"
        mode:  'u=rwx,g=rwx,o=rwx'
-       dest:  "{{zephome}}/scripts/add_user.sh"
+       dest:  "{{zephome}}/bin/add_user.sh"
        content: "{{ add_user }}"
      tags:
        - always
 
+   - name: "Script to add a unix user"
+     copy:
+       owner: "{{zepuser}}"
+       group: "{{zepuser}}"
+       mode:  'u=rwx,g=rwx,o=rwx'
+       dest:  "{{zephome}}/bin/create_unix_user.sh"
+       content: "{{ create_unix_user }}"
+     tags:
+       - always
+
+   - name: "Script to create an HDFS user directory"
+     copy:
+       owner: "{{zepuser}}"
+       group: "{{zepuser}}"
+       mode:  'u=rwx,g=rwx,o=rwx'
+       dest:  "{{zephome}}/bin/create_hdfs_user.sh"
+       content: "{{ create_hdfs_user }}"
+     tags:
+       - always
+
+   - name: "Script to create add a MySQL user"
+     copy:
+       owner: "{{zepuser}}"
+       group: "{{zepuser}}"
+       mode:  'u=rwx,g=rwx,o=rwx'
+       dest:  "{{zephome}}/bin/create_mysql_user.sh"
+       content: "{{ create_mysql_user }}"
+     tags:
+       - always
+
+   - name: "Script to create a clone of the example notebooks"
+     copy:
+       owner: "{{zepuser}}"
+       group: "{{zepuser}}"
+       mode:  'u=rwx,g=rwx,o=rwx'
+       dest:  "{{zephome}}/bin/create_notebook_clone.sh"
+       content: "{{ create_notebook_clone }}"
+     tags:
+       - always
 

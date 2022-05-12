@@ -175,26 +175,22 @@
 # -----------------------------------------------------
 # Create our data shares.
 
-#    "${treetop:?}/hadoop-yarn/bin/create-data-shares.sh" \
-#        "${cloudname:?}" \
-#        "${deployname:?}"
+    "${treetop:?}/hadoop-yarn/bin/create-data-shares.sh" \
+        "${cloudname:?}" \
+        "${deployconf:?}"
 
 
 # -----------------------------------------------------
 # Create our user shares.
 
-#    "${treetop:?}/hadoop-yarn/bin/create-user-shares.sh" \
-#        "${cloudname:?}" \
-#        "${deployname:?}"
-
-# -----------------------------------------------------
-# Restart the Zeppelin service.
-
-    "${treetop:?}/hadoop-yarn/bin/restart-zeppelin.sh"
+    "${treetop:?}/hadoop-yarn/bin/create-user-shares.sh" \
+        "${cloudname:?}" \
+        "${deployconf:?}"
 
 # -----------------------------------------------------
 # Install GaiaXpy
-# TODO move this into create-all/yml
+# This relies on a user share so it has to be after they are created.
+# TODO convert this to use a ssh+git repo on our data project.
 
     pushd "/deployments/hadoop-yarn/ansible"
 
@@ -203,4 +199,9 @@
             "37-install-gaiaxpy.yml"
 
     popd
+
+# -----------------------------------------------------
+# Restart the Zeppelin service.
+
+    "${treetop:?}/hadoop-yarn/bin/restart-zeppelin.sh"
 

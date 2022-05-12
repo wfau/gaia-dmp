@@ -93,6 +93,17 @@
 
     popd
 
+    pushd "${treetop:?}/hadoop-yarn/ansible"
+
+
+        if [ "${authtype}" == "test" ] || [ "${authtype}" == "jdbc" ]
+        then
+            ansible-playbook \
+                --inventory "${inventory:?}" \
+                "39-create-user-scripts.yml"
+        fi
+
+    popd
 
 # -----------------------------------------------------
 # Restart the Zeppelin service.

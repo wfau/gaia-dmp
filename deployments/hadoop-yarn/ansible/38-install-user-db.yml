@@ -26,18 +26,22 @@
   become: true
   gather_facts: false
   vars_files:
+    - config/aglais.yml
     - config/ansible.yml
     - config/hadoop.yml
     - /tmp/ansible-vars.yml
     - config/zeppelin.yml
+
   vars:
-    zeppelinshiro: |
+    shirodbname: "shirodata"
+    shirodbuser: "shirouser"
+
+    shirodbconfig: |
             [main]
-            ds = com.mysql.cj.jdbc.MysqlDataSource
-            ds.serverName = localhost
-            ds.databaseName = zeppelin
-            ds.user = zeppelin
-            ds.password = {{ mysql_zeppelin_password }}
+            ds = org.mariadb.jdbc.MariaDbDataSource
+            ds.url = jdbc:mariadb://localhost:3306/{{shirodbname}}
+            ds.user = {{shirodbuser}}
+            ds.password = {{shirodbpass}}
 
             jdbcRealm = org.apache.shiro.realm.jdbc.JdbcRealm
             ps = org.apache.shiro.authc.credential.DefaultPasswordService
@@ -72,30 +76,39 @@
   tasks:
 
    - set_fact:
-       mysql_zeppelin_password: "{{ lookup('password','/dev/null chars=ascii_letters,digits,hexdigits length=20') }}!"
+       shirodbpass: "{{ lookup('password','/dev/null chars=ascii_letters,digits,hexdigits length=20') }}!"
 
-   - name: "Get MySQL Connector jar"
+   - name: "Install MariaDB connector"
      get_url:
-       url: https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.28/mysql-connector-java-8.0.28.jar
-       dest: "{{zephome}}/lib/mysql-connector-java-8.0.28.jar"
+       url: https://repo1.maven.org/maven2/org/mariadb/jdbc/mariadb-java-client/3.0.4/mariadb-java-client-3.0.4.jar
+       dest: "{{zephome}}/lib/"
 
-   - name: "Install MySQL Server"
+   - name: "Install Shiro password hasher"
+     get_url:
+       url: "https://repo1.maven.org/maven2/org/apache/shiro/tools/shiro-tools-hasher/1.9.0/shiro-tools-hasher-1.9.0-cli.jar"
+       dest: "{{aghome}}/lib/"
+
+   - name: "Install MariaDB server"
      dnf:
        name:  "mariadb-server"
        state: "installed"
 
-   - name: "Start the MySQL service"
+   - name: "Install PyMySQL"
+     pip:
+       name:  "pymysql"
+       state: "present"
+
+   - name: "Start the MariaDB service"
      service:
        name:    "mariadb"
        state:   "started"
        enabled: true
        daemon_reload: yes
 
-# Root password is not needed if connecting via Unix socket on localhost
+# Root password is not needed if connecting via Unix socket
 # https://mariadb.com/kb/en/authentication-from-mariadb-104/
 
-
-   - name: "Create MySQL config for fedora"
+   - name: "Create MariaDB config for fedora"
      become: true
      blockinfile:
        dest:  '/home/fedora/.my.cnf'
@@ -107,41 +120,39 @@
        insertafter: 'EOF'
        block: |
          [client]
-         user=zeppelin
-         password={{ mysql_zeppelin_password }}
+         user={{shirodbuser}}
+         password={{shirodbpass}}
+         database={{shirodbname}}
 
-   - name: "Create Zeppelin database"
+   - name: "Create MariaDB database [{{shirodbname}}]"
      become: true
      mysql_db:
-       name: 'zeppelin'
+       name: "{{shirodbname}}"
        state: 'present'
 
-   - name: "Create MySQL Zeppelin user with appropriate privileges"
+   - name: "Create MariaDB user [{{shirodbuser}}]"
      become: true
      mysql_user:
-       name: "zeppelin"
-       password: "{{ mysql_zeppelin_password }}"
-       priv: "zeppelin.*:ALL"
+       name: "{{shirodbuser}}"
+       password: "{{shirodbpass}}"
+       priv: "{{shirodbname}}.*:ALL"
        state: "present"
 
-   - name: "Create a Zeppelin Shiro Configuration"
+   - name: "Create Shiro Configuration"
      copy:
        owner: "{{zepuser}}"
        group: "{{zepuser}}"
        mode:  'u=rw,g=r,o=r'
        dest:  "{{zephome}}/conf/shiro.ini"
-       content: "{{ zeppelinshiro }}"
+       content: "{{ shirodbconfig }}"
      tags:
        - always
 
-   - name: "Copy Create SQL file to Zeppelin"
-     copy: src="{{ playbook_dir | dirname | dirname }}/common/zeppelin/sql/create.sql" dest=/tmp
-
-   - name: "Create User SQL database"
-     become: true
-     mysql_db:
-        name: "zeppelin"
-        state: "import"
-        target: "/tmp/create.sql"
-
+   - name: "Create Shiro tables"
+     mysql_query:
+        login_db: "{{shirodbname}}"
+        query:
+            - CREATE TABLE users (username TEXT, password TEXT, password_salt TEXT)
+            - CREATE TABLE user_roles (username TEXT, role_name TEXT)
+            - CREATE TABLE user_permissions (username TEXT, permission TEXT)
 

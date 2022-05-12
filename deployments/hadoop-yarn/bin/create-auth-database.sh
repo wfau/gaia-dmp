@@ -54,7 +54,6 @@
     pushd "${treetop:?}/hadoop-yarn/ansible"
 
         ansible-playbook \
-            --verbose \
             --inventory "${inventory:?}" \
             "38-install-user-db.yml"
 

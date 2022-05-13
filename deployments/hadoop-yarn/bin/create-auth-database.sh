@@ -59,10 +59,3 @@
 
     popd
 
-
-# -----------------------------------------------------
-# Restart the Zeppelin service.
-
-    "${treetop:?}/hadoop-yarn/bin/restart-zeppelin.sh"
-
-

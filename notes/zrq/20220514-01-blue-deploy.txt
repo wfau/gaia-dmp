@@ -1,0 +1,1398 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Test deployment to check everything works.
+
+    Result:
+
+        Work in progress ....
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-blue'
+    configname=zeppelin-54.86-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    4m23.071s
+    >   user    1m49.784s
+    >   sys     0m12.289s
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >   real    42m43.745s
+    >   user    12m56.944s
+    >   sys     3m23.966s
+
+
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+    >   real    1m5.732s
+    >   user    0m18.383s
+    >   sys     0m3.741s
+
+
+# -----------------------------------------------------
+# Create ssh key for fedora (Zeppelin) user.
+# TODO This needs to be part of the deployment sequence.
+# TODO Copy the public key to /opt/aglais/keys/<username>.pub
+#[root@ansibler]
+
+      ssh zeppelin \
+            '
+            sudo mkdir "/opt/aglais/keys"
+            '
+
+      ssh zeppelin \
+            '
+            keypath=${HOME}/.ssh/id_rsa
+            ssh-keygen -t rsa -N "" -f "${keypath}"
+            sudo cp "${keypath}.pub" "/opt/aglais/keys/$(whoami).pub"
+            '
+
+    >   Generating public/private rsa key pair.
+    >   Your identification has been saved in /home/fedora/.ssh/id_rsa.
+    >   Your public key has been saved in /home/fedora/.ssh/id_rsa.pub.
+    >   The key fingerprint is:
+    >   SHA256:b0xWwRQM18nh9+K7sFr18AamTSH9+9bGbcxCLuLABR4 fedora@iris-gaia-blue-20220513-zeppelin
+    >   The key's randomart image is:
+    >   +---[RSA 3072]----+
+    >   |          .==+.o |
+    >   |           .o++  |
+    >   |        E   o + .|
+    >   |       . o . . +.|
+    >   |        S +   B o|
+    >   |       . *   B.*.|
+    >   |        o + +oo=*|
+    >   |         o...ooo@|
+    >   |         .oo..o*.|
+    >   +----[SHA256]-----+
+
+
+      ssh zeppelin \
+            '
+            cat "/opt/aglais/keys/$(whoami).pub"
+            '
+
+    >   ssh-rsa AAAA.... fedora@iris-gaia-blue-20220513-zeppelin
+
+
+# -----------------------------------------------------
+# Move the built-in notebooks out of the way.
+# TODO Make this part of the deployment.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        mv zeppelin/notebook zeppelin/notebook-old
+        '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Restore notebooks from backup.
+# TODO Move this into the container.
+# TODO Restore from data project VM.
+#[user@desktop]
+
+    sshuser=fedora
+    sshhost=128.232.222.201
+
+    ssh "${sshuser:?}@${sshhost:?}" \
+        '
+        date
+        hostname
+        '
+
+    >   Sat May 14 00:49:38 UTC 2022
+    >   iris-gaia-blue-20220513-zeppelin
+
+
+    pushd /var/local/backups/aglais/2022/20220510/
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            'aglais-notebooks/' \
+            "${sshuser:?}@${sshhost:?}:zeppelin/notebook"
+
+    popd
+
+    >   ....
+    >   ....
+    >   Number of files: 656 (reg: 441, dir: 215)
+    >   Number of created files: 656 (reg: 441, dir: 215)
+    >   Number of deleted files: 0
+    >   Number of regular files transferred: 441
+    >   Total file size: 141.06M bytes
+    >   Total transferred file size: 141.06M bytes
+    >   Literal data: 141.06M bytes
+    >   Matched data: 0 bytes
+    >   File list size: 0
+    >   File list generation time: 0.004 seconds
+    >   File list transfer time: 0.000 seconds
+    >   Total bytes sent: 141.15M
+    >   Total bytes received: 9.70K
+    >   
+    >   sent 141.15M bytes  received 9.70K bytes  2.69M bytes/sec
+    >   total size is 141.06M  speedup is 1.00
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Restart Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add our test account.
+#[root@ansibler]
+
+    testuser='gamestop'
+    testpass=$(pwgen 16 1)
+
+    ssh zeppelin \
+        "
+        create_user.sh '${testuser}' '${testpass}' 'user'
+        "
+
+    >   Generating public/private rsa key pair.
+    >   Your identification has been saved in /home/gamestop/.ssh/id_rsa.
+    >   Your public key has been saved in /home/gamestop/.ssh/id_rsa.pub.
+    >   The key fingerprint is:
+    >   SHA256:f65i3zjgBUT2UbbLFTdDNnG3CFqBLcK90dOgOfD1O9o root@iris-gaia-blue-20220513-zeppelin
+    >   The key's randomart image is:
+    >   +---[RSA 3072]----+
+    >   |      .o+ =B* oB=|
+    >   |       ++***ooooB|
+    >   |       ..*= oo.. |
+    >   |        .... o.  |
+    >   |        S.  oo   |
+    >   |        ... o .  |
+    >   |       . o...E   |
+    >   |        + .=     |
+    >   |       . o+oo    |
+    >   +----[SHA256]-----+
+    >   {"status":"OK","message":"","body":{"principal":"gamestop","ticket":"1624d15f-777b-450c-b002-7f786267f566","roles":"[\"user\"]"}}  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+    >                                    Dload  Upload   Total   Spent    Left  Speed
+    >   100    89  100    47  100    42    783    700 --:--:-- --:--:-- --:--:--  1483{"status":"OK","message":"","body":"2H249GNV1"}
+    >     % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+    >                                    Dload  Upload   Total   Spent    Left  Speed
+    >   100    92  100    47  100    45   1516   1451 --:--:-- --:--:-- --:--:--  2967{"status":"OK","message":"","body":"2H33RZHNZ"}
+    >     % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+    >                                    Dload  Upload   Total   Spent    Left  Speed
+    >   100   105  100    47  100    58   1205   1487 --:--:-- --:--:-- --:--:--  2692{"status":"OK","message":"","body":"2H43GAMR9"}
+    >     % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+    >                                    Dload  Upload   Total   Spent    Left  Speed
+    >   100   111  100    47  100    64   1044   1422 --:--:-- --:--:-- --:--:--  2466{"status":"OK","message":"","body":"2H25YXUAD"}
+    >     % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+    >                                    Dload  Upload   Total   Spent    Left  Speed
+    >   100   107  100    47  100    60   2764   3529 --:--:-- --:--:-- --:--:--  6294{"status":"OK","message":"","body":"2H54VQWAU"}
+    >     % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+    >                                    Dload  Upload   Total   Spent    Left  Speed
+    >   100   113  100    47  100    66   1678   2357 --:--:-- --:--:-- --:--:--  4035{"status":"OK","message":"","body":"2H2ZPFFWK"}
+    >     % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+    >                                    Dload  Upload   Total   Spent    Left  Speed
+    >   100   138  100    47  100    91    870   1685 --:--:-- --:--:-- --:--:--  2555{"status":"OK","message":"","body":"2H267CGY9"}
+    >     % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+    >                                    Dload  Upload   Total   Spent    Left  Speed
+    >   100    94  100    47  100    47   1382   1382 --:--:-- --:--:-- --:--:--  2764{"status":"OK","message":"","body":"2H5ZZZCAV"}
+
+
+# -----------------------------------------------------
+# Check the test user's Unix account.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        echo
+        id '${testuser:?}'
+        "
+
+    >   Sat May 14 01:02:29 UTC 2022
+    >   iris-gaia-blue-20220513-zeppelin
+    >   
+    >   uid=1006(gamestop) gid=1008(gamestop) groups=1008(gamestop),1006(zeppelinusers)
+
+
+# -----------------------------------------------------
+# Check the test user's ssh keys.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        echo
+        sudo ls -al '/home/${testuser:?}'
+        echo
+        sudo ls -al '/home/${testuser:?}/.ssh'
+        "
+
+    >   Sat May 14 01:03:11 UTC 2022
+    >   iris-gaia-blue-20220513-zeppelin
+    >   
+    >   total 24
+    >   drwx------. 3 gamestop gamestop 4096 May 14 01:00 .
+    >   drwxr-xr-x. 9 root     root     4096 May 14 01:00 ..
+    >   -rw-r--r--. 1 gamestop gamestop   18 Aug  5  2019 .bash_logout
+    >   -rw-r--r--. 1 gamestop gamestop  141 Aug  5  2019 .bash_profile
+    >   -rw-r--r--. 1 gamestop gamestop  376 Aug  5  2019 .bashrc
+    >   drwxr-xr-x. 2 gamestop gamestop 4096 May 14 01:00 .ssh
+    >   
+    >   total 20
+    >   drwxr-xr-x. 2 gamestop gamestop 4096 May 14 01:00 .
+    >   drwx------. 3 gamestop gamestop 4096 May 14 01:00 ..
+    >   -rw-------. 1 gamestop gamestop  593 May 14 01:00 authorized_keys
+    >   -rw-------. 1 gamestop gamestop 2635 May 14 01:00 id_rsa
+    >   -rw-r--r--. 1 gamestop gamestop  591 May 14 01:00 id_rsa.pub
+
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        echo
+        sudo cat '/home/${testuser:?}/.ssh/authorized_keys'
+        "
+
+    >   Sat May 14 01:03:39 UTC 2022
+    >   iris-gaia-blue-20220513-zeppelin
+    >   
+    >   ssh-rsa AAAA.... fedora@iris-gaia-blue-20220513-zeppelin
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        whoami
+        echo
+        ssh -o IdentitiesOnly=yes '${testuser:?}@localhost' \
+            '
+            date
+            hostname
+            whoami
+            '
+        "
+
+    >   Sat May 14 01:07:36 UTC 2022
+    >   iris-gaia-blue-20220513-zeppelin
+    >   fedora
+    >   
+    >   Sat May 14 01:07:37 UTC 2022
+    >   iris-gaia-blue-20220513-zeppelin
+    >   gamestop
+
+# -----------------------------------------------------
+# For that to work, fedora needs to accept the public key for localhost.
+# Which is in /etc/ssh ..
+#[fedora@zeppelin]
+
+    sudo cat /etc/ssh/ssh_host_ecdsa_key.pub
+
+    >   ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBPFarQQHlgk5rlzX+6+UpVfzDUvz0Jh9Lt+gItvOATfWraIEDZo4KNLhcZ73SXaD/s4f09VxnTusUbamr77d/CM=
+
+    cat ~/.ssh/known_hosts
+
+    >   localhost ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBPFarQQHlgk5rlzX+6+UpVfzDUvz0Jh9Lt+gItvOATfWraIEDZo4KNLhcZ73SXaD/s4f09VxnTusUbamr77d/CM=
+
+    #
+    # We could probably solve this by copying the public key and adding 'localhost' to the first line.
+    # Note - this will always be the first known_host because we have only just created the deployment.
+    #
+
+
+# -----------------------------------------------------
+# Check the test user's HDFS space.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        whoami
+        echo
+        hdfs dfs -ls '/user'
+        "
+
+    >           "
+    >   Sat May 14 01:12:46 UTC 2022
+    >   iris-gaia-blue-20220513-zeppelin
+    >   fedora
+    >   
+    >   Found 1 items
+    >   drwxr-xr-x   - gamestop supergroup          0 2022-05-14 01:00 /user/gamestop
+
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        whoami
+        echo
+        ssh -o IdentitiesOnly=yes '${testuser:?}@localhost' \
+            '
+            date
+            hostname
+            whoami
+            echo
+            hdfs dfs -ls '/user'
+            '
+        "
+
+    >   Sat May 14 01:13:00 UTC 2022
+    >   iris-gaia-blue-20220513-zeppelin
+    >   fedora
+    >   
+    >   Sat May 14 01:13:00 UTC 2022
+    >   iris-gaia-blue-20220513-zeppelin
+    >   gamestop
+    >   
+    >   Found 1 items
+    >   drwxr-xr-x   - gamestop supergroup          0 2022-05-14 01:00 /user/gamestop
+
+
+# -----------------------------------------------------
+# Check the test user's Shiro account.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        mysql --table --execute \
+            '
+            SELECT * FROM users ;
+            SELECT * FROM user_roles ;
+            '
+        "
+
+    >   +----------+------------------+---------------+
+    >   | username | password         | password_salt |
+    >   +----------+------------------+---------------+
+    >   | gamestop | $shiro1$SHA-.... | NULL          |
+    >   +----------+------------------+---------------+
+    >   
+    >   +----------+-----------+
+    >   | username | role_name |
+    >   +----------+-----------+
+    >   | gamestop | user      |
+    >   +----------+-----------+
+
+
+# -----------------------------------------------------
+# Load our curl tests.
+# TODO save the IP address duting the build.
+#[root@ansibler]
+
+    zeppelinhost=128.232.222.201
+    zeppelinport=8080
+    zeppelinurl=http://${zeppelinhost:?}:${zeppelinport:?}
+
+    source /deployments/zeppelin/test/bin/rest-tests.sh
+
+
+# -----------------------------------------------------
+# Login to Zeppelin as the test user.
+#[root@ansibler]
+
+    zeplogin "${testuser:?}" "${testpass:?}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gamestop",
+    >       "ticket": "1624d15f-777b-450c-b002-7f786267f566",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# List the test user's notebooks
+#[root@ansibler]
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq ".body[] | select(.path | startswith(\"/Users/${testuser:?}\"))"
+
+    >   {
+    >     "id": "2H249GNV1",
+    >     "path": "/Users/gamestop/1. Start here"
+    >   }
+    >   {
+    >     "id": "2H33RZHNZ",
+    >     "path": "/Users/gamestop/2. Data holdings"
+    >   }
+    >   {
+    >     "id": "2H43GAMR9",
+    >     "path": "/Users/gamestop/3. Source counts over the sky"
+    >   }
+    >   {
+    >     "id": "2H25YXUAD",
+    >     "path": "/Users/gamestop/4. Mean proper motions over the sky"
+    >   }
+    >   {
+    >     "id": "2H54VQWAU",
+    >     "path": "/Users/gamestop/5. Working with Gaia XP spectra"
+    >   }
+    >   {
+    >     "id": "2H2ZPFFWK",
+    >     "path": "/Users/gamestop/6. Working with cross-matched surveys"
+    >   }
+    >   {
+    >     "id": "2H267CGY9",
+    >     "path": "/Users/gamestop/7. Good astrometric solutions via ML Random Forrest classifier"
+    >   }
+    >   {
+    >     "id": "2H5ZZZCAV",
+    >     "path": "/Users/gamestop/9. Tips and tricks"
+    >   }
+
+
+# -----------------------------------------------------
+# Run all the test user's notebooks.
+#[root@ansibler]
+
+    for noteid in $(
+        curl \
+            --silent \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook" \
+        | jq -r ".body[] | select(.path | startswith(\"/Users/${testuser:?}\")) | .id"
+        )
+    do
+        echo "-----------------------------------------------------"
+        echo "Notebook [${noteid}]"
+        echo
+        zepnbclear     "${noteid}"
+        echo
+        zepnbexecstep  "${noteid}"
+        echo
+        zepnbstatus    "${noteid}"
+        echo
+        zepnbtotaltime "${noteid}"
+        echo
+    done
+
+    >   Notebook [2H249GNV1]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [20210507-152557_21014937][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-152628_446700578][Familiarisation]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-084215_1445060106][Zeppelin notebooks]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-160139_1365676170][PySpark SQL]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-105824_1166659944][Example code from previous cell]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-152746_1171284722][Spark aspects]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-090543_1039599855][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "1. Start here",
+    >       "id": "2H249GNV1",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/gamestop/1. Start here"
+    >     }
+    >   }
+    >   
+    >   0:0:38
+
+    >   Notebook [2H33RZHNZ]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [20210507-123801_497865463][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-124436_282498395][Database and table details]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1651056869670_357515407][N.B.]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-124618_1845823957][Description and links]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-133844_1243154051][Column listing for a table]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-140821_1444471628][Querying the main catalogue]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-144257_1004220319][Querying with cross-matched data]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-144728_1143294166][Things to note]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-144934_423944230][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "2. Data holdings",
+    >       "id": "2H33RZHNZ",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/gamestop/2. Data holdings"
+    >     }
+    >   }
+    >   
+    >   0:0:16
+
+    >   Notebook [2H43GAMR9]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [20210507-084613_357121151][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20200826-105718_1698521515][Set the resolution level and define the query]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20200826-110030_2095441495][Plot up the results]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-091244_670006530][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1648610499944_1376690736][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "3. Source counts over the sky",
+    >       "id": "2H43GAMR9",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/gamestop/3. Source counts over the sky"
+    >     }
+    >   }
+    >   
+    >   0:0:29
+
+    >   Notebook [2H25YXUAD]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [paragraph_1646395441893_1272795891][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-111756_391695716][Set HEALPix resolution]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-111538_106023214][Define a data frame by SQL query]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-111939_1386609632][Mean RA proper motion plot]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-111943_814907111][Mean Dec proper motion plot]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-111956_1822284967][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-132447_1514402898][Tidy-up]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20211207-132335_689637194][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "4. Mean proper motions over the sky",
+    >       "id": "2H25YXUAD",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/gamestop/4. Mean proper motions over the sky"
+    >     }
+    >   }
+    >   
+    >   0:0:39
+
+    >   Notebook [2H54VQWAU]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [paragraph_1650981001262_1093264483][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1650981269844_2057939329][Sampling and plotting spectra TODO CHECK FOLLOWING DR3 RELEASE]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "ERROR"
+    >     }
+    >   }
+    >   Result [ERROR]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "5. Working with Gaia XP spectra",
+    >       "id": "2H54VQWAU",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/gamestop/5. Working with Gaia XP spectra"
+    >     }
+    >   }
+    >   
+    >   0:0:0
+
+    >   Notebook [2H2ZPFFWK]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [paragraph_1646992513304_653265144][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1647250636508_2082384671][Standard platform set-up TODO]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646992632242_1534494301][Utility function definitions]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646996320283_812479873][Define a data aggregation TODO tweak]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646996892901_1183551489][Collect the results and process in preparation for visualisation]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646997023626_41851232][Visualise via matplotlib]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1647276187713_571053798][Further reading TODO add links]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1647339970003_891385563][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "6. Working with cross-matched surveys",
+    >       "id": "2H2ZPFFWK",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/gamestop/6. Working with cross-matched surveys"
+    >     }
+    >   }
+    >   
+    >   0:0:47
+
+    >   Notebook [2H267CGY9]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [20201013-131059_546082898][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201013-131649_1734629667][Basic catalogue query selections and predicates]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201013-132418_278702125][Raw catalogue with selected columns]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201120-094650_221463065][Visualisation (colour / absolute-magnitue diagram) of the raw catalogue]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201120-110502_1704727157][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201123-105445_95907042][Define the training samples]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201015-161110_18118893][Assemble training and reserve test sets]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201013-152110_1282917873][Train up the Random Forrest]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210504-153521_1591875670][Check feature set for nulls]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201015-131823_1744793710][Classify the reserved test sets]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201016-154755_24366630][Classification confusion matrix]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201123-163421_1811049882][Relative importance of the selected features]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201123-162249_1468741293][Apply the classification model and plot sample results]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201124-100512_110153564][Histogram of classification probability]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201125-103046_1353183691][Sky distribution of good source sample]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201125-163312_728555601][Sky distribution of bad source sample]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1647354647989_1984770159][Tidy up]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210428-140519_1288739408][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210506-134212_1741520795][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "7. Good astrometric solutions via ML Random Forrest classifier",
+    >       "id": "2H267CGY9",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/gamestop/7. Good astrometric solutions via ML Random Forrest classifier"
+    >     }
+    >   }
+    >   
+    >   0:9:10
+
+    >   Notebook [2H5ZZZCAV]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [paragraph_1646302979387_1967819699][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1650969130797_24418076][Resetting the Spark context]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646303142140_1348941331][Interpreters]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646303435709_963866048][Getting Python help (PySpark)]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646307170102_2048767015][Getting Python help (IPython)]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   parse error: Invalid numeric literal at line 1, column 83
+    >   parse error: Invalid numeric literal at line 1, column 83
+    >   parse error: Invalid numeric literal at line 1, column 83
+    >   
+    >   Para [][]
+    >   bash: paraid: parameter null or not set
+    >   Result []
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "9. Tips and tricks",
+    >       "id": "2H5ZZZCAV",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/gamestop/9. Tips and tricks"
+    >     }
+    >   }
+    >   
+    >   0:0:6
+
+

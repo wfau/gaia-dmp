@@ -45,17 +45,32 @@
     echo "---- ---- ----"
 
 # -----------------------------------------------------
-# Create the Shiro database.
+# Create the Shiro user database.
 
     echo ""
     echo "---- ----"
-    echo "Creating Zeppelin Shiro database"
+    echo "Creating Shiro user database"
 
     pushd "${treetop:?}/hadoop-yarn/ansible"
 
         ansible-playbook \
             --inventory "${inventory:?}" \
             "38-install-user-db.yml"
+
+    popd
+
+# -----------------------------------------------------
+# Install the create-user scripts.
+
+    echo ""
+    echo "---- ----"
+    echo "Installing create-user scripts"
+
+    pushd "${treetop:?}/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "${inventory:?}" \
+            "39-create-user-scripts.yml"
 
     popd
 

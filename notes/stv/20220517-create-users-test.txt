@@ -1,0 +1,176 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Run Test Deploy, testing creation of new users using our scripts 
+        
+
+    Result:
+  
+        PASS 
+
+
+# -----------------------------------------------------
+# Fetch target branch
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+      	git checkout 'feature/user-impersonate'
+
+    popd
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --publish 8088:8088 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        --volume "${AGLAIS_SECRETS:?}/users.yml:/tmp/users.yml:ro,z" \
+        atolmis/ansible-client:2021.08.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the cloud and configuration.
+#[root@ansibler]
+
+    cloudname=iris-gaia-red
+
+    configname=zeppelin-26.43-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+
+# -----------------------------------------------------
+# Create everything, using the new config.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}"   \
+        | tee /tmp/create-all.log
+
+
+        > Done
+
+
+# -----------------------------------------------------
+# Create ssh key for fedora (Zeppelin) user and known_hosts file
+#[root@ansibler]
+
+
+    ssh \
+        -t \
+        zeppelin \
+            "
+            sudo ssh-keygen -t rsa -N '' -f /home/fedora/.ssh/id_rsa
+            "
+
+    ssh \
+        -t \
+        zeppelin \
+            "
+            sudo chown fedora:fedora /home/fedora/.ssh/*
+            "
+    ssh \
+        -t \
+        zeppelin \
+            "
+            ssh-keyscan -H localhost >> /home/fedora/.ssh/known_hosts
+            "
+
+
+# -----------------------------------------------------
+# Clone notebook repository into Zeppelin
+#[root@ansibler]
+
+      ssh \
+        -t \
+        zeppelin \
+            "
+            rm -r  /home/fedora/zeppelin-0.10.0-bin-all/notebook
+            "
+
+      ssh \
+        -t \
+        zeppelin \
+            "
+            git clone https://github.com/wfau/aglais-notebooks /home/fedora/zeppelin-0.10.0-bin-all/notebook
+            "
+ 
+# -----------------------------------------------------
+# Restart Zeppelin
+#[root@ansibler]
+
+
+     time /deployments/hadoop-yarn/bin/restart-zeppelin.sh 
+
+
+# -----------------------------------------------------
+# Create (test) users.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-users.sh \
+            "${cloudname:?}" \
+            "${configname:?}"   \
+            "jdbc"   \
+        | tee /tmp/create-users.log
+
+# Note: For this deploy, I modified the add_user script that we create in Zeppelin/bin to include the DB_PASSWORD, as we don't yet have MariaDB enabled
+
+
+# -----------------------------------------------------
+# Test as "gaiauser"
+#[zeppelin GUI]
+
+# Login [SUCCESS]
+# Test Spark notebooks / Confirm that it is run as gaiauser in Yarn UI [SUCCESS]
+# Test sh notebooks / Confirm that it is run as gaiauser [SUCCESS]
+# Test python notebooks / Confirm that it is run as gaiauser [SUCCESS]
+
+
+
+

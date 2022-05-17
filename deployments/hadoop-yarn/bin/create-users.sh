@@ -63,9 +63,11 @@
                 --inventory "${inventory:?}" \
                 "38-install-user-db.yml"
         fi
+
+
     popd
 
-
+    source ${treetop:?}/hadoop-yarn/bin/restart-zeppelin.sh
 
     # Create user scripts and import users
 

@@ -67,31 +67,7 @@
 
 
 
-    # Import users
-
-    pushd "${treetop:?}/hadoop-yarn/ansible"
-
-
-        if [ "${authtype}" == "test" ]
-        then
-            ansible-playbook \
-                --inventory "${inventory:?}" \
-                --extra-vars "users_import_file=auth-test.sql" \
-                "39-import-users.yml"
-        elif [ "${authtype}" == "jdbc" ]
-        then
-            ansible-playbook \
-                --inventory "${inventory:?}" \
-                --extra-vars "users_import_file=auth.sql" \
-                "39-import-users.yml"
-        else
-            ansible-playbook \
-                --inventory "${inventory:?}" \
-                "40-create-shiro-file.yml"
-        fi
-
-
-    popd
+    # Create user scripts and import users
 
     pushd "${treetop:?}/hadoop-yarn/ansible"
 
@@ -102,6 +78,26 @@
                 --inventory "${inventory:?}" \
                 "39-create-user-scripts.yml"
         fi
+
+        cat "/tmp/users.yml" | while read line
+        do
+          ssh -t zeppelin /home/fedora/zeppelin-0.10.0-bin-all/bin/add_user.sh line
+        done
+
+    popd
+
+    # Create shiro config for prod if needed
+
+    pushd "${treetop:?}/hadoop-yarn/ansible"
+
+
+        if [ "${authtype}" == "prod" ]
+        then
+            ansible-playbook \
+                --inventory "${inventory:?}" \
+                "40-create-shiro-file.yml"
+        fi
+
 
     popd
 

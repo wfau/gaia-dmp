@@ -1,7 +1,8 @@
+#!/bin/sh
 #
 # <meta:header>
 #   <meta:licence>
-#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
 #
 #     This information is free software: you can redistribute it and/or modify
 #     it under the terms of the GNU General Public License as published by
@@ -18,17 +19,11 @@
 #   </meta:licence>
 # </meta:header>
 #
-#
 
-# Zeppelin vars
-zepvers: "0.10.0"
-zepname: "zeppelin-0.10.0-bin-all"
-zepbase: "/home/fedora"
-zephome: "/home/fedora/zeppelin"
-zephost: "zeppelin"
-zepuser: "fedora"
-zepmavendest: "/var/local/zeppelin/maven"
-zepusersgroup: "zeppelinusers"
-# Temp fix until we move Zeppelin
-zepuserhome: "/home/fedora"
+echo "---- ----"
+echo "date [$(date)]"
+echo "host [$(hostname)]"
+echo "PATH [${PATH}]"
+echo "---- ----"
+
 

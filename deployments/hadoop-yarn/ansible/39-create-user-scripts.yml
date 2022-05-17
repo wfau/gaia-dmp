@@ -20,46 +20,24 @@
 #
 #
 
-- name: "Get Zeppelin IP Address"
-  hosts: localhost
-  vars_files:
-    - config/ansible.yml
-    - /tmp/ansible-vars.yml
-    - config/openstack.yml
-
-  tasks:
-
-    - name: "Discover our Zeppelin node and store IP address in temp file"
-      os_server_info:
-        cloud:  "{{ cloudname }}"
-        server: "{{ deployname }}-zeppelin"
-      register:
-        zeppelinnode
-
-    - local_action: copy content={{ zeppelinnode.openstack_servers[0].accessIPv4 }} dest=/tmp/zeppelin_ip.txt
-
-
 - name: "Install MySQL Database for Zeppelin/Shiro"
   hosts: zeppelin
   become: true
   gather_facts: true
   vars_files:
+    - config/shiro.yml
+    - config/aglais.yml
     - config/ansible.yml
     - config/hadoop.yml
-    - config/spark.yml
-    - /tmp/ansible-vars.yml
     - config/zeppelin.yml
     - /tmp/ansible-vars.yml
   vars:
-    zepipaddress: "{{ lookup('file', '/tmp/zeppelin_ip.txt') | trim }}"
     export_users: |
             #!/bin/bash
             printf "Exporting users to file: auth.sql"
             printf "\n"
-            DB_USER='zeppelin'
-            DB_NAME='zeppelin'
 
-            mysqldump $DB_NAME -u root --no-create-info  > {{zephome}}/auth.sql
+            mysqldump --no-create-info --databases "{{shirodbname}}"  > {{aghome}}/tmp/auth.sql
 
     create_hdfs_user: |
             #!/bin/bash
@@ -76,19 +54,16 @@
             NEW_PASSWORD=$2
             NEW_USER_ROLE=$3
 
-            DB_USER='zeppelin'
-            DB_NAME='zeppelin'
             USER_TABLE='users';
             USER_ROLES_TABLE='user_roles'
-            
-            NEW_PASSWORD_ENCRYPTED="$(java -jar {{zephome}}/lib/shiro-tools-hasher-1.9.0-cli.jar -i 500000 -f shiro1 -a SHA-256 -gss 128 $NEW_PASSWORD)"
 
-            
-            mysql --user=$DB_USER $DB_NAME << EOF
+            NEW_PASSWORD_ENCRYPTED="$(java -jar {{aghome}}/lib/shiro-tools-hasher-cli.jar -i 500000 -f shiro1 -a SHA-256 -gss 128 $NEW_PASSWORD)"
+
+            mysql {{shirodbname}} << EOF
             INSERT INTO $USER_TABLE (username, password) VALUES ("$NEW_USERNAME", "$NEW_PASSWORD_ENCRYPTED");
             INSERT INTO $USER_ROLES_TABLE (username, role_name) VALUES ("$NEW_USERNAME", "$NEW_USER_ROLE");
             EOF
-            
+
     create_unix_user: |
             #!/bin/bash
             # Add user
@@ -101,12 +76,12 @@
             sudo su -c "cat /home/{{ zepuser }}/.ssh/id_rsa.pub >> $NEW_UNIX_DIR/.ssh/authorized_keys"
             sudo usermod -a -G {{ zepusersgroup }} $NEW_USERNAME
             sudo chown -R $NEW_USERNAME:$NEW_USERNAME $NEW_UNIX_DIR/.ssh
-            
+
     create_notebook_clone: |
             #!/bin/bash
             NEW_USERNAME=$1
             NEW_PASSWORD=$2
-            ZEPPELIN_URL=$3
+            ZEPPELIN_URL='http://localhost:8080'
 
             # Setup Clone of notebooks
             NEW_ZEPPELIN_DIR="{{zephome}}/notebook/Users/$NEW_USERNAME"
@@ -116,43 +91,48 @@
             sudo chown -R {{ zepuser }}:{{ zepuser }} $NEW_ZEPPELIN_DIR
 
             zepcookies=/tmp/${NEW_USERNAME}.cookies
-            
+
             curl \
             --silent \
             --request 'POST' \
             --cookie-jar "${zepcookies:?}" \
             --data "userName=${NEW_USERNAME:?}" \
             --data "password=${NEW_PASSWORD:?}" \
-            ${ZEPPELIN_URL:?}/api/login 
+            ${ZEPPELIN_URL:?}/api/login
 
             curl --silent --cookie "${zepcookies:?}" "${ZEPPELIN_URL:?}/api/notebook"| jq -r '.body[] | select(.path | startswith("/Public")) | [.id, .path] | @tsv' |
             while IFS=$'\t' read -r id path; do
               curl -L         -H 'Content-Type: application/json'         -d "{'name': '${path/Public Examples/Users/$NEW_USERNAME}' }"        --request POST         --cookie "${zepcookies:?}"    $ZEPPELIN_URL/api/notebook/$id
             done
 
-    
     add_user: |
             #!/bin/bash
             printf "Create a new Zeppelin user"
             printf "\n"
             printf "Username: "
             read NEW_USERNAME
-            
+
             stty -echo
             printf "Password: "
             read NEW_PASSWORD
             stty echo
-                        
+
             printf "\n"
             printf "User role: "
             read NEW_USER_ROLE
 
-            ZEPPELIN_URL="http://{{ zepipaddress }}:8080"
+            source {{aghome}}/bin/create_user.sh $NEW_USERNAME $NEW_PASSWORD $NEW_USER_ROLE
 
-            source {{zephome}}/bin/create_mysql_user.sh $NEW_USERNAME $NEW_PASSWORD $NEW_USER_ROLE
-            source {{zephome}}/bin/create_unix_user.sh $NEW_USERNAME
-            source {{zephome}}/bin/create_hdfs_user.sh $NEW_USERNAME
-            source {{zephome}}/bin/create_notebook_clone.sh $NEW_USERNAME $NEW_PASSWORD $ZEPPELIN_URL
+    create_user: |
+            #!/bin/bash
+            NEW_USERNAME=$1
+            NEW_PASSWORD=$2
+            NEW_USER_ROLE=$3
+
+            source {{aghome}}/bin/create_mysql_user.sh $NEW_USERNAME $NEW_PASSWORD $NEW_USER_ROLE
+            source {{aghome}}/bin/create_unix_user.sh $NEW_USERNAME
+            source {{aghome}}/bin/create_hdfs_user.sh $NEW_USERNAME
+            source {{aghome}}/bin/create_notebook_clone.sh $NEW_USERNAME $NEW_PASSWORD
 
   tasks:
 
@@ -161,7 +141,7 @@
        owner: "{{zepuser}}"
        group: "{{zepuser}}"
        mode:  'u=rwx,g=rwx,o=rwx'
-       dest:  "{{zephome}}/bin/export_users.sh"
+       dest:  "{{aghome}}/bin/export_users.sh"
        content: "{{ export_users }}"
      tags:
        - always
@@ -171,8 +151,18 @@
        owner: "{{zepuser}}"
        group: "{{zepuser}}"
        mode:  'u=rwx,g=rwx,o=rwx'
-       dest:  "{{zephome}}/bin/add_user.sh"
+       dest:  "{{aghome}}/bin/add_user.sh"
        content: "{{ add_user }}"
+     tags:
+       - always
+
+   - name: "Script to create a new user"
+     copy:
+       owner: "{{zepuser}}"
+       group: "{{zepuser}}"
+       mode:  'u=rwx,g=rwx,o=rwx'
+       dest:  "{{aghome}}/bin/create_user.sh"
+       content: "{{ create_user }}"
      tags:
        - always
 
@@ -181,7 +171,7 @@
        owner: "{{zepuser}}"
        group: "{{zepuser}}"
        mode:  'u=rwx,g=rwx,o=rwx'
-       dest:  "{{zephome}}/bin/create_unix_user.sh"
+       dest:  "{{aghome}}/bin/create_unix_user.sh"
        content: "{{ create_unix_user }}"
      tags:
        - always
@@ -191,7 +181,7 @@
        owner: "{{zepuser}}"
        group: "{{zepuser}}"
        mode:  'u=rwx,g=rwx,o=rwx'
-       dest:  "{{zephome}}/bin/create_hdfs_user.sh"
+       dest:  "{{aghome}}/bin/create_hdfs_user.sh"
        content: "{{ create_hdfs_user }}"
      tags:
        - always
@@ -201,7 +191,7 @@
        owner: "{{zepuser}}"
        group: "{{zepuser}}"
        mode:  'u=rwx,g=rwx,o=rwx'
-       dest:  "{{zephome}}/bin/create_mysql_user.sh"
+       dest:  "{{aghome}}/bin/create_mysql_user.sh"
        content: "{{ create_mysql_user }}"
      tags:
        - always
@@ -211,7 +201,7 @@
        owner: "{{zepuser}}"
        group: "{{zepuser}}"
        mode:  'u=rwx,g=rwx,o=rwx'
-       dest:  "{{zephome}}/bin/create_notebook_clone.sh"
+       dest:  "{{aghome}}/bin/create_notebook_clone.sh"
        content: "{{ create_notebook_clone }}"
      tags:
        - always

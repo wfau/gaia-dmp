@@ -44,7 +44,7 @@
 
     defaultsharesize=10
 
-    datahostname='iris-gaia-data.duckdns.org'
+    datahostname='data.aglais.uk'
     datahostuser='fedora'
 
     # Get the next available uid

@@ -131,14 +131,31 @@
 # Get details of the access rule.
 # TODO Move this to an openstack script.
 
-    accessrule=$(
-        openstack \
-            --os-cloud "${sharecloud:?}" \
-            share access list \
-                --format json \
-                "${shareid:?}" \
-        | jq -r '.[] | select(.access_level == "'${mountmode:?}'") | .id'
-        )
+    #
+    # Yes, some numpty thought it was a good idea to change the JSON field names.
+    # Changing 'id' to 'ID', and 'access_level' to 'Access Level'.
+    # Possibly because they thought it would be pretty ?
+    # Waste of an afternoon chasing that down.
+    if [ "$(openstack --version)" == "openstack 5.8.0" ]
+    then
+        accessrule=$(
+            openstack \
+                --os-cloud "${sharecloud:?}" \
+                share access list \
+                    --format json \
+                    "${shareid:?}" \
+            | jq -r '.[] | select(."Access Level" == "'${mountmode:?}'") | .ID'
+            )
+    else
+        accessrule=$(
+            openstack \
+                --os-cloud "${sharecloud:?}" \
+                share access list \
+                    --format json \
+                    "${shareid:?}" \
+            | jq -r '.[] | select(.access_level == "'${mountmode:?}'") | .id'
+            )
+    fi
 
     openstack \
         --os-cloud "${sharecloud:?}" \

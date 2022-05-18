@@ -20,45 +20,29 @@
 #
 #
 
-- name: "Get Zeppelin IP Address"
-  hosts: localhost
-  vars_files:
-    - config/ansible.yml
-    - /tmp/ansible-vars.yml
-    - config/openstack.yml
-
-  tasks:
-
-    - name: "Discover our Zeppelin node and store IP address in temp file"
-      os_server_info:
-        cloud:  "{{ cloudname }}"
-        server: "{{ deployname }}-zeppelin"
-      register:
-        zeppelinnode
-
-    - local_action: copy content={{ zeppelinnode.openstack_servers[0].accessIPv4 }} dest=/tmp/zeppelin_ip.txt
-
-
+---
 - name: "Install MySQL Database for Zeppelin/Shiro"
   hosts: zeppelin
   become: true
-  gather_facts: true
+
   vars_files:
+    - config/shiro.yml
+    - config/aglais.yml
     - config/ansible.yml
-    - config/hadoop.yml
-    - config/spark.yml
-    - /tmp/ansible-vars.yml
     - config/zeppelin.yml
     - /tmp/ansible-vars.yml
+
   vars:
-    zepipaddress: "{{ lookup('file', '/tmp/zeppelin_ip.txt') | trim }}"
-    zeppelinshiro: |
+
+    mariadbjavaversion: "3.0.4"
+    shirohasherversion: "1.9.0"
+
+    shirodbconfig: |
             [main]
-            ds = com.mysql.cj.jdbc.MysqlDataSource
-            ds.serverName = localhost
-            ds.databaseName = zeppelin
-            ds.user = zeppelin
-            ds.password = {{ mysql_zeppelin_password }}
+            ds = org.mariadb.jdbc.MariaDbDataSource
+            ds.url = jdbc:mariadb://localhost:3306/{{shirodbname}}
+            ds.user = {{shirodbuser}}
+            ds.password = {{shirodbpass}}
 
             jdbcRealm = org.apache.shiro.realm.jdbc.JdbcRealm
             ps = org.apache.shiro.authc.credential.DefaultPasswordService
@@ -93,97 +77,89 @@
   tasks:
 
    - set_fact:
-       mysql_root_password: "{{ lookup('password','/dev/null chars=ascii_letters,digits,hexdigits length=20') }}!"
-       mysql_zeppelin_password: "{{ lookup('password','/dev/null chars=ascii_letters,digits,hexdigits length=20') }}!"
+       shirodbpass: "{{ lookup('password','/dev/null chars=ascii_letters,digits,hexdigits length=20') }}!"
 
-   - name: "Enable MySQL Community release repo"
-     yum:
-       disable_gpg_check: True
-       name: https://repo.mysql.com//mysql80-community-release-fc31-1.noarch.rpm
-       state: present
-
-   - name: "Get MySQL Connector jar"
+   - name: "Install MariaDB connector"
      get_url:
-       url: https://repo1.maven.org/maven2/mysql/mysql-connector-java/8.0.28/mysql-connector-java-8.0.28.jar
-       dest: "{{zephome}}/lib/mysql-connector-java-8.0.28.jar"
+       url: https://repo1.maven.org/maven2/org/mariadb/jdbc/mariadb-java-client/{{mariadbjavaversion}}/mariadb-java-client-{{mariadbjavaversion}}.jar
+       dest: "{{zephome}}/lib/"
 
-   - name: "Install MySQL Server"
-     yum: name=mysql-server state=installed
+   - name: "Download Shiro password hasher"
+     get_url:
+       url: "https://repo1.maven.org/maven2/org/apache/shiro/tools/shiro-tools-hasher/{{shirohasherversion}}/shiro-tools-hasher-{{shirohasherversion}}-cli.jar"
+       dest: "{{aghome}}/lib/"
 
-   - name: "Install MySQL-devel"
-     yum: name=mysql-devel state=installed
+   - name: "Symlink Shiro password hasher"
+     ansible.builtin.file:
+       src:  "{{aghome}}/lib//shiro-tools-hasher-{{shirohasherversion}}-cli.jar"
+       dest: "{{aghome}}/lib//shiro-tools-hasher-cli.jar"
+       state: link
 
-   - name: "Make sure pymysql is present"
+   - name: "Install MariaDB server"
+     dnf:
+       name:  "mariadb-server"
+       state: "installed"
+
+   - name: "Install PyMySQL"
      pip:
-       name: pymysql
-       state: present
+       name:  "pymysql"
+       state: "present"
 
-   - name: "reload systemd"
-     command: systemctl daemon-reload
-
-   - name: "Start the MySQL service"
-     service: 
-       name: mysqld
-       state: started
-       enabled: yes
+   - name: "Start the MariaDB service"
+     service:
+       name:    "mariadb"
+       state:   "started"
+       enabled: true
        daemon_reload: yes
 
-   - name: "Find temporary password"
-     shell: "echo `grep 'temporary.*root@localhost' /var/log/mysqld.log | sed
-'s/.*root@localhost: //'`"
-     register: mysql_root_password_temp
-     tags: register
+# Root password is not needed if connecting via Unix socket
+# https://mariadb.com/kb/en/authentication-from-mariadb-104/
 
-   - name: "Update expired root user password"
-     shell: 'mysql -e "ALTER USER ''root''@''localhost'' IDENTIFIED WITH mysql_native_password BY ''{{ mysql_root_password }}''" --connect-expired-password -uroot -p"{{ mysql_root_password_temp.stdout }}"'
-
-   - name: "Create MySQL config"
+   - name: "Create MariaDB config for fedora"
      become: true
      blockinfile:
-       dest:  '/root/.my.cnf'
+       dest:  '/home/fedora/.my.cnf'
        state: present
-       owner: 'root'
-       group: 'root'
+       owner: 'fedora'
+       group: 'fedora'
        mode:  'u=rw,g=r,o=r'
        create: true
        insertafter: 'EOF'
        block: |
          [client]
-         user=root
-         password={{ mysql_root_password }}
-         [client2]
-         user=root
-         password={{ mysql_zeppelin_password }}
-         [mysqld]
-         bind-address            = 0.0.0.0
+         user={{shirodbuser}}
+         password={{shirodbpass}}
+         database={{shirodbname}}
 
-   - name: "Create Zeppelin database"
-     mysql_db: name=zeppelin state=present login_user=root login_password={{ mysql_root_password }}
+   - name: "Create MariaDB database [{{shirodbname}}]"
+     become: true
+     mysql_db:
+       name: "{{shirodbname}}"
+       state: 'present'
 
-   - name: "Create MySQL Zeppelin user with appropriate privileges"
-     mysql_user:	
-       name: zeppelin
-       password: '{{ mysql_zeppelin_password }}'
-       priv: "zeppelin.*:ALL"
-       state: present
+   - name: "Create MariaDB user [{{shirodbuser}}]"
+     become: true
+     mysql_user:
+       name: "{{shirodbuser}}"
+       password: "{{shirodbpass}}"
+       priv: "{{shirodbname}}.*:ALL"
+       state: "present"
 
-   - name: "Create a Zeppelin Shiro Configuration"
+   - name: "Create Shiro Configuration"
      copy:
        owner: "{{zepuser}}"
        group: "{{zepuser}}"
        mode:  'u=rw,g=r,o=r'
        dest:  "{{zephome}}/conf/shiro.ini"
-       content: "{{ zeppelinshiro }}"
+       content: "{{ shirodbconfig }}"
      tags:
        - always
 
-   - name: "Copy Create SQL file to Zeppelin"
-     copy: src="{{ playbook_dir | dirname | dirname }}/common/zeppelin/sql/create.sql" dest=/tmp
+   - name: "Create Shiro tables"
+     mysql_query:
+        login_db: "{{shirodbname}}"
+        query:
+            - CREATE TABLE users (username TEXT, password TEXT, password_salt TEXT)
+            - CREATE TABLE user_roles (username TEXT, role_name TEXT)
+            - CREATE TABLE user_permissions (username TEXT, permission TEXT)
 
-   - name: "Create User SQL database"
-     mysql_db: name=zeppelin state=import target=/tmp/create.sql
-
-   - name: "Download shiro hasher jar"
-     get_url:
-       url: https://repo1.maven.org/maven2/org/apache/shiro/tools/shiro-tools-hasher/1.9.0/shiro-tools-hasher-1.9.0-cli.jar
-       dest: "{{zephome}}/lib/shiro-tools-hasher-1.9.0-cli.jar"

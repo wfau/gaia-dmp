@@ -1,0 +1,674 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Test deployment to debug Shiro database.
+
+    Result:
+
+        Success, deployment worked and tests passed.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-blue'
+    configname=zeppelin-54.86-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    4m42.715s
+    >   user    1m51.640s
+    >   sys     0m13.081s
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >   real    43m26.132s
+    >   user    13m10.677s
+    >   sys     3m27.292s
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Restore notebooks from backup.
+# TODO Move this into the container.
+# TODO Restore from data project VM.
+#[user@desktop]
+
+    sshuser=fedora
+    sshhost=128.232.222.217
+
+    ssh "${sshuser:?}@${sshhost:?}" \
+        '
+        mv zeppelin/notebook zeppelin/notebook-old
+        '
+
+    pushd /var/local/backups/aglais/2022/20220510/
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            'aglais-notebooks/' \
+            "${sshuser:?}@${sshhost:?}:zeppelin/notebook"
+
+    popd
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+    >   real    0m58.721s
+    >   user    0m12.923s
+    >   sys     0m2.331s
+
+# -----------------------------------------------------
+# Restart Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+
+# -----------------------------------------------------
+# Add our tester account.
+#[root@ansibler]
+
+    testuser='gamestop'
+    testpass='ahm5Rion see2Eegh'
+
+    ssh zeppelin \
+        "
+        testhash=\$(
+            java -jar '/opt/aglais/lib/shiro-tools-hasher-cli.jar' -i 500000 -f shiro1 -a SHA-256 -gss 128 '${testpass:?}'
+            )
+        mysql --execute \
+            '
+            INSERT INTO users (username, password) VALUES (\"${testuser:?}\", \"'\${testhash:?}'\");
+            INSERT INTO user_roles (username, role_name) VALUES (\"${testuser:?}\", \"user\");
+            '
+        "
+
+    ssh zeppelin \
+        "
+        mysql --execute \
+            '
+            SELECT * FROM users ;
+            SELECT * FROM user_roles ;
+            '
+        "
+
+    >   username    password            password_salt
+    >   gamestop    $shiro1$SHA-256.... NULL
+    >
+    >   username    role_name
+    >   gamestop    user
+
+
+# -----------------------------------------------------
+# Load our curl tests.
+# TODO save the IP address duting the build.
+#[root@ansibler]
+
+    zeppelinhost=128.232.222.217
+    zeppelinport=8080
+    zeppelinurl=http://${zeppelinhost:?}:${zeppelinport:?}
+
+    source /deployments/zeppelin/test/bin/rest-tests.sh
+
+
+# -----------------------------------------------------
+# Login to Zeppelin.
+#[root@ansibler]
+
+    zeplogin "${testuser:?}" "${testpass:?}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "gamestop",
+    >       "ticket": "017d2598-4a9f-44c6-aa94-b0126ad6a772",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# List the public notebooks
+#[root@ansibler]
+
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq '.body[] | select(.path | startswith("/Public"))'
+
+    >   {
+    >     "id": "2GRTQZFUM",
+    >     "path": "/Public Examples/1. Start here"
+    >   }
+    >   {
+    >     "id": "2GRA39HCN",
+    >     "path": "/Public Examples/2. Data holdings"
+    >   }
+    >   {
+    >     "id": "2GQ6WMH9W",
+    >     "path": "/Public Examples/3. Source counts over the sky"
+    >   }
+    >   {
+    >     "id": "2GSNYBDWB",
+    >     "path": "/Public Examples/4. Mean proper motions over the sky"
+    >   }
+    >   {
+    >     "id": "2H2YRJCKM",
+    >     "path": "/Public Examples/5. Working with Gaia XP spectra"
+    >   }
+    >   {
+    >     "id": "2GZME59KY",
+    >     "path": "/Public Examples/6. Working with cross-matched surveys"
+    >   }
+    >   {
+    >     "id": "2GQDKZ59J",
+    >     "path": "/Public Examples/7. Good astrometric solutions via ML Random Forrest classifier"
+    >   }
+    >   {
+    >     "id": "2GVXKC266",
+    >     "path": "/Public Examples/9. Tips and tricks"
+    >   }
+
+
+# -----------------------------------------------------
+# Run the HealpixSourceCounts notebook
+#[root@ansibler]
+
+    noteid=2GQ6WMH9W
+
+    zepnbclear     "${noteid}"
+    zepnbexecstep  "${noteid}"
+    zepnbstatus    "${noteid}"
+    zepnbtotaltime "${noteid}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+
+    >   Para [20210507-084613_357121151][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20200826-105718_1698521515][Set the resolution level and define the query]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20200826-110030_2095441495][Plot up the results]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210507-091244_670006530][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [paragraph_1648610499944_1376690736][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "3. Source counts over the sky",
+    >       "id": "2GQ6WMH9W",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false,
+    >         "looknfeel": "default",
+    >         "personalizedMode": "false"
+    >       },
+    >       "info": {},
+    >       "path": "/Public Examples/3. Source counts over the sky"
+    >     }
+    >   }
+
+    >   0:1:11
+
+
+# -----------------------------------------------------
+# Run the MeanProperMotions notebook
+#[root@ansibler]
+
+    noteid=2GSNYBDWB
+
+    zepnbclear     "${noteid}"
+    zepnbexecstep  "${noteid}"
+    zepnbstatus    "${noteid}"
+    zepnbtotaltime "${noteid}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+
+    >   Para [paragraph_1646395441893_1272795891][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210510-111756_391695716][Set HEALPix resolution]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210510-111538_106023214][Define a data frame by SQL query]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210510-111939_1386609632][Mean RA proper motion plot]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210510-111943_814907111][Mean Dec proper motion plot]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210510-111956_1822284967][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210510-132447_1514402898][Tidy-up]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20211207-132335_689637194][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "4. Mean proper motions over the sky",
+    >       "id": "2GSNYBDWB",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false,
+    >         "looknfeel": "default",
+    >         "personalizedMode": "false"
+    >       },
+    >       "info": {},
+    >       "path": "/Public Examples/4. Mean proper motions over the sky"
+    >     }
+    >   }
+
+    >   0:0:54
+
+
+# -----------------------------------------------------
+# Run the RandomForestClassifier notebook
+#[root@ansibler]
+
+    noteid=2GQDKZ59J
+
+    zepnbclear     "${noteid}"
+    zepnbexecstep  "${noteid}"
+    zepnbstatus    "${noteid}"
+    zepnbtotaltime "${noteid}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+
+    >   Para [20201013-131059_546082898][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201013-131649_1734629667][Basic catalogue query selections and predicates]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201013-132418_278702125][Raw catalogue with selected columns]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201120-094650_221463065][Visualisation (colour / absolute-magnitue diagram) of the raw catalogue]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201120-110502_1704727157][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201123-105445_95907042][Define the training samples]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201015-161110_18118893][Assemble training and reserve test sets]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201013-152110_1282917873][Train up the Random Forrest]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210504-153521_1591875670][Check feature set for nulls]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201015-131823_1744793710][Classify the reserved test sets]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201016-154755_24366630][Classification confusion matrix]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201123-163421_1811049882][Relative importance of the selected features]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201123-162249_1468741293][Apply the classification model and plot sample results]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201124-100512_110153564][Histogram of classification probability]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201125-103046_1353183691][Sky distribution of good source sample]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20201125-163312_728555601][Sky distribution of bad source sample]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [paragraph_1647354647989_1984770159][Tidy up]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210428-140519_1288739408][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >
+    >   Para [20210506-134212_1741520795][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "7. Good astrometric solutions via ML Random Forrest classifier",
+    >       "id": "2GQDKZ59J",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false,
+    >         "looknfeel": "default",
+    >         "personalizedMode": "false"
+    >       },
+    >       "info": {},
+    >       "path": "/Public Examples/7. Good astrometric solutions via ML Random Forrest classifier"
+    >     }
+    >   }
+
+    >   0:9:5
+
+
+

@@ -21,43 +21,37 @@
 #
 #
 
-# -----------------------------------------------------
-# Settings ...
+user=${1:?}
+hash=${2}
+pass=''
 
-#    set -eu
-#    set -o pipefail
-#
-#    binfile="$(basename ${0})"
-#    binpath="$(dirname $(readlink -f ${0}))"
-#    treetop="$(dirname $(dirname ${binpath}))"
-#
-#    echo ""
-#    echo "---- ---- ----"
-#    echo "File [${binfile}]"
-#    echo "Path [${binpath}]"
-#    echo "Tree [${treetop}]"
-#    echo "---- ---- ----"
-#
-
-
-    # get the next available uid
-    # https://www.commandlinefu.com/commands/view/5684/determine-next-available-uid
-    getnextuid()
-        {
-        getent passwd | awk -F: '($3>600) && ($3<60000) && ($3>maxuid) { maxuid=$3; } END { print maxuid+1; }'
-        }
-
-
-    # Generate a new password hash.
-    newpasshash()
-        {
-        local password="${1:?}"
+if [ -z "${hash}" ]
+then
+    pass=$(
+        pwgen 30 1
+        )
+    hash=$(
         java \
-            -jar "${HOME}/lib/shiro-tools-hasher.jar" \
+            -jar '/opt/aglais/lib/shiro-tools-hasher-cli.jar' \
             -i 500000 \
             -f shiro1 \
             -a SHA-256 \
             -gss 128 \
-            '${password:?}'
-        }
+            "${pass}"
+        )
+fi
+
+mysql --execute \
+    "
+    INSERT INTO users (username, password) VALUES (\"${user}\", \"${hash}\");
+    INSERT INTO user_roles (username, role_name) VALUES (\"${user}\", \"user\");
+    "
+
+cat << EOF
+{
+"name": "${user}",
+"pass": "${pass}",
+"hash": "${hash}"
+}
+EOF
 

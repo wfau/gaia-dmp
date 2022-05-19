@@ -32,6 +32,10 @@
     - config/zeppelin.yml
     - /tmp/ansible-vars.yml
   vars:
+
+    sshkeyname: "id_rsa"
+    sshkeytype: "rsa"
+
     export_users: |
             #!/bin/bash
             printf "Exporting users to file: auth.sql"
@@ -50,32 +54,98 @@
     create_mysql_user: |
             #!/bin/bash
             # Create MySQL user
-            NEW_USERNAME=$1
-            NEW_PASSWORD=$2
-            NEW_USER_ROLE=$3
+            NEW_USERNAME=${1:?}
+            NEW_PASSWORD_ENCRYPTED=${2:-''}
+            NEW_USER_ROLE=${3:-'user'}
+            NEW_PASSWORD=''
 
             USER_TABLE='users';
             USER_ROLES_TABLE='user_roles'
 
-            NEW_PASSWORD_ENCRYPTED="$(java -jar {{aghome}}/lib/shiro-tools-hasher-cli.jar -i 500000 -f shiro1 -a SHA-256 -gss 128 $NEW_PASSWORD)"
+            if [ -z "${NEW_PASSWORD_ENCRYPTED}" ]
+            then
+                NEW_PASSWORD=$(
+                    pwgen 30 1
+                    )
+                NEW_PASSWORD_ENCRYPTED="$(java -jar {{aghome}}/lib/shiro-tools-hasher-cli.jar -i 500000 -f shiro1 -a SHA-256 -gss 128 $NEW_PASSWORD)"
+            fi
 
             mysql {{shirodbname}} << EOF
             INSERT INTO $USER_TABLE (username, password) VALUES ("$NEW_USERNAME", "$NEW_PASSWORD_ENCRYPTED");
             INSERT INTO $USER_ROLES_TABLE (username, role_name) VALUES ("$NEW_USERNAME", "$NEW_USER_ROLE");
             EOF
 
+            cat << EOF
+            {
+            "name": "${NEW_USERNAME}",
+            "pass": "${NEW_PASSWORD}",
+            "hash": "${NEW_PASSWORD_ENCRYPTED}"
+            }
+            EOF
+
     create_unix_user: |
             #!/bin/bash
             # Add user
-            NEW_USERNAME=$1
-            NEW_UNIX_DIR="/home/$NEW_USERNAME"
+            NEW_USERNAME="${1:?}"
+            NEW_USERID="${2}"
+            NEW_UNIX_DIR="${3:-/home/$NEW_USERNAME}"
 
-            sudo adduser $NEW_USERNAME
-            sudo mkdir -p $NEW_UNIX_DIR/.ssh
-            sudo ssh-keygen -t rsa -N '' -f $NEW_UNIX_DIR/.ssh/id_rsa
-            sudo su -c "cat /home/{{ zepuser }}/.ssh/id_rsa.pub >> $NEW_UNIX_DIR/.ssh/authorized_keys"
-            sudo usermod -a -G {{ zepusersgroup }} $NEW_USERNAME
-            sudo chown -R $NEW_USERNAME:$NEW_USERNAME $NEW_UNIX_DIR/.ssh
+            minuid=20000
+            maxuid=60000
+
+            sshkeyname={{sshkeyname}}
+            sshkeytype={{sshkeytype}}
+            zeppubkeypath={{zeppubkeypath}}
+            zepusersgroup={{zepusersgroup}}
+
+            # Get the next available uid
+            # https://www.commandlinefu.com/commands/view/5684/determine-next-available-uid
+            if [ -z ${NEW_USERID} ]
+            then
+                NEW_USERID=$(
+                    getent passwd | awk -F: 'BEGIN {NEW_USERID = '${minuid}'} ($3 < '${maxuid}') && ($3 > NEW_USERID) { NEW_USERID = $3 } END { print NEW_USERID + 1 }'
+                    )
+            fi
+
+            # Do the whole block as root rather than one line at a time.
+            # https://stackoverflow.com/a/14497422
+            sudo -s -- <<  SUDO
+
+                # Create the new Unix user account.
+                adduser \
+                    --uid "${NEW_USERID}" \
+                    --create-home \
+                    --home-dir "${NEW_UNIX_DIR}" \
+                    --user-group \
+                    --groups "users,${zepusersgroup}" \
+                    "${NEW_USERNAME}"
+
+                # Generate our local ssh key pair.
+                mkdir "${NEW_UNIX_DIR}/.ssh"
+                ssh-keygen \
+                    -t "${sshkeytype}" \
+                    -N '' \
+                    -f "${NEW_UNIX_DIR}/.ssh/${sshkeyname}" \
+                > /dev/null 2>&1
+
+                # Add the Zeppelin user's public key.
+                cat "${zeppubkeypath}" >> "${NEW_UNIX_DIR}/.ssh/authorized_keys"
+
+                # Fix permissions on the ssh directory.
+                chown -R "${NEW_USERNAME}:${NEW_USERNAME}" "${NEW_UNIX_DIR}/.ssh"
+                chmod -R "u=rwX,g=,o="     "${NEW_UNIX_DIR}/.ssh"
+
+            SUDO
+
+            # Generate our JSON response.
+            cat << JSON
+            {
+            "name": "${NEW_USERNAME}",
+            "home": "${NEW_UNIX_DIR}"
+            "uid":   ${NEW_USERID},
+            }
+            JSON
+
 
     create_notebook_clone: |
             #!/bin/bash
@@ -102,24 +172,25 @@
 
             curl --silent --cookie "${zepcookies:?}" "${ZEPPELIN_URL:?}/api/notebook"| jq -r '.body[] | select(.path | startswith("/Public")) | [.id, .path] | @tsv' |
             while IFS=$'\t' read -r id path; do
-              curl -L         -H 'Content-Type: application/json'         -d "{'name': '${path/Public Examples/Users/$NEW_USERNAME}' }"        --request POST         --cookie "${zepcookies:?}"    $ZEPPELIN_URL/api/notebook/$id
+              curl --silent -L -H 'Content-Type: application/json' -d "{'name': '${path/Public Examples/Users/$NEW_USERNAME}' }" --request POST --cookie "${zepcookies:?}" $ZEPPELIN_URL/api/notebook/$id
             done
 
     add_user: |
             #!/bin/bash
+
             if [ "$#" -ne 3 ]
             then
-                
+
                 printf "Create a new Zeppelin user"
                 printf "\n"
                 printf "Username: "
                 read NEW_USERNAME
-                
+
                 stty -echo
                 printf "Password: "
                 read NEW_PASSWORD
                 stty echo
-                            
+
                 printf "\n"
                 printf "User role: "
                 read NEW_USER_ROLE
@@ -127,7 +198,7 @@
                 NEW_USERNAME=$1
                 NEW_PASSWORD=$2
                 NEW_USER_ROLE=$3
-	    fi
+            fi
 
             source {{aghome}}/bin/create_user.sh $NEW_USERNAME $NEW_PASSWORD $NEW_USER_ROLE
 
@@ -143,6 +214,17 @@
             source {{aghome}}/bin/create_notebook_clone.sh $NEW_USERNAME $NEW_PASSWORD
 
   tasks:
+
+   - name: "Install password generator"
+     dnf:
+       name:  "pwgen"
+       state: "installed"
+
+   - name: "Accept SSH key for data node"
+     become: true
+     become_user: "{{zepuser}}"
+     ansible.builtin.shell: |
+        ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
 
    - name: "Create Scipt to export users"
      copy:

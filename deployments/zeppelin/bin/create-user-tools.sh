@@ -98,7 +98,7 @@ cat << EOF
 "name": "${sharename}",
 "uuid": "${shareuuid}",
 "path": "${sharepath}",
-"size": ${sharesize}
+"size":  ${sharesize}
 }
 EOF
         }
@@ -106,7 +106,7 @@ EOF
     cloneusernotebooks()
         {
         local user="${1:?}"
-        local pass="${2:?}"
+        local pass="${2}"
         #
         # Call Zeppelin to clone the user's notebooks.
         # Returns null (could return JSON list).
@@ -116,6 +116,8 @@ EOF
                 "
                 create_notebook_clone.sh '${user}' '${pass}'
                 "
+        else
+            echo "{}"
         fi
         }
 
@@ -127,13 +129,6 @@ EOF
         local data="${4}"
         local size="${5}"
 
-        shirouserjson=$(
-            createshirouser \
-                "${user}"
-            )
-
-        pass=$(jq -r '.pass' <<< ${shirouserjson})
-
         linuxuserjson=$(
             createlinuxuser \
                 "${user}" \
@@ -141,7 +136,9 @@ EOF
                 "${home}"
             )
 
-        uid=$(jq -r '.uid' <<< ${linuxuserjson})
+        uid=$(
+            jq -r '.uid' <<< ${linuxuserjson}
+            )
 
         cephsharejson=$(
             createusershare \
@@ -156,6 +153,15 @@ EOF
                 "${user}"
             )
 
+        shirouserjson=$(
+            createshirouser \
+                "${user}"
+            )
+
+        local pass=$(
+            jq -r '.pass' <<< ${shirouserjson}
+            )
+
         notebooksjson=$(
             cloneusernotebooks \
                 "${user}" \
@@ -167,7 +173,8 @@ cat << EOF
 "linuxuser": ${linuxuserjson},
 "shirouser": ${shirouserjson},
 "cephshare": ${cephsharejson},
-"notebooks:" ${notebooksjson}
+"hdfsspace": ${hdfsspacejson},
+"notebooks": ${notebooksjson}
 }
 EOF
         }

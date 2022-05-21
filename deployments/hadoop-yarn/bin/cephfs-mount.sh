@@ -34,10 +34,10 @@
     echo "Path [${binpath}]"
     echo "Tree [${treetop}]"
 
-    inventory=${1:?}
-    sharecloud=${2:?}
-    sharename=${3:?}
-    mountpath=${4:?}
+    inventory=${1:?'inventory required'}
+    sharecloud=${2:?'cloud name required'}
+    sharename=${3:?'share name required'}
+    mountpath=${4:?'mount path required'}
     mounthost=${5:-'zeppelin:masters:workers'}
     mountmode=${6:-'ro'}
 
@@ -187,6 +187,7 @@
 mntpath:  '${mountpath:?}'
 mntopts:  'async,auto,nodev,noexec,nosuid,${mountmode:?},_netdev'
 mnthost:  '${mounthost:?}'
+mntmode:  '${mountmode:?}'
 
 cephuser:  '${cephuser:?}'
 cephkey:   '${cephkey:?}'

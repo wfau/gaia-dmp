@@ -197,16 +197,34 @@ cephnodes: '${cephnodes// /,}'
 EOF
 
 # -----------------------------------------------------
-# Run the Ansible deplyment.
+# Define quiet versions of pushd and popd.
+# https://stackoverflow.com/a/25288289
 
-    pushd "${treetop:?}/hadoop-yarn/ansible"
+    qpushd () {
+        command pushd "$@" > /dev/null
+        }
+
+    qpopd () {
+        command popd "$@" > /dev/null
+        }
+
+# -----------------------------------------------------
+# Run the Ansible playbook.
+# Formatting the output as JSON.
+# https://docs.ansible.com/ansible/latest/collections/ansible/posix/json_callback.html
+# https://serverfault.com/a/836181
+# https://docs.ansible.com/ansible/latest/reference_appendices/config.html#envvar-ANSIBLE_STDOUT_CALLBACK
+
+    qpushd "${treetop:?}/hadoop-yarn/ansible"
+
+        export ANSIBLE_STDOUT_CALLBACK=ansible.posix.json
 
         ansible-playbook \
             --inventory "${inventory:?}" \
             --extra-vars '@/tmp/ceph-mount-vars.yml' \
             '51-cephfs-mount.yml'
 
-    popd
+    qpopd
 
 
 

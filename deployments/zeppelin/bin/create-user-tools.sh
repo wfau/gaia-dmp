@@ -156,14 +156,14 @@ EOF
             jq -r '.uid' <<< ${linuxuserjson}
             )
 
-        cephsharejson=$(
-            createcephshare \
-                "${username}" \
-                "${usertype}" \
-                "${uid}"  \
-                "${data}" \
-                "${size}"
-            )
+#        cephsharejson=$(
+#            createcephshare \
+#                "${username}" \
+#                "${usertype}" \
+#                "${uid}"  \
+#                "${data}" \
+#                "${size}"
+#            )
 
         hdfsspacejson=$(
             createhdfsspace \
@@ -192,7 +192,6 @@ cat << EOF
 {
 "linuxuser": ${linuxuserjson},
 "shirouser": ${shirouserjson},
-"cephshare": ${cephsharejson},
 "hdfsspace": ${hdfsspacejson},
 "notebooks": ${notebooksjson}
 }

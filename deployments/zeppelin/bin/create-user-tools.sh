@@ -70,13 +70,12 @@
         {
         local username="${1:?'username required'}"
         local usertype="${2:?'usertype required'}"
-        local hdfsroot="${3:-'hdfs-${usertype}'}"
         #
         # Call Zeppelin to create the user's HDFS space.
         # Returns JSON.
         ssh zeppelin \
             "
-            create_hdfs_user.sh '${username}' '${usertype}' '${hdfsroot}'
+            create_hdfs_home.sh '${username}' '${usertype}'
             "
         }
 

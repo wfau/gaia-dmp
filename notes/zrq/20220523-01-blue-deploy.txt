@@ -1,0 +1,392 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Deployment to test the latest changes.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-blue'
+    configname=zeppelin-54.86-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m32.969s
+    >   user    1m15.711s
+    >   sys     0m7.543s
+
+# -----------------------------------------------------
+# Create everything.
+# (*) apart from the user database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >   real    53m54.734s
+    >   user    17m19.531s
+    >   sys     4m14.447s
+
+
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+    >   rea 	1m17.063s
+    >   user    0m24.577s
+    >   sys     0m4.818s
+
+
+# -----------------------------------------------------
+# Copy notebooks from the live server.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sshuser=fedora
+        sshhost=zeppelin.aglais.uk
+
+        sudo mkdir -p '/var/local/backups'
+        sudo mv "/home/fedora/zeppelin/notebook" \
+           "/var/local/backups/notebook-$(date '+%Y%m%d%H%M%S')"
+
+        ssh-keyscan "${sshhost:?}" >> "${HOME}/.ssh/known_hosts"
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            "${sshuser:?}@${sshhost:?}:zeppelin/notebook/" \
+            "/home/fedora/zeppelin/notebook"
+        '
+
+    >   ....
+    >   ....
+    >   Number of files: 712 (reg: 490, dir: 222)
+    >   Number of created files: 712 (reg: 490, dir: 222)
+    >   ....
+    >   ....
+    >   sent 10.62K bytes  received 153.62M bytes  61.45M bytes/sec
+    >   total size is 153.52M  speedup is 1.00
+
+
+# -----------------------------------------------------
+# re-start Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    testusername=$(
+        pwgen 8 1
+        )
+
+    createusermain \
+        "${testusername}" \
+    | tee "/tmp/${testusername}.json" | jq '.'
+
+    testuserpass=$(
+        jq -r '.shirouser.pass' "/tmp/${testusername}.json"
+        )
+
+    >   {
+    >     "linuxuser": {
+    >       "name": "Zeishoo3",
+    >       "type": "test",
+    >       "home": "/home/Zeishoo3",
+    >       "uid": 20001
+    >     },
+    >     "shirouser": {
+    >       "name": "Zeishoo3",
+    >       "type": "test",
+    >       "pass": "xeyoh0aidie4AegahPhem9leQu9Os0",
+    >       "hash": "$shiro1$SHA-256$500000$m2yBDt+U8A2PAnRqFfCCSw==$tKtH/95hmwSJkdJmgPJcvmCNacqk0rIU+UDhTKlv2OY="
+    >     },
+    >     "hdfsspace": {
+    >       "user": "Zeishoo3",
+    >       "type": "test",
+    >       "path": "/hdfs-test/Zeishoo3"
+    >     },
+    >     "notebooks": [
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": {
+    >           "principal": "Zeishoo3",
+    >           "ticket": "329ad71a-6523-491c-beec-8f75a177bb3f",
+    >           "roles": "[\"user\"]"
+    >         }
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H4ZG7CVU"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H64FHQA4"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H6CTDJ85"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H2XKNGH6"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H4NGV8TB"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H4F62S49"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H5X2H78Q"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H3WDVA1S"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Check we can ssh from fedora to the new user.
+# This simulates the ssh login used by Zeppelin for user impersonation.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        whoami
+        id
+        echo
+        ssh ${testusername}@localhost \
+            '
+            date
+            hostname
+            whoami
+            id
+            '
+        echo
+        date
+        hostname
+        whoami
+        id
+        "
+
+    >   Wed May 25 07:32:17 UTC 2022
+    >   iris-gaia-blue-20220525-zeppelin
+    >   fedora
+    >   uid=1000(fedora) gid=1000(fedora) groups=1000(fedora),4(adm),10(wheel),190(systemd-journal) context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+    >   
+    >   Wed May 25 07:32:18 UTC 2022
+    >   iris-gaia-blue-20220525-zeppelin
+    >   Zeishoo3
+    >   uid=20001(Zeishoo3) gid=20001(Zeishoo3) groups=20001(Zeishoo3),100(users),1006(zeppelinusers) context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+    >   
+    >   Wed May 25 07:32:18 UTC 2022
+    >   iris-gaia-blue-20220525-zeppelin
+    >   fedora
+    >   uid=1000(fedora) gid=1000(fedora) groups=1000(fedora),4(adm),10(wheel),190(systemd-journal) context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Update our DuckDNS record.
+#[user@desktop]
+
+    duckname=iris-gaia-blue
+    ducktoken=$(secret 'aglais.duckdns.token')
+    zeppelinip=128.232.222.52
+
+    curl "https://www.duckdns.org/update/${duckname:?}/${ducktoken:?}/${zeppelinip:?}"
+
+    >   OK
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to Zeppelin as the test user.
+#[root@ansibler]
+
+    zeppelinhost=blue.aglais.uk
+    zeppelinport=8080
+    zeppelinurl=http://${zeppelinhost:?}:${zeppelinport:?}
+
+    source '/deployments/zeppelin/bin/zeppelin-rest-tools.sh'
+
+    zeplogin "${testusername:?}" "${testuserpass:?}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "Zeishoo3",
+    >       "ticket": "329ad71a-6523-491c-beec-8f75a177bb3f",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# List the user's notebooks
+#[root@ansibler]
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq "[.body[] | select(.path | startswith(\"/Users/${testusername:?}\"))]"
+
+    >   [
+    >     {
+    >       "id": "2H4ZG7CVU",
+    >       "path": "/Users/Zeishoo3/1. Start here"
+    >     },
+    >     {
+    >       "id": "2H64FHQA4",
+    >       "path": "/Users/Zeishoo3/2. Data holdings"
+    >     },
+    >     {
+    >       "id": "2H6CTDJ85",
+    >       "path": "/Users/Zeishoo3/3. Source counts over the sky"
+    >     },
+    >     {
+    >       "id": "2H2XKNGH6",
+    >       "path": "/Users/Zeishoo3/4. Mean proper motions over the sky"
+    >     },
+    >     {
+    >       "id": "2H4NGV8TB",
+    >       "path": "/Users/Zeishoo3/5. Working with Gaia XP spectra"
+    >     },
+    >     {
+    >       "id": "2H4F62S49",
+    >       "path": "/Users/Zeishoo3/6. Working with cross-matched surveys"
+    >     },
+    >     {
+    >       "id": "2H5X2H78Q",
+    >       "path": "/Users/Zeishoo3/7. Good astrometric solutions via ML Random Forrest classifier"
+    >     },
+    >     {
+    >       "id": "2H3WDVA1S",
+    >       "path": "/Users/Zeishoo3/8. Tips and tricks"
+    >     }
+    >   ]
+
+

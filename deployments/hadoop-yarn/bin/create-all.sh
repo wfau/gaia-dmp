@@ -175,7 +175,7 @@
 # -----------------------------------------------------
 # Create our data shares.
 
-    "${treetop:?}/hadoop-yarn/bin/create-data-shares.sh" \
+    "${treetop:?}/hadoop-yarn/bin/mount-data-shares.sh" \
         "${cloudname:?}" \
         "${deployconf:?}"
 
@@ -183,7 +183,7 @@
 # -----------------------------------------------------
 # Create our user shares.
 
-    "${treetop:?}/hadoop-yarn/bin/create-user-shares.sh" \
+    "${treetop:?}/hadoop-yarn/bin/mount-user-shares.sh" \
         "${cloudname:?}" \
         "${deployconf:?}"
 

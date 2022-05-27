@@ -21,140 +21,88 @@
 #
 #
 
-# -----------------------------------------------------
-# Settings ...
-
-#    set -eu
-#    set -o pipefail
-#
-#    binfile="$(basename ${0})"
-#    binpath="$(dirname $(readlink -f ${0}))"
-#    treetop="$(dirname $(dirname ${binpath}))"
-#
-#    echo ""
-#    echo "---- ---- ----"
-#    echo "File [${binfile}]"
-#    echo "Path [${binpath}]"
-#    echo "Tree [${treetop}]"
-#    echo "---- ---- ----"
-#
-
-    hadoopuid=5000
-    hadoopgid=5000
-
     defaultsharesize=10
 
     datahostname='data.aglais.uk'
     datahostuser='fedora'
 
-    # Get the next available uid
-    # https://www.commandlinefu.com/commands/view/5684/determine-next-available-uid
-    # TODO Move this to the Zeppelin node.
-    getnextuid()
-        {
-        getent passwd | awk -F: '($3>600) && ($3<60000) && ($3>maxuid) { maxuid=$3; } END { print maxuid+1; }'
-        }
-
     # Get the password hash for a user name.
     # Calls 'getpasshash' on data project VM.
     getpasshash()
         {
-        local key="${1:?}"
+        local username="${1:?'username required'}"
         ssh -n "${datahostuser:?}@${datahostname:?}" \
             "
-            getpasshash '${key:?}'
+            getpasshash '${username:?}'
             "
-        }
-
-    # Generate a new password hash.
-    newpasshash()
-        {
-        local password="${1:?}"
-        java \
-            -jar "${HOME}/lib/shiro-tools-hasher.jar" \
-            -i 500000 \
-            -f shiro1 \
-            -a SHA-256 \
-            -gss 128 \
-            '${password:?}'
         }
 
     createshirouser()
         {
-        local user="${1:?}"
-        local hash="$(getpasshash \"${user}\")";
-        local pass=''
-
-        if [ -z "${hash}" ]
-        then
-            pass=$(
-                pwgen 30 1
-                )
-            hash=$(
-                newpasshash "${pass}"
-                )
-        fi
-
+        local username="${1:?'username required'}"
+        local usertype="${2:?'usertype required'}"
+        local passhash="$(getpasshash \"${username}\")"
         #
-        # Call to Zeppelin node to create the user account in the Shiro database.
-        #
-
-cat << EOF
-{
-"pass": "${pass}",
-"hash": "${hash}"
-}
-EOF
+        # Call Zeppelin to create a user account in the Shiro database.
+        # Returns JSON.
+        ssh zeppelin \
+            "
+            create_mysql_user.sh '${username}' '${usertype}' '${passhash}'
+            "
         }
 
     createlinuxuser()
         {
-        local user="${1:?}"
-        local uid="${2}"
-        local gid="${3}"
-        local home="${4:-/home/${user}}"
-
+        local username="${1:?'username required'}"
+        local usertype="${2:?'usertype required'}"
+        local uid="${3}"
+        local home="${4}"
         #
-        # Call to Zeppelin node to create the Linux user account.
-        # The test for zero and the call to 'getnextuid' would be done on the Zeppelin node.
-        #
-
-        if [ -z ${uid} ]
-        then
-            uid=$(getnextuid)
-        fi
-        if [ -z ${gid} ]
-        then
-            gid=${uid}
-        fi
-
-
-cat << EOF
-{
-"name": "${user}",
-"uid":  ${uid},
-"gid":  ${gid},
-"home": "${home}"
-}
-EOF
+        # Call Zeppelin to create the Linux user account.
+        # Returns JSON.
+        ssh zeppelin \
+            "
+            create_unix_user.sh '${username}' '${usertype}' '${uid}' '${home}'
+            "
         }
 
-    createusershare()
+    createhdfsspace()
         {
-        local username="${1:?}"
-        local uid="${2:?}"
-        local gid="${3:?}"
-        local sharepath="${4:-/user/${user}}"
-        local sharesize="${5:-${defaultsharesize}}"
-        local sharename="user-data-${username}"
+        local username="${1:?'username required'}"
+        local usertype="${2:?'usertype required'}"
+        #
+        # Call Zeppelin to create the user's HDFS space.
+        # Returns JSON.
+        ssh zeppelin \
+            "
+            create_hdfs_home.sh '${username}' '${usertype}'
+            "
+        }
+
+    createcephshare()
+        {
+        local cloudname="${1:?'cloudname required'}"
+        local username="${2:?'username required'}"
+        local usertype="${3:?'usertype required'}"
+        local uid="${4:?'user id required'}"
+
+        local cephroot="/ceph-${usertype}"
+        local sharepath="${5:-${cephroot}/${username}}"
+        local sharesize="${6:-${defaultsharesize}}"
+        local sharename="${usertype}-${username}"
         local shareuuid=$(uuidgen)
 
         #
         # Call to Openstack to create the share.
         #
+        create-ceph-share.sh \
+            "${cloudname}" \
+            "${sharename}" \
+            "${sharesize}"
+
 
         #
-        # Call to Zeppelin node to mount the share.
+        # Call to Zeppelin to mount the share.
         #
 
 cat << EOF
@@ -162,73 +110,110 @@ cat << EOF
 "name": "${sharename}",
 "uuid": "${shareuuid}",
 "path": "${sharepath}",
-"size": ${sharesize}
+"size":  ${sharesize}
 }
 EOF
         }
 
+    cloneusernotebooks()
+        {
+        local username="${1:?'username required'}"
+        local usertype="${2:?'usertype required'}"
+        local userpass="${3}"
+        #
+        # Call Zeppelin to clone the user's notebooks.
+        # Returns null (could return JSON list).
+        if [ -n "${userpass}" ]
+        then
+            ssh zeppelin \
+                "
+                create_notebook_clone.sh '${username}' '${usertype}' '${userpass}'
+                "
+        else
+            echo "{}"
+        fi
+        }
 
     createusermain()
         {
-        local user="${1:?}"
-        local uid="${2}"
-        local gid="${3}"
+        local username="${1:?'username required'}"
+        local usertype="${2:-'test'}"
+        local uid="${3}"
         local home="${4}"
         local data="${5}"
         local size="${6}"
 
-        shirouserjson=$(
-            createshirouser \
-                "${user}"
-            )
-
         linuxuserjson=$(
             createlinuxuser \
-                "${user}" \
+                "${username}" \
+                "${usertype}" \
                 "${uid}"  \
-                "${gid}"  \
                 "${home}"
             )
 
-        uid=$(jq -r '.uid' <<< ${linuxuserjson})
-        gid=$(jq -r '.gid' <<< ${linuxuserjson})
+        uid=$(
+            jq -r '.uid' <<< ${linuxuserjson}
+            )
 
-        shareinfojson=$(
-            createusershare \
-                "${user}" \
-                "${uid}"  \
-                "${hadoopgid}" \
-                "${data}" \
-                "${size}"
+#        cephsharejson=$(
+#            createcephshare \
+#                "${username}" \
+#                "${usertype}" \
+#                "${uid}"  \
+#                "${data}" \
+#                "${size}"
+#            )
+
+        hdfsspacejson=$(
+            createhdfsspace \
+                "${username}" \
+                "${usertype}"
+            )
+
+        shirouserjson=$(
+            createshirouser \
+                "${username}" \
+                "${usertype}"
+            )
+
+        local pass=$(
+            jq -r '.pass' <<< ${shirouserjson}
+            )
+
+        notebooksjson=$(
+            cloneusernotebooks \
+                "${username}" \
+                "${usertype}" \
+                "${pass}"
             )
 
 cat << EOF
 {
-"linux": ${linuxuserjson},
-"shiro": ${shirouserjson},
-"share": ${shareinfojson}
+"linuxuser": ${linuxuserjson},
+"shirouser": ${shirouserjson},
+"hdfsspace": ${hdfsspacejson},
+"notebooks": ${notebooksjson}
 }
 EOF
         }
 
-
     createarrayusers()
         {
-        local names=("$@")
-        local name
+        local usernames=("$@")
+        local username
         local comma=''
         echo '{ "users": ['
-        for name in "${names[@]}"
+        for username in "${usernames[@]}"
         do
             echo "${comma}" ; comma=','
-            createusermain "${name}"
+            createusermain "${username}"
         done
         echo ']}'
         }
 
     createyamlusers()
         {
-        local yamlfile=${1:?}
+        local yamlfile=${1:?'yamlfile required'}
         local yamlpath=${2:-'users'}
         local comma=''
 
@@ -238,8 +223,8 @@ EOF
             echo "${comma}" ; comma=','
             createusermain \
                 "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.name // empty')" \
+                "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.type // empty')" \
                 "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.uid  // empty')" \
-                "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.gid  // empty')" \
                 "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.home // empty')" \
                 "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.data.path // empty')" \
                 "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.data.size // empty')"

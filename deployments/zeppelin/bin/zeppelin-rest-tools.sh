@@ -93,21 +93,30 @@
             --request GET \
             --cookie "${zepcookies:?}" \
             "${zeppelinurl:?}/api/notebook/${nbident:?}" \
-        | jq '.' | tee $(zepnbjsonfile ${nbident}) | jq 'del(.body.paragraphs[])'
+        | jq '.' | tee $(zepnbjsonfile ${nbident}) | jq 'del(.body.paragraphs[]) | del(.body.angularObjects)'
         }
 
-    zepnbexecute()
-        {
-        local nbident=${1:?}
-        zepnbjsonclr ${nbident}
-        curl \
-            --silent \
-            --request POST \
-            --cookie "${zepcookies:?}" \
-            "${zeppelinurl:?}/api/notebook/job/${nbident:?}" \
-        | jq '.'
-        }
-
+#
+#    zepnbexecute()
+#        {
+#        local nbident=${1:?}
+#        zepnbjsonclr ${nbident}
+#cat << EOF
+#{
+#"noteid": "${nbident}",
+#"response":
+#EOF
+#        curl \
+#            --silent \
+#            --request POST \
+#            --cookie "${zepcookies:?}" \
+#            "${zeppelinurl:?}/api/notebook/job/${nbident:?}" \
+#        | jq '.'
+#cat << EOF
+#}
+#EOF
+#        }
+#
 
 # -----------------------------------------------------
 # Execute a notebook paragraph at a time.
@@ -116,6 +125,11 @@
         {
         local nbident=${1:?}
         zepnbjsonclr ${nbident}
+cat << EOF
+{
+"noteid": "${nbident}",
+"paragraphs": [
+EOF
 
         # Fetch the notbook details.
         curl \
@@ -125,7 +139,6 @@
             "${zeppelinurl:?}/api/notebook/${nbident:?}" \
             > $(zepnbjsonfile ${nbident})
 
-
         # List the title, status and ident.
         paralist=$(mktemp --suffix '.json')
         jq '
@@ -133,6 +146,8 @@
             ' "$(zepnbjsonfile ${nbident})" \
             > "${paralist}"
 
+        local comma=''
+        local notestart=$(date "+%H:%M:%S.%N")
 
         # Execute each paragraph
         jq -r '.[] | @text' "${paralist}" \
@@ -141,29 +156,60 @@
                 title=$(jq -r '.title' <<< "${line}")
                 paraid=$(jq -r '.id'   <<< "${line}")
                 status=$(jq -r '.status' <<< "${line}")
-                echo ""
-                echo "Para [${paraid}][${title}]"
-
-                curl \
-                    --silent \
-                    --request POST \
-                    --cookie "${zepcookies:?}" \
-                    "${zeppelinurl:?}/api/notebook/run/${nbident:?}/${paraid:?}" \
-                | jq 'del(.body.msg)' \
-                | tee "/tmp/para-${paraid}.json"
-
-
-                result=$(
-                    jq -r '.body.code' "/tmp/para-${paraid}.json"
-                    )
-                echo "Result [${result}]"
-
-                if [ "${result}" != 'SUCCESS' ]
+                #echo ""
+                #echo "Para [${paraid}][${title}]"
+                if [ -n "${paraid}" ]
                 then
-                    break
-                fi
+cat << EOF
+${comma}
+    {
+    "noteid": "${nbident}",
+    "paraid": "${paraid}",
+    "title":  "${title}",
+    "execute":
+EOF
+comma=','
+                    local parastart=$(date "+%H:%M:%S.%N")
 
+                    curl \
+                        --silent \
+                        --request POST \
+                        --cookie "${zepcookies:?}" \
+                        "${zeppelinurl:?}/api/notebook/run/${nbident:?}/${paraid:?}" \
+                    | jq 'del(.body.msg)' \
+                    | tee "/tmp/para-${paraid}.json"
+
+                    local paradone=$(date "+%H:%M:%S.%N")
+                    local paratime=$(
+                        datediff --format "%H:%M:%S" --input-format "%H:%M:%S.%N" "${parastart}" "${paradone}"
+                        )
+
+cat << EOF
+    ,
+    "duration": "${paratime}"
+    }
+EOF
+                    result=$(
+                        jq -r '.body.code' "/tmp/para-${paraid}.json"
+                        )
+
+                    if [ "${result}" != 'SUCCESS' ]
+                    then
+                        break
+                    fi
+                fi
             done
+
+            local notedone=$(date "+%H:%M:%S.%N")
+            local notetime=$(
+                datediff --format "%H:%M:%S" --input-format "%H:%M:%S.%N" "${notestart}" "${notedone}"
+                )
+
+cat << EOF
+    ],
+"duration": "${notetime}"
+}
+EOF
         }
 
 # -----------------------------------------------------
@@ -172,7 +218,6 @@
     zepnbparatime()
         {
         local nbident=${1:?}
-
         cat $(zepnbjsonfile ${nbident}) \
         | sed '
             /"dateStarted": null,/d
@@ -202,7 +247,7 @@
 
 
 # -----------------------------------------------------
-# Calculate the elapsed time for the whole notebook.
+# Calculate the elapsed time for a whole notebook.
 #[root@ansibler]
 
     zepnbtotaltime()
@@ -228,4 +273,57 @@
         }
 
 
+# -----------------------------------------------------
+# Run all the notebooks for a user.
+#[root@ansibler]
+
+    testall()
+        {
+        local username=${1:?'username required'}
+        local password=${2:?'password required'}
+        local teststart=$(date "+%H:%M:%S.%N")
+cat << EOF
+{
+"login": $(
+    zeplogin "${username:?}" "${password:?}"
+    ),
+"notebooks": [
+EOF
+
+        local comma=''
+        for noteid in $(
+            curl \
+                --silent \
+                --cookie "${zepcookies:?}" \
+                "${zeppelinurl:?}/api/notebook" \
+            | jq -r ".body[] | select(.path | startswith(\"/Users/${username:?}\")) | .id"
+            )
+        do
+
+cat << EOF
+${comma}{
+"noteid": "${noteid}",
+"clear": $(
+    zepnbclear "${noteid}"
+    ),
+"execute": $(
+    zepnbexecstep "${noteid}"
+    )
+}
+EOF
+
+            comma=','
+        done
+
+        local testdone=$(date "+%H:%M:%S.%N")
+        local testtime=$(
+            datediff --format "%H:%M:%S" --input-format "%H:%M:%S.%N" "${teststart}" "${testdone}"
+            )
+
+cat << EOF
+    ],
+    "duration": "${testtime}"
+}
+EOF
+        }
 

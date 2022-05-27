@@ -34,10 +34,10 @@
     echo "Path [${binpath}]"
     echo "Tree [${treetop}]"
 
-    inventory=${1:?}
-    sharecloud=${2:?}
-    sharename=${3:?}
-    mountpath=${4:?}
+    inventory=${1:?'inventory required'}
+    sharecloud=${2:?'cloud name required'}
+    sharename=${3:?'share name required'}
+    mountpath=${4:?'mount path required'}
     mounthost=${5:-'zeppelin:masters:workers'}
     mountmode=${6:-'ro'}
 
@@ -187,6 +187,7 @@
 mntpath:  '${mountpath:?}'
 mntopts:  'async,auto,nodev,noexec,nosuid,${mountmode:?},_netdev'
 mnthost:  '${mounthost:?}'
+mntmode:  '${mountmode:?}'
 
 cephuser:  '${cephuser:?}'
 cephkey:   '${cephkey:?}'
@@ -196,16 +197,34 @@ cephnodes: '${cephnodes// /,}'
 EOF
 
 # -----------------------------------------------------
-# Run the Ansible deplyment.
+# Define quiet versions of pushd and popd.
+# https://stackoverflow.com/a/25288289
 
-    pushd "${treetop:?}/hadoop-yarn/ansible"
+    qpushd () {
+        command pushd "$@" > /dev/null
+        }
+
+    qpopd () {
+        command popd "$@" > /dev/null
+        }
+
+# -----------------------------------------------------
+# Run the Ansible playbook.
+# Formatting the output as JSON.
+# https://docs.ansible.com/ansible/latest/collections/ansible/posix/json_callback.html
+# https://serverfault.com/a/836181
+# https://docs.ansible.com/ansible/latest/reference_appendices/config.html#envvar-ANSIBLE_STDOUT_CALLBACK
+
+    qpushd "${treetop:?}/hadoop-yarn/ansible"
+
+        export ANSIBLE_STDOUT_CALLBACK=ansible.posix.json
 
         ansible-playbook \
             --inventory "${inventory:?}" \
             --extra-vars '@/tmp/ceph-mount-vars.yml' \
             '51-cephfs-mount.yml'
 
-    popd
+    qpopd
 
 
 

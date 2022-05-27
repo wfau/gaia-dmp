@@ -1,0 +1,1488 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Deployment to test the latest changes.
+
+    Result:
+
+        Success.
+        Tests run end-end.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-blue'
+    configname=zeppelin-54.86-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    4m18.563s
+    >   user    1m47.464s
+    >   sys     0m12.031s
+
+# -----------------------------------------------------
+# Create everything.
+# (*) apart from the user database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >   real    44m43.779s
+    >   user    15m13.419s
+    >   sys     3m57.775s
+
+
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+    >   real    1m13.920s
+    >   user    0m23.198s
+    >   sys     0m4.655s
+
+
+# -----------------------------------------------------
+# Copy notebooks from the live server.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sshuser=fedora
+        sshhost=zeppelin.aglais.uk
+
+        sudo mkdir -p '/var/local/backups'
+        sudo mv "/home/fedora/zeppelin/notebook" \
+           "/var/local/backups/notebook-$(date '+%Y%m%d%H%M%S')"
+
+        ssh-keyscan "${sshhost:?}" >> "${HOME}/.ssh/known_hosts"
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            "${sshuser:?}@${sshhost:?}:zeppelin/notebook/" \
+            "/home/fedora/zeppelin/notebook"
+        '
+
+    >   ....
+    >   ....
+    >   Number of files: 712 (reg: 490, dir: 222)
+    >   Number of created files: 712 (reg: 490, dir: 222)
+    >   Number of deleted files: 0
+    >   Number of regular files transferred: 490
+    >   ....
+
+
+# -----------------------------------------------------
+# re-start Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    testusername=$(
+        pwgen 8 1
+        )
+
+    createusermain \
+        "${testusername}" \
+    | tee "/tmp/${testusername}.json" | jq '.'
+
+    testuserpass=$(
+        jq -r '.shirouser.pass' "/tmp/${testusername}.json"
+        )
+
+    >   {
+    >     "linuxuser": {
+    >       "name": "ciNg2thu",
+    >       "type": "test",
+    >       "home": "/home/ciNg2thu",
+    >       "uid": 20004
+    >     },
+    >     "shirouser": {
+    >       "name": "ciNg2thu",
+    >       "type": "test",
+    >       "pass": "phuduuwieb7Ietho2koo4Eegaiw9ac",
+    >       "hash": "$shiro1$SHA-256$500000$FcgSAc90Nki9bRTCakAvqA==$WhQOnNbHU3K5HtSt5xLEB33c4QAC/X+V/QMGDBwMAN0="
+    >     },
+    >     "hdfsspace": {
+    >       "path": "/albert/ciNg2thu",
+    >       "owner": "ciNg2thu",
+    >       "group": "supergroup"
+    >     },
+    >     "notebooks": [
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": {
+    >           "principal": "ciNg2thu",
+    >           "ticket": "3a882fec-f28f-4863-9f0a-f40f08d7ce7a",
+    >           "roles": "[\"user\"]"
+    >         }
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H5NA8EWW"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H4Z656G8"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H657JQT2"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H3FGPZAT"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H5MNBJMC"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H4WEX8TN"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H3TBEN9A"
+    >       },
+    >       {
+    >         "status": "OK",
+    >         "message": "",
+    >         "body": "2H4P4F7ED"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Get the IP address from the ssh config file.
+# TODO Log this somewhere sensible.
+#[root@ansibler]
+
+    ipaddress=$(
+
+        sed -n '
+            /^Host zeppelin/,/^Host/ {
+                /HostName/ {
+                    s/^[[:space:]]*HostName[[:space:]]\(.*\)/\1/ p
+                    }
+                }
+            ' ~/.ssh/config
+
+        )
+
+    echo "ipaddress [${ipaddress}]"
+
+# -----------------------------------------------------
+# Login to Zeppelin as the test user.
+#[root@ansibler]
+
+    zeppelinhost=${ipaddress}
+    zeppelinport=8080
+    zeppelinurl=http://${zeppelinhost:?}:${zeppelinport:?}
+
+    source '/deployments/zeppelin/bin/zeppelin-rest-tools.sh'
+
+    zeplogin "${testusername:?}" "${testuserpass:?}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "ciNg2thu",
+    >       "ticket": "3a882fec-f28f-4863-9f0a-f40f08d7ce7a",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# List the user's notebooks
+#[root@ansibler]
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq "[.body[] | select(.path | startswith(\"/Users/${testusername:?}\"))]"
+
+    >   [
+    >     {
+    >       "id": "2H5NA8EWW",
+    >       "path": "/Users/ciNg2thu/1. Start here"
+    >     },
+    >     {
+    >       "id": "2H4Z656G8",
+    >       "path": "/Users/ciNg2thu/2. Data holdings"
+    >     },
+    >     {
+    >       "id": "2H657JQT2",
+    >       "path": "/Users/ciNg2thu/3. Source counts over the sky"
+    >     },
+    >     {
+    >       "id": "2H3FGPZAT",
+    >       "path": "/Users/ciNg2thu/4. Mean proper motions over the sky"
+    >     },
+    >     {
+    >       "id": "2H5MNBJMC",
+    >       "path": "/Users/ciNg2thu/5. Working with Gaia XP spectra"
+    >     },
+    >     {
+    >       "id": "2H4WEX8TN",
+    >       "path": "/Users/ciNg2thu/6. Working with cross-matched surveys"
+    >     },
+    >     {
+    >       "id": "2H3TBEN9A",
+    >       "path": "/Users/ciNg2thu/7. Good astrometric solutions via ML Random Forrest classifier"
+    >     },
+    >     {
+    >       "id": "2H4P4F7ED",
+    >       "path": "/Users/ciNg2thu/8. Tips and tricks"
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Run all the test user's notebooks.
+#[root@ansibler]
+
+    for noteid in $(
+        curl \
+            --silent \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook" \
+        | jq -r ".body[] | select(.path | startswith(\"/Users/${testusername:?}\")) | .id"
+        )
+    do
+        echo "-----------------------------------------------------"
+        echo "Notebook [${noteid}]"
+        echo
+        zepnbclear     "${noteid}"
+        echo
+        zepnbexecstep  "${noteid}"
+        echo
+        zepnbstatus    "${noteid}"
+        echo
+        zepnbtotaltime "${noteid}"
+        echo
+    done
+
+    >   -----------------------------------------------------
+    >   Notebook [2H5NA8EWW]
+    >   ....
+    >   ....
+    >   Para [20210510-105824_1166659944][Example code from previous cell]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "ERROR"
+    >     }
+    >   }
+    >   Result [ERROR]
+    >   ....
+    >   ....
+    >   -----------------------------------------------------
+    >   Notebook [2H4Z656G8]
+    >   ....
+    >   ....
+    >   Para [20210507-124436_282498395][Database and table details]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "ERROR"
+    >     }
+    >   }
+    >   Result [ERROR]
+    >   ....
+    >   ....
+    >   
+    >       #
+    >       # Still got lots of errors.
+    >       #
+    >   
+    >   # -----------------------------------------------------
+    >   # -----------------------------------------------------
+    >   # Fix the errors on Zeppelin.
+    >   #[user@zeppelin]
+    >   
+    >       pushd zeppelin/logs
+    >   
+    >           less zeppelin-interpreter-spark-ciNg2thu-ciNg2thu-fedora-iris-gaia-blue-20220526-zeppelin.log
+    >   
+    >       popd
+    >   
+    >   ....
+    >    INFO [2022-05-27 04:44:15,869] ({FIFOScheduler-interpreter_2088462041-Worker-1} Logging.scala[logInfo]:57) - Preparing resources for our AM container
+    >   ERROR [2022-05-27 04:44:15,870] ({FIFOScheduler-interpreter_2088462041-Worker-1} Logging.scala[logError]:94) - Error initializing SparkContext.
+    >   java.lang.IllegalArgumentException: java.net.UnknownHostException: albert
+    >           at org.apache.hadoop.security.SecurityUtil.buildTokenService(SecurityUtil.java:447)
+    >           at org.apache.hadoop.hdfs.NameNodeProxiesClient.createProxyWithClientProtocol(NameNodeProxiesClient.java:131)
+    >   ....
+
+
+    sudo vi /opt/hadoop/etc/hadoop/hdfs-site.xml
+
+        <property>
+          <name>dfs.user.home.dir.prefix</name>
+    -     <value>//albert</value>
+    +     <value>/albert</value>
+        </property>
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# re-start Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+# -----------------------------------------------------
+# Login to Zeppelin as the test user.
+#[root@ansibler]
+
+    zeplogin "${testusername:?}" "${testuserpass:?}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "ciNg2thu",
+    >       "ticket": "9ee3cb6e-3e3b-45fd-be9d-29c465f0c71a",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Run all the test user's notebooks.
+#[root@ansibler]
+
+    for noteid in $(
+        curl \
+            --silent \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook" \
+        | jq -r ".body[] | select(.path | startswith(\"/Users/${testusername:?}\")) | .id"
+        )
+    do
+        echo "-----------------------------------------------------"
+        echo "Notebook [${noteid}]"
+        echo
+        zepnbclear     "${noteid}"
+        echo
+        zepnbexecstep  "${noteid}"
+        echo
+        zepnbstatus    "${noteid}"
+        echo
+        zepnbtotaltime "${noteid}"
+        echo
+    done
+
+
+
+    >   -----------------------------------------------------
+    >   Notebook [2H5NA8EWW]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [20210507-152557_21014937][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-152628_446700578][Familiarisation]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-084215_1445060106][Zeppelin notebooks]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-160139_1365676170][PySpark SQL]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-105824_1166659944][Example code from previous cell]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-152746_1171284722][Spark aspects]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-090543_1039599855][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "1. Start here",
+    >       "id": "2H5NA8EWW",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/ciNg2thu/1. Start here"
+    >     }
+    >   }
+    >   
+    >   0:0:40
+    >   
+    >   -----------------------------------------------------
+    >   Notebook [2H4Z656G8]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [20210507-123801_497865463][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-124436_282498395][Database and table details]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1651056869670_357515407][N.B.]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-124618_1845823957][Description and links]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-133844_1243154051][Column listing for a table]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-140821_1444471628][Querying the main catalogue]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-144257_1004220319][Querying with cross-matched data]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-144728_1143294166][Things to note]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-144934_423944230][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "2. Data holdings",
+    >       "id": "2H4Z656G8",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/ciNg2thu/2. Data holdings"
+    >     }
+    >   }
+    >   
+    >   0:0:15
+    >   
+    >   -----------------------------------------------------
+    >   Notebook [2H657JQT2]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [20210507-084613_357121151][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20200826-105718_1698521515][Set the resolution level and define the query]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20200826-110030_2095441495][Plot up the results]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210507-091244_670006530][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1648610499944_1376690736][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "3. Source counts over the sky",
+    >       "id": "2H657JQT2",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/ciNg2thu/3. Source counts over the sky"
+    >     }
+    >   }
+    >   
+    >   0:0:29
+    >   
+    >   -----------------------------------------------------
+    >   Notebook [2H3FGPZAT]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [paragraph_1646395441893_1272795891][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-111756_391695716][Set HEALPix resolution]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-111538_106023214][Define a data frame by SQL query]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-111939_1386609632][Mean RA proper motion plot]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-111943_814907111][Mean Dec proper motion plot]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-111956_1822284967][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210510-132447_1514402898][Tidy-up]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20211207-132335_689637194][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "4. Mean proper motions over the sky",
+    >       "id": "2H3FGPZAT",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/ciNg2thu/4. Mean proper motions over the sky"
+    >     }
+    >   }
+    >   
+    >   0:0:39
+    >   
+    >   -----------------------------------------------------
+    >   Notebook [2H5MNBJMC]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [paragraph_1650981001262_1093264483][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1650981269844_2057939329][Sampling and plotting spectra TODO CHECK FOLLOWING DR3 RELEASE]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "ERROR"
+    >     }
+    >   }
+    >   Result [ERROR]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "5. Working with Gaia XP spectra",
+    >       "id": "2H5MNBJMC",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/ciNg2thu/5. Working with Gaia XP spectra"
+    >     }
+    >   }
+    >   
+    >   0:0:1
+    >   
+    >   -----------------------------------------------------
+    >   Notebook [2H4WEX8TN]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [paragraph_1646992513304_653265144][Introduction]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1647250636508_2082384671][Standard platform set-up TODO]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646992632242_1534494301][Utility function definitions]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646996320283_812479873][Define a data aggregation TODO tweak]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646996892901_1183551489][Collect the results and process in preparation for visualisation]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646997023626_41851232][Visualise via matplotlib]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1647276187713_571053798][Further reading TODO add links]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1647339970003_891385563][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "6. Working with cross-matched surveys",
+    >       "id": "2H4WEX8TN",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/ciNg2thu/6. Working with cross-matched surveys"
+    >     }
+    >   }
+    >   
+    >   0:0:47
+    >   
+    >   -----------------------------------------------------
+    >   Notebook [2H3TBEN9A]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [20201013-131059_546082898][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201013-131649_1734629667][Basic catalogue query selections and predicates]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201013-132418_278702125][Raw catalogue with selected columns]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201120-094650_221463065][Visualisation (colour / absolute-magnitue diagram) of the raw catalogue]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201120-110502_1704727157][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201123-105445_95907042][Define the training samples]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201015-161110_18118893][Assemble training and reserve test sets]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201013-152110_1282917873][Train up the Random Forrest]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210504-153521_1591875670][Check feature set for nulls]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201015-131823_1744793710][Classify the reserved test sets]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201016-154755_24366630][Classification confusion matrix]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201123-163421_1811049882][Relative importance of the selected features]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201123-162249_1468741293][Apply the classification model and plot sample results]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201124-100512_110153564][Histogram of classification probability]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201125-103046_1353183691][Sky distribution of good source sample]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20201125-163312_728555601][Sky distribution of bad source sample]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1647354647989_1984770159][Tidy up]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210428-140519_1288739408][Further reading and resources]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [20210506-134212_1741520795][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "7. Good astrometric solutions via ML Random Forrest classifier",
+    >       "id": "2H3TBEN9A",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/ciNg2thu/7. Good astrometric solutions via ML Random Forrest classifier"
+    >     }
+    >   }
+    >   
+    >   0:8:57
+    >   
+    >   -----------------------------------------------------
+    >   Notebook [2H4P4F7ED]
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": ""
+    >   }
+    >   
+    >   
+    >   Para [paragraph_1646302979387_1967819699][null]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1650969130797_24418076][Resetting the Spark context]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646303142140_1348941331][Interpreters]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646303435709_963866048][Getting Python help (PySpark)]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   
+    >   Para [paragraph_1646307170102_2048767015][Getting Python help (IPython)]
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS"
+    >     }
+    >   }
+    >   Result [SUCCESS]
+    >   parse error: Invalid numeric literal at line 1, column 83
+    >   parse error: Invalid numeric literal at line 1, column 83
+    >   parse error: Invalid numeric literal at line 1, column 83
+    >   
+    >   Para [][]
+    >   bash: paraid: parameter null or not set
+    >   Result []
+    >   
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "paragraphs": [],
+    >       "name": "8. Tips and tricks",
+    >       "id": "2H4P4F7ED",
+    >       "defaultInterpreterGroup": "spark",
+    >       "version": "0.10.0",
+    >       "noteParams": {},
+    >       "noteForms": {},
+    >       "angularObjects": {},
+    >       "config": {
+    >         "personalizedMode": "false",
+    >         "looknfeel": "default",
+    >         "isZeppelinNotebookCronEnable": false
+    >       },
+    >       "info": {},
+    >       "path": "/Users/ciNg2thu/8. Tips and tricks"
+    >     }
+    >   }
+    >   
+    >   0:0:6
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# -----------------------------------------------------
+# Run all the test user's notebooks.
+#[root@ansibler]
+
+    for noteid in $(
+        curl \
+            --silent \
+            --cookie "${zepcookies:?}" \
+            "${zeppelinurl:?}/api/notebook" \
+        | jq -r ".body[] | select(.path | startswith(\"/Users/${testusername:?}\")) | .id"
+        )
+    do
+        echo "-----------------------------------------------------"
+        echo "Notebook [${noteid}]"
+        echo
+        zepnbclear     "${noteid}"
+        echo
+        zepnbexecstep  "${noteid}"
+        echo
+        zepnbstatus    "${noteid}"
+        echo
+        zepnbtotaltime "${noteid}"
+        echo
+    done
+
+
+
+[
+    {
+    "id": "2H4P4F7ED"
+    "clear": {{
+        "status": "OK",
+        "message": ""
+        }},
+    "paragraphs": [
+            {
+            "id": "paragraph_1646302979387_1967819699",
+            "title": "",
+            "execute": {{
+                "status": "OK",
+                "body": {
+                    "code": "SUCCESS"
+                    }
+                }}
+            },
+        ]
+        }
+    },
+
+
+]
+
+
+
+
+
+
+-----------------------------------------------------
+Notebook [2H4P4F7ED]
+
+
+
+Para [paragraph_1646302979387_1967819699][null]
+{
+  "status": "OK",
+  "body": {
+    "code": "SUCCESS"
+  }
+}
+Result [SUCCESS]
+
+Para [paragraph_1650969130797_24418076][Resetting the Spark context]
+{
+  "status": "OK",
+  "body": {
+    "code": "SUCCESS"
+  }
+}
+Result [SUCCESS]
+
+Para [paragraph_1646303142140_1348941331][Interpreters]
+{
+  "status": "OK",
+  "body": {
+    "code": "SUCCESS"
+  }
+}
+Result [SUCCESS]
+
+Para [paragraph_1646303435709_963866048][Getting Python help (PySpark)]
+{
+  "status": "OK",
+  "body": {
+    "code": "SUCCESS"
+  }
+}
+Result [SUCCESS]
+
+Para [paragraph_1646307170102_2048767015][Getting Python help (IPython)]
+{
+  "status": "OK",
+  "body": {
+    "code": "SUCCESS"
+  }
+}
+Result [SUCCESS]
+parse error: Invalid numeric literal at line 1, column 83
+parse error: Invalid numeric literal at line 1, column 83
+parse error: Invalid numeric literal at line 1, column 83
+
+Para [][]
+bash: paraid: parameter null or not set
+Result []
+
+{
+  "status": "OK",
+  "message": "",
+  "body": {
+    "paragraphs": [],
+    "name": "8. Tips and tricks",
+    "id": "2H4P4F7ED",
+    "defaultInterpreterGroup": "spark",
+    "version": "0.10.0",
+    "noteParams": {},
+    "noteForms": {},
+    "angularObjects": {},
+    "config": {
+      "personalizedMode": "false",
+      "looknfeel": "default",
+      "isZeppelinNotebookCronEnable": false
+    },
+    "info": {},
+    "path": "/Users/ciNg2thu/8. Tips and tricks"
+  }
+}
+
+0:0:6
+--END--
+
+

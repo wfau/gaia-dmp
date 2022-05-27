@@ -281,6 +281,7 @@ EOF
         {
         local username=${1:?'username required'}
         local password=${2:?'password required'}
+        local teststart=$(date "+%H:%M:%S.%N")
 cat << EOF
 {
 "login": $(
@@ -289,15 +290,15 @@ cat << EOF
 "notebooks": [
 EOF
 
-    local comma=''
-    for noteid in $(
-        curl \
-            --silent \
-            --cookie "${zepcookies:?}" \
-            "${zeppelinurl:?}/api/notebook" \
-        | jq -r ".body[] | select(.path | startswith(\"/Users/${username:?}\")) | .id"
-        )
-    do
+        local comma=''
+        for noteid in $(
+            curl \
+                --silent \
+                --cookie "${zepcookies:?}" \
+                "${zeppelinurl:?}/api/notebook" \
+            | jq -r ".body[] | select(.path | startswith(\"/Users/${username:?}\")) | .id"
+            )
+        do
 
 cat << EOF
 ${comma}{
@@ -311,11 +312,17 @@ ${comma}{
 }
 EOF
 
-        comma=','
-    done
+            comma=','
+        done
+
+        local testdone=$(date "+%H:%M:%S.%N")
+        local testtime=$(
+            datediff --format "%H:%M:%S" --input-format "%H:%M:%S.%N" "${teststart}" "${testdone}"
+            )
 
 cat << EOF
-    ]
+    ],
+    "duration": "${testtime}"
 }
 EOF
         }

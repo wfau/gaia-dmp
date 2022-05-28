@@ -21,7 +21,7 @@
 #
 #
 
-    set -eu
+    set -e
     set -o pipefail
 
     binfile="$(basename ${0})"
@@ -53,20 +53,44 @@
 
 # -----------------------------------------------------
 # Run Benchmarks
+ 
+    # Create Users
 
-echo "Running multi user test"
+    source ${treetop:?}/zeppelin/bin/create-user-tools.sh
+    count=1
+    testers=()
+    while [ "$count" -le $num_users ]; do
+        testers[$count]=$(pwgen 8 1)
+        let "count += 1"
+    done
+
+    tempfile=$(mktemp)
+
+ testusername=$(
+        pwgen 8 1
+        )
+
+    createusermain \
+        "${testusername}" \
+    | tee "/tmp/${testusername}.json" | jq '.'
+
+    createarrayusers \
+        ${testers[@]} \
+    > "${tempfile}"
+
+
 
 if [[ "$testlevel" == "multiuser" ]]
 then
 
-echo "Running multi user test"
+    echo "Running multi user test"
 
     pushd "/deployments/hadoop-yarn/ansible"
 
         ansible-playbook \
             --verbose \
             --inventory "${inventory:?}" \
-            --extra-vars "testlevel=$testlevel concurrent=$concurrent num_users=$num_users" \
+            --extra-vars "testlevel=$testlevel concurrent=$concurrent num_users=$num_users users=$tempfile" \
             "36-run-benchmark.yml" \
 
     popd
@@ -80,7 +104,7 @@ else
         ansible-playbook \
             --verbose \
             --inventory "${inventory:?}" \
-	    --extra-vars "testlevel=$testlevel concurrent=$concurrent num_users=$num_users"  \
+	    --extra-vars "testlevel=$testlevel concurrent=$concurrent num_users=$num_users users=$tempfile"  \
             "36-run-benchmark.yml"
 
     popd

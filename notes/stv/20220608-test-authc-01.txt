@@ -1,0 +1,279 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+    Target:
+
+        Deployment to test the latest changes.
+
+    Result:
+
+        Success.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-red'
+    configname=zeppelin-26.43-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   Done
+    
+# -----------------------------------------------------
+# Create everything.
+# (*) apart from the user database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >   Done
+
+
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+
+
+# -----------------------------------------------------
+# Copy notebooks from the live server.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sshuser=fedora
+        sshhost=zeppelin.aglais.uk
+
+        sudo mkdir -p '/var/local/backups'
+        sudo mv "/home/fedora/zeppelin/notebook" \
+           "/var/local/backups/notebook-$(date '+%Y%m%d%H%M%S')"
+
+        ssh-keyscan "${sshhost:?}" >> "${HOME}/.ssh/known_hosts"
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            "${sshuser:?}@${sshhost:?}:zeppelin/notebook/" \
+            "/home/fedora/zeppelin/notebook"
+        '
+
+
+# -----------------------------------------------------
+# re-start Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+
+    
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    testusername=$(
+        pwgen 8 1
+        )
+
+    createusermain \
+        "${testusername}" \
+    | tee "/tmp/${testusername}.json" | jq '.'
+
+    testuserpass=$(
+        jq -r '.shirouser.pass' "/tmp/${testusername}.json"
+        )
+        
+# Try accessing interpreter page:
+# Authentication warning / Cant access page
+> "You don't have permission on this page"
+# Success
+
+
+
+# -----------------------------------------------------
+# Create an admin user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    testusername=$(
+        pwgen 8 1
+        )
+
+    createusermain \
+        "${testusername}" admin \
+    | tee "/tmp/${testusername}.json" | jq '.'
+
+    testuserpass=$(
+        jq -r '.shirouser.pass' "/tmp/${testusername}.json"
+        )
+        
+# Try accessing interpreter page:
+# Interpreters can be accessed & modified
+# Success
+
+
+
+# -----------------------------------------------------
+# Run Quick Tests
+#[root@ansibler]
+
+    num_users=1
+    concurrent=False
+    test_level=quick
+    cloudname=iris-gaia-red
+    configname=zeppelin-26.43-spark-6.26.43
+
+
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "${test_level:?}"  \
+	     ${concurrent:?}  \
+	     ${num_users:?}  \
+        | tee /tmp/run-tests-quick.log
+	
+
+# Results:
+ [{
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '33.92',
+			'expected': '45.00',
+			'percent': '-24.63',
+			'start': '2022-06-08T12:06:39.192906',
+			'finish': '2022-06-08T12:07:13.109958'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '51.16',
+			'expected': '55.00',
+			'percent': '-6.97',
+			'start': '2022-06-08T12:07:13.110049',
+			'finish': '2022-06-08T12:08:04.274908'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '17.72',
+			'expected': '22.00',
+			'percent': '-19.45',
+			'start': '2022-06-08T12:08:04.275201',
+			'finish': '2022-06-08T12:08:21.996497'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '8.32',
+			'expected': '60.00',
+			'percent': '-86.14',
+			'start': '2022-06-08T12:08:21.996856',
+			'finish': '2022-06-08T12:08:30.315357'
+		},
+		'logs': ''
+	}
+}]

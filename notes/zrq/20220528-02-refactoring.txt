@@ -1,0 +1,665 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Experiment to see what we can refactor.
+
+    Result:
+
+        Success.
+        We only need to deploy the Python libraries to the Spark master (Zeppelin) node.
+
+
+# -----------------------------------------------------
+
+    Refactoring.
+
+    * Deploy Python dependecies on Zeppelin only.
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-blue'
+    configname=zeppelin-54.86-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    4m3.755s
+    >   user    1m41.430s
+    >   sys     0m11.392s
+
+# -----------------------------------------------------
+# Create everything.
+# (*) apart from the user database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >   real    40m26.457s
+    >   user    12m46.299s
+    >   sys     3m16.460s
+
+
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+    >   real    0m46.164s
+    >   user    0m16.167s
+    >   sys     0m3.628s
+
+
+# -----------------------------------------------------
+# Copy notebooks from the live server.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sshuser=fedora
+        sshhost=zeppelin.aglais.uk
+
+        sudo mkdir -p '/var/local/backups'
+        sudo mv "/home/fedora/zeppelin/notebook" \
+           "/var/local/backups/notebook-$(date '+%Y%m%d%H%M%S')"
+
+        ssh-keyscan "${sshhost:?}" >> "${HOME}/.ssh/known_hosts"
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            "${sshuser:?}@${sshhost:?}:zeppelin/notebook/" \
+            "/home/fedora/zeppelin/notebook"
+        '
+
+    >   ....
+    >   Number of files: 712 (reg: 490, dir: 222)
+    >   Number of created files: 712 (reg: 490, dir: 222)
+    >   Number of deleted files: 0
+    >   Number of regular files transferred: 490
+    >   ....
+
+
+# -----------------------------------------------------
+# re-start Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+    >   # data.aglais.uk:22 SSH-2.0-OpenSSH_8.0
+
+
+# -----------------------------------------------------
+# Get the IP address from the ssh config file.
+# TODO Store this somewhere sensible.
+#[root@ansibler]
+
+    ipaddress=$(
+
+        sed -n '
+            /^Host zeppelin/,/^Host/ {
+                /HostName/ {
+                    s/^[[:space:]]*HostName[[:space:]]\(.*\)/\1/ p
+                    }
+                }
+            ' ~/.ssh/config
+
+        )
+
+    echo "ipaddress [${ipaddress}]"
+
+    >   ipaddress [128.232.222.27]
+
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    testusername=$(
+        pwgen 8 1
+        )
+
+    createusermain \
+        "${testusername}" \
+    | tee "/tmp/${testusername}.json" | jq '.'
+
+    testuserpass=$(
+        jq -r '.shirouser.pass' "/tmp/${testusername}.json"
+        )
+
+    >   {
+    >     "linuxuser": {
+    >       "name": "opeiYo5W",
+    >       "type": "test",
+    >       "home": "/home/opeiYo5W",
+    >       "uid": 20001
+    >     },
+    >     "shirouser": {
+    >       "name": "opeiYo5W",
+    >       "type": "test",
+    >       "pass": "Biequieta5Yi1eeJ7xeevah3ahMeib",
+    >       "hash": "$shiro1$SHA-256$500000$DA8qPkRFzraoOQcpRlBHZA==$4Huq//Z40LX1Y1asFuLbDGoN4eygONNGgEJTTptwBAk="
+    >     },
+    >     "hdfsspace": {
+    >       "path": "/albert/opeiYo5W",
+    >       "owner": "opeiYo5W",
+    >       "group": "supergroup"
+    >     },
+    >     "notebooks": [
+    >       ....
+    >       ....
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Login to Zeppelin as the test user.
+#[root@ansibler]
+
+    zeppelinhost=${ipaddress}
+    zeppelinport=8080
+    zeppelinurl=http://${zeppelinhost:?}:${zeppelinport:?}
+
+    source '/deployments/zeppelin/bin/zeppelin-rest-tools.sh'
+
+    zeplogin "${testusername:?}" "${testuserpass:?}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "opeiYo5W",
+    >       "ticket": "b08a776e-340c-4992-bc28-f446cc5cf936",
+    >       "roles": "[\"user\"]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# List the user's notebooks
+#[root@ansibler]
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq "[.body[] | select(.path | startswith(\"/Users/${testusername:?}\"))]"
+
+    >   [
+    >     {
+    >       "id": "2H69YEJ7N",
+    >       "path": "/Users/opeiYo5W/1. Start here"
+    >     },
+    >     {
+    >       "id": "2H445RHFX",
+    >       "path": "/Users/opeiYo5W/2. Data holdings"
+    >     },
+    >     {
+    >       "id": "2H54RAXEB",
+    >       "path": "/Users/opeiYo5W/3. Source counts over the sky"
+    >     },
+    >     {
+    >       "id": "2H5DZP5PC",
+    >       "path": "/Users/opeiYo5W/4. Mean proper motions over the sky"
+    >     },
+    >     {
+    >       "id": "2H6RBHSXY",
+    >       "path": "/Users/opeiYo5W/5. Working with Gaia XP spectra"
+    >     },
+    >     {
+    >       "id": "2H6XRTV18",
+    >       "path": "/Users/opeiYo5W/6. Working with cross-matched surveys"
+    >     },
+    >     {
+    >       "id": "2H69543VJ",
+    >       "path": "/Users/opeiYo5W/7. Good astrometric solutions via ML Random Forrest classifier"
+    >     },
+    >     {
+    >       "id": "2H5HZM4DD",
+    >       "path": "/Users/opeiYo5W/8. Tips and tricks"
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Run all the user's notebooks.
+#[root@ansibler]
+
+    source '/deployments/zeppelin/bin/zeppelin-rest-tools.sh'
+
+    testall "${testusername}" "${testuserpass}" \
+    | tee "/tmp/testall-${testusername}.json"
+
+    jq '
+        .notebooks[].execute.paragraphs[] | {title: .title, result: .execute.body.code}
+        ' \
+        "/tmp/testall-${testusername}.json"
+
+    >   {
+    >     "title": "Introduction",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Familiarisation",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Zeppelin notebooks",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "PySpark SQL",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Example code from previous cell",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Spark aspects",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Further reading and resources",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Introduction",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Database and table details",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "N.B.",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Description and links",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Column listing for a table",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Querying the main catalogue",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Querying with cross-matched data",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Things to note",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Set the resolution level and define the query",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Plot up the results",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Further reading and resources",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Introduction",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Set HEALPix resolution",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Define a data frame by SQL query",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Mean RA proper motion plot",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Mean Dec proper motion plot",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Further reading and resources",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Tidy-up",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Introduction",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Sampling and plotting spectra TODO CHECK FOLLOWING DR3 RELEASE",
+    >     "result": "ERROR"
+    >   }
+    >   {
+    >     "title": "Introduction",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Standard platform set-up TODO",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Utility function definitions",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Define a data aggregation TODO tweak",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Collect the results and process in preparation for visualisation",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Visualise via matplotlib",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Further reading TODO add links",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Basic catalogue query selections and predicates",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Raw catalogue with selected columns",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Visualisation (colour / absolute-magnitue diagram) of the raw catalogue",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Define the training samples",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Assemble training and reserve test sets",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Train up the Random Forrest",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Check feature set for nulls",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Classify the reserved test sets",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Classification confusion matrix",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Relative importance of the selected features",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Apply the classification model and plot sample results",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Histogram of classification probability",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Sky distribution of good source sample",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Sky distribution of bad source sample",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Tidy up",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Further reading and resources",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Resetting the Spark context",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Interpreters",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Getting Python help (PySpark)",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Getting Python help (IPython)",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Dynamic input forms",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Data frame formatted table display",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Simple matplotlib example",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Plotting from multiple cells in matplotlib",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "First cell - this has the plot with the first line",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Second line",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Label axes",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Add legend",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Add title",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "Pandas and matplotlib",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+    >   {
+    >     "title": "null",
+    >     "result": "SUCCESS"
+    >   }
+
+
+    #
+    # Only one that failes, and I think we expected it to.
+    #
+
+    >   ....
+    >   {
+    >     "title": "Sampling and plotting spectra TODO CHECK FOLLOWING DR3 RELEASE",
+    >     "result": "ERROR"
+    >   }
+    >   ....
+
+

@@ -1,0 +1,646 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Try to find out more about the limits on concurrent users.
+        Started with a clean deployment 20220605-01-blue-deploy.txt
+
+    Result:
+
+        Work in progress ..
+
+
+# -----------------------------------------------------
+# Create some test users.
+# TODO Move the create-user-tools to ansible/client/bin.
+# TODO Add ansible/client/bin to the client PATH.
+#[root@ansibler]
+
+    #
+    # Only create a small set to see if that reduces problems with too many notebooks.
+    #
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    testnames02=(
+        Hamar
+        Carclop
+        Halda
+        Jaden
+        Mavaca
+        Franilley
+        Masonania
+        Webbbron
+        Granwaler
+        )
+
+    createarrayusers \
+        "${testnames02[@]}" \
+    | tee /tmp/testusers-02.json \
+    | jq '[ .users[] | {"name": .shirouser.name, "pass": .shirouser.pass} ]'
+
+    >   [
+    >     {
+    >       "name": "Hamar",
+    >       "pass": "TieshukeduM8iij2dujeed5viuKoov"
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "name": "Granwaler",
+    >       "pass": "Keik0oiph9moh4Aedahphee7bou2ji"
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Create our benchmark script.
+# TODO Create run-benchmark.py in ansible/client/bin.
+# Learning Python:
+#   Command line args
+#   https://realpython.com/python-command-line-arguments/
+#   String.format()
+#   https://docs.python.org/3/library/string.html#formatstrings
+#   Escape {} in format()
+#   https://stackoverflow.com/a/5466478
+#[root@ansibler]
+
+    cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print(
+"""
+{{
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\"
+    }}
+}}
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount
+        )
+    )
+
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint
+    ).run(
+        concurrent=True,
+        users=usercount
+        )
+
+EOF
+
+    chmod 'a+x' /tmp/run-benchmark.py
+
+
+# -----------------------------------------------------
+# Run a quick test with one user.
+#[root@ansibler]
+
+    mkdir /tmp/results
+
+    endpoint="http://zeppelin:8080"
+
+    testconfig=/deployments/zeppelin/test/config/quick.json
+
+    testusers=/tmp/testusers-02.json
+    testname=single-user-01
+    usercount=1
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}"  \
+        "${testconfig:?}"  \
+        "${testusers:?}" \
+        "${usercount:?}" \
+    | tee "/tmp/results/${testname:?}.txt"
+
+    >   Test started [Multi User]
+    >   b'Create notebook: 2H58E738R\n'
+    >   b'Create notebook: 2H7NGHV9Q\n'
+    >   b'Create notebook: 2H7SKTKDR\n'
+    >   b'Create notebook: 2H6FTDJU8\n'
+    >   Test completed! (117.60 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   [{'GaiaDMPSetup': { .... }}]
+
+
+    sed "
+        0,/^----/ d
+        s/\"/#/g
+        s/'\(-\{0,1\}[0-9.]\{1,\}\)'/\1/g
+        s/:[[:space:]]*\([a-zA-Z]\{1,\}\)\([,}]\)/:'\1'\2/g
+        s/:[[:space:]]*\([,}]\),/: ''\1/g
+        s/'/\"/g
+        " \
+        "/tmp/results/${testname:?}.txt" \
+    | tee "/tmp/results/${testname:?}.json" \
+    | jq '
+        .[] | keys as $x | [ $x[] as $y | {name: $y, value: .[$y].result, time: .[$y].time.elapsed } ]
+        '
+
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 37.52
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.53
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 52.57
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 17.98
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Add a function to filter our results.
+#[root@ansibler]
+
+    filter-results()
+        {
+        local testname=${1:?'testname required'}
+        sed "
+            0,/^----/ d
+            s/\"/#/g
+            s/'\(-\{0,1\}[0-9.]\{1,\}\)'/\1/g
+            s/:[[:space:]]*\([a-zA-Z]\{1,\}\)\([,}]\)/:'\1'\2/g
+            s/:[[:space:]]*\([,}]\),/: ''\1/g
+            s/'/\"/g
+            " \
+            "/tmp/results/${testname:?}.txt" \
+        | tee "/tmp/results/${testname:?}.json" \
+        | jq '
+            .[] | keys as $x | [ $x[] as $y | {name: $y, value: .[$y].result, time: .[$y].time.elapsed } ]
+            '
+        }
+
+# -----------------------------------------------------
+# Step up to 4 users run 4 times.
+#[root@ansibler]
+
+    loopcount=4
+    usercount=4
+
+    for i in $(seq 0 $((loopcount - 1)))
+    do
+        echo ""
+        echo "-------------"
+        echo "Loop [${i}]"
+        testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+        echo "Name [${testname}]"
+
+        /tmp/run-benchmark.py \
+            "${endpoint:?}" \
+            "${testconfig:?}" \
+            "${testusers:?}" \
+            "${usercount:?}" \
+        | tee "/tmp/results/${testname:?}.txt"
+
+        filter-results "${testname:?}"
+    done
+
+
+    >   -------------
+    >   Loop [3]
+    >   Name [multi-user-04-03]
+    >   
+    >   {
+    >   "config": {
+    >       "endpoint":   "http://zeppelin:8080",
+    >       "testconfig": "/deployments/zeppelin/test/config/quick.json",
+    >       "userlist":   "/tmp/testusers-02.json",
+    >       "usercount":  "4"
+    >       }
+    >   }
+    >   
+    >   /tmp/testusers-02.json
+    >   Test started [Multi User]
+    >   b'Create notebook: 2H7GQG7V2\n'
+    >   b'Create notebook: 2H66KYKND\n'
+    >   b'Create notebook: 2H59W8Q1X\n'
+    >   b'Create notebook: 2H7CZHEXV\n'
+    >   b'Create notebook: 2H5WHXUU2\n'
+    >   b'Create notebook: 2H4K3W85M\n'
+    >   b'Create notebook: 2H7S46HA2\n'
+    >   b'Create notebook: 2H79NJ6VA\n'
+    >   b'Create notebook: 2H72AEZ7R\n'
+    >   b'Create notebook: 2H741XUWP\n'
+    >   b'Create notebook: 2H6RU7Z9J\n'
+    >   b'Create notebook: 2H5W28DC8\n'
+    >   b'Create notebook: 2H7HXT4H7\n'
+    >   b'Create notebook: 2H4X3N7HH\n'
+    >   b'Create notebook: 2H5FNWPZY\n'
+    >   b'Create notebook: 2H5D6RZHR\n'
+    >   Test completed! (59.21 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   [{'GaiaDMPSetup': { .... }}]
+
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 3.70
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 31.35
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Step up to 4 users run 8 times.
+#[root@ansibler]
+
+    loopcount=8
+    usercount=4
+
+    for i in $(seq 0 $((loopcount - 1)))
+    do
+        echo ""
+        echo "-------------"
+        echo "Loop [${i}]"
+        testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+        echo "Name [${testname}]"
+
+        /tmp/run-benchmark.py \
+            "${endpoint:?}" \
+            "${testconfig:?}" \
+            "${testusers:?}" \
+            "${usercount:?}" \
+        | tee "/tmp/results/${testname:?}.txt"
+
+        filter-results "${testname:?}"
+    done
+
+
+    >   ....
+    >   ....
+    >   -------------
+    >   Loop [7]
+    >   Name [multi-user-04-07]
+    >   
+    >   {
+    >   "config": {
+    >       "endpoint":   "http://zeppelin:8080",
+    >       "testconfig": "/deployments/zeppelin/test/config/quick.json",
+    >       "userlist":   "/tmp/testusers-02.json",
+    >       "usercount":  "4"
+    >       }
+    >   }
+    >   
+    >   /tmp/testusers-02.json
+    >   Test started [Multi User]
+    >   b'Create notebook: 2H6RAKEXJ\n'
+    >   b'Create notebook: 2H4Y746VQ\n'
+    >   b'Create notebook: 2H659RJFZ\n'
+    >   b'Create notebook: 2H4FXKAF9\n'
+    >   b'Create notebook: 2H7V2WFV1\n'
+    >   b'Create notebook: 2H4HM8V81\n'
+    >   b'Create notebook: 2H6945DZW\n'
+    >   b'Create notebook: 2H5KYXT6H\n'
+    >   b'Create notebook: 2H3VKBC5C\n'
+    >   b'Create notebook: 2H7Q6XTDY\n'
+    >   b'Create notebook: 2H658Z5CB\n'
+    >   b'Create notebook: 2H3X85YM8\n'
+    >   b'Create notebook: 2H661MM95\n'
+    >   b'Create notebook: 2H6DWSQK4\n'
+    >   b'Create notebook: 2H6VQ7D83\n'
+    >   b'Create notebook: 2H7UWX4M9\n'
+    >   Test completed! (62.27 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   [{'GaiaDMPSetup': { .... }}]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 3.93
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 20.11
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Step up to 4 users run 16 times.
+#[root@ansibler]
+
+    loopcount=16
+    usercount=4
+
+    for i in $(seq 0 $((loopcount - 1)))
+    do
+        echo ""
+        echo "-------------"
+        echo "Loop [${i}]"
+        testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+        echo "Name [${testname}]"
+
+        /tmp/run-benchmark.py \
+            "${endpoint:?}" \
+            "${testconfig:?}" \
+            "${testusers:?}" \
+            "${usercount:?}" \
+        | tee "/tmp/results/${testname:?}.txt"
+
+        filter-results "${testname:?}"
+    done
+
+    #
+    # Starting to see failures with notebooks access.
+    # 4 users means only 4 Spark contexts, so only 4 Hadoop applications.
+    #
+
+    >   -------------
+    >   Loop [0]
+    >   Name [multi-user-04-00]
+    >   ....
+    >   Test completed! (70.05 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [1]
+    >   Name [multi-user-04-01]
+    >   ....
+    >   Test completed! (60.42 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [2]
+    >   Name [multi-user-04-02]
+    >   ....
+    >   Test completed! (59.80 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [3]
+    >   Name [multi-user-04-03]
+    >   ....
+    >   Test completed! (60.88 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [4]
+    >   Name [multi-user-04-04]
+    >   ....
+    >   Test completed! (58.60 seconds)
+    >   ------------ Test Result: [FAIL] ------------
+    >   ....
+    >   -------------
+    >   Loop [5]
+    >   Name [multi-user-04-05]
+    >   ....
+    >   Test completed! (63.50 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [6]
+    >   Name [multi-user-04-06]
+    >   ....
+    >   Test completed! (62.36 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [7]
+    >   Name [multi-user-04-07]
+    >   ....
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [8]
+    >   Name [multi-user-04-08]
+    >   ....
+    >   Test completed! (60.83 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [9]
+    >   Name [multi-user-04-09]
+    >   ....
+    >   Test completed! (60.60 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [10]
+    >   Name [multi-user-04-10]
+    >   ....
+    >   Test completed! (59.41 seconds)
+    >   ------------ Test Result: [FAIL] ------------
+    >   ....
+    >   -------------
+    >   Loop [11]
+    >   Name [multi-user-04-11]
+    >   ....
+    >   Test completed! (61.45 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [12]
+    >   Name [multi-user-04-12]
+    >   ....
+    >   Test completed! (62.53 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   ....
+    >   -------------
+    >   Loop [13]
+    >   Name [multi-user-04-13]
+    >   ....
+    >   Test completed! (59.47 seconds)
+    >   ------------ Test Result: [FAIL] ------------
+    >   ....
+    >   -------------
+    >   Loop [14]
+    >   Name [multi-user-04-14]
+    >   ....
+    >   Test completed! (51.11 seconds)
+    >   ------------ Test Result: [FAIL] ------------
+    >   ....
+    >   -------------
+    >   Loop [15]
+    >   Name [multi-user-04-15]
+    >   ....
+    >   Test completed! (50.79 seconds)
+    >   ------------ Test Result: [FAIL] ------------
+    >   ....
+
+
+    grep 'Result:' /tmp/results/multi-user-04-*.txt
+
+    >   /tmp/results/multi-user-04-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-02.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-03.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-04.txt:------------ Test Result: [FAIL] ------------
+    >   /tmp/results/multi-user-04-05.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-06.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-07.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-08.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-09.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-10.txt:------------ Test Result: [FAIL] ------------
+    >   /tmp/results/multi-user-04-11.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-12.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-13.txt:------------ Test Result: [FAIL] ------------
+    >   /tmp/results/multi-user-04-14.txt:------------ Test Result: [FAIL] ------------
+    >   /tmp/results/multi-user-04-15.txt:------------ Test Result: [FAIL] ------------
+
+
+# -----------------------------------------------------
+# Step up to 4 users run 32 times.
+#[root@ansibler]
+
+    loopcount=32
+    usercount=4
+
+    for i in $(seq 0 $((loopcount - 1)))
+    do
+        echo ""
+        echo "-------------"
+        echo "Loop [${i}]"
+        testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+        echo "Name [${testname}]"
+
+        /tmp/run-benchmark.py \
+            "${endpoint:?}" \
+            "${testconfig:?}" \
+            "${testusers:?}" \
+            "${usercount:?}" \
+        | tee "/tmp/results/${testname:?}.txt"
+
+        filter-results "${testname:?}"
+    done
+
+    #
+    # Notebook managment failures.
+    #
+
+    >   ....
+    >    INFO [2022-06-06 02:07:45,640] ({qtp686466458-32159} NotebookRestApi.java[initParagraph]:1105) - Init Paragraph for user Carclop
+    >    INFO [2022-06-06 02:07:45,640] ({qtp686466458-32159} NotebookRestApi.java[configureParagraph]:1116) - Configure Paragraph for user Carclop
+    >   ERROR [2022-06-06 02:07:46,537] ({LuceneSearch7} NoteEventAsyncListener.java[run]:128) - Fail to handle NoteEvent
+    >   org.apache.lucene.store.AlreadyClosedException: refusing to delete any files: this IndexWriter hit an unrecoverable exception
+    >       at org.apache.lucene.index.IndexFileDeleter.ensureOpen(IndexFileDeleter.java:349)
+    >       at org.apache.lucene.index.IndexFileDeleter.deleteFiles(IndexFileDeleter.java:669)
+    >       at org.apache.lucene.index.IndexFileDeleter.decRef(IndexFileDeleter.java:589)
+    >       at org.apache.lucene.index.IndexFileDeleter.checkpoint(IndexFileDeleter.java:531)
+    >       at org.apache.lucene.index.IndexWriter.checkpoint(IndexWriter.java:2717)
+    >       at org.apache.lucene.index.IndexWriter.publishFlushedSegment(IndexWriter.java:2795)
+    >       at org.apache.lucene.index.IndexWriter.lambda$publishFlushedSegments$22(IndexWriter.java:5385)
+    >       at org.apache.lucene.index.DocumentsWriterFlushQueue.innerPurge(DocumentsWriterFlushQueue.java:119)
+    >       at org.apache.lucene.index.DocumentsWriterFlushQueue.tryPurge(DocumentsWriterFlushQueue.java:150)
+    >       at org.apache.lucene.index.DocumentsWriter.purgeFlushTickets(DocumentsWriter.java:191)
+    >       at org.apache.lucene.index.IndexWriter.publishFlushedSegments(IndexWriter.java:5365)
+    >       at org.apache.lucene.index.IndexWriter.access$300(IndexWriter.java:219)
+    >       at org.apache.lucene.index.IndexWriter$1.afterSegmentsFlushed(IndexWriter.java:446)
+    >       at org.apache.lucene.index.DocumentsWriter.doFlush(DocumentsWriter.java:525)
+    >       at org.apache.lucene.index.DocumentsWriter.flushAllThreads(DocumentsWriter.java:660)
+    >       at org.apache.lucene.index.IndexWriter.prepareCommitInternal(IndexWriter.java:3365)
+    >       at org.apache.lucene.index.IndexWriter.commitInternal(IndexWriter.java:3771)
+    >       at org.apache.lucene.index.IndexWriter.commit(IndexWriter.java:3729)
+    >       at org.apache.zeppelin.search.LuceneSearch.updateDoc(LuceneSearch.java:241)
+    >       at org.apache.zeppelin.search.LuceneSearch.addIndexDocAsync(LuceneSearch.java:326)
+    >       at org.apache.zeppelin.search.LuceneSearch.addNoteIndex(LuceneSearch.java:305)
+    >       at org.apache.zeppelin.search.SearchService.handleNoteCreateEvent(SearchService.java:108)
+    >       at org.apache.zeppelin.notebook.NoteEventAsyncListener$EventHandling.run(NoteEventAsyncListener.java:113)
+    >       at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    >       at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    >       at java.lang.Thread.run(Thread.java:748)
+    >   Caused by: java.lang.OutOfMemoryError: GC overhead limit exceeded
+    >   ERROR [2022-06-06 02:07:46,539] ({LuceneSearch7} NoteEventAsyncListener.java[run]:128) - Fail to handle NoteEvent
+    >   org.apache.lucene.store.AlreadyClosedException: this IndexWriter is closed
+    >       at org.apache.lucene.index.IndexWriter.ensureOpen(IndexWriter.java:877)
+    >       at org.apache.lucene.index.IndexWriter.ensureOpen(IndexWriter.java:891)
+    >       at org.apache.lucene.index.IndexWriter.updateDocuments(IndexWriter.java:1468)
+    >       at org.apache.lucene.index.IndexWriter.updateDocument(IndexWriter.java:1757)
+    >       at org.apache.zeppelin.search.LuceneSearch.updateDoc(LuceneSearch.java:240)
+    >       at org.apache.zeppelin.search.LuceneSearch.addParagraphIndex(LuceneSearch.java:314)
+    >       at org.apache.zeppelin.search.SearchService.handleParagraphCreateEvent(SearchService.java:123)
+    >       at org.apache.zeppelin.notebook.NoteEventAsyncListener$EventHandling.run(NoteEventAsyncListener.java:119)
+    >       at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    >       at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    >       at java.lang.Thread.run(Thread.java:748)
+    >   Caused by: java.lang.OutOfMemoryError: GC overhead limit exceeded
+    >   ....
+
+    #
+    # Zeppelin UI fails too ..
+    #
+
+    >   ....
+    >   HTTP ERROR 500 java.lang.OutOfMemoryError: GC overhead limit exceeded
+    >   ....
+
+    #
+    # Everything locks up and the test fails ...
+    #
+    # 4 users lots of times creates lots of notebooks.
+    # Notebook management tools in Zeppelin fail with memory errors.
+    #
+

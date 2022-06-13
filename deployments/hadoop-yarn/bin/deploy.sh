@@ -1,13 +1,30 @@
 #!/bin/bash
-
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
 
 # -----------------------------------------------------
 # Delete everything.
 #[root@ansibler]
 
-    time \
-        /deployments/openstack/bin/delete-all.sh \
-            "${cloudname:?}"
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
 
 
 # -----------------------------------------------------
@@ -15,22 +32,20 @@
 # (*) apart from the user database.
 #[root@ansibler]
 
-    time \
-        /deployments/hadoop-yarn/bin/create-all.sh \
-            "${cloudname:?}" \
-            "${configname:?}" \
-        | tee /tmp/create-all.log
+    /deployments/hadoop-yarn/bin/create-all.sh \
+        "${cloudname:?}" \
+        "${configname:?}" \
+    | tee /tmp/create-all.log
 
 
 # -----------------------------------------------------
 # Create our shiro-auth database.
 #[root@ansibler]
 
-    time \
-        /deployments/hadoop-yarn/bin/create-auth-database.sh \
-            "${cloudname:?}" \
-            "${configname:?}" \
-        | tee /tmp/create-auth-database.log
+    /deployments/hadoop-yarn/bin/create-auth-database.sh \
+        "${cloudname:?}" \
+        "${configname:?}" \
+    | tee /tmp/create-auth-database.log
 
 
 # -----------------------------------------------------

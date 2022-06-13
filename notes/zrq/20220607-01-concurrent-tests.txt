@@ -1,0 +1,241 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Try to find out more about the limits on concurrent users.
+        Following on from the broken deployment 20220605-02-concurrent-tests.txt
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Client container is no longer running on laptop
+#[user@laptop]
+
+    podman ps -a
+
+    >   CONTAINER ID  IMAGE       COMMAND     CREATED     STATUS      PORTS       NAMES
+
+
+# -----------------------------------------------------
+# STart a new client container
+#[user@laptop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Re-create our ansible-vars file.
+# Copied from hadoop-yarn/bin/create-all.sh
+#[root@ansibler]
+
+    configyml=/tmp/ansible-vars.yml
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-blue'
+    configname=zeppelin-54.86-spark-6.26.43
+
+    deployconf=${configname:?}
+    deployname=${cloudname:?}-20220605
+    deploydate=20220605T000000
+
+    touch "${configyml:?}"
+
+    yq eval \
+        --inplace \
+        ".aglais.status.deployment.type = \"hadoop-yarn\"" \
+        "${configyml:?}"
+
+    yq eval \
+        --inplace \
+        ".aglais.status.deployment.conf = \"${deployconf}\"" \
+        "${configyml:?}"
+
+    yq eval \
+        --inplace \
+        ".aglais.status.deployment.name = \"${deployname}\"" \
+        "${configyml:?}"
+
+    yq eval \
+        --inplace \
+        ".aglais.status.deployment.date = \"${deploydate}\"" \
+        "${configyml:?}"
+
+    yq eval \
+        --inplace \
+        ".aglais.spec.openstack.cloud.base = \"${cloudbase}\"" \
+        "${configyml:?}"
+
+    yq eval \
+        --inplace \
+        ".aglais.spec.openstack.cloud.name = \"${cloudname}\"" \
+        "${configyml:?}"
+
+
+    cat "${configyml:?}"
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-blue-20220605
+    >         date: 20220605T000000
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-blue
+
+# -----------------------------------------------------
+# Run the ssh configuration step.
+#[root@ansibler]
+
+    inventory="/deployments/hadoop-yarn/ansible/config/${deployconf:?}.yml"
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "${inventory:?}" \
+            "05-config-ssh.yml"
+
+    popd
+
+
+# -----------------------------------------------------
+# Get the IP address for the Zeppelin node from the ssh config file.
+# TODO Save the IP address during the deployment process.
+#[root@ansibler]
+
+    ipaddress=$(
+        sed -n '
+            /^Host zeppelin/,/^Host/ {
+                /HostName/ {
+                    s/^[[:space:]]*HostName[[:space:]]\(.*\)/\1/ p
+                    }
+                }
+            ' ~/.ssh/config
+        )
+
+
+# -----------------------------------------------------
+# Add the Zeppelin IP address to our hosts file.
+# TODO Add this to the Ansible deployment.
+#[root@ansibler]
+
+cat >> /etc/hosts << EOF
+# Zeppelin
+${ipaddress}    zeppelin
+EOF
+
+
+# -----------------------------------------------------
+# Check we can ssh into the Zeppelin node.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        hostname
+        date
+        '
+
+    >   iris-gaia-blue-20220605-zeppelin
+    >   Tue Jun  7 10:37:47 UTC 2022
+
+
+# -----------------------------------------------------
+# Check we can access the Zeppelin webapp.
+#[root@ansibler]
+
+    endpoint="http://zeppelin:8080"
+
+    curl --head "${endpoint:?}"
+
+        #
+        # Timeout - I'm guessing Zeppelin is still locked up ?
+        #
+
+# -----------------------------------------------------
+# Re-start the Zeppelin service.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        hostname
+        date
+        zeppelin-daemon.sh restart
+        '
+
+    >   iris-gaia-blue-20220605-zeppelin
+    >   Tue Jun  7 10:45:46 UTC 2022
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Try again ....
+#[root@ansibler]
+
+    curl --head "${endpoint:?}"
+
+    >   HTTP/1.1 200 OK
+    >   Date: Tue, 07 Jun 2022 10:46:31 GMT
+    >   ....
+    >   ....
+
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+    Next steps
+    count the notebooks
+    delete all the notebooks
+    increase the available memory
+    re-create the test and see if this kicks the can
+
+
+

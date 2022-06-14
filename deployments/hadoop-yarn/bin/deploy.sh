@@ -127,12 +127,12 @@ ${ipaddress}    zeppelin
 EOF
 
 # -----------------------------------------------------
-# Configure out client container.
+# Configure our client container.
 #[root@ansibler]
 
     dnf install -y git
 
-    pip install git+https://github.com/wfau/aglais-testing@v0.2.2
+    pip install git+https://github.com/wfau/aglais-testing@v0.2.3
 
 
 

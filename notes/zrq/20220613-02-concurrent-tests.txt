@@ -1,0 +1,1919 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Try to find out more about the limits on concurrent users.
+        Following on from the broken deployment 20220613-01-blue-deploy.txt
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Create some test users.
+# TODO Move the create-user-tools to ansible/client/bin.
+# TODO Add ansible/client/bin to the client PATH.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    testnames02=(
+        Hamar
+        Carclop
+        Halda
+        Jaden
+        Mavaca
+        Franilley
+        Masonania
+        Webbbron
+        Granwaler
+        )
+
+    createarrayusers \
+        "${testnames02[@]}" \
+    | tee /tmp/testusers-02.json \
+    | jq '[ .users[] | {"name": .shirouser.name, "pass": .shirouser.pass} ]'
+
+    >   [
+    >     {
+    >       "name": "Hamar",
+    >       "pass": "bu2hohmohthiesuNg1deiy5IeshaeD"
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "name": "Granwaler",
+    >       "pass": "Su1ie7akaethae6eic0ien5wiChaeC"
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Create our benchmark script.
+# TODO Create run-benchmark.py in ansible/client/bin.
+# Learning Python:
+#   Command line args
+#   https://realpython.com/python-command-line-arguments/
+#   String.format()
+#   https://docs.python.org/3/library/string.html#formatstrings
+#   Escape {} in format()
+#   https://stackoverflow.com/a/5466478
+#[root@ansibler]
+
+    cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print(
+"""
+{{
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }}
+}}
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+
+EOF
+
+    chmod 'a+x' /tmp/run-benchmark.py
+
+
+# -----------------------------------------------------
+# Add a function to filter our results.
+#[root@ansibler]
+
+    filter-results()
+        {
+        local testname=${1:?'testname required'}
+        sed "
+            0,/^----/ d
+            s/\"/#/g
+            s/'\(-\{0,1\}[0-9.]\{1,\}\)'/\1/g
+            s/:[[:space:]]*\([a-zA-Z]\{1,\}\)\([,}]\)/:'\1'\2/g
+            s/:[[:space:]]*\([,}]\),/: ''\1/g
+            s/'/\"/g
+            " \
+            "/tmp/results/${testname:?}.txt" \
+        | tee "/tmp/results/${testname:?}.json" \
+        | jq '
+            .[] | keys as $x | [ $x[] as $y | {name: $y, value: .[$y].result, time: .[$y].time.elapsed , start: .[$y].time.start, finish: .[$y].time.finish } ]
+            '
+        }
+
+
+# -----------------------------------------------------
+# Run a quick test with one user, one second start delay and one second between.
+#[root@ansibler]
+
+    mkdir /tmp/results
+
+    endpoint="http://zeppelin:8080"
+
+    testconfig=/deployments/zeppelin/test/config/quick.json
+
+    testusers=/tmp/testusers-02.json
+    testname=single-user-01
+    usercount=1
+
+    delaystart=1
+    delaynotebook=1
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}"  \
+        "${testconfig:?}"  \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" \
+    | tee "/tmp/results/${testname:?}.txt"
+
+    filter-results "${testname:?}"
+
+    >   Test started [Multi User]
+    >   Test completed! (125.28 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   [{'GaiaDMPSetup': { .... }}]
+
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 37.51,
+    >       "start": "2022-06-13T12:35:15.419507",
+    >       "finish": "2022-06-13T12:35:52.934486"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.87,
+    >       "start": "2022-06-13T12:37:09.804486",
+    >       "finish": "2022-06-13T12:37:19.672728"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 55.74,
+    >       "start": "2022-06-13T12:35:53.935352",
+    >       "finish": "2022-06-13T12:36:49.678480"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 18.12,
+    >       "start": "2022-06-13T12:36:50.679349",
+    >       "finish": "2022-06-13T12:37:08.803166"
+    >     }
+    >   ]
+
+    #
+    # Looks like the 1 seconbd between delay is working.
+    # Although the results are not listed in chronological order.
+    # Library_Validation is listed as second, when it is actually run last.
+    #
+
+    #
+    # Re-ordering into the correct the sequence shows a 1 second delay between a notebook "finish" and the next "start".
+    #
+
+    >   "start":  "2022-06-13T12:35:15.419507",
+    >   "finish": "2022-06-13T12:35:52.934486"
+
+    >   "start":  "2022-06-13T12:35:53.935352",
+    >   "finish": "2022-06-13T12:36:49.678480"
+
+    >   "start":  "2022-06-13T12:36:50.679349",
+    >   "finish": "2022-06-13T12:37:08.803166"
+
+    >   "start":  "2022-06-13T12:37:09.804486",
+    >   "finish": "2022-06-13T12:37:19.672728"
+
+
+
+# -----------------------------------------------------
+# Step up to 4 users run 4 times.
+# One second start delay and one second between.
+#[root@ansibler]
+
+    loopcount=4
+    usercount=4
+
+    for i in $(seq 0 $((loopcount - 1)))
+    do
+        echo ""
+        echo "-------------"
+        echo "Loop [${i}]"
+        testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+        echo "Name [${testname}]"
+
+        /tmp/run-benchmark.py \
+            "${endpoint:?}" \
+            "${testconfig:?}" \
+            "${testusers:?}" \
+            "${usercount:?}" \
+            "${delaystart:?}" \
+            "${delaynotebook:?}" \
+        | tee "/tmp/results/${testname:?}.txt"
+
+        filter-results "${testname:?}"
+    done
+
+    >   -------------
+    >   Loop [0]
+    >   Name [multi-user-04-00]
+    >
+    >   {
+    >   "config": {
+    >       "endpoint":   "http://zeppelin:8080",
+    >       "testconfig": "/deployments/zeppelin/test/config/quick.json",
+    >       "userlist":   "/tmp/testusers-02.json",
+    >       "usercount":  "4",
+    >       "delaystart":  "1",
+    >       "delaynotebook":  "1"
+    >       }
+    >   }
+    >
+    >   Test started [Multi User]
+    >   Test completed! (243.42 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   [{'GaiaDMPSetup': { .... }}]
+
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 37.13,
+    >       "start": "2022-06-13T12:43:40.946927",
+    >       "finish": "2022-06-13T12:44:18.077720"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.82,
+    >       "start": "2022-06-13T12:45:35.325620",
+    >       "finish": "2022-06-13T12:45:45.146706"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 59.41,
+    >       "start": "2022-06-13T12:44:19.078346",
+    >       "finish": "2022-06-13T12:45:18.488553"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 14.83,
+    >       "start": "2022-06-13T12:45:19.489466",
+    >       "finish": "2022-06-13T12:45:34.323733"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 47.44,
+    >       "start": "2022-06-13T12:43:41.947520",
+    >       "finish": "2022-06-13T12:44:29.383222"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.77,
+    >       "start": "2022-06-13T12:45:46.100340",
+    >       "finish": "2022-06-13T12:45:55.872691"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 57.97,
+    >       "start": "2022-06-13T12:44:30.384355",
+    >       "finish": "2022-06-13T12:45:28.358789"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 15.74,
+    >       "start": "2022-06-13T12:45:29.360581",
+    >       "finish": "2022-06-13T12:45:45.098585"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 133.11,
+    >       "start": "2022-06-13T12:43:42.948604",
+    >       "finish": "2022-06-13T12:45:56.059248"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.67,
+    >       "start": "2022-06-13T12:47:01.167521",
+    >       "finish": "2022-06-13T12:47:10.837536"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 48.55,
+    >       "start": "2022-06-13T12:45:57.060289",
+    >       "finish": "2022-06-13T12:46:45.607410"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 13.56,
+    >       "start": "2022-06-13T12:46:46.608433",
+    >       "finish": "2022-06-13T12:47:00.165693"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 133.18,
+    >       "start": "2022-06-13T12:43:43.950581",
+    >       "finish": "2022-06-13T12:45:57.127126"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.69,
+    >       "start": "2022-06-13T12:47:33.649372",
+    >       "finish": "2022-06-13T12:47:43.334442"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 68.37,
+    >       "start": "2022-06-13T12:45:58.128363",
+    >       "finish": "2022-06-13T12:47:06.493910"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 25.15,
+    >       "start": "2022-06-13T12:47:07.494554",
+    >       "finish": "2022-06-13T12:47:32.647725"
+    >     }
+    >   ]
+
+    >   -------------
+    >   Loop [1]
+    >   Name [multi-user-04-01]
+    >
+    >   {
+    >   "config": {
+    >       "endpoint":   "http://zeppelin:8080",
+    >       "testconfig": "/deployments/zeppelin/test/config/quick.json",
+    >       "userlist":   "/tmp/testusers-02.json",
+    >       "usercount":  "4",
+    >       "delaystart":  "1",
+    >       "delaynotebook":  "1"
+    >       }
+    >   }
+    >
+    >   Test started [Multi User]
+    >   Test completed! (221.44 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   [{'GaiaDMPSetup': { .... }}]
+
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 35.80,
+    >       "start": "2022-06-13T12:47:44.843521",
+    >       "finish": "2022-06-13T12:48:20.648000"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.64,
+    >       "start": "2022-06-13T12:49:13.344047",
+    >       "finish": "2022-06-13T12:49:22.987467"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 36.04,
+    >       "start": "2022-06-13T12:48:21.648338",
+    >       "finish": "2022-06-13T12:48:57.686602"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 13.65,
+    >       "start": "2022-06-13T12:48:58.688433",
+    >       "finish": "2022-06-13T12:49:12.342658"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 42.14,
+    >       "start": "2022-06-13T12:47:45.844496",
+    >       "finish": "2022-06-13T12:48:27.988714"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.64,
+    >       "start": "2022-06-13T12:49:26.028317",
+    >       "finish": "2022-06-13T12:49:35.666475"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 39.15,
+    >       "start": "2022-06-13T12:48:28.989466",
+    >       "finish": "2022-06-13T12:49:08.139868"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 15.89,
+    >       "start": "2022-06-13T12:49:09.141460",
+    >       "finish": "2022-06-13T12:49:25.027373"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 105.85,
+    >       "start": "2022-06-13T12:47:46.845395",
+    >       "finish": "2022-06-13T12:49:32.697761"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.67,
+    >       "start": "2022-06-13T12:50:34.026447",
+    >       "finish": "2022-06-13T12:50:43.701217"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 45.55,
+    >       "start": "2022-06-13T12:49:33.698321",
+    >       "finish": "2022-06-13T12:50:19.244296"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 12.78,
+    >       "start": "2022-06-13T12:50:20.245473",
+    >       "finish": "2022-06-13T12:50:33.024777"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 105.87,
+    >       "start": "2022-06-13T12:47:47.846643",
+    >       "finish": "2022-06-13T12:49:33.713476"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.80,
+    >       "start": "2022-06-13T12:51:15.445425",
+    >       "finish": "2022-06-13T12:51:25.243525"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 73.60,
+    >       "start": "2022-06-13T12:49:34.714440",
+    >       "finish": "2022-06-13T12:50:48.313410"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 25.13,
+    >       "start": "2022-06-13T12:50:49.314344",
+    >       "finish": "2022-06-13T12:51:14.443252"
+    >     }
+    >   ]
+
+    >   -------------
+    >   Loop [2]
+    >   Name [multi-user-04-02]
+    >
+    >   {
+    >   "config": {
+    >       "endpoint":   "http://zeppelin:8080",
+    >       "testconfig": "/deployments/zeppelin/test/config/quick.json",
+    >       "userlist":   "/tmp/testusers-02.json",
+    >       "usercount":  "4",
+    >       "delaystart":  "1",
+    >       "delaynotebook":  "1"
+    >       }
+    >   }
+    >
+    >   Test started [Multi User]
+    >   Test completed! (240.41 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   [{'GaiaDMPSetup': { .... }}]
+
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 36.48,
+    >       "start": "2022-06-13T12:51:26.761263",
+    >       "finish": "2022-06-13T12:52:03.237429"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.63,
+    >       "start": "2022-06-13T12:52:54.021783",
+    >       "finish": "2022-06-13T12:53:03.656093"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 33.14,
+    >       "start": "2022-06-13T12:52:04.238353",
+    >       "finish": "2022-06-13T12:52:37.381047"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 14.64,
+    >       "start": "2022-06-13T12:52:38.382663",
+    >       "finish": "2022-06-13T12:52:53.019742"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 53.55,
+    >       "start": "2022-06-13T12:51:27.761776",
+    >       "finish": "2022-06-13T12:52:21.312996"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.70,
+    >       "start": "2022-06-13T12:53:25.764458",
+    >       "finish": "2022-06-13T12:53:35.462627"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 40.28,
+    >       "start": "2022-06-13T12:52:22.313370",
+    >       "finish": "2022-06-13T12:53:02.596923"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 21.16,
+    >       "start": "2022-06-13T12:53:03.598394",
+    >       "finish": "2022-06-13T12:53:24.762894"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 108.40,
+    >       "start": "2022-06-13T12:51:28.763434",
+    >       "finish": "2022-06-13T12:53:17.166334"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.69,
+    >       "start": "2022-06-13T12:54:27.889259",
+    >       "finish": "2022-06-13T12:54:37.583376"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 55.13,
+    >       "start": "2022-06-13T12:53:18.167387",
+    >       "finish": "2022-06-13T12:54:13.298729"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 12.59,
+    >       "start": "2022-06-13T12:54:14.300348",
+    >       "finish": "2022-06-13T12:54:26.887134"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 101.92,
+    >       "start": "2022-06-13T12:51:29.764477",
+    >       "finish": "2022-06-13T12:53:11.684486"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.71,
+    >       "start": "2022-06-13T12:55:16.421569",
+    >       "finish": "2022-06-13T12:55:26.136469"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 94.50,
+    >       "start": "2022-06-13T12:53:12.685433",
+    >       "finish": "2022-06-13T12:54:47.189065"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 27.23,
+    >       "start": "2022-06-13T12:54:48.190761",
+    >       "finish": "2022-06-13T12:55:15.419630"
+    >     }
+    >   ]
+
+    >   -------------
+    >   Loop [3]
+    >   Name [multi-user-04-03]
+    >
+    >   {
+    >   "config": {
+    >       "endpoint":   "http://zeppelin:8080",
+    >       "testconfig": "/deployments/zeppelin/test/config/quick.json",
+    >       "userlist":   "/tmp/testusers-02.json",
+    >       "usercount":  "4",
+    >       "delaystart":  "1",
+    >       "delaynotebook":  "1"
+    >       }
+    >   }
+    >
+    >   Test started [Multi User]
+    >   Test completed! (240.41 seconds)
+    >   ------------ Test Result: [PASS] ------------
+    >   [{'GaiaDMPSetup': { .... }}]
+
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 36.48,
+    >       "start": "2022-06-13T12:51:26.761263",
+    >       "finish": "2022-06-13T12:52:03.237429"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.63,
+    >       "start": "2022-06-13T12:52:54.021783",
+    >       "finish": "2022-06-13T12:53:03.656093"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 33.14,
+    >       "start": "2022-06-13T12:52:04.238353",
+    >       "finish": "2022-06-13T12:52:37.381047"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 14.64,
+    >       "start": "2022-06-13T12:52:38.382663",
+    >       "finish": "2022-06-13T12:52:53.019742"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 53.55,
+    >       "start": "2022-06-13T12:51:27.761776",
+    >       "finish": "2022-06-13T12:52:21.312996"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.70,
+    >       "start": "2022-06-13T12:53:25.764458",
+    >       "finish": "2022-06-13T12:53:35.462627"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 40.28,
+    >       "start": "2022-06-13T12:52:22.313370",
+    >       "finish": "2022-06-13T12:53:02.596923"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 21.16,
+    >       "start": "2022-06-13T12:53:03.598394",
+    >       "finish": "2022-06-13T12:53:24.762894"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 108.40,
+    >       "start": "2022-06-13T12:51:28.763434",
+    >       "finish": "2022-06-13T12:53:17.166334"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.69,
+    >       "start": "2022-06-13T12:54:27.889259",
+    >       "finish": "2022-06-13T12:54:37.583376"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 55.13,
+    >       "start": "2022-06-13T12:53:18.167387",
+    >       "finish": "2022-06-13T12:54:13.298729"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 12.59,
+    >       "start": "2022-06-13T12:54:14.300348",
+    >       "finish": "2022-06-13T12:54:26.887134"
+    >     }
+    >   ]
+    >   [
+    >     {
+    >       "name": "GaiaDMPSetup",
+    >       "value": "PASS",
+    >       "time": 101.92,
+    >       "start": "2022-06-13T12:51:29.764477",
+    >       "finish": "2022-06-13T12:53:11.684486"
+    >     },
+    >     {
+    >       "name": "Library_Validation.json",
+    >       "value": "PASS",
+    >       "time": 9.71,
+    >       "start": "2022-06-13T12:55:16.421569",
+    >       "finish": "2022-06-13T12:55:26.136469"
+    >     },
+    >     {
+    >       "name": "Mean_proper_motions_over_the_sky",
+    >       "value": "PASS",
+    >       "time": 94.50,
+    >       "start": "2022-06-13T12:53:12.685433",
+    >       "finish": "2022-06-13T12:54:47.189065"
+    >     },
+    >     {
+    >       "name": "Source_counts_over_the_sky.json",
+    >       "value": "PASS",
+    >       "time": 27.23,
+    >       "start": "2022-06-13T12:54:48.190761",
+    >       "finish": "2022-06-13T12:55:15.419630"
+    >     }
+    >   ]
+
+
+    grep 'Result:' /tmp/results/multi-user-04-*.txt
+
+    >   /tmp/results/multi-user-04-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-02.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-03.txt:------------ Test Result: [PASS] ------------
+
+
+    #
+    # Checking the start times shows a 1 second delay between each user.
+    #
+
+    >   "start":  "2022-06-13T12:43:40.946927",
+    >   "finish": "2022-06-13T12:44:18.077720"
+    >
+    >   "start":  "2022-06-13T12:43:41.947520",
+    >   "finish": "2022-06-13T12:44:29.383222"
+    >
+    >   "start":  "2022-06-13T12:43:42.948604",
+    >   "finish": "2022-06-13T12:45:56.059248"
+    >
+    >   "start":  "2022-06-13T12:43:43.950581",
+    >   "finish": "2022-06-13T12:45:57.127126"
+
+    #
+    # Need to vary the delays to confirm this in more detail.
+    # At the moment, 1 second for both start and between makes it hard to separate them.
+    #
+
+
+# -----------------------------------------------------
+# Step up to 4 users run 8 times.
+#[root@ansibler]
+
+    loopcount=8
+    usercount=4
+
+    for i in $(seq 0 $((loopcount - 1)))
+    do
+        echo ""
+        echo "-------------"
+        echo "Loop [${i}]"
+        testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+        echo "Name [${testname}]"
+
+        /tmp/run-benchmark.py \
+            "${endpoint:?}" \
+            "${testconfig:?}" \
+            "${testusers:?}" \
+            "${usercount:?}" \
+            "${delaystart:?}" \
+            "${delaynotebook:?}" \
+        | tee "/tmp/results/${testname:?}.txt"
+
+        filter-results "${testname:?}"
+    done
+
+    grep 'Result:' /tmp/results/multi-user-04-*.txt
+
+    >   /tmp/results/multi-user-04-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-02.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-03.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-04.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-05.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-06.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-07.txt:------------ Test Result: [PASS] ------------
+
+
+# -----------------------------------------------------
+# Step up to 4 users run 16 times.
+#[root@ansibler]
+
+    loopcount=16
+    usercount=4
+
+    for i in $(seq 0 $((loopcount - 1)))
+    do
+        echo ""
+        echo "-------------"
+        echo "Loop [${i}]"
+        testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+        echo "Name [${testname}]"
+
+        /tmp/run-benchmark.py \
+            "${endpoint:?}" \
+            "${testconfig:?}" \
+            "${testusers:?}" \
+            "${usercount:?}" \
+            "${delaystart:?}" \
+            "${delaynotebook:?}" \
+        | tee "/tmp/results/${testname:?}.txt"
+
+        filter-results "${testname:?}"
+    done
+
+    grep 'Result:' /tmp/results/multi-user-04-*.txt
+
+    >   /tmp/results/multi-user-04-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-02.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-03.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-04.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-05.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-06.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-07.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-08.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-09.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-10.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-11.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-12.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-13.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-14.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-15.txt:------------ Test Result: [PASS] ------------
+
+
+# -----------------------------------------------------
+# Update our benchmark script.
+#[root@ansibler]
+
+    cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print(
+"""
+{{
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }},
+\"output\": {{
+---start---
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+
+print(
+"""
+---end---
+    }
+}
+"""
+    )
+EOF
+
+    chmod 'a+x' /tmp/run-benchmark.py
+
+
+# -----------------------------------------------------
+# Update our filter function.
+#[root@ansibler]
+
+    filter-results()
+        {
+        local testname=${1:?'testname required'}
+        sed "
+            /^--*start--*/,/^--*end--*/ {
+                /^--*start/,/^--* Test Result/ {
+                    /Test Result/ ! {
+                        d
+                        }
+                    /Test Result/ {
+                        s/^.*Test Result: \[\(.*\)\].*$/'testcode': '\1',/
+                        a \"threads\":
+                        }
+                    }
+                s/\"/'/g
+                s/'\(-\{0,1\}[0-9.]\{1,\}\)'/\1/g
+                s/:[[:space:]]*\([a-zA-Z]\{1,\}\)\([,}]\)/:'\1'\2/g
+                s/:[[:space:]]*\([,}]\),/: ''\1/g
+                s/'/\"/g
+                }
+            /^--*end--*/ {
+                d
+                }
+            " \
+            "/tmp/results/${testname:?}.txt" \
+        | tee "/tmp/results/${testname:?}.json" \
+        | jq  '
+              .output.threads[] | keys as $x | [ $x[] as $y | {name: $y, value: .[$y].result, time: .[$y].time.elapsed , start: .[$y].time.start, finish: .[$y].time.finish } ]
+              '
+        }
+
+    filter-results "${testname:?}"
+
+
+# -----------------------------------------------------
+# Create a test-loop function.
+#[root@ansibler]
+
+    test-loop()
+        {
+        local loopcount=${1:?'loopcount required'}
+        local usercount=${2:?'usercount required'}
+
+cat << EOF
+[
+EOF
+
+    local comma=''
+    for i in $(seq 0 $((loopcount - 1)))
+    do
+
+        testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+
+cat << EOF
+    ${comma}{
+    "iteration": ${i},
+    "testname": "${testname}",
+    "threads":
+EOF
+comma=','
+
+        /tmp/run-benchmark.py \
+            "${endpoint:?}" \
+            "${testconfig:?}" \
+            "${testusers:?}" \
+            "${usercount:?}" \
+            "${delaystart:?}" \
+            "${delaynotebook:?}" \
+        > "/tmp/results/${testname:?}.txt"
+
+        filter-results "${testname:?}"
+
+cat << EOF
+    }
+EOF
+
+    done
+
+cat << EOF
+]
+EOF
+        }
+
+
+# -----------------------------------------------------
+# Test the new function.
+#[root@ansibler]
+
+    test-loop 1 1 \
+    | tee /tmp/test-loop.json
+    | jq '.'
+
+    >   [
+    >     {
+    >       "iteration": 0,
+    >       "testname": "multi-user-01-00",
+    >       "threads": [
+    >         {
+    >           "name": "GaiaDMPSetup",
+    >           "value": "PASS",
+    >           "time": 33.70,
+    >           "start": "2022-06-13T17:35:08.001440",
+    >           "finish": "2022-06-13T17:35:41.703389"
+    >         },
+    >         {
+    >           "name": "Library_Validation.json",
+    >           "value": "PASS",
+    >           "time": 9.58,
+    >           "start": "2022-06-13T17:37:15.556330",
+    >           "finish": "2022-06-13T17:37:25.135670"
+    >         },
+    >         {
+    >           "name": "Mean_proper_motions_over_the_sky",
+    >           "value": "PASS",
+    >           "time": 75.36,
+    >           "start": "2022-06-13T17:35:42.704853",
+    >           "finish": "2022-06-13T17:36:58.061503"
+    >         },
+    >         {
+    >           "name": "Source_counts_over_the_sky.json",
+    >           "value": "PASS",
+    >           "time": 15.49,
+    >           "start": "2022-06-13T17:36:59.063435",
+    >           "finish": "2022-06-13T17:37:14.555184"
+    >         }
+    >       ]
+    >     }
+    >   ]
+
+
+    test-loop 2 2 \
+    | tee /tmp/test-loop.json
+    | jq '.'
+
+
+    #
+    # Mix of Python and Bash is complicating things.
+    # Crappy non-JSON output from the test is making things really hard.
+    # Need to jump from Python to Bash in order to run sed on the non-JSON output.
+    #
+
+    #
+    # Underneath - the test works fine for loop[0], but fails for loop[1].
+    # One user account works, one user account fails.
+    # I think the error is:
+    #   UnresolvedRelation [gaia_source]
+    #
+
+
+# -----------------------------------------------------
+# Test with 1 loop, 4 users.
+#[root@ansibler]
+
+    test-loop 1 4 \
+    | tee /tmp/test-loop.json
+
+
+    >   [
+    >       {
+    >       "iteration": 0,
+    >       "testname": "multi-user-04-00",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >   ]
+
+
+# -----------------------------------------------------
+# Test with 2 loops, 4 users.
+#[root@ansibler]
+
+    test-loop 2 4 \
+    | tee /tmp/test-loop.json
+
+
+    >   [
+    >       {
+    >       "iteration": 0,
+    >       "testname": "multi-user-04-00",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 1,
+    >       "testname": "multi-user-04-01",
+    >       "threads":
+    >   parse error: Invalid numeric literal at line 14, column 638
+    >       }
+    >   ]
+
+    #
+    # Same error ON THE SECOND PASS.
+    #
+
+    less /tmp/results/multi-user-04-01.json
+
+    >   ....
+    >   pyspark.sql.utils.AnalysisException: Table or view not found: gaia_source
+    >   ....
+
+
+# -----------------------------------------------------
+# Test with 4 loops, 4 users.
+#[root@ansibler]
+
+    test-loop 4 4 \
+    | tee /tmp/test-loop.json
+
+    >   [
+    >       {
+    >       "iteration": 0,
+    >       "testname": "multi-user-04-00",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 1,
+    >       "testname": "multi-user-04-01",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 2,
+    >       "testname": "multi-user-04-02",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 3,
+    >       "testname": "multi-user-04-03",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >   ]
+
+
+    grep 'Result:' /tmp/results/multi-user-04-*.txt
+
+    >   /tmp/results/multi-user-04-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-02.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-03.txt:------------ Test Result: [PASS] ------------
+
+
+# -----------------------------------------------------
+# Back to 2 loops, 4 users.
+#[root@ansibler]
+
+    rm -f /tmp/results/multi-user-*
+
+    test-loop 2 4 \
+    | tee /tmp/test-loop.json
+
+
+    >   [
+    >       {
+    >       "iteration": 0,
+    >       "testname": "multi-user-04-00",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 1,
+    >       "testname": "multi-user-04-01",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >   ]
+
+
+    grep 'Result:' /tmp/results/multi-user-*.txt
+
+    >   /tmp/results/multi-user-04-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-01.txt:------------ Test Result: [PASS] ------------
+
+    #
+    # So we are OK now !?
+    #
+
+
+# -----------------------------------------------------
+# Try 8 loops, 4 users.
+#[root@ansibler]
+
+    rm -f /tmp/results/multi-user-*
+
+    test-loop 8 4 \
+    | tee /tmp/test-loop.json
+
+
+    >   [
+    >       {
+    >       "iteration": 0,
+    >       "testname": "multi-user-04-00",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 1,
+    >       "testname": "multi-user-04-01",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 2,
+    >       "testname": "multi-user-04-02",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 3,
+    >       "testname": "multi-user-04-03",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 4,
+    >       "testname": "multi-user-04-04",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 5,
+    >       "testname": "multi-user-04-05",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 6,
+    >       "testname": "multi-user-04-06",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 7,
+    >       "testname": "multi-user-04-07",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >   ]
+
+
+    grep 'Result:' /tmp/results/multi-user-*.txt
+
+    >   /tmp/results/multi-user-04-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-02.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-03.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-04.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-05.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-06.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-04-07.txt:------------ Test Result: [PASS] ------------
+
+
+# -----------------------------------------------------
+# Try 32 loops, 4 users.
+#[root@ansibler]
+
+    rm -f /tmp/results/multi-user-*
+
+    test-loop 32 4 \
+    | tee /tmp/test-loop.json
+
+    >   [
+    >       {
+    >       "iteration": 0,
+    >       "testname": "multi-user-04-00",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 1,
+    >       "testname": "multi-user-04-01",
+    >       "threads":
+    >           [
+    >             {
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               "value": "PASS",
+    >               ....
+    >             }
+    >           ]
+    >       }
+    >       ,{
+    >       "iteration": 2,
+    >       "testname": "multi-user-04-02",
+    >       "threads":
+        [
+          {
+            ....
+            "value": "PASS",
+            "value": "PASS",
+            "value": "PASS",
+            "value": "PASS",
+            ....
+            "value": "PASS",
+            "value": "PASS",
+            "value": "PASS",
+            "value": "PASS",
+            ....
+            "value": "PASS",
+            "value": "PASS",
+            "value": "PASS",
+            "value": "PASS",
+            ....
+            "value": "PASS",
+            "value": "PASS",
+            "value": "PASS",
+            "value": "PASS",
+            ....
+          }
+        ]
+    }
+    ,{
+    "iteration": 3,
+    "testname": "multi-user-04-03",
+    "threads":
+
+
+

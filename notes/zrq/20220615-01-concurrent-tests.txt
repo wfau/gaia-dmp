@@ -1,0 +1,319 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Try to find out more about the limits on concurrent users.
+        Follow on from yesterda's notes 20220614-01-concurrent-tests.txt.
+
+    Result:
+
+        Work in progress ...
+
+        TODO move from quick to complex test sets
+        TODO move from 4 to 8 concurrent users
+
+# -----------------------------------------------------
+# Create our benchmark script.
+#[root@ansibler]
+
+    cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print(
+"""
+{{
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }},
+\"output\": {{
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+print(
+    "---start---"
+    )
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+print(
+    "---end---"
+    )
+print(
+"""
+    }
+}
+"""
+    )
+EOF
+
+    chmod 'a+x' /tmp/run-benchmark.py
+
+
+# -----------------------------------------------------
+# Create our filter function.
+# https://github.com/wfau/aglais/issues/602
+#[root@ansibler]
+
+    filter-results()
+        {
+        local testname=${1:?'testname required'}
+        sed "
+            /^--*start--*/,/^--*end--*/ {
+                /^--*start/,/^--* Test Result/ {
+                    /Test Result/ ! {
+                        d
+                        }
+                    /Test Result/ {
+                        s/^.*Test Result: \[\(.*\)\].*$/'testcode': '\1',/
+                        a \"threads\":
+                        }
+                    }
+                s/\"/'/g
+                s/'\(-\{0,1\}[0-9.]\{1,\}\)'/\1/g
+                s/:[[:space:]]*\([a-zA-Z]\{1,\}\)\([,}]\)/:'\1'\2/g
+                s/:[[:space:]]*\([,}]\),/: ''\1/g
+                s/'/\"/g
+                }
+            /^--*end--*/ {
+                d
+                }
+            " \
+            "/tmp/results/${testname:?}.txt" \
+        | tee "/tmp/results/${testname:?}.json" \
+        | jq  '
+              .output.threads[] | keys as $x | [ $x[] as $y | {name: $y, value: .[$y].result, time: .[$y].time.elapsed , start: .[$y].time.start, finish: .[$y].time.finish } ]
+              '
+        }
+
+
+# -----------------------------------------------------
+# Create our test-loop function.
+#[root@ansibler]
+
+    test-loop()
+        {
+        local usercount=${1:?'usercount required'}
+        local loopcount=${2:?'loopcount required'}
+        local looppause=${3:-10}
+        local delaystart=${4:-1}
+        local delaynotebook=${5:-1}
+
+        rm -f /tmp/results/*
+
+cat << EOF
+    {
+    "usercount": "${usercount}",
+    "loopcount": "${loopcount}",
+    "looppause": "${looppause}",
+    "delaystart": "${delaystart}",
+    "delaynotebook": "${delaynotebook}",
+    "iterations": [
+EOF
+
+        local comma=''
+        for i in $(seq 0 $((loopcount - 1)))
+        do
+
+            testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+
+cat << EOF
+            ${comma}
+            {
+            "iteration": ${i},
+            "testname": "${testname}",
+            "threads":
+EOF
+
+            sleep "${looppause}"
+
+            /tmp/run-benchmark.py \
+                "${endpoint:?}" \
+                "${testconfig:?}" \
+                "${testusers:?}" \
+                "${usercount:?}" \
+                "${delaystart:?}" \
+                "${delaynotebook:?}" \
+            > "/tmp/results/${testname:?}.txt"
+
+            filter-results "${testname:?}"
+
+cat << EOF
+            }
+EOF
+            comma=','
+
+        done
+
+cat << EOF
+        ]
+    }
+EOF
+        }
+
+
+# -----------------------------------------------------
+# Test with 1 user doing 3 loops.
+#[root@ansibler]
+
+    test-loop 1 3 \
+    | tee /tmp/test-loop.json
+
+    jq '.' /tmp/test-loop.json
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-01-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-01-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-01-02.txt:------------ Test Result: [PASS] ------------
+
+
+# -----------------------------------------------------
+# Test with 2 users doing 3 loops.
+#[root@ansibler]
+
+    test-loop 2 3 \
+    | tee /tmp/test-loop.json
+
+    jq '.' /tmp/test-loop.json
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-02-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-02-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-02-02.txt:------------ Test Result: [PASS] ------------
+
+
+# -----------------------------------------------------
+# Test with 6 users doing 50 loops.
+#[root@ansibler]
+
+    test-loop 6 50 \
+    | tee /tmp/test-loop.json
+
+    jq '.' /tmp/test-loop.json
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-06-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-06-01.txt:------------ Test Result: [PASS] ------------
+    >   ....
+    >   ....
+    >   /tmp/results/multi-user-06-48.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-06-49.txt:------------ Test Result: [PASS] ------------
+
+
+# -----------------------------------------------------
+# Test with 6 users doing 50 loops.
+#[root@ansibler]
+
+    test-loop 6 50 \
+    | tee /tmp/test-loop.json
+
+    jq '.' /tmp/test-loop.json
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   ....
+    >   ....
+
+    #
+    # 6 users is fine.
+    # Adding a 7th user by logging in to the Zeppelin UI and running notebooks manually caused the system to lock up.
+    # All applications in the list are state ACCEPTED.
+    # http://master01:8088/cluster/apps
+    #
+
+    >   ....
+    >   [Wed Jun 15 10:04:03 +0000 2022] Application is Activated, waiting for resources to be assigned for AM.
+    >       Details : AM Partition = <DEFAULT_PARTITION>
+    >               Partition Resource = <memory:258048, vCores:156>
+    >               Queue's Absolute capacity = 100.0 %
+    >               Queue's Absolute used capacity = 99.60318 %
+    >               Queue's Absolute max capacity = 100.0 %
+    >               Queue's capacity (absolute resource) = <memory:258048, vCores:156>
+    >               Queue's used capacity (absolute resource) = <memory:257024, vCores:32>
+    >               Queue's max capacity (absolute resource) = <memory:258048, vCores:156> ;
+    >   ....
+
+    #
+    # Looks like number of cores is fine, but we havereached the limit for memory.
+    # Available 258048
+    # Used      257024
+    #
+
+
+
+
+
+    TODO - loop until <time>
+    TODO - find the minimum looppause
+
+    TODO - more users ?
+
+
+
+

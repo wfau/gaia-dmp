@@ -1,0 +1,1466 @@
+
+Skip to content
+Pull requests
+Issues
+Marketplace
+Explore
+@stvoutsin
+stvoutsin /
+aglais
+Public
+forked from wfau/aglais
+
+Code
+Pull requests
+Actions
+Projects
+Wiki
+Security
+Insights
+
+    Settings
+
+aglais/notes/stv/20220608-test-authc-01.txt
+@stvoutsin
+stvoutsin Added test notes
+Latest commit dc39b30 yesterday
+History
+1 contributor
+279 lines (220 sloc) 6.31 KB
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+    Target:
+
+        Deployment to test the latest changes.
+
+    Result:
+
+        Success.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-red'
+    configname=zeppelin-26.43-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   Done
+    
+# -----------------------------------------------------
+# Create everything.
+# (*) apart from the user database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >   Done
+
+
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+
+
+# -----------------------------------------------------
+# Copy notebooks from the live server.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sshuser=fedora
+        sshhost=zeppelin.aglais.uk
+
+        sudo mkdir -p '/var/local/backups'
+        sudo mv "/home/fedora/zeppelin/notebook" \
+           "/var/local/backups/notebook-$(date '+%Y%m%d%H%M%S')"
+
+        ssh-keyscan "${sshhost:?}" >> "${HOME}/.ssh/known_hosts"
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            "${sshuser:?}@${sshhost:?}:zeppelin/notebook/" \
+            "/home/fedora/zeppelin/notebook"
+        '
+
+
+# -----------------------------------------------------
+# re-start Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+
+
+# -----------------------------------------------------
+# Create a set of users
+#[root@ansibler]
+
+    testernames=(
+        Rhaelhall
+        Fipa
+        Mythicson
+        Balline
+        Hiness
+        Anskelisia
+        Iflee
+        AAAAAAA
+        BBBBBBB
+        CCCCCCC
+        DDDDDDD
+        )
+
+
+    createarrayusers \
+        ${testernames[@]} \
+    | tee /tmp/testusers.json	
+
+
+
+
+# ----------------------------------------------------
+# Run with 10 users and 10 sec delay
+# Note: Notebook delete enabled by default
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.222.42:8080"
+    ).run(
+        concurrent=True,
+        users=10,
+        delay_start= 10
+        )
+EOF
+
+
+# Results:
+# Success
+
+[{
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '37.14',
+			'expected': '45.00',
+			'percent': '-17.46',
+			'start': '2022-06-09T13:45:15.134090',
+			'finish': '2022-06-09T13:45:52.276230'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '37.29',
+			'expected': '55.00',
+			'percent': '-32.21',
+			'start': '2022-06-09T13:45:52.276331',
+			'finish': '2022-06-09T13:46:29.562104'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '18.65',
+			'expected': '22.00',
+			'percent': '-15.21',
+			'start': '2022-06-09T13:46:29.562340',
+			'finish': '2022-06-09T13:46:48.215371'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.34',
+			'expected': '60.00',
+			'percent': '-84.43',
+			'start': '2022-06-09T13:46:48.215636',
+			'finish': '2022-06-09T13:46:57.555757'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '52.51',
+			'expected': '45.00',
+			'percent': '16.69',
+			'start': '2022-06-09T13:45:25.141480',
+			'finish': '2022-06-09T13:46:17.650805'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '50.02',
+			'expected': '55.00',
+			'percent': '-9.05',
+			'start': '2022-06-09T13:46:17.650901',
+			'finish': '2022-06-09T13:47:07.674626'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '25.13',
+			'expected': '22.00',
+			'percent': '14.23',
+			'start': '2022-06-09T13:47:07.674933',
+			'finish': '2022-06-09T13:47:32.805064'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.09',
+			'expected': '60.00',
+			'percent': '-84.86',
+			'start': '2022-06-09T13:47:32.805363',
+			'finish': '2022-06-09T13:47:41.892079'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '92.91',
+			'expected': '45.00',
+			'percent': '106.47',
+			'start': '2022-06-09T13:45:35.152668',
+			'finish': '2022-06-09T13:47:08.063016'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '78.47',
+			'expected': '55.00',
+			'percent': '42.68',
+			'start': '2022-06-09T13:47:08.063119',
+			'finish': '2022-06-09T13:48:26.537367'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '23.88',
+			'expected': '22.00',
+			'percent': '8.52',
+			'start': '2022-06-09T13:48:26.537575',
+			'finish': '2022-06-09T13:48:50.412688'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.11',
+			'expected': '60.00',
+			'percent': '-84.82',
+			'start': '2022-06-09T13:48:50.412986',
+			'finish': '2022-06-09T13:48:59.523784'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '82.36',
+			'expected': '45.00',
+			'percent': '83.02',
+			'start': '2022-06-09T13:45:45.160546',
+			'finish': '2022-06-09T13:47:07.520202'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '114.19',
+			'expected': '55.00',
+			'percent': '107.62',
+			'start': '2022-06-09T13:47:07.520296',
+			'finish': '2022-06-09T13:49:01.711304'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '20.27',
+			'expected': '22.00',
+			'percent': '-7.88',
+			'start': '2022-06-09T13:49:01.711505',
+			'finish': '2022-06-09T13:49:21.976859'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.01',
+			'expected': '60.00',
+			'percent': '-84.99',
+			'start': '2022-06-09T13:49:21.977110',
+			'finish': '2022-06-09T13:49:30.982529'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '80.03',
+			'expected': '45.00',
+			'percent': '77.84',
+			'start': '2022-06-09T13:45:55.172513',
+			'finish': '2022-06-09T13:47:15.199054'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '41.66',
+			'expected': '55.00',
+			'percent': '-24.25',
+			'start': '2022-06-09T13:47:15.199150',
+			'finish': '2022-06-09T13:47:56.861787'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '20.24',
+			'expected': '22.00',
+			'percent': '-8.00',
+			'start': '2022-06-09T13:47:56.861989',
+			'finish': '2022-06-09T13:48:17.102259'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.13',
+			'expected': '60.00',
+			'percent': '-84.78',
+			'start': '2022-06-09T13:48:17.102525',
+			'finish': '2022-06-09T13:48:26.232633'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '184.64',
+			'expected': '45.00',
+			'percent': '310.31',
+			'start': '2022-06-09T13:46:05.184511',
+			'finish': '2022-06-09T13:49:09.824885'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '62.38',
+			'expected': '55.00',
+			'percent': '13.41',
+			'start': '2022-06-09T13:49:09.825058',
+			'finish': '2022-06-09T13:50:12.201631'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '17.44',
+			'expected': '22.00',
+			'percent': '-20.72',
+			'start': '2022-06-09T13:50:12.201833',
+			'finish': '2022-06-09T13:50:29.643887'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '8.98',
+			'expected': '60.00',
+			'percent': '-85.04',
+			'start': '2022-06-09T13:50:29.644157',
+			'finish': '2022-06-09T13:50:38.622114'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '171.34',
+			'expected': '45.00',
+			'percent': '280.76',
+			'start': '2022-06-09T13:46:15.192495',
+			'finish': '2022-06-09T13:49:06.534088'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '131.05',
+			'expected': '55.00',
+			'percent': '138.26',
+			'start': '2022-06-09T13:49:06.534183',
+			'finish': '2022-06-09T13:51:17.579405'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '18.91',
+			'expected': '22.00',
+			'percent': '-14.04',
+			'start': '2022-06-09T13:51:17.579607',
+			'finish': '2022-06-09T13:51:36.489773'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '8.97',
+			'expected': '60.00',
+			'percent': '-85.05',
+			'start': '2022-06-09T13:51:36.490055',
+			'finish': '2022-06-09T13:51:45.459502'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '196.37',
+			'expected': '45.00',
+			'percent': '336.38',
+			'start': '2022-06-09T13:46:25.204577',
+			'finish': '2022-06-09T13:49:41.575616'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '148.94',
+			'expected': '55.00',
+			'percent': '170.80',
+			'start': '2022-06-09T13:49:41.575718',
+			'finish': '2022-06-09T13:52:10.515279'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '23.74',
+			'expected': '22.00',
+			'percent': '7.90',
+			'start': '2022-06-09T13:52:10.515507',
+			'finish': '2022-06-09T13:52:34.253841'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.20',
+			'expected': '60.00',
+			'percent': '-84.67',
+			'start': '2022-06-09T13:52:34.254133',
+			'finish': '2022-06-09T13:52:43.453556'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '329.63',
+			'expected': '45.00',
+			'percent': '632.51',
+			'start': '2022-06-09T13:46:35.212515',
+			'finish': '2022-06-09T13:52:04.844085'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '76.48',
+			'expected': '55.00',
+			'percent': '39.05',
+			'start': '2022-06-09T13:52:04.844228',
+			'finish': '2022-06-09T13:53:21.323988'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '18.74',
+			'expected': '22.00',
+			'percent': '-14.81',
+			'start': '2022-06-09T13:53:21.324208',
+			'finish': '2022-06-09T13:53:40.066721'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '8.94',
+			'expected': '60.00',
+			'percent': '-85.09',
+			'start': '2022-06-09T13:53:40.067000',
+			'finish': '2022-06-09T13:53:49.011476'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '316.08',
+			'expected': '45.00',
+			'percent': '602.39',
+			'start': '2022-06-09T13:46:45.224568',
+			'finish': '2022-06-09T13:52:01.300405'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '54.04',
+			'expected': '55.00',
+			'percent': '-1.74',
+			'start': '2022-06-09T13:52:01.300499',
+			'finish': '2022-06-09T13:52:55.341171'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '26.93',
+			'expected': '22.00',
+			'percent': '22.42',
+			'start': '2022-06-09T13:52:55.341376',
+			'finish': '2022-06-09T13:53:22.274553'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.22',
+			'expected': '60.00',
+			'percent': '-84.63',
+			'start': '2022-06-09T13:53:22.274835',
+			'finish': '2022-06-09T13:53:31.498622'
+		},
+		'logs': ''
+	}
+}]	
+
+
+
+# ----------------------------------------------------
+# Run with 10 users and no delay
+# Note: Notebook delete enabled by default
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.222.42:8080"
+    ).run(
+        concurrent=True,
+        users=10
+        )
+EOF
+
+
+[{
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '153.01',
+			'expected': '45.00',
+			'percent': '240.02',
+			'start': '2022-06-09T14:28:51.604094',
+			'finish': '2022-06-09T14:31:24.613863'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '74.87',
+			'expected': '55.00',
+			'percent': '36.12',
+			'start': '2022-06-09T14:31:24.613991',
+			'finish': '2022-06-09T14:32:39.482437'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '16.73',
+			'expected': '22.00',
+			'percent': '-23.96',
+			'start': '2022-06-09T14:32:39.482655',
+			'finish': '2022-06-09T14:32:56.210370'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.02',
+			'expected': '60.00',
+			'percent': '-84.97',
+			'start': '2022-06-09T14:32:56.210672',
+			'finish': '2022-06-09T14:33:05.227242'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '5.29',
+			'expected': '45.00',
+			'percent': '-88.25',
+			'start': '2022-06-09T14:28:51.604145',
+			'finish': '2022-06-09T14:28:56.889936'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '163.40',
+			'expected': '55.00',
+			'percent': '197.10',
+			'start': '2022-06-09T14:28:56.890031',
+			'finish': '2022-06-09T14:31:40.292963'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '17.84',
+			'expected': '22.00',
+			'percent': '-18.89',
+			'start': '2022-06-09T14:31:40.293213',
+			'finish': '2022-06-09T14:31:58.136560'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.00',
+			'expected': '60.00',
+			'percent': '-85.00',
+			'start': '2022-06-09T14:31:58.136860',
+			'finish': '2022-06-09T14:32:07.134006'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '395.79',
+			'expected': '45.00',
+			'percent': '779.54',
+			'start': '2022-06-09T14:28:51.604266',
+			'finish': '2022-06-09T14:35:27.399245'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '67.61',
+			'expected': '55.00',
+			'percent': '22.93',
+			'start': '2022-06-09T14:35:27.399339',
+			'finish': '2022-06-09T14:36:35.013555'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '32.52',
+			'expected': '22.00',
+			'percent': '47.80',
+			'start': '2022-06-09T14:36:35.013754',
+			'finish': '2022-06-09T14:37:07.529536'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.14',
+			'expected': '60.00',
+			'percent': '-84.76',
+			'start': '2022-06-09T14:37:07.529871',
+			'finish': '2022-06-09T14:37:16.672449'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.05',
+			'expected': '45.00',
+			'percent': '-79.88',
+			'start': '2022-06-09T14:28:51.604459',
+			'finish': '2022-06-09T14:29:00.657617'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '158.58',
+			'expected': '55.00',
+			'percent': '188.32',
+			'start': '2022-06-09T14:29:00.657761',
+			'finish': '2022-06-09T14:31:39.235864'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '92.74',
+			'expected': '22.00',
+			'percent': '321.52',
+			'start': '2022-06-09T14:31:39.236195',
+			'finish': '2022-06-09T14:33:11.971303'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '10.39',
+			'expected': '60.00',
+			'percent': '-82.69',
+			'start': '2022-06-09T14:33:11.971655',
+			'finish': '2022-06-09T14:33:22.360491'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '398.15',
+			'expected': '45.00',
+			'percent': '784.79',
+			'start': '2022-06-09T14:28:51.605003',
+			'finish': '2022-06-09T14:35:29.758595'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '57.15',
+			'expected': '55.00',
+			'percent': '3.90',
+			'start': '2022-06-09T14:35:29.758690',
+			'finish': '2022-06-09T14:36:26.905356'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '22.81',
+			'expected': '22.00',
+			'percent': '3.67',
+			'start': '2022-06-09T14:36:26.905614',
+			'finish': '2022-06-09T14:36:49.714087'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.20',
+			'expected': '60.00',
+			'percent': '-84.66',
+			'start': '2022-06-09T14:36:49.714375',
+			'finish': '2022-06-09T14:36:58.915871'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '5.34',
+			'expected': '45.00',
+			'percent': '-88.13',
+			'start': '2022-06-09T14:28:51.604732',
+			'finish': '2022-06-09T14:28:56.947111'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '105.05',
+			'expected': '55.00',
+			'percent': '90.99',
+			'start': '2022-06-09T14:28:56.947281',
+			'finish': '2022-06-09T14:30:41.992732'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '16.78',
+			'expected': '22.00',
+			'percent': '-23.73',
+			'start': '2022-06-09T14:30:41.993018',
+			'finish': '2022-06-09T14:30:58.771907'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.01',
+			'expected': '60.00',
+			'percent': '-84.98',
+			'start': '2022-06-09T14:30:58.772176',
+			'finish': '2022-06-09T14:31:07.785943'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '263.49',
+			'expected': '45.00',
+			'percent': '485.53',
+			'start': '2022-06-09T14:28:51.604837',
+			'finish': '2022-06-09T14:33:15.091544'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '89.90',
+			'expected': '55.00',
+			'percent': '63.45',
+			'start': '2022-06-09T14:33:15.091651',
+			'finish': '2022-06-09T14:34:44.988620'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '16.76',
+			'expected': '22.00',
+			'percent': '-23.82',
+			'start': '2022-06-09T14:34:44.988833',
+			'finish': '2022-06-09T14:35:01.749233'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.17',
+			'expected': '60.00',
+			'percent': '-84.71',
+			'start': '2022-06-09T14:35:01.749623',
+			'finish': '2022-06-09T14:35:10.921481'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '5.37',
+			'expected': '45.00',
+			'percent': '-88.07',
+			'start': '2022-06-09T14:28:51.611127',
+			'finish': '2022-06-09T14:28:56.981337'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '44.37',
+			'expected': '55.00',
+			'percent': '-19.32',
+			'start': '2022-06-09T14:28:56.981473',
+			'finish': '2022-06-09T14:29:41.352971'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '16.79',
+			'expected': '22.00',
+			'percent': '-23.66',
+			'start': '2022-06-09T14:29:41.353165',
+			'finish': '2022-06-09T14:29:58.146904'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.26',
+			'expected': '60.00',
+			'percent': '-84.56',
+			'start': '2022-06-09T14:29:58.147230',
+			'finish': '2022-06-09T14:30:07.408895'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '395.78',
+			'expected': '45.00',
+			'percent': '779.52',
+			'start': '2022-06-09T14:28:51.611155',
+			'finish': '2022-06-09T14:35:27.394793'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '50.90',
+			'expected': '55.00',
+			'percent': '-7.45',
+			'start': '2022-06-09T14:35:27.394892',
+			'finish': '2022-06-09T14:36:18.295968'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '17.92',
+			'expected': '22.00',
+			'percent': '-18.56',
+			'start': '2022-06-09T14:36:18.296164',
+			'finish': '2022-06-09T14:36:36.211939'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '10.43',
+			'expected': '60.00',
+			'percent': '-82.61',
+			'start': '2022-06-09T14:36:36.212230',
+			'finish': '2022-06-09T14:36:46.646756'
+		},
+		'logs': ''
+	}
+}, {
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '204.07',
+			'expected': '45.00',
+			'percent': '353.49',
+			'start': '2022-06-09T14:28:51.611310',
+			'finish': '2022-06-09T14:32:15.683157'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '85.38',
+			'expected': '55.00',
+			'percent': '55.24',
+			'start': '2022-06-09T14:32:15.683301',
+			'finish': '2022-06-09T14:33:41.066820'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '16.91',
+			'expected': '22.00',
+			'percent': '-23.15',
+			'start': '2022-06-09T14:33:41.067221',
+			'finish': '2022-06-09T14:33:57.973309'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '9.84',
+			'expected': '60.00',
+			'percent': '-83.61',
+			'start': '2022-06-09T14:33:57.973628',
+			'finish': '2022-06-09T14:34:07.810131'
+		},
+		'logs': ''
+	}
+}]

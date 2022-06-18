@@ -1,0 +1,2200 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+    Target:
+
+        Deployment to test the latest changes.
+
+    Result:
+
+        Success.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        -d \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-red'
+    configname=zeppelin-26.43-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   Done
+    
+# -----------------------------------------------------
+# Create everything.
+# (*) apart from the user database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >   Done
+
+
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+
+
+# -----------------------------------------------------
+# Copy notebooks from the live server.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sshuser=fedora
+        sshhost=zeppelin.aglais.uk
+
+        sudo mkdir -p '/var/local/backups'
+        sudo mv "/home/fedora/zeppelin/notebook" \
+           "/var/local/backups/notebook-$(date '+%Y%m%d%H%M%S')"
+
+        ssh-keyscan "${sshhost:?}" >> "${HOME}/.ssh/known_hosts"
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            "${sshuser:?}@${sshhost:?}:zeppelin/notebook/" \
+            "/home/fedora/zeppelin/notebook"
+        '
+
+
+# -----------------------------------------------------
+# re-start Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+
+    
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    testusername=$(
+        pwgen 8 1
+        )
+
+    createusermain \
+        "${testusername}" \
+    | tee "/tmp/${testusername}.json" | jq '.'
+
+    testuserpass=$(
+        jq -r '.shirouser.pass' "/tmp/${testusername}.json"
+        )
+
+# Success
+
+
+
+
+# -----------------------------------------------------
+# Run Quick Tests
+# Defaults for notebook deletion(True) & timeouts(0)
+#[root@ansibler]
+
+    num_users=1
+    concurrent=False
+    test_level=quick
+    cloudname=iris-gaia-red
+    configname=zeppelin-26.43-spark-6.26.43
+
+
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "${test_level:?}"  \
+	     ${concurrent:?}  \
+	     ${num_users:?}  \
+        | tee /tmp/run-tests-quick.log
+	
+
+# Results:
+# Success
+
+[{
+	"GaiaDMPSetup": {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '39.29',
+			'expected': '45.00',
+			'percent': '-12.69',
+			'start': '2022-06-16T15:22:03.097553',
+			'finish': '2022-06-16T15:22:42.385141'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '71.64',
+			'expected': '55.00',
+			'percent': '30.25',
+			'start': '2022-06-16T15:22:42.385251',
+			'finish': '2022-06-16T15:23:54.020823'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '22.55',
+			'expected': '22.00',
+			'percent': '2.50',
+			'start': '2022-06-16T15:23:54.021134',
+			'finish': '2022-06-16T15:24:16.570169'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '8.15',
+			'expected': '60.00',
+			'percent': '-86.42',
+			'start': '2022-06-16T15:24:16.570432',
+			'finish': '2022-06-16T15:24:24.721277'
+		},
+		'logs': ''
+	}
+}]
+[{
+	'GaiaDMPSetup': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '39.29',
+			'expected': '45.00',
+			'percent': '-12.69',
+			'start': '2022-06-16T15:22:03.097553',
+			'finish': '2022-06-16T15:22:42.385141'
+		},
+		'logs': ''
+	},
+	'Mean_proper_motions_over_the_sky': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '71.64',
+			'expected': '55.00',
+			'percent': '30.25',
+			'start': '2022-06-16T15:22:42.385251',
+			'finish': '2022-06-16T15:23:54.020823'
+		},
+		'logs': ''
+	},
+	'Source_counts_over_the_sky.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'SLOW',
+			'elapsed': '22.55',
+			'expected': '22.00',
+			'percent': '2.50',
+			'start': '2022-06-16T15:23:54.021134',
+			'finish': '2022-06-16T15:24:16.570169'
+		},
+		'logs': ''
+	},
+	'Library_Validation.json': {
+		'result': 'PASS',
+		'outputs': {
+			'valid': True
+		},
+		'time': {
+			'result': 'FAST',
+			'elapsed': '8.15',
+			'expected': '60.00',
+			'percent': '-86.42',
+			'start': '2022-06-16T15:24:16.570432',
+			'finish': '2022-06-16T15:24:24.721277'
+		},
+		'logs': ''
+	}
+}]
+
+
+
+
+# -----------------------------------------------------
+# Create 8 test users
+#[root@ansibler]
+
+    count=8
+
+    testernames=()
+
+    for i in $(seq $((count+1)))
+    do
+        testernames+=($(pwgen 12 1))
+    done
+
+    createarrayusers \
+        ${testernames[@]} \
+    | tee /tmp/testusers.json \
+    | jq '[ .users[].shirouser.name ]'
+
+
+	 > [
+	 >  "rai7ai1ooXoo",
+	 >  "zieth4Thaeph",
+	 >  "yohGhaeWe4gi",
+	 >  "asoo5AeH8yi6",
+	 >  "kieGheiy8uw8",
+	 >  "eiNgap7eel8m",
+	 >  "nahPhoge4OoB",
+	 >  "ooshae9uQu1m",
+	 >  "Phioji8Eir0a"
+	 > ]
+
+
+# -----------------------------------------------------
+# Run concurrent test
+# Users: 2
+# Delay_start: 0
+# Delay_notebook: 0
+# Delete Notebooks: True
+
+#[root@ansibler]
+
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.227.238:8080",
+    False
+    ).run(
+        concurrent=True,
+        users=2,
+        delay_start=0,
+        delay_notebook=0,
+        delete=True
+        )
+EOF
+
+python3 /tmp/testprog.py | tee /tmp/test-results.txt
+
+# Check /tmp/ directory while test is running
+
+# fedora@zeppelin
+
+ls /home/fedora/zeppelin-0.10.0-bin-all/notebook/tmp/
+
+-rw-rw-r--. 1 fedora fedora 985005 Jun 16 17:45 0FU77MWLP6.json_2H5BHG47H.zpln
+-rw-rw-r--. 1 fedora fedora 984995 Jun 16 17:45 18E9RGTCYJ.json_2H6HWPG39.zpln
+-rw-rw-r--. 1 fedora fedora  13195 Jun 16 17:45 BOJS6RF1XU.json_2H7VY8XU6.zpln
+-rw-rw-r--. 1 fedora fedora   2241 Jun 16 17:44 E9WWNU7KYN.json_2H7GBHDD8.zpln
+-rw-rw-r--. 1 fedora fedora 495635 Jun 16 17:45 MLQCIW2NTQ.json_2H5HH5WQZ.zpln
+-rw-rw-r--. 1 fedora fedora 495633 Jun 16 17:45 NBF5RJ3B1A.json_2H5D91TV1.zpln
+-rw-rw-r--. 1 fedora fedora   2241 Jun 16 17:44 PS8SX5AOFE.json_2H7DVWS1G.zpln
+-rw-rw-r--. 1 fedora fedora  12678 Jun 16 17:45 WTAKJB9MQO.json_2H76HUT7H.zpln
+
+
+# Test finished
+
+# Results
+
+ [{
+ 	"GaiaDMPSetup": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "37.41",
+ 			"expected": "45.00",
+ 			"percent": "-16.87",
+ 			"start": "2022-06-16T17:43:52.397724",
+ 			"finish": "2022-06-16T17:44:29.806010"
+ 		},
+ 		"logs": ""
+ 	},
+ 	"Mean_proper_motions_over_the_sky": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "50.77",
+ 			"expected": "55.00",
+ 			"percent": "-7.68",
+ 			"start": "2022-06-16T17:44:29.806103",
+ 			"finish": "2022-06-16T17:45:20.579536"
+ 		},
+ 		"logs": ""
+ 	},
+ 	"Source_counts_over_the_sky.json": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "17.39",
+ 			"expected": "22.00",
+ 			"percent": "-20.97",
+ 			"start": "2022-06-16T17:45:20.580006",
+ 			"finish": "2022-06-16T17:45:37.967302"
+ 		},
+ 		"logs": ""
+ 	},
+ 	"Library_Validation.json": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "10.68",
+ 			"expected": "60.00",
+ 			"percent": "-82.20",
+ 			"start": "2022-06-16T17:45:37.967590",
+ 			"finish": "2022-06-16T17:45:48.645223"
+ 		},
+ 		"logs": ""
+ 	}
+ }, {
+ 	"GaiaDMPSetup": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "SLOW",
+ 			"elapsed": "46.35",
+ 			"expected": "45.00",
+ 			"percent": "2.99",
+ 			"start": "2022-06-16T17:43:52.397740",
+ 			"finish": "2022-06-16T17:44:38.744778"
+ 		},
+ 		"logs": ""
+ 	},
+ 	"Mean_proper_motions_over_the_sky": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "45.44",
+ 			"expected": "55.00",
+ 			"percent": "-17.39",
+ 			"start": "2022-06-16T17:44:38.744872",
+ 			"finish": "2022-06-16T17:45:24.180551"
+ 		},
+ 		"logs": ""
+ 	},
+ 	"Source_counts_over_the_sky.json": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "18.63",
+ 			"expected": "22.00",
+ 			"percent": "-15.32",
+ 			"start": "2022-06-16T17:45:24.180767",
+ 			"finish": "2022-06-16T17:45:42.810378"
+ 		},
+ 		"logs": ""
+ 	},
+ 	"Library_Validation.json": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "8.73",
+ 			"expected": "60.00",
+ 			"percent": "-85.45",
+ 			"start": "2022-06-16T17:45:42.810735",
+ 			"finish": "2022-06-16T17:45:51.539512"
+ 		},
+ 		"logs": ""
+ 	}
+ }]
+
+
+
+# Check if notebooks were deleted
+
+ssh zeppelin \
+        ' 
+        ls /home/fedora/zeppelin-0.10.0-bin-all/notebook/tmp/
+        '
+
+# Empty
+
+
+
+# Check start time for each user
+
+jq '.[].GaiaDMPSetup.time.start' /tmp/test-result.json 
+
+"2022-06-16T17:43:52.397724"
+"2022-06-16T17:43:52.397740"
+
+
+
+# -----------------------------------------------------
+# Run concurrent test
+# Users: 2
+# Delay_start: 0
+# Delay_notebook: 0
+# Delete Notebooks: False
+
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.227.238:8080",
+    False
+    ).run(
+        concurrent=True,
+        users=2,
+        delay_start=0,
+        delay_notebook=0,
+        delete=False
+        )
+EOF
+
+python3 /tmp/testprog.py | tee /tmp/test-results.txt
+
+# Results
+
+[{
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "5.25",
+			"expected": "45.00",
+			"percent": "-88.33",
+			"start": "2022-06-17T07:26:36.874959",
+			"finish": "2022-06-17T07:26:42.126035"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "34.98",
+			"expected": "55.00",
+			"percent": "-36.39",
+			"start": "2022-06-17T07:26:42.126174",
+			"finish": "2022-06-17T07:27:17.109017"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "37.35",
+			"expected": "22.00",
+			"percent": "69.77",
+			"start": "2022-06-17T07:27:17.109672",
+			"finish": "2022-06-17T07:27:54.459933"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "18.20",
+			"expected": "60.00",
+			"percent": "-69.67",
+			"start": "2022-06-17T07:27:54.460055",
+			"finish": "2022-06-17T07:28:12.660919"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "6.08",
+			"expected": "45.00",
+			"percent": "-86.48",
+			"start": "2022-06-17T07:26:36.875114",
+			"finish": "2022-06-17T07:26:42.958713"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "34.47",
+			"expected": "55.00",
+			"percent": "-37.33",
+			"start": "2022-06-17T07:26:42.958807",
+			"finish": "2022-06-17T07:27:17.427772"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "38.31",
+			"expected": "22.00",
+			"percent": "74.15",
+			"start": "2022-06-17T07:27:17.428395",
+			"finish": "2022-06-17T07:27:55.742348"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "25.88",
+			"expected": "60.00",
+			"percent": "-56.87",
+			"start": "2022-06-17T07:27:55.742447",
+			"finish": "2022-06-17T07:28:21.617563"
+		},
+		"logs": ""
+	}
+}]
+
+
+# Check start times:
+
+jq '.[].GaiaDMPSetup.time.start' /tmp/test-result.json 
+"2022-06-16T17:43:52.397724"
+"2022-06-16T17:43:52.397740"
+
+ 	
+ssh zeppelin \
+    ' 
+    ls /home/fedora/zeppelin-0.10.0-bin-all/notebook/tmp/
+    '
+03DD61KLPG.json_2H5FN3QE9.zpln
+67WM5KGVB5.json_2H6VXN76Y.zpln
+C2VBH67KP0.json_2H5W5PCQJ.zpln
+IW6C705V FS.json_2H6HB34SF.zpln
+KN3BDBFHO4.json_2H6KP4NSM.zpln
+M413TXUUNC.json_2H7J32HVQ.zpln
+P5SPD0JA5M.json_2H7332NFP.zpln
+YYN0FF3SRQ.json_2H7R1562M.zpln
+ 	
+ 	
+ 	
+# -----------------------------------------------------
+# Run concurrent test
+# Users: 5
+# Delay_start: 10
+# Delay_notebook: 0
+# Delete Notebooks: True
+
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.227.238:8080",
+    False
+    ).run(
+        concurrent=True,
+        users=5,
+        delay_start=10,
+        delay_notebook=0,
+        delete=True
+        )
+EOF
+
+# Results
+
+[{
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "37.22",
+			"expected": "45.00",
+			"percent": "-17.29",
+			"start": "2022-06-17T08:35:23.656908",
+			"finish": "2022-06-17T08:36:00.877330"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "37.78",
+			"expected": "55.00",
+			"percent": "-31.30",
+			"start": "2022-06-17T08:36:00.877457",
+			"finish": "2022-06-17T08:36:38.661929"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "18.74",
+			"expected": "22.00",
+			"percent": "-14.83",
+			"start": "2022-06-17T08:36:38.662348",
+			"finish": "2022-06-17T08:36:57.399817"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "9.40",
+			"expected": "60.00",
+			"percent": "-84.34",
+			"start": "2022-06-17T08:36:57.400156",
+			"finish": "2022-06-17T08:37:06.797312"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "38.12",
+			"expected": "45.00",
+			"percent": "-15.28",
+			"start": "2022-06-17T08:35:33.666741",
+			"finish": "2022-06-17T08:36:11.790771"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "49.08",
+			"expected": "55.00",
+			"percent": "-10.76",
+			"start": "2022-06-17T08:36:11.790861",
+			"finish": "2022-06-17T08:37:00.872264"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "19.67",
+			"expected": "22.00",
+			"percent": "-10.59",
+			"start": "2022-06-17T08:37:00.872679",
+			"finish": "2022-06-17T08:37:20.543855"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "8.53",
+			"expected": "60.00",
+			"percent": "-85.79",
+			"start": "2022-06-17T08:37:20.544129",
+			"finish": "2022-06-17T08:37:29.071554"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "93.91",
+			"expected": "45.00",
+			"percent": "108.68",
+			"start": "2022-06-17T08:35:43.677226",
+			"finish": "2022-06-17T08:37:17.585415"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "46.29",
+			"expected": "55.00",
+			"percent": "-15.84",
+			"start": "2022-06-17T08:37:17.585503",
+			"finish": "2022-06-17T08:38:03.876123"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "13.80",
+			"expected": "22.00",
+			"percent": "-37.25",
+			"start": "2022-06-17T08:38:03.876568",
+			"finish": "2022-06-17T08:38:17.681102"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "7.19",
+			"expected": "60.00",
+			"percent": "-88.01",
+			"start": "2022-06-17T08:38:17.681361",
+			"finish": "2022-06-17T08:38:24.876014"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "83.90",
+			"expected": "45.00",
+			"percent": "86.44",
+			"start": "2022-06-17T08:35:53.686854",
+			"finish": "2022-06-17T08:37:17.585415"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "103.67",
+			"expected": "55.00",
+			"percent": "88.50",
+			"start": "2022-06-17T08:37:17.585503",
+			"finish": "2022-06-17T08:39:01.260354"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "16.45",
+			"expected": "22.00",
+			"percent": "-25.21",
+			"start": "2022-06-17T08:39:01.260568",
+			"finish": "2022-06-17T08:39:17.714257"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "9.35",
+			"expected": "60.00",
+			"percent": "-84.42",
+			"start": "2022-06-17T08:39:17.714649",
+			"finish": "2022-06-17T08:39:27.064519"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "94.77",
+			"expected": "45.00",
+			"percent": "110.59",
+			"start": "2022-06-17T08:36:03.694680",
+			"finish": "2022-06-17T08:37:38.459984"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "141.25",
+			"expected": "55.00",
+			"percent": "156.81",
+			"start": "2022-06-17T08:37:38.460083",
+			"finish": "2022-06-17T08:39:59.707393"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "16.59",
+			"expected": "22.00",
+			"percent": "-24.59",
+			"start": "2022-06-17T08:39:59.707650",
+			"finish": "2022-06-17T08:40:16.296879"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "8.66",
+			"expected": "60.00",
+			"percent": "-85.57",
+			"start": "2022-06-17T08:40:16.297139",
+			"finish": "2022-06-17T08:40:24.957399"
+		},
+		"logs": ""
+	}
+}]
+
+ 
+# Check notebook directory
+ssh zeppelin \
+    ' 
+    ls /home/fedora/zeppelin-0.10.0-bin-all/notebook/tmp/
+    '
+# Empty
+
+
+# Check start times
+
+jq '.[].GaiaDMPSetup.time.start' /tmp/test-result.json 
+"2022-06-17T08:35:23.656908"
+"2022-06-17T08:35:33.666741"
+"2022-06-17T08:35:43.677226"
+"2022-06-17T08:35:53.686854"
+"2022-06-17T08:36:03.694680"
+
+    
+# -----------------------------------------------------
+# Run concurrent test
+# Users: 5
+# Delay_start: 20
+# Delay_notebook: 0
+# Delete Notebooks: True
+
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.227.238:8080",
+    False
+    ).run(
+        concurrent=True,
+        users=5,
+        delay_start=20,
+        delay_notebook=0,
+        delete=True
+        )
+EOF
+
+# Results
+
+[{
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "41.37",
+			"expected": "45.00",
+			"percent": "-8.06",
+			"start": "2022-06-17T09:50:44.876463",
+			"finish": "2022-06-17T09:51:26.249460"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "50.45",
+			"expected": "55.00",
+			"percent": "-8.26",
+			"start": "2022-06-17T09:51:26.249605",
+			"finish": "2022-06-17T09:52:16.703955"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "23.05",
+			"expected": "22.00",
+			"percent": "4.76",
+			"start": "2022-06-17T09:52:16.704398",
+			"finish": "2022-06-17T09:52:39.752478"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "10.68",
+			"expected": "60.00",
+			"percent": "-82.19",
+			"start": "2022-06-17T09:52:39.753002",
+			"finish": "2022-06-17T09:52:50.436747"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "38.03",
+			"expected": "45.00",
+			"percent": "-15.49",
+			"start": "2022-06-17T09:51:04.895103",
+			"finish": "2022-06-17T09:51:42.926046"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "48.84",
+			"expected": "55.00",
+			"percent": "-11.20",
+			"start": "2022-06-17T09:51:42.926142",
+			"finish": "2022-06-17T09:52:31.767524"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "21.29",
+			"expected": "22.00",
+			"percent": "-3.22",
+			"start": "2022-06-17T09:52:31.767945",
+			"finish": "2022-06-17T09:52:53.059056"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "11.54",
+			"expected": "60.00",
+			"percent": "-80.76",
+			"start": "2022-06-17T09:52:53.059420",
+			"finish": "2022-06-17T09:53:04.601447"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "96.97",
+			"expected": "45.00",
+			"percent": "115.50",
+			"start": "2022-06-17T09:51:24.914667",
+			"finish": "2022-06-17T09:53:01.887633"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "67.26",
+			"expected": "55.00",
+			"percent": "22.29",
+			"start": "2022-06-17T09:53:01.887833",
+			"finish": "2022-06-17T09:54:09.149655"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "28.88",
+			"expected": "22.00",
+			"percent": "31.26",
+			"start": "2022-06-17T09:54:09.149950",
+			"finish": "2022-06-17T09:54:38.026509"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "14.24",
+			"expected": "60.00",
+			"percent": "-76.27",
+			"start": "2022-06-17T09:54:38.026956",
+			"finish": "2022-06-17T09:54:52.265081"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "83.77",
+			"expected": "45.00",
+			"percent": "86.16",
+			"start": "2022-06-17T09:51:44.934833",
+			"finish": "2022-06-17T09:53:08.705733"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "60.60",
+			"expected": "55.00",
+			"percent": "10.18",
+			"start": "2022-06-17T09:53:08.705904",
+			"finish": "2022-06-17T09:54:09.303473"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "29.41",
+			"expected": "22.00",
+			"percent": "33.69",
+			"start": "2022-06-17T09:54:09.303749",
+			"finish": "2022-06-17T09:54:38.715080"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "13.42",
+			"expected": "60.00",
+			"percent": "-77.64",
+			"start": "2022-06-17T09:54:38.715485",
+			"finish": "2022-06-17T09:54:52.130672"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "67.34",
+			"expected": "45.00",
+			"percent": "49.64",
+			"start": "2022-06-17T09:52:04.954647",
+			"finish": "2022-06-17T09:53:12.291472"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "142.69",
+			"expected": "55.00",
+			"percent": "159.43",
+			"start": "2022-06-17T09:53:12.291568",
+			"finish": "2022-06-17T09:55:34.979552"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "21.11",
+			"expected": "22.00",
+			"percent": "-4.04",
+			"start": "2022-06-17T09:55:34.979748",
+			"finish": "2022-06-17T09:55:56.090937"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "9.82",
+			"expected": "60.00",
+			"percent": "-83.63",
+			"start": "2022-06-17T09:55:56.091209",
+			"finish": "2022-06-17T09:56:05.915647"
+		},
+		"logs": ""
+	}
+}]
+
+# Check start times
+
+jq '.[].GaiaDMPSetup.time.start' /tmp/test-results.txt 
+
+"2022-06-17T09:50:44.876463"
+"2022-06-17T09:51:04.895103"
+"2022-06-17T09:51:24.914667"
+"2022-06-17T09:51:44.934833"
+"2022-06-17T09:52:04.954647"
+
+
+    
+# -----------------------------------------------------
+# Run concurrent test
+# Users: 8
+# Delay_start: 30
+# Delay_notebook: 0
+# Delete Notebooks: True
+
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.227.238:8080",
+    False
+    ).run(
+        concurrent=True,
+        users=8,
+        delay_start=30,
+        delay_notebook=0,
+        delete=True
+        )
+EOF
+
+# Results
+
+[{
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "44.37",
+			"expected": "45.00",
+			"percent": "-1.41",
+			"start": "2022-06-17T11:45:33.131057",
+			"finish": "2022-06-17T11:46:17.498648"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "50.44",
+			"expected": "55.00",
+			"percent": "-8.28",
+			"start": "2022-06-17T11:46:17.498762",
+			"finish": "2022-06-17T11:47:07.942695"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "20.67",
+			"expected": "22.00",
+			"percent": "-6.04",
+			"start": "2022-06-17T11:47:07.943073",
+			"finish": "2022-06-17T11:47:28.613906"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "11.15",
+			"expected": "60.00",
+			"percent": "-81.42",
+			"start": "2022-06-17T11:47:28.614241",
+			"finish": "2022-06-17T11:47:39.761383"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "57.73",
+			"expected": "45.00",
+			"percent": "28.30",
+			"start": "2022-06-17T11:46:03.158646",
+			"finish": "2022-06-17T11:47:00.892007"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "79.09",
+			"expected": "55.00",
+			"percent": "43.79",
+			"start": "2022-06-17T11:47:00.892096",
+			"finish": "2022-06-17T11:48:19.977643"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "20.52",
+			"expected": "22.00",
+			"percent": "-6.72",
+			"start": "2022-06-17T11:48:19.978196",
+			"finish": "2022-06-17T11:48:40.500307"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "9.95",
+			"expected": "60.00",
+			"percent": "-83.42",
+			"start": "2022-06-17T11:48:40.501059",
+			"finish": "2022-06-17T11:48:50.451489"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "78.76",
+			"expected": "45.00",
+			"percent": "75.03",
+			"start": "2022-06-17T11:46:33.190966",
+			"finish": "2022-06-17T11:47:51.953328"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "102.65",
+			"expected": "55.00",
+			"percent": "86.64",
+			"start": "2022-06-17T11:47:51.953416",
+			"finish": "2022-06-17T11:49:34.606778"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "21.06",
+			"expected": "22.00",
+			"percent": "-4.30",
+			"start": "2022-06-17T11:49:34.607365",
+			"finish": "2022-06-17T11:49:55.662392"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "9.89",
+			"expected": "60.00",
+			"percent": "-83.51",
+			"start": "2022-06-17T11:49:55.663317",
+			"finish": "2022-06-17T11:50:05.557579"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "118.40",
+			"expected": "45.00",
+			"percent": "163.11",
+			"start": "2022-06-17T11:47:03.150826",
+			"finish": "2022-06-17T11:49:01.550136"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "106.71",
+			"expected": "55.00",
+			"percent": "94.01",
+			"start": "2022-06-17T11:49:01.550278",
+			"finish": "2022-06-17T11:50:48.256240"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "21.71",
+			"expected": "22.00",
+			"percent": "-1.30",
+			"start": "2022-06-17T11:50:48.256576",
+			"finish": "2022-06-17T11:51:09.970381"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "9.82",
+			"expected": "60.00",
+			"percent": "-83.63",
+			"start": "2022-06-17T11:51:09.970937",
+			"finish": "2022-06-17T11:51:19.793119"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "162.24",
+			"expected": "45.00",
+			"percent": "260.54",
+			"start": "2022-06-17T11:47:33.230647",
+			"finish": "2022-06-17T11:50:15.472685"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "105.61",
+			"expected": "55.00",
+			"percent": "92.03",
+			"start": "2022-06-17T11:50:15.472785",
+			"finish": "2022-06-17T11:52:01.087471"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "18.50",
+			"expected": "22.00",
+			"percent": "-15.92",
+			"start": "2022-06-17T11:52:01.087915",
+			"finish": "2022-06-17T11:52:19.585225"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "10.07",
+			"expected": "60.00",
+			"percent": "-83.22",
+			"start": "2022-06-17T11:52:19.585517",
+			"finish": "2022-06-17T11:52:29.656113"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "133.69",
+			"expected": "45.00",
+			"percent": "197.09",
+			"start": "2022-06-17T11:48:03.230682",
+			"finish": "2022-06-17T11:50:16.921729"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "167.65",
+			"expected": "55.00",
+			"percent": "204.81",
+			"start": "2022-06-17T11:50:16.921817",
+			"finish": "2022-06-17T11:53:04.567031"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "27.73",
+			"expected": "22.00",
+			"percent": "26.06",
+			"start": "2022-06-17T11:53:04.567240",
+			"finish": "2022-06-17T11:53:32.300118"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "10.98",
+			"expected": "60.00",
+			"percent": "-81.70",
+			"start": "2022-06-17T11:53:32.300409",
+			"finish": "2022-06-17T11:53:43.278268"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "247.10",
+			"expected": "45.00",
+			"percent": "449.11",
+			"start": "2022-06-17T11:48:33.231847",
+			"finish": "2022-06-17T11:52:40.331338"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "109.83",
+			"expected": "55.00",
+			"percent": "99.69",
+			"start": "2022-06-17T11:52:40.331425",
+			"finish": "2022-06-17T11:54:30.159983"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "23.84",
+			"expected": "22.00",
+			"percent": "8.35",
+			"start": "2022-06-17T11:54:30.160518",
+			"finish": "2022-06-17T11:54:53.997616"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "9.91",
+			"expected": "60.00",
+			"percent": "-83.48",
+			"start": "2022-06-17T11:54:53.998152",
+			"finish": "2022-06-17T11:55:03.911561"
+		},
+		"logs": ""
+	}
+}, {
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "224.72",
+			"expected": "45.00",
+			"percent": "399.38",
+			"start": "2022-06-17T11:49:03.231076",
+			"finish": "2022-06-17T11:52:47.952018"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "61.73",
+			"expected": "55.00",
+			"percent": "12.24",
+			"start": "2022-06-17T11:52:47.952109",
+			"finish": "2022-06-17T11:53:49.683404"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "30.21",
+			"expected": "22.00",
+			"percent": "37.30",
+			"start": "2022-06-17T11:53:49.683912",
+			"finish": "2022-06-17T11:54:19.889274"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "10.36",
+			"expected": "60.00",
+			"percent": "-82.74",
+			"start": "2022-06-17T11:54:19.889595",
+			"finish": "2022-06-17T11:54:30.247540"
+		},
+		"logs": ""
+	}
+}]
+
+# Check start times
+
+jq '.[].GaiaDMPSetup.time.start' /tmp/test-results.txt
+
+"2022-06-17T11:45:33.131057"
+"2022-06-17T11:46:03.158646"
+"2022-06-17T11:46:33.190966"
+"2022-06-17T11:47:03.150826"
+"2022-06-17T11:47:33.230647"
+"2022-06-17T11:48:03.230682"
+"2022-06-17T11:48:33.231847"
+"2022-06-17T11:49:03.231076"
+
+
+    
+# -----------------------------------------------------
+# Run test with a Zeppelin URL with a trailing slash
+# Users: 1
+# Delay_start: 0
+# Delay_notebook: 0
+# Delete Notebooks: True
+
+
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.227.238:8080/",
+    False
+    ).run(
+        concurrent=False,
+        users=1,
+        delay_start=0,
+        delay_notebook=0,
+        delete=True
+        )
+EOF
+
+# Results
+# Success
+
+ [{
+ 	"GaiaDMPSetup": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "39.12",
+ 			"expected": "45.00",
+ 			"percent": "-13.06",
+ 			"start": "2022-06-17T12:02:19.348246",
+ 			"finish": "2022-06-17T12:02:58.470219"
+ 		},
+ 		"logs": ""
+ 	},
+ 	"Mean_proper_motions_over_the_sky": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "42.90",
+ 			"expected": "55.00",
+ 			"percent": "-22.00",
+ 			"start": "2022-06-17T12:02:58.470324",
+ 			"finish": "2022-06-17T12:03:41.368567"
+ 		},
+ 		"logs": ""
+ 	},
+ 	"Source_counts_over_the_sky.json": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "SLOW",
+ 			"elapsed": "26.42",
+ 			"expected": "22.00",
+ 			"percent": "20.09",
+ 			"start": "2022-06-17T12:03:41.369016",
+ 			"finish": "2022-06-17T12:04:07.788475"
+ 		},
+ 		"logs": ""
+ 	},
+ 	"Library_Validation.json": {
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "12.10",
+ 			"expected": "60.00",
+ 			"percent": "-79.83",
+ 			"start": "2022-06-17T12:04:07.788747",
+ 			"finish": "2022-06-17T12:04:19.889529"
+ 		},
+ 		"logs": ""
+ 	}
+ }]
+ 
+ 
+    
+# -----------------------------------------------------
+# Run test with delay on each notebook
+# Users: 1
+# Delay_start: 0
+# Delay_notebook: 10
+# Delete Notebooks: True
+
+
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.227.238:8080/",
+    False
+    ).run(
+        concurrent=False,
+        users=1,
+        delay_start=0,
+        delay_notebook=10,
+        delete=True
+        )
+EOF
+ 
+ # Results
+ 
+ [{
+	"GaiaDMPSetup": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "40.13",
+			"expected": "45.00",
+			"percent": "-10.83",
+			"start": "2022-06-17T12:06:53.553915",
+			"finish": "2022-06-17T12:07:33.681560"
+		},
+		"logs": ""
+	},
+	"Mean_proper_motions_over_the_sky": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "SLOW",
+			"elapsed": "65.71",
+			"expected": "55.00",
+			"percent": "19.47",
+			"start": "2022-06-17T12:07:43.690819",
+			"finish": "2022-06-17T12:08:49.400184"
+		},
+		"logs": ""
+	},
+	"Source_counts_over_the_sky.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "19.55",
+			"expected": "22.00",
+			"percent": "-11.15",
+			"start": "2022-06-17T12:08:59.406708",
+			"finish": "2022-06-17T12:09:18.953103"
+		},
+		"logs": ""
+	},
+	"Library_Validation.json": {
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"time": {
+			"result": "FAST",
+			"elapsed": "25.41",
+			"expected": "60.00",
+			"percent": "-57.65",
+			"start": "2022-06-17T12:09:28.962671",
+			"finish": "2022-06-17T12:09:54.374882"
+		},
+		"logs": ""
+	}
+}]
+ 
+# Not sure how to validate that this works, as the notebooks don't all start at the same time anyway for a given user.
+
+
+    
+# -----------------------------------------------------
+# Stop zeppelin and Run test, to see if we get meaningfull feedback
+# Users: 1
+# Delay_start: 0
+# Delay_notebook: 0
+# Delete Notebooks: True
+
+
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.227.238:8080/",
+    False
+    ).run(
+        concurrent=False,
+        users=1,
+        delay_start=0,
+        delay_notebook=10,
+        delete=True
+        )
+
+EOF
+
+python3 /tmp/testprog.py | tee /tmp/test-results.txt
+
+# Result:
+
+Exception encountered while trying to create a notebook: /tmp/7JN2WBGP5I.json for user in config: /tmp/user.yml
+HTTPConnectionPool(host='128.232.227.238', port=8080): Max retries exceeded with url: /api/login (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7fd0d25f4880>: Failed to establish a new connection: [Errno 111] Connection refused'))
+
+Exception encountered while trying to create a notebook: /tmp/C1UJTCPMXB.json for user in config: /tmp/user.yml
+HTTPConnectionPool(host='128.232.227.238', port=8080): Max retries exceeded with url: /api/login (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7f1cc1db0880>: Failed to establish a new connection: [Errno 111] Connection refused'))
+
+Exception encountered while trying to create a notebook: /tmp/MJ26A8XLYP.json for user in config: /tmp/user.yml
+HTTPConnectionPool(host='128.232.227.238', port=8080): Max retries exceeded with url: /api/login (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7fd20c7f0880>: Failed to establish a new connection: [Errno 111] Connection refused'))
+
+Exception encountered while trying to create a notebook: /tmp/I0EZRUTY3Y.json for user in config: /tmp/user.yml
+HTTPConnectionPool(host='128.232.227.238', port=8080): Max retries exceeded with url: /api/login (Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x7fa7581f0880>: Failed to establish a new connection: [Errno 111] Connection refused'))
+
+[{"GaiaDMPSetup": {"result": "FAIL", "outputs": {"valid": true}, "time": {"result": "FAST", "elapsed": "2.28", "expected": "45.00", "percent": "-94.93", "start": "2022-06-17T12:15:05.706600", "finish": "2022-06-17T12:15:07.987354"}, "logs": ""}, "Mean_proper_motions_over_the_sky": {"result": "FAIL", "outputs": {"valid": true}, "time": {"result": "FAST", "elapsed": "1.29", "expected": "55.00", "percent": "-97.66", "start": "2022-06-17T12:15:17.994824", "finish": "2022-06-17T12:15:19.283176"}, "logs": ""}, "Source_counts_over_the_sky.json": {"result": "FAIL", "outputs": {"valid": true}, "time": {"result": "FAST", "elapsed": "2.83", "expected": "22.00", "percent": "-87.12", "start": "2022-06-17T12:15:29.290719", "finish": "2022-06-17T12:15:32.123839"}, "logs": ""}, "Library_Validation.json": {"result": "FAIL", "outputs": {"valid": true}, "time": {"result": "FAST", "elapsed": "1.91", "expected": "60.00", "percent": "-96.82", "start": "2022-06-17T12:15:42.133174", "finish": "2022-06-17T12:15:44.042185"}, "logs": ""}}]
+
+
+

@@ -1,0 +1,1231 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Try to find out more about the limits on concurrent users.
+        Follow on from yesterda's notes 20220614-01-concurrent-tests.txt.
+
+    Result:
+
+        Identified a number of limits and race conditions.
+
+            Race condition limits creating Interpreter process
+            https://github.com/wfau/aglais/issues/778
+
+            Race condition triggers ConcurrentModificationException in notebook handler
+            https://github.com/wfau/aglais/issues/779
+
+            Fixed limit to number of ports for Spark UI
+            https://github.com/wfau/aglais/issues/780
+
+            Active SparkContexts block the Yarn Application queue
+            https://github.com/wfau/aglais/issues/781
+
+            Too many notebooks causes Zeppelin to fail.
+            https://github.com/wfau/aglais/issues/783
+
+
+# -----------------------------------------------------
+# Create our benchmark script.
+#[root@ansibler]
+
+    cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print(
+"""
+{{
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }},
+\"output\": {{
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+print(
+    "---start---"
+    )
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+print(
+    "---end---"
+    )
+print(
+"""
+    }
+}
+"""
+    )
+EOF
+
+    chmod 'a+x' /tmp/run-benchmark.py
+
+
+# -----------------------------------------------------
+# Create our filter function.
+# https://github.com/wfau/aglais/issues/602
+#[root@ansibler]
+
+    filter-results()
+        {
+        local testname=${1:?'testname required'}
+        sed "
+            /^--*start--*/,/^--*end--*/ {
+                /^--*start/,/^--* Test Result/ {
+                    /Test Result/ ! {
+                        d
+                        }
+                    /Test Result/ {
+                        s/^.*Test Result: \[\(.*\)\].*$/'testcode': '\1',/
+                        a \"threads\":
+                        }
+                    }
+                s/\"/'/g
+                s/'\(-\{0,1\}[0-9.]\{1,\}\)'/\1/g
+                s/:[[:space:]]*\([a-zA-Z]\{1,\}\)\([,}]\)/:'\1'\2/g
+                s/:[[:space:]]*\([,}]\),/: ''\1/g
+                s/'/\"/g
+                }
+            /^--*end--*/ {
+                d
+                }
+            " \
+            "/tmp/results/${testname:?}.txt" \
+        | tee "/tmp/results/${testname:?}.json" \
+        | jq  '
+              .output.threads[] | keys as $x | [ $x[] as $y | {name: $y, value: .[$y].result, time: .[$y].time.elapsed , start: .[$y].time.start, finish: .[$y].time.finish } ]
+              '
+        }
+
+
+# -----------------------------------------------------
+# Create our test-loop function.
+#[root@ansibler]
+
+    test-loop()
+        {
+        local usercount=${1:?'usercount required'}
+        local loopcount=${2:?'loopcount required'}
+        local looppause=${3:-10}
+        local delaystart=${4:-1}
+        local delaynotebook=${5:-1}
+
+        rm -f /tmp/results/*
+
+cat << EOF
+    {
+    "usercount": "${usercount}",
+    "loopcount": "${loopcount}",
+    "looppause": "${looppause}",
+    "delaystart": "${delaystart}",
+    "delaynotebook": "${delaynotebook}",
+    "iterations": [
+EOF
+
+        local comma=''
+        for i in $(seq 0 $((loopcount - 1)))
+        do
+
+            testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+
+cat << EOF
+            ${comma}
+            {
+            "iteration": ${i},
+            "testname": "${testname}",
+            "threads":
+EOF
+
+            sleep "${looppause}"
+
+            /tmp/run-benchmark.py \
+                "${endpoint:?}" \
+                "${testconfig:?}" \
+                "${testusers:?}" \
+                "${usercount:?}" \
+                "${delaystart:?}" \
+                "${delaynotebook:?}" \
+            > "/tmp/results/${testname:?}.txt"
+
+            filter-results "${testname:?}"
+
+cat << EOF
+            }
+EOF
+            comma=','
+
+        done
+
+cat << EOF
+        ]
+    }
+EOF
+        }
+
+
+# -----------------------------------------------------
+# Test with 6 users doing 50 loops.
+#[root@ansibler]
+
+    test-loop 6 50 \
+    | tee /tmp/test-loop.json
+
+    jq '.' /tmp/test-loop.json
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-06-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-06-01.txt:------------ Test Result: [PASS] ------------
+    >   ....
+    >   ....
+    >   /tmp/results/multi-user-06-48.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-06-49.txt:------------ Test Result: [PASS] ------------
+
+
+# -----------------------------------------------------
+# Test with 6 users doing 50 loops.
+#[root@ansibler]
+
+    test-loop 6 50 \
+    | tee /tmp/test-loop.json
+
+    jq '.' /tmp/test-loop.json
+
+    #
+    # 6 users is fine.
+    # Adding a 7th user by logging in to the Zeppelin UI and running notebooks manually caused the system to lock up.
+    # All applications in the list are state ACCEPTED.
+    # http://master01:8088/cluster/apps
+    #
+    # Running some notenooks as the 7th user was fine.
+    # Could be coincidence that the lock up occurred when I ran the [Random Forrest classifier] notebook.
+    # Could be just running any notebook at that point would have caused the lockup.
+    #
+
+    >   ....
+    >   [Wed Jun 15 10:04:03 +0000 2022] Application is Activated, waiting for resources to be assigned for AM.
+    >       Details : AM Partition = <DEFAULT_PARTITION>
+    >               Partition Resource = <memory:258048, vCores:156>
+    >               Queue's Absolute capacity = 100.0 %
+    >               Queue's Absolute used capacity = 99.60318 %
+    >               Queue's Absolute max capacity = 100.0 %
+    >               Queue's capacity (absolute resource) = <memory:258048, vCores:156>
+    >               Queue's used capacity (absolute resource) = <memory:257024, vCores:32>
+    >               Queue's max capacity (absolute resource) = <memory:258048, vCores:156> ;
+    >   ....
+
+    #
+    # Looks like number of cores is fine, but we have reached the limit for memory.
+    # Available 258048
+    # Used      257024
+    #
+
+    #
+    # Now we know how to cause it.
+    # How do we fix it ?
+    #
+    # Um .... I went browsing Reddit for, er, stuff, and when I came back, it was working again.
+    # So perhaps just waiting will free it if/when one of them times out ?
+    #
+    # 6 users running again ..
+    # Logged in as the 7th, looking at [Random Forrest classifier] notebook.
+    # Clear all cells.
+    # Run all cells ..
+    #
+
+    #
+    # Running with 6 users is fine.
+    # Running with 7 users - borderline, some jobs delayed.
+    # Running with 8 users fails.
+    #
+
+
+
+# -----------------------------------------------------
+# Tailing the spark interpreter logs for a user.
+#[user@zeppelin]
+
+    tail -f zeppelin-interpreter-spark-Mavaca-Mavaca-fedora-iris-gaia-blue-20220613-zeppelin.log
+
+    >   ....
+    >    INFO [2022-06-15 13:32:00,996] ({Thread-47} Logging.scala[logInfo]:57) - Starting job: hasNext at NativeMethodAccessorImpl.java:0
+    >    INFO [2022-06-15 13:32:01,014] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Got job 0 (hasNext at NativeMethodAccessorImpl.java:0) with 1 output partitions
+    >    INFO [2022-06-15 13:32:01,015] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Final stage: ResultStage 0 (hasNext at NativeMethodAccessorImpl.java:0)
+    >    INFO [2022-06-15 13:32:01,016] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Parents of final stage: List()
+    >    INFO [2022-06-15 13:32:01,017] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Missing parents: List()
+    >    INFO [2022-06-15 13:32:01,022] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Submitting ResultStage 0 (MapPartitionsRDD[7] at toLocalIterator at NativeMethodAccessorImpl.java:0), which has no missing parents
+    >    INFO [2022-06-15 13:32:01,068] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Block broadcast_0 stored as values in memory (estimated size 4.7 KiB, free 30.5 GiB)
+    >    INFO [2022-06-15 13:32:01,114] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Block broadcast_0_piece0 stored as bytes in memory (estimated size 2.5 KiB, free 30.5 GiB)
+    >    INFO [2022-06-15 13:32:01,117] ({dispatcher-BlockManagerMaster} Logging.scala[logInfo]:57) - Added broadcast_0_piece0 in memory on zeppelin:41313 (size: 2.5 KiB, free: 30.5 GiB)
+    >    INFO [2022-06-15 13:32:01,120] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Created broadcast 0 from broadcast at DAGScheduler.scala:1388
+    >    INFO [2022-06-15 13:32:01,139] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Submitting 1 missing tasks from ResultStage 0 (MapPartitionsRDD[7] at toLocalIterator at NativeMethodAccessorImpl.java:0) (first 15 tasks are for partitions Vector(0))
+    >    INFO [2022-06-15 13:32:01,140] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Adding task set 0.0 with 1 tasks resource profile 0
+    >    INFO [2022-06-15 13:32:01,166] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Added task set TaskSet_0.0 tasks to pool default
+    >    WARN [2022-06-15 13:32:16,167] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:32:31,166] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:32:46,167] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:33:01,167] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:33:16,168] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:33:31,166] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:33:46,169] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:34:01,166] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:34:16,169] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:34:31,166] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:34:46,167] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:35:01,167] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:35:16,169] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-15 13:35:31,167] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >   ....
+
+    #
+    # 4 jobs are RUNNING .. including the RandomForestClassifier notebook for Hamar via UI.
+    # 1 job for Masonania is stuck in ACCEPTED.
+    # RandomForestClassifier finishes and resources become available to the other jobns.
+    #
+    # Takes about 10 min for the system to get back to normal.
+    #
+
+    >   ....
+    >    INFO [2022-06-15 13:47:19,283] ({task-result-getter-3} Logging.scala[logInfo]:57) - Finished task 195.0 in stage 9.0 (TID 7255) in 1006 ms on worker02 (executor 17) (200/200)
+    >    INFO [2022-06-15 13:47:19,283] ({task-result-getter-3} Logging.scala[logInfo]:57) - Removed TaskSet 9.0, whose tasks have all completed, from pool default
+    >    INFO [2022-06-15 13:47:19,283] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - ResultStage 9 (collect at <stdin>:17) finished in 2.309 s
+    >    INFO [2022-06-15 13:47:19,283] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Job 6 is finished. Cancelling potential speculative or zombie tasks for this job
+    >    INFO [2022-06-15 13:47:19,283] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Killing all running tasks in stage 9: Stage finished
+    >    INFO [2022-06-15 13:47:19,284] ({Thread-47} Logging.scala[logInfo]:57) - Job 6 finished: collect at <stdin>:17, took 8.587013 s
+    >    WARN [2022-06-15 13:47:20,340] ({Thread-47} PooledRemoteClient.java[releaseBrokenClient]:80) - release broken client
+    >    WARN [2022-06-15 13:47:20,341] ({Thread-47} PooledRemoteClient.java[releaseBrokenClient]:80) - release broken client
+    >    WARN [2022-06-15 13:47:20,341] ({Thread-47} PooledRemoteClient.java[releaseBrokenClient]:80) - release broken client
+    >   ....
+
+    #
+    # The Spark session for Hamar is still listed as RUNNING.
+    # Started [10:18:37]
+    # It is listed as RUNNING, but it doesn't seem to be taking up that many resources.
+    # All 6 test users are getting on with their work ..
+    #
+
+
+# -----------------------------------------------------
+# Check the results ...
+#[root@ansibler]
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-06-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-06-01.txt:------------ Test Result: [PASS] ------------
+    >   ....
+    >   ....
+    >   /tmp/results/multi-user-06-48.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-06-49.txt:------------ Test Result: [PASS] ------------
+
+
+    #
+    # All 50 loops completed.
+    # The RandomForestClassifier notebook is still open in the UI.
+    # Corresponding app is still listed as RUNNING in Hadoop.
+    # http://master01:8088/cluster/apps/RUNNING
+    #
+
+
+
+# -----------------------------------------------------
+# Test with 7 users doing 5 loops.
+#[root@ansibler]
+
+    test-loop 7 5 \
+    | tee /tmp/test-loop.json
+
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-07-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-07-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-07-02.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-07-03.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-07-04.txt:------------ Test Result: [PASS] ------------
+
+    #
+    # Survives the run, all tests PASS.
+    # The corresponding Hadoop/Yarn applications have all been deleted.
+    #
+    # Login via the Zeppelin UI (left from previous daty) still has a corresponding Hadoop/Yarn application listed as RUNNING.
+    # Left for >12 hrs, the Hadoop/Yarn application is still listed as RUNNING.
+    #
+    # Cleared all the cells and ran the RandomForestClassifier notebook again.
+    # RandomForestClassifier notebook completed
+    # Running the RandomForestClassifier notebook uses the same Hadoop/Yarn application again.
+    # Hadoop/Yarn application has been listed as RUNNING since the notebook first started.
+    #
+
+# -----------------------------------------------------
+# Test with 7 users doing 5 loops.
+#[root@ansibler]
+
+    test-loop 7 5 \
+    | tee /tmp/test-loop.json
+
+    #
+    # ... wait until they show up in the Hadoop/Yarn application queue listed as RUNNING.
+    # AND then run the RandomForestClassifier via the Zeppelin UI.
+    #
+
+    #
+    # Not all the new applications get listed as RUNNING.
+    # Two of the new applications are listed as ACCEPTED.
+    #
+    # The the RandomForestClassifier jumped the queue by
+
+    #
+    # Start to see resource warning in the logs ..
+
+    tail -f zeppelin-interpreter-spark-Mavaca-Mavaca-fedora-iris-gaia-blue-20220613-zeppelin.log
+
+    >   ....
+    >
+    >    WARN [2022-06-16 10:21:13,281] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-16 10:21:28,280] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-16 10:21:43,281] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-16 10:21:58,281] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-16 10:22:13,280] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-16 10:22:28,280] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-16 10:22:43,281] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-16 10:22:58,281] ({Timer-0} Logging.scala[l....
+
+    #
+    # ACCEPTED applications have the same diagnostics message.
+    # http://master01:8088/cluster/app/application_1655122472463_1100
+
+    >   [Thu Jun 16 10:20:30 +0000 2022] Application is Activated, waiting for resources to be assigned for AM.
+    >       Details : AM Partition = <DEFAULT_PARTITION>
+    >       Partition Resource = <memory:258048, vCores:156>
+    >       Queue's Absolute capacity = 100.0 %
+    >       Queue's Absolute used capacity = 85.31746 %
+    >       Queue's Absolute max capacity = 100.0 %
+    >       Queue's capacity (absolute resource) = <memory:258048, vCores:156>
+    >       Queue's used capacity (absolute resource) = <memory:220160, vCores:30>
+    >       Queue's max capacity (absolute resource) = <memory:258048, vCores:156>
+
+
+    #
+    # 11:44 Still 2 applications held at ACCEPTED
+    #       Only 4 applications RUNNING (one of which is the RandomForestClassifier).
+    #       RandomForestClassifier is running, but very slowly.
+    #
+
+    # 11:45 RandomForestClassifier is still processing the first select [Raw catalogue with selected columns] cell
+    #       [Raw catalogue with selected columns] cell has been running for > 20min.
+
+    # 11:46 Zeppelin UI pop-up:
+
+        "Note is now running sequentially. Can not be performed: COMMIT_PARAGRAPH"
+        [Close]
+
+    >   ....
+    >   ERROR [2022-06-16 10:45:47,994] ({qtp686466458-621448} NotebookServer.java[onMessage]:463)
+    >       Can't handle message:
+    >           {
+    >           "op":"COMMIT_PARAGRAPH",
+    >           "data":{
+    >               "id":"20201013-132418_278702125",
+    >               "noteId":"2H7PSR6CB"
+    >   "title":"Raw catalogue with selected columns"
+    >   "paragraph": "..."
+    >   ....
+
+    # 11:48 Only 4 applications RUNNING (one of which is the RandomForestClassifier).
+    #       Still 2 applications held at ACCEPTED
+
+    # 11:49 Click the [Close] button
+
+    # 11:54 RandomForestClassifier is still running, reached [Train up the Random Forrest]
+
+    #
+    # I think the COMMIT_PARAGRAPH error message is bogus.
+    # It is triggered by a Ctrl^C on the cell title, might be Zeppelin trying to save (non-existrient) changes the the note title while the notebook is running.
+    #
+
+    # 11:58 RandomForestClassifier completes.
+    #       Applications held at ACCEPTED move to RUNNING.
+    #       Things get back to normal.
+
+
+    # RandomForestClassifier took longer that normal?
+    # 11:23:00 .. 11:56:44
+
+    # 12:04 RandomForestClassifier has finished, but application is still listed as RUNNING.
+    #       Stress tests has moved on to the second iteration.
+    #       Looks like it is normal to have 2 applications waiting as ACCEPTEDa and 6 applications RUNNING.
+    #       RandomForestClassifier is taking up a RUNNING slot even though it has finmished.
+
+    #
+    # Test run completes.
+    #
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-07-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-07-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-07-02.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-07-03.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-07-04.txt:------------ Test Result: [PASS] ------------
+
+    #
+    # Having the test runs delete their notebooks frees up the Hadoop/Yarn applications queue.
+    #
+
+# -----------------------------------------------------
+# Test with 10 users doing 5 loops.
+#[root@ansibler]
+
+    test-loop 10 5 \
+    | tee /tmp/test-loop.json
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-10-00.txt:------------ Test Result: [FAIL] ------------
+    >   /tmp/results/multi-user-10-01.txt:------------ Test Result: [FAIL] ------------
+    >   /tmp/results/multi-user-10-02.txt:------------ Test Result: [FAIL] ------------
+    >   /tmp/results/multi-user-10-03.txt:------------ Test Result: [FAIL] ------------
+    >   /tmp/results/multi-user-10-04.txt:------------ Test Result: [FAIL] ------------
+
+    #
+    # OK, that was my fault.
+    #
+
+    >   ....
+    >   Exception encountered while trying to create a notebook: /tmp/NVIZBFZXAO.json for user in config: /tmp/user9.yml
+    >   [Errno 2] No such file or directory: '/tmp/user9.yml'
+    >   ....
+
+
+# -----------------------------------------------------
+# Create some test users.
+# TODO Move the create-user-tools to ansible/client/bin.
+# TODO Add ansible/client/bin to the client PATH.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    testnames01=(
+        Rhaelhall
+        Fipa        -
+        Mythicson   -
+        Balline     -
+        Hiness      -
+        Anskelisia  -
+        Iflee       -
+        Mischiellis -
+        Kellaug     -
+        Liphima     -
+        Jarters     -
+        Williazoga  -
+        Carrovieus  -
+        Pierione    -
+        Hayesphasia -
+        Collinotter -
+        Adazoga     -
+        Harinabla
+        Sanderlotus
+        Bellgrin
+        )
+
+    createarrayusers \
+        "${testnames01[@]}" \
+    | tee /tmp/testusers-01.json \
+    | jq '[ .users[] | {"name": .shirouser.name, "pass": .shirouser.pass} ]'
+
+    >   [
+    >     {
+    >       "name": "Rhaelhall",
+    >       "pass": "ohxohT9fiew2ui1OhchiC0seeyeel9"
+    >     },
+    >     {
+    >       "name": "Fipa",
+    >       "pass": "aePhei7zei4gaeM1ACaique5eir8ad"
+    >     },
+    >   ....
+    >   ....
+    >     {
+    >       "name": "Bellgrin",
+    >       "pass": "ieheNg3AiXohV8aed6aesh5sah5zou"
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Test with 10 users doing 5 loops.
+#[root@ansibler]
+
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/testusers-01.json
+
+    test-loop 10 5 \
+    | tee /tmp/test-loop.json
+
+    #
+    # Hadoop/Yarn lists show 6 applications RUNNING and 5 applications ACCEPTED
+    # 6 RUNNING and 4 ACCEPTED are from the test run, and the fith ACCEPTED is our login via Zeppelin GUI.
+    # If this runs to completion, then it suggests we have solved the issue for the test platform (delete the notebooks after test run).
+    # It will still be a problem for notebosk run via Zeppelin GUI, because they don't get released.
+    # TODO next - investigate setting the notebook expiry time.
+    #
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-10-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-10-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-10-02.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-10-03.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-10-04.txt:------------ Test Result: [PASS] ------------
+
+
+# -----------------------------------------------------
+# Test with all 19 users doing 5 loops.
+# (*) benchmarker always skips one account.
+#[root@ansibler]
+
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/testusers-01.json
+
+    test-loop 19 5 \
+    | tee /tmp/test-loop.json
+
+        #
+        # Goes quiet at the end of the first iteration.
+        # Nothing running, nothing in the queue, just .. nothing.
+        # First 16 test users FINISHED.
+        # No sign of the final 4 ...
+        #
+
+        Harinabla
+        Sanderlotus
+        Bellgrin
+
+
+# -----------------------------------------------------
+# Check the Spark interpreter log for one of the stalled users.
+#[root@ansibler]
+
+        less zeppelin-interpreter-spark-Harinabla-Harinabla-fedora-iris-gaia-blue-20220613-zeppelin.log
+
+    >    ....
+    >    INFO [2022-06-16 15:03:29,249] ({FIFOScheduler-interpreter_327761460-Worker-1} Logging.scala[logInfo]:57) - Registering OutputCommitCoordinator
+    >    INFO [2022-06-16 15:03:29,366] ({FIFOScheduler-interpreter_327761460-Worker-1} Log.java[initialized]:169) - Logging initialized @10988ms to org.sparkproject.jetty.util.log.Slf4jLog
+    >    INFO [2022-06-16 15:03:29,468] ({FIFOScheduler-interpreter_327761460-Worker-1} Server.java[doStart]:375) - jetty-9.4.40.v20210413; built: 2021-04-13T20:42:42.668Z; git: b881a572662e1943a14ae12e7e1207989f218b74; jvm 1.8.0_272-b10
+    >    INFO [2022-06-16 15:03:29,500] ({FIFOScheduler-interpreter_327761460-Worker-1} Server.java[doStart]:415) - Started @11121ms
+    >    WARN [2022-06-16 15:03:29,535] ({FIFOScheduler-interpreter_327761460-Worker-1} Logging.scala[logWarning]:69) - Service 'SparkUI' could not bind on port 4040. Attempting port 4041.
+    >    WARN [2022-06-16 15:03:29,535] ({FIFOScheduler-interpreter_327761460-Worker-1} Logging.scala[logWarning]:69) - Service 'SparkUI' could not bind on port 4041. Attempting port 4042.
+    >    ....
+    >    WARN [2022-06-16 15:03:29,540] ({FIFOScheduler-interpreter_327761460-Worker-1} Logging.scala[logWarning]:69) - Service 'SparkUI' could not bind on port 4054. Attempting port 4055.
+    >    WARN [2022-06-16 15:03:29,540] ({FIFOScheduler-interpreter_327761460-Worker-1} Logging.scala[logWarning]:69) - Service 'SparkUI' could not bind on port 4055. Attempting port 4056.
+    >   ERROR [2022-06-16 15:03:29,543] ({FIFOScheduler-interpreter_327761460-Worker-1} Logging.scala[logError]:94) - Failed to bind SparkUI
+    >   java.net.BindException: Failed to bind to /0.0.0.0:4056: Service 'SparkUI' failed after 16 retries (starting from 4040)! Consider explicitly setting the appropriate port for the service 'SparkUI' (for example spark.ui.port for SparkUI) to an available port or increasing spark.port.maxRetries.
+    >           at org.sparkproject.jetty.server.ServerConnector.openAcceptChannel(ServerConnector.java:349)
+    >           at org.sparkproject.jetty.server.ServerConnector.open(ServerConnector.java:310)
+    >           at org.sparkproject.jetty.server.AbstractNetworkConnector.doStart(AbstractNetworkConnector.java:80)
+    >           at org.sparkproject.jetty.server.ServerConnector.doStart(ServerConnector.java:234)
+    >           at org.sparkproject.jetty.util.component.AbstractLifeCycle.start(AbstractLifeCycle.java:73)
+    >           at org.apache.spark.ui.JettyUtils$.newConnector$1(JettyUtils.scala:302)
+    >           at org.apache.spark.ui.JettyUtils$.httpConnect$1(JettyUtils.scala:333)
+    >           at org.apache.spark.ui.JettyUtils$.$anonfun$startJettyServer$5(JettyUtils.scala:336)
+    >           at org.apache.spark.ui.JettyUtils$.$anonfun$startJettyServer$5$adapted(JettyUtils.scala:336)
+    >           at org.apache.spark.util.Utils$.$anonfun$startServiceOnPort$2(Utils.scala:2331)
+    >           at scala.collection.immutable.Range.foreach$mVc$sp(Range.scala:158)
+    >           at org.apache.spark.util.Utils$.startServiceOnPort(Utils.scala:2323)
+    >           at org.apache.spark.ui.JettyUtils$.startJettyServer(JettyUtils.scala:337)
+    >           at org.apache.spark.ui.WebUI.bind(WebUI.scala:146)
+    >           at org.apache.spark.SparkContext.$anonfun$new$11(SparkContext.scala:486)
+    >           at org.apache.spark.SparkContext.$anonfun$new$11$adapted(SparkContext.scala:486)
+    >           at scala.Option.foreach(Option.scala:407)
+    >           at org.apache.spark.SparkContext.<init>(SparkContext.scala:486)
+    >           at org.apache.spark.SparkContext$.getOrCreate(SparkContext.scala:2672)
+    >           at org.apache.spark.sql.SparkSession$Builder.$anonfun$getOrCreate$2(SparkSession.scala:945)
+    >           at scala.Option.getOrElse(Option.scala:189)
+    >           at org.apache.spark.sql.SparkSession$Builder.getOrCreate(SparkSession.scala:939)
+    >           at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+    >           at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+    >           at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    >           at java.lang.reflect.Method.invoke(Method.java:498)
+    >           at org.apache.zeppelin.spark.BaseSparkScalaInterpreter.spark2CreateContext(BaseSparkScalaInterpreter.scala:299)
+    >           at org.apache.zeppelin.spark.BaseSparkScalaInterpreter.createSparkContext(BaseSparkScalaInterpreter.scala:228)
+    >           at org.apache.zeppelin.spark.SparkScala212Interpreter.open(SparkScala212Interpreter.scala:88)
+    >           at org.apache.zeppelin.spark.SparkInterpreter.open(SparkInterpreter.java:121)
+    >           at org.apache.zeppelin.interpreter.LazyOpenInterpreter.open(LazyOpenInterpreter.java:70)
+    >           at org.apache.zeppelin.interpreter.Interpreter.getInterpreterInTheSameSessionByClassName(Interpreter.java:322)
+    >           at org.apache.zeppelin.interpreter.Interpreter.getInterpreterInTheSameSessionByClassName(Interpreter.java:333)
+    >           at org.apache.zeppelin.spark.PySparkInterpreter.open(PySparkInterpreter.java:90)
+    >           at org.apache.zeppelin.interpreter.LazyOpenInterpreter.open(LazyOpenInterpreter.java:70)
+    >           at org.apache.zeppelin.interpreter.remote.RemoteInterpreterServer$InterpretJob.jobRun(RemoteInterpreterServer.java:833)
+    >           at org.apache.zeppelin.interpreter.remote.RemoteInterpreterServer$InterpretJob.jobRun(RemoteInterpreterServer.java:741)
+    >           at org.apache.zeppelin.scheduler.Job.run(Job.java:172)
+    >           at org.apache.zeppelin.scheduler.AbstractScheduler.runJob(AbstractScheduler.java:132)
+    >           at org.apache.zeppelin.scheduler.FIFOScheduler.lambda$runJobInScheduler$0(FIFOScheduler.java:42)
+    >           at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    >           at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    >           at java.lang.Thread.run(Thread.java:748)
+    >    INFO [2022-06-16 15:03:29,545] ({ShutdownThread} RemoteInterpreterServer.java[run]:646) - Shutting down...
+
+    #
+    # £$%*& another failure mode
+    # TODO list all these in GitHub
+    #
+
+    #
+    # Possible cause :
+    # https://kontext.tech/article/525/fix-error-sparkui-failed-to-bind-sparkui
+    #   Spark configuration spark.ui.port can be used to specify the default port of Spark UI.
+    #   By default it is on port 4040.
+    #   If the port number is occupied by other programs, Spark will try to increase the port
+    #   number and try up to spark.port.maxRetries times.
+    #   By default, the value for spark.port.maxRetries is 16.
+
+    # https://spark.apache.org/docs/latest/configuration.html
+    # spark.port.maxRetries
+    #   Maximum number of retries when binding to a port before giving up.
+    #   When a port is given a specific value (non 0), each subsequent retry will increment the port used in the previous attempt by 1 before retrying.
+    #   This essentially allows it to try a range of ports from the start port specified to port + maxRetries.
+
+    #
+    # Looks like once it reaches 16 retries, it just gives up.
+    # Possibly the Spark job finishes with an error, but the test system doesn't catch it ?
+    # Either way, this places a hard limit on the number of separate  Spark contextx we can run.
+    #
+    # TODO Try setting this higher and see if the problem goes away.
+    #
+
+    #
+    # TODO If we need to allow a large port range this may have implications for firewalls ?
+    #
+
+# -----------------------------------------------------
+# Test with 5 users doing 5 loops.
+#[root@ansibler]
+
+    test-loop 1 5 \
+    | tee /tmp/test-loop.json
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-01-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-01-01.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-01-02.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-01-03.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-01-04.txt:------------ Test Result: [PASS] ------------
+
+# -----------------------------------------------------
+# Edit the Spark settings.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        vi /opt/spark/conf/spark-defaults.conf
+
+            spark.port.maxRetries  25
+
+# -----------------------------------------------------
+# Test with 19 users doing 2 loops.
+# (*) benchmarker always skips one account.
+#[root@ansibler]
+
+    test-loop 19 2 \
+    | tee /tmp/test-loop.json
+
+        #
+        # Still fails.
+        # Nothing is left active in Zeppelin, so I suspect the notebook failed, but the xx hasn't detected it.
+        # TODO Replicate and check the notebook status ..
+        #
+
+# -----------------------------------------------------
+# Re-start Zeppelin.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        zeppelin-daemon.sh restart
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Test with 19 users doing 2 loops.
+# (*) benchmarker always skips one account.
+#[root@ansibler]
+
+    test-loop 19 2 \
+    | tee /tmp/test-loop.json
+
+
+    #
+    # Hadoop/Yarn is allowing between 7 applications RUNNING.
+    # The rest are queued as ACCEPTED.
+    #
+
+# -----------------------------------------------------
+# Check the Spark interpreter log for one of the stalled users.
+#[root@ansibler]
+
+    pushd ${HOME}/zeppelin/logs
+
+        tail -f zeppelin-interpreter-spark-Harinabla-Harinabla-fedora-iris-gaia-blue-20220613-zeppelin.log
+
+    >    ....
+    >    INFO [2022-06-16 17:17:35,986] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Block broadcast_0 stored as values in memory (estimated size 4.7 KiB, free 30.5 GiB)
+    >    INFO [2022-06-16 17:17:36,026] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Block broadcast_0_piece0 stored as bytes in memory (estimated size 2.5 KiB, free 30.5 GiB)
+    >    INFO [2022-06-16 17:17:36,029] ({dispatcher-BlockManagerMaster} Logging.scala[logInfo]:57) - Added broadcast_0_piece0 in memory on zeppelin:38315 (size: 2.5 KiB, free: 30.5 GiB)
+    >    INFO [2022-06-16 17:17:36,031] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Created broadcast 0 from broadcast at DAGScheduler.scala:1388
+    >    INFO [2022-06-16 17:17:36,052] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Submitting 1 missing tasks from ResultStage 0 (MapPartitionsRDD[7] at toLocalIterator at NativeMethodAccessorImpl.java:0) (first 15 tasks are for partitions Vector(0))
+    >    INFO [2022-06-16 17:17:36,053] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Adding task set 0.0 with 1 tasks resource profile 0
+    >    INFO [2022-06-16 17:17:36,079] ({dag-scheduler-event-loop} Logging.scala[logInfo]:57) - Added task set TaskSet_0.0 tasks to pool default
+    >    WARN [2022-06-16 17:17:51,080] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-16 17:18:06,080] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    ....
+    >    ....
+    >    WARN [2022-06-16 17:20:36,080] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    WARN [2022-06-16 17:20:51,080] ({Timer-0} Logging.scala[logWarning]:69) - Initial job has not accepted any resources; check your cluster UI to ensure that workers are registered and have sufficient resources
+    >    INFO [2022-06-16 17:20:56,185] ({dispatcher-CoarseGrainedScheduler} Logging.scala[logInfo]:57) - Registered executor NettyRpcEndpointRef(spark-client://Executor) (10.10.2.198:45524) with ID 1,  ResourceProfileId 0
+    >    INFO [2022-06-16 17:20:56,188] ({spark-listener-group-executorManagement} Logging.scala[logInfo]:57) - New executor 1 has registered (new total is 2)
+    >    INFO [2022-06-16 17:20:56,307] ({dispatcher-BlockManagerMaster} Logging.scala[logInfo]:57) - Registering block manager worker06:45025 with 3.6 GiB RAM, BlockManagerId(1, worker06, 45025, None)
+    >    INFO [2022-06-16 17:20:56,776] ({dispatcher-CoarseGrainedScheduler} Logging.scala[logInfo]:57) - Starting task 0.0 in stage 0.0 (TID 0) (worker06, executor 1, partition 0, PROCESS_LOCAL, 4728 bytes) taskResourceAssignments Map()
+    >    INFO [2022-06-16 17:20:57,074] ({dispatcher-BlockManagerMaster} Logging.scala[logInfo]:57) - Added broadcast_0_piece0 in memory on worker06:45025 (size: 2.5 KiB, free: 3.6 GiB)
+    >    INFO [2022-06-16 17:20:57,536] ({task-result-getter-0} Logging.scala[logInfo]:57) - Finished task 0.0 in stage 0.0 (TID 0) in 771 ms on worker06 (executor 1) (1/1)
+    >    ....
+
+    >    ....
+    >    INFO [2022-06-16 17:24:29,156] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - Submitting application application_1655122472463_1291 to ResourceManager
+    >    INFO [2022-06-16 17:24:29,187] ({FIFOScheduler-interpreter_614510408-Worker-1} YarnClientImpl.java[submitApplication]:311) - Submitted application application_1655122472463_1291
+    >    INFO [2022-06-16 17:24:30,190] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - Application report for application_1655122472463_1291 (state: ACCEPTED)
+    >    INFO [2022-06-16 17:24:30,193] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) -
+    >            client token: N/A
+    >            diagnostics: [Thu Jun 16 17:24:29 +0000 2022] Application is added to the scheduler and is not yet activated. Queue's AM resource limit exceeded.  Details : AM Partition = <DEFAULT_PARTITION>; AM Resource Request = <memory:3072,
+    >    vCores:1>; Queue Resource Limit for AM = <memory:26624, vCores:1>; User AM Resource Limit of the queue = <memory:26624, vCores:1>; Queue AM Resource Usage = <memory:24576, vCores:8>;
+    >            ApplicationMaster host: N/A
+    >            ApplicationMaster RPC port: -1
+    >            queue: default
+    >            start time: 1655400269168
+    >            final status: UNDEFINED
+    >            tracking URL: http://master01:8088/proxy/application_1655122472463_1291/
+    >            user: Harinabla
+    >    INFO [2022-06-16 17:24:31,195] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - Application report for application_1655122472463_1291 (state: ACCEPTED)
+    >    INFO [2022-06-16 17:24:32,196] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - Application report for application_1655122472463_1291 (state: ACCEPTED)
+    >    ....
+    >    ....
+    >    INFO [2022-06-16 17:33:03,115] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - Application report for application_1655122472463_1291 (state: RUNNING)
+    >    INFO [2022-06-16 17:33:03,115] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) -
+    >   	 client token: N/A
+    >   	 diagnostics: N/A
+    >   	 ApplicationMaster host: 10.10.2.147
+    >   	 ApplicationMaster RPC port: -1
+    >   	 queue: default
+    >   	 start time: 1655400269168
+    >   	 final status: UNDEFINED
+    >   	 tracking URL: http://master01:8088/proxy/application_1655122472463_1291/
+    >   	 user: Harinabla
+    >    INFO [2022-06-16 17:33:03,117] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - Application application_1655122472463_1291 has started running.
+    >    INFO [2022-06-16 17:33:03,128] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - Successfully started service 'org.apache.spark.network.netty.NettyBlockTransferService' on port 46313.
+    >    INFO [2022-06-16 17:33:03,128] ({FIFOScheduler-interpreter_614510408-Worker-1} NettyBlockTransferService.scala[init]:81) - Server created on zeppelin:46313
+    >    INFO [2022-06-16 17:33:03,130] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - Using org.apache.spark.storage.RandomBlockReplicationPolicy for block replication policy
+    >    INFO [2022-06-16 17:33:03,140] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - Registering BlockManager BlockManagerId(driver, zeppelin, 46313, None)
+    >    INFO [2022-06-16 17:33:03,144] ({dispatcher-BlockManagerMaster} Logging.scala[logInfo]:57) - Registering block manager zeppelin:46313 with 30.5 GiB RAM, BlockManagerId(driver, zeppelin, 46313, None)
+    >    INFO [2022-06-16 17:33:03,148] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - Registered BlockManager BlockManagerId(driver, zeppelin, 46313, None)
+    >    INFO [2022-06-16 17:33:03,148] ({FIFOScheduler-interpreter_614510408-Worker-1} Logging.scala[logInfo]:57) - external shuffle service port = 7337
+    >    ....
+
+# -----------------------------------------------------
+# Check the test results.
+#[root@ansibler]
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-19-00.txt:------------ Test Result: [ERROR] ------------
+    >   /tmp/results/multi-user-19-01.txt:------------ Test Result: [PASS] ------------
+
+
+    #
+    # NOT what I was expecting ...
+    #
+
+    >   ....
+    >   [
+    >       {
+    >       'GaiaDMPSetup': {
+    >           'result': 'ERROR',
+    >           'outputs': {
+    >               'valid': True
+    >               },
+    >           'time': {
+    >               'result': 'FAST',
+    >               'elapsed': '4.40',
+    >               'expected': '45.00',
+    >               'percent': '-90.23',
+    >               'start': '2022-06-16T17:10:07.129116',
+    >               'finish': '2022-06-16T17:10:11.525329'
+    >               },
+    >           'logs': '
+    >               Unexpected exception: java.util.ConcurrentModificationException
+    >                   at java.util.HashMap$ValueSpliterator.forEachRemaining(HashMap.java:1633)
+    >                   at java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:482)
+    >                   at java.util.stream.AbstractPipeline.wrapAndCopyInto(AbstractPipeline.java:472)
+    >                   at java.util.stream.ReduceOps$ReduceOp.evaluateSequential(ReduceOps.java:708)
+    >                   at java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:234)
+    >                   at java.util.stream.ReferencePipeline.collect(ReferencePipeline.java:566)
+    >                   at org.apache.zeppelin.service.JobManagerService.getNoteJobInfoByUnixTime(JobManagerService.java:90)
+    >                   at org.apache.zeppelin.socket.NotebookServer.broadcastUpdateNoteJobInfo(NotebookServer.java:519)
+    >                   at org.apache.zeppelin.socket.NotebookServer.onStatusChange(NotebookServer.java:2007)
+    >                   at org.apache.zeppelin.socket.NotebookServer.onStatusChange(NotebookServer.java:105)
+    >                   at org.apache.zeppelin.scheduler.Job.setStatus(Job.java:141)
+    >                   at org.apache.zeppelin.notebook.Paragraph.setStatus(Paragraph.java:398)
+    >                   at org.apache.zeppelin.notebook.Paragraph.execute(Paragraph.java:349)
+    >                   at org.apache.zeppelin.notebook.Note.run(Note.java:873)
+    >                   at org.apache.zeppelin.service.NotebookService.runParagraph(NotebookService.java:390)
+    >                   at org.apache.zeppelin.rest.NotebookRestApi.runParagraph(NotebookRestApi.java:849)
+    >                   at sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+    >                   at sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+    >                   at sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    >                   at java.lang.reflect.Method.invoke(Method.java:498)
+    >                   at org.glassfish.jersey.server.model.internal.ResourceMethodInvocationHandlerFactory.lambda$static$0(ResourceMethodInvocationHandlerFactory.java:52)
+    >                   at org.glassfish.jersey.server.model.internal.AbstractJavaResourceMethodDispatcher$1.run(AbstractJavaResourceMethodDispatcher.java:124)
+    >                   at org.glassfish.jersey.server.model.internal.AbstractJavaResourceMethodDispatcher.invoke(AbstractJavaResourceMethodDispatcher.java:167)
+    >                   at org.glassfish.jersey.server.model.internal.JavaResourceMethodDispatcherProvider$ResponseOutInvoker.doDispatch(JavaResourceMethodDispatcherProvider.java:176)
+    >                   at org.glassfish.jersey.server.model.internal.AbstractJavaResourceMethodDispatcher.dispatch(AbstractJavaResourceMethodDispatcher.java:79)
+    >                   at org.glassfish.jersey.server.model.ResourceMethodInvoker.invoke(ResourceMethodInvoker.java:469)
+    >                   at org.glassfish.jersey.server.model.ResourceMethodInvoker.apply(ResourceMethodInvoker.java:391)
+    >                   at org.glassfish.jersey.server.model.ResourceMethodInvoker.apply(ResourceMethodInvoker.java:80)
+    >                   at org.glassfish.jersey.server.ServerRuntime$1.run(ServerRuntime.java:253)
+    >                   at org.glassfish.jersey.internal.Errors$1.call(Errors.java:248)
+    >                   at org.glassfish.jersey.internal.Errors$1.call(Errors.java:244)
+    >                   at org.glassfish.jersey.internal.Errors.process(Errors.java:292)
+    >                   at org.glassfish.jersey.internal.Errors.process(Errors.java:274)
+    >                   at org.glassfish.jersey.internal.Errors.process(Errors.java:244)
+    >                   at org.glassfish.jersey.process.internal.RequestScope.runInScope(RequestScope.java:265)
+    >                   at org.glassfish.jersey.server.ServerRuntime.process(ServerRuntime.java:232)
+    >                   at org.glassfish.jersey.server.ApplicationHandler.handle(ApplicationHandler.java:680)
+    >                   at org.glassfish.jersey.servlet.WebComponent.serviceImpl(WebComponent.java:394)
+    >                   at org.glassfish.jersey.servlet.WebComponent.service(WebComponent.java:346)
+    >                   at org.glassfish.jersey.servlet.ServletContainer.service(ServletContainer.java:366)
+    >                   at org.glassfish.jersey.servlet.ServletContainer.service(ServletContainer.java:319)
+    >                   at org.glassfish.jersey.servlet.ServletContainer.service(ServletContainer.java:205)
+    >                   at org.eclipse.jetty.servlet.ServletHolder.handle(ServletHolder.java:763)
+    >                   at org.eclipse.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1651)
+    >                   at org.apache.shiro.web.servlet.ProxiedFilterChain.doFilter(ProxiedFilterChain.java:61)
+    >                   at org.apache.shiro.web.servlet.AdviceFilter.executeChain(AdviceFilter.java:108)
+    >                   at org.apache.shiro.web.servlet.AdviceFilter.doFilterInternal(AdviceFilter.java:137)
+    >                   at org.apache.shiro.web.servlet.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:125)
+    >                   at org.apache.shiro.web.servlet.ProxiedFilterChain.doFilter(ProxiedFilterChain.java:66)
+    >                   at org.apache.shiro.web.servlet.AdviceFilter.executeChain(AdviceFilter.java:108)
+    >                   at org.apache.shiro.web.servlet.AdviceFilter.doFilterInternal(AdviceFilter.java:137)
+    >                   at org.apache.shiro.web.servlet.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:125)
+    >                   at org.apache.shiro.web.servlet.ProxiedFilterChain.doFilter(ProxiedFilterChain.java:66)
+    >                   at org.apache.shiro.web.servlet.AbstractShiroFilter.executeChain(AbstractShiroFilter.java:450)
+    >                   at org.apache.shiro.web.servlet.AbstractShiroFilter$1.call(AbstractShiroFilter.java:365)
+    >                   at org.apache.shiro.subject.support.SubjectCallable.doCall(SubjectCallable.java:90)
+    >                   at org.apache.shiro.subject.support.SubjectCallable.call(SubjectCallable.java:83)
+    >                   at org.apache.shiro.subject.support.DelegatingSubject.execute(DelegatingSubject.java:387)
+    >                   at org.apache.shiro.web.servlet.AbstractShiroFilter.doFilterInternal(AbstractShiroFilter.java:362)
+    >                   at org.apache.shiro.web.servlet.OncePerRequestFilter.doFilter(OncePerRequestFilter.java:125)
+    >                   at org.eclipse.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1638)
+    >                   at org.apache.zeppelin.server.CorsFilter.doFilter(CorsFilter.java:64)
+    >                   at org.eclipse.jetty.servlet.ServletHandler$CachedChain.doFilter(ServletHandler.java:1638)
+    >                   at org.eclipse.jetty.servlet.ServletHandler.doHandle(ServletHandler.java:567)
+    >                   at org.eclipse.jetty.server.handler.ScopedHandler.handle(ScopedHandler.java:143)
+    >                   at org.eclipse.jetty.security.SecurityHandler.handle(SecurityHandler.java:602)
+    >                   at org.eclipse.jetty.server.handler.HandlerWrapper.handle(HandlerWrapper.java:127)
+    >                   at org.eclipse.jetty.server.handler.ScopedHandler.nextHandle(ScopedHandler.java:235)
+    >                   at org.eclipse.jetty.server.session.SessionHandler.doHandle(SessionHandler.java:1610)
+    >                   at org.eclipse.jetty.server.handler.ScopedHandler.nextHandle(ScopedHandler.java:233)
+    >                   at org.eclipse.jetty.server.handler.ContextHandler.doHandle(ContextHandler.java:1377)
+    >                   at org.eclipse.jetty.server.handler.ScopedHandler.nextScope(ScopedHandler.java:188)
+    >                   at org.eclipse.jetty.servlet.ServletHandler.doScope(ServletHandler.java:507)
+    >                   at org.eclipse.jetty.server.session.SessionHandler.doScope(SessionHandler.java:1580)
+    >                   at org.eclipse.jetty.server.handler.ScopedHandler.nextScope(ScopedHandler.java:186)
+    >                   at org.eclipse.jetty.server.handler.ContextHandler.doScope(ContextHandler.java:1292)
+    >                   at org.eclipse.jetty.server.handler.ScopedHandler.handle(ScopedHandler.java:141)
+    >                   at org.eclipse.jetty.server.handler.ContextHandlerCollection.handle(ContextHandlerCollection.java:234)
+    >                   at io.micrometer.core.instrument.binder.jetty.TimedHandler.handle(TimedHandler.java:120)
+    >                   at org.eclipse.jetty.server.handler.HandlerWrapper.handle(HandlerWrapper.java:127)
+    >                   at org.eclipse.jetty.server.Server.handle(Server.java:501)
+    >                   at org.eclipse.jetty.server.HttpChannel.lambda$handle$1(HttpChannel.java:383)
+    >                   at org.eclipse.jetty.server.HttpChannel.dispatch(HttpChannel.java:556)
+    >                   at org.eclipse.jetty.server.HttpChannel.handle(HttpChannel.java:375)
+    >                   at org.eclipse.jetty.server.HttpConnection.onFillable(HttpConnection.java:273)
+    >                   at org.eclipse.jetty.io.AbstractConnection$ReadCallback.succeeded(AbstractConnection.java:311)
+    >                   at org.eclipse.jetty.io.FillInterest.fillable(FillInterest.java:105)
+    >                   at org.eclipse.jetty.io.ChannelEndPoint$1.run(ChannelEndPoint.java:104)
+    >                   at org.eclipse.jetty.util.thread.strategy.EatWhatYouKill.runTask(EatWhatYouKill.java:336)
+    >                   at org.eclipse.jetty.util.thread.strategy.EatWhatYouKill.doProduce(EatWhatYouKill.java:313)
+    >                   at org.eclipse.jetty.util.thread.strategy.EatWhatYouKill.tryProduce(EatWhatYouKill.java:171)
+    >                   at org.eclipse.jetty.util.thread.strategy.EatWhatYouKill.produce(EatWhatYouKill.java:135)
+    >                   at org.eclipse.jetty.util.thread.QueuedThreadPool.runJob(QueuedThreadPool.java:806)
+    >                   at org.eclipse.jetty.util.thread.QueuedThreadPool$Runner.run(QueuedThreadPool.java:938)
+    >                   at java.lang.Thread.run(Thread.java:748)
+    >               '
+    >           },
+    >       'Mean_proper_motions_over_the_sky': {
+    >           'result': 'ERROR',
+    >           'outputs': {
+    >               'valid': True
+    >               },
+    >           'time': {
+    >               'result': 'SLOW',
+    >               'elapsed': '130.59',
+    >               'expected': '55.00',
+    >               'percent': '137.44',
+    >               'start': '2022-06-16T17:10:12.526309',
+    >               'finish': '2022-06-16T17:12:23.119005'
+    >               },
+    >           'logs': '
+    >               Fail to execute line 13: df = spark.sql(query).cache()
+    >                   Traceback (most recent call last):
+    >                       File "/tmp/1655399539296-1/zeppelin_python.py", line 158, in <module>
+    >                       exec(code, _zcUserQueryNameSpace)
+    >   ....
+
+    #
+    # Back to ConcurrentModificationException again :-(
+    #
+    # This looks a bit suspicious to me.
+    # If the noteboos are different each time, why are we getting ConcurrentModificationExceptions ?
+    #
+
+    >   Unexpected exception: java.util.ConcurrentModificationException
+    >       at java.util.HashMap$ValueSpliterator.forEachRemaining(HashMap.java:1633)
+    >       at java.util.stream.AbstractPipeline.copyInto(AbstractPipeline.java:482)
+    >       at java.util.stream.AbstractPipeline.wrapAndCopyInto(AbstractPipeline.java:472)
+    >       at java.util.stream.ReduceOps$ReduceOp.evaluateSequential(ReduceOps.java:708)
+    >       at java.util.stream.AbstractPipeline.evaluate(AbstractPipeline.java:234)
+    >       at java.util.stream.ReferencePipeline.collect(ReferencePipeline.java:566)
+    >       at org.apache.zeppelin.service.JobManagerService.getNoteJobInfoByUnixTime(JobManagerService.java:90)
+    >       at org.apache.zeppelin.socket.NotebookServer.broadcastUpdateNoteJobInfo(NotebookServer.java:519)
+    >       at org.apache.zeppelin.socket.NotebookServer.onStatusChange(NotebookServer.java:2007)
+    >       at org.apache.zeppelin.socket.NotebookServer.onStatusChange(NotebookServer.java:105)
+    >       at org.apache.zeppelin.scheduler.Job.setStatus(Job.java:141)
+    >       at org.apache.zeppelin.notebook.Paragraph.setStatus(Paragraph.java:398)
+    >       at org.apache.zeppelin.notebook.Paragraph.execute(Paragraph.java:349)
+    >       at org.apache.zeppelin.notebook.Note.run(Note.java:873)
+    >       at org.apache.zeppelin.service.NotebookService.runParagraph(NotebookService.java:390)
+    >       at org.apache.zeppelin.rest.NotebookRestApi.runParagraph(NotebookRestApi.java:849)
+
+    #
+    # ConcurrentModificationException while iterating a HashMAp.
+    #
+
+    >       at java.util.HashMap$ValueSpliterator.forEachRemaining(HashMap.java:1633)
+
+    #
+    # Implies unsynchronised access to a global instance !?
+    #
+    # https://docs.oracle.com/javase/8/docs/api/java/util/HashMap.html
+
+        Note that this implementation is not synchronized. If multiple threads access a hash map
+        concurrently, and at least one of the threads modifies the map structurally, it must be
+        synchronized externally ...
+        This is typically accomplished by synchronizing on some object that naturally encapsulates
+        the map. If no such object exists, the map should be "wrapped" using the
+        Collections.synchronizedMap method.
+
+        The iterators returned by all of this class's "collection view methods" are fail-fast:
+        if the map is structurally modified at any time after the iterator is created, in any
+        way except through the iterator's own remove method, the iterator will throw a
+        ConcurrentModificationException.
+        Thus, in the face of concurrent modification, the iterator fails quickly and cleanly, rather
+        than risking arbitrary, non-deterministic behavior at an undetermined time in the future.
+
+    #
+    # Found a change to Zeppelin JobManagerService that matches this.
+    # https://github.com/apache/zeppelin/blame/master/zeppelin-server/src/main/java/org/apache/zeppelin/service/JobManagerService.java#L91-L99
+
+    # The GitHub blame view can show us the code before the change:
+    # https://github.com/apache/zeppelin/blame/bef579d87f7531480052d8e9451752cae1118e36/zeppelin-server/src/main/java/org/apache/zeppelin/service/JobManagerService.java#L86-L90
+    # Which matches the stack trace we see in our logs.
+
+    # The new code fixes an unrelated bug about a memory leak.
+    # https://issues.apache.org/jira/browse/ZEPPELIN-5559
+    # NoteManager never releases the note memory after a note has been read.
+
+    # The GitHub PullRequest
+    # https://github.com/apache/zeppelin/pull/4252
+    # https://github.com/zlosim/zeppelin/commit/621837900005ad9a990d84435972461534881336
+
+    # The new code also introduces a setting
+    # https://github.com/apache/zeppelin/blob/master/docs/setup/operation/configuration.md#zeppelin_note_cache_threshold
+
+        zeppelin.note.cache.threshold
+        Threshold for the number of notes in the cache before an eviction occurs.
+
+    # This was merged on 3rd Feb 2022, so it might be in the latest release :-)
+    # TODO - update to the latest release and re-test ?
+
+
+# -----------------------------------------------------
+# Test with 19 users doing 2 loops.
+#[root@ansibler]
+
+    #
+    # Increase the initial startup delay and the delay between notebooks.
+    #
+    # local usercount=${1:?'usercount required'}
+    # local loopcount=${2:?'loopcount required'}
+    # local looppause=${3:-10}
+    # local delaystart=${4:-1}
+    # local delaynotebook=${5:-1}
+
+    test-loop 19 2 10 5 5 \
+    | tee /tmp/test-loop.json
+
+    grep 'Result:' /tmp/results/*.txt
+
+    >   /tmp/results/multi-user-19-00.txt:------------ Test Result: [PASS] ------------
+    >   /tmp/results/multi-user-19-01.txt:------------ Test Result: [PASS] ------------
+
+
+# -----------------------------------------------------
+# Create our long-loop function.
+# https://stackoverflow.com/questions/17548064/how-to-have-a-bash-script-loop-until-a-specific-time
+# https://stackoverflow.com/a/17548151
+# https://linuxize.com/post/bash-increment-decrement-variable/
+#[root@ansibler]
+
+    long-loop()
+        {
+        local usercount=${1:?'usercount required'}
+        local loopfinish=${2:?'loopfinish required'}
+        local looppause=${3:-10}
+        local delaystart=${4:-1}
+        local delaynotebook=${5:-1}
+
+        rm -f /tmp/results/*
+
+cat << EOF
+    {
+    "usercount": "${usercount}",
+    "loopcount": "${loopcount}",
+    "looppause": "${looppause}",
+    "delaystart": "${delaystart}",
+    "delaynotebook": "${delaynotebook}",
+    "iterations": [
+EOF
+
+        local comma=''
+        local iter=0
+        while [ $(date "+%H") -lt ${loopfinish} ]
+        do
+
+            testname="test-$(date '+%Y%m%dT%H%M%S')-iter-$(printf "%02d" ${iter})"
+
+cat << EOF
+            ${comma}
+            {
+            "iteration": ${iter},
+            "testname": "${testname}",
+            "threads":
+EOF
+
+            sleep "${looppause}"
+
+            /tmp/run-benchmark.py \
+                "${endpoint:?}" \
+                "${testconfig:?}" \
+                "${testusers:?}" \
+                "${usercount:?}" \
+                "${delaystart:?}" \
+                "${delaynotebook:?}" \
+            > "/tmp/results/${testname:?}.txt"
+
+            filter-results "${testname:?}"
+
+cat << EOF
+            }
+EOF
+            comma=','
+            ((iter+=1))
+
+        done
+
+cat << EOF
+        ]
+    }
+EOF
+        }
+
+
+# -----------------------------------------------------
+# Test with 19 users doing 2 loops until 10:00.
+#[root@ansibler]
+
+    # local usercount=${1:?'usercount required'}
+    # local loopfinish=${2:?'loopfinish required'}
+    # local looppause=${3:-10}
+    # local delaystart=${4:-1}
+    # local delaynotebook=${5:-1}
+
+    long-loop 19 10 10 5 5 \
+    | tee /tmp/test-loop.json
+
+
+

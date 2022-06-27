@@ -1,0 +1,424 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+
+    Target:
+
+        New deployment to include recent changes.
+        Add live users to deployment
+    Result:
+
+        Success [Partial] 
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-blue'
+    configname=zeppelin-54.86-spark-12.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >  Done
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >  Done
+    .. 
+    
+	/deployments/hadoop-yarn/ansible /
+
+	PLAY [Install GaiaXpy] *********************************************************
+
+	TASK [Install the required Python packages] ************************************
+	changed: [zeppelin]
+
+	TASK [Install GaiaXPy] *********************************************************
+	changed: [zeppelin]
+
+	PLAY RECAP *********************************************************************
+	zeppelin                   : ok=2    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+	/
+      ..
+    
+    
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+
+
+
+# -----------------------------------------------------
+# Copy notebooks from the live server.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        sshuser=fedora
+        sshhost=zeppelin.aglais.uk
+
+        sudo mkdir -p '/var/local/backups'
+        sudo mv "/home/fedora/zeppelin/notebook" \
+           "/var/local/backups/notebook-$(date '+%Y%m%d%H%M%S')"
+
+        ssh-keyscan "${sshhost:?}" >> "${HOME}/.ssh/known_hosts"
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            "${sshuser:?}@${sshhost:?}:zeppelin/notebook/" \
+            "/home/fedora/zeppelin/notebook"
+        '
+ 
+        > Done
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    cloudname=$(
+        yq eval \
+            '.aglais.spec.openstack.cloud.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r ".addresses | .\"${deployname}-internal-network\" | .[1]"
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+  
+> Zeppelin IP [128.232.227.180]
+
+
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+    
+
+# -----------------------------------------------------
+# Run Quick Tests
+#[root@ansibler]
+
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.227.180:8080",
+    False
+    ).run(
+        concurrent=False,
+        users=1,
+        delay_start=0,
+        delay_notebook=0,
+        delete=True
+        )
+EOF
+
+python3 /tmp/testprog.py | tee /tmp/test-results.txt
+
+# Results
+
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "4.42",
+			"expected": "45.00",
+			"percent": "-90.18",
+			"start": "2022-06-25T20:00:14.992921",
+			"finish": "2022-06-25T20:00:19.412662"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "9.41",
+			"expected": "55.00",
+			"percent": "-82.90",
+			"start": "2022-06-25T20:00:19.412750",
+			"finish": "2022-06-25T20:00:28.819323"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "19.71",
+			"expected": "22.00",
+			"percent": "-10.40",
+			"start": "2022-06-25T20:00:28.819689",
+			"finish": "2022-06-25T20:00:48.531383"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "9.59",
+			"expected": "60.00",
+			"percent": "-84.02",
+			"start": "2022-06-25T20:00:48.531473",
+			"finish": "2022-06-25T20:00:58.119307"
+		},
+		"logs": ""
+	}]
+]
+
+
+
+
+# -----------------------------------------------------
+# Create live users
+#[root@ansibler]
+
+
+# Until now, our new user creation script have only created test users
+# We need to create a yaml file with password hashes for the list of existing/known users
+
+# dmr:
+
+The password hashes for live users are stored in a YAML file on our data node.
+https://github.com/wfau/aglais/blob/b21362229eab165dacdacaef85406459aeb5e904/notes/zrq/20220517-01-create-users.txt#L100-L120
+
+The code to read them is already in place.
+https://github.com/wfau/aglais/blob/b21362229eab165dacdacaef85406459aeb5e904/deployments/zeppelin/bin/create-user-tools.sh#L31-L38
+
+There is an open issue to add the hashes for our accounts, dmr, nch, and stv, and test that they work.
+
+Deploy using shiro DB for live users · Issue #758
+https://github.com/wfau/aglais/issues/758
+
+Once the correct hashes are in the YAML file on our data node, just create the users without specifying password and the create-user-tools should fetch the right hash and insert it in the right place.
+
+https://github.com/wfau/aglais/20220517-01-create-users.txt at b21362229eab165dacdacaef85406459aeb5e904 · wfau/aglais
+https://github.com/wfau/aglais/create-user-tools.sh at b21362229eab165dacdacaef85406459aeb5e904 · wfau/aglais
+
+Github issue: Deploy using shiro DB for live users   · Issue #758 · wfau/aglais
+
+
+# -----------------------------------------------------
+# Create hashes for list of users
+#[root@ansibler]
+
+source /deployments/zeppelin/bin/create-user-tools.sh
+
+# Looking through notes it looks like we can use the following function:
+
+
+    newpasshash()
+        {
+        local password="${1:?}"
+        java -jar "${HOME}/lib/shiro-tools-hasher.jar" -i 500000 -f shiro1 -a SHA-256 -gss 128 '${password:?}'
+        }
+
+    newpasshash "${testpass}"
+  
+  
+for each of (stv, zrq, stv, nch)
+   newpasshash "password"
+
+
+# Store password for each user, and then create a yaml file with the password hashes in data server
+
+
+
+# Create one of our users:
+
+createusermain         "zrq"     | jq '.'
+adduser: user 'zrq' already exists
+mkdir: cannot create directory ‘/home/zrq/.ssh’: File exists
+{
+  "linuxuser": {
+    "name": "zrq",
+    "type": "test",
+    "home": "/home/zrq",
+    "uid": 20010
+  },
+  "shirouser": {
+    "name": "zrq",
+    "type": "test",
+    "pass": "",
+    "hash": "..."
+  },
+  "hdfsspace": {
+    "path": "/albert/zrq",
+    "owner": "zrq",
+    "group": "supergroup"
+  },
+  "notebooks": {}
+}
+
+# User already exists, because we create the user during deployment
+# This likely may cause issues with impersonation
+
+
+# Try logging into Zeppelin:
+  # Invalid credentials provided..
+
+.. 
+
+# After a few attempts of delete user from Shiro db and recreating
+# Login with the following string worked: "${password:?}"
+# For some reason, ${password:} was not replaced with actual pass string
+
+# Create hashes manually:
+
+for each of (stv, zrq, stv, nch)
+  java -jar "${HOME}/lib/shiro-tools-hasher.jar" -i 500000 -f shiro1 -a SHA-256 -gss 128  "ENTER_PASS_HERE"
+   
+   
+# Create one of our users again:
+
+createusermain         "zrq"     | jq '.'
+adduser: user 'zrq' already exists
+mkdir: cannot create directory ‘/home/zrq/.ssh’: File exists
+...
+
+
+# Login as 'zrq'
+  # Login Successful
+
+# Try a simple Spark notebook
+  # Failed - Permission denied error, when accessing config/zeppelin-env.sh
+
+# User impersonation failed, likely because the user may not have been added to the group, or the ssh keys were not appended to the right place during the create process
+   
+............
+
+
+# Delete home directory for "zrq" and then run the create script
+
+# userdel -r zrq
+createusermain         "zrq"     | jq '.'
+   
+# Success (User created successfully, we can login as user and run Spark notebooks)
+
+
+
+# .. We will have to recreate, and increase the disk size of the /var/hadoop/data directory

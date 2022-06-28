@@ -48,3 +48,50 @@ jsonarray()
     jq --compact-output --null-input '$ARGS.positional' --args -- "${array[@]}"
     }
 
+# A set of functions for collecting debug messages.
+#
+result="PASS"
+messages=()
+errorfile=$(mktemp)
+
+skipmessage()
+    {
+    local message=${1}
+    if [ -n "${message}" ]
+    then
+        messages+=("SKIP: ${message}")
+    fi
+    }
+
+passmessage()
+    {
+    local message=${1}
+    if [ -n "${message}" ]
+    then
+        messages+=("PASS: ${message}")
+    fi
+    }
+
+failmessage()
+    {
+    result="FAIL"
+    local message=${1}
+    if [ -n "${message}" ]
+    then
+        messages+=("FAIL: ${message}")
+    fi
+    local errors
+    readarray -t errors < "${errorfile}"
+    messages+=("${errors[@]}")
+    }
+
+jsonmessages()
+    {
+    return jsonarray messages
+    }
+
+jsonresult()
+    {
+    return result
+    }
+

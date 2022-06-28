@@ -62,7 +62,8 @@
         # Returns JSON.
         ssh zeppelin \
             "
-            sudo create-linux-user.sh '${username}' '${usertype}' '${userpkey}' '${useruid}'
+            # If we run as root, /opt/aglais/bin isn't in our PATH.
+            sudo /opt/aglais/bin/create-linux-user.sh '${username}' '${usertype}' '${userpkey}' '${useruid}'
             "
         }
 
@@ -155,6 +156,7 @@ EOF
             jq -r '.uid' <<< ${linuxuserjson}
             )
 
+# Replaced by create-linux-user.sh
 #        cephsharejson=$(
 #            createcephshare \
 #                "${username}" \

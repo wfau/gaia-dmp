@@ -55,14 +55,14 @@
         {
         local username="${1:?'username required'}"
         local usertype="${2:?'usertype required'}"
-        local uid="${3}"
-        local home="${4}"
+        local userpkey="${3}"
+        local useruid="${4}"
         #
         # Call Zeppelin to create the Linux user account.
         # Returns JSON.
         ssh zeppelin \
             "
-            create_unix_user.sh '${username}' '${usertype}' '${uid}' '${home}'
+            sudo create-linux-user.sh '${username}' '${usertype}' '${userpkey}' '${useruid}'
             "
         }
 
@@ -138,20 +138,20 @@ EOF
         {
         local username="${1:?'username required'}"
         local usertype="${2:-'test'}"
-        local uid="${3}"
-        local home="${4}"
-        local data="${5}"
-        local size="${6}"
+        local userpkey="${3}"
+        local useruid="${4}"
+        local datapath="${5}"
+        local datasize="${6}"
 
         linuxuserjson=$(
             createlinuxuser \
                 "${username}" \
                 "${usertype}" \
-                "${uid}"  \
-                "${home}"
+                "${userpkey}" \
+                "${useruid}"
             )
 
-        uid=$(
+        useruid=$(
             jq -r '.uid' <<< ${linuxuserjson}
             )
 
@@ -159,9 +159,9 @@ EOF
 #            createcephshare \
 #                "${username}" \
 #                "${usertype}" \
-#                "${uid}"  \
-#                "${data}" \
-#                "${size}"
+#                "${useruid}"  \
+#                "${datapath}" \
+#                "${datasize}"
 #            )
 
         hdfsspacejson=$(
@@ -176,7 +176,7 @@ EOF
                 "${usertype}"
             )
 
-        local pass=$(
+        local userpass=$(
             jq -r '.pass' <<< ${shirouserjson}
             )
 
@@ -184,7 +184,7 @@ EOF
             cloneusernotebooks \
                 "${username}" \
                 "${usertype}" \
-                "${pass}"
+                "${userpass}"
             )
 
 cat << EOF

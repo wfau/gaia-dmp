@@ -19,16 +19,21 @@
 #   </meta:licence>
 # </meta:header>
 #
-# This script isn't used at the moment, the equivalent script is created by the creat-user-scripts Ansible playbook.
-# We will probably move most of the code out of the Ansible playbook into small scripts like this in a future PR.
-# Which will hopefully make them easier to maintain.
-#
 
-username="${1:?}"
-usertype="${2:?}"
-passhash="${3:?}"
-userrole=${4:-'user'}
-password=''
+srcfile="$(basename ${0})"
+srcpath="$(dirname $(readlink -f ${0}))"
+
+# Include our JSON formatting tools.
+source "${srcpath}/json-tools.sh"
+
+username="${1}"
+usertype="${2}"
+passhash="${3:-''}"
+password="${4:-''}"
+userrole="${5:-'user'}"
+
+
+
 
 if [ -z "${passhash}" ]
 then
@@ -59,4 +64,41 @@ cat << EOF
 "hash": "${hash}"
 }
 EOF
+
+
+
+
+
+
+            #!/bin/bash
+            # Create MySQL user
+            NEW_USERNAME=${1:?}
+            NEW_USERTYPE=${2:?}
+            NEW_PASSWORD_ENCRYPTED=${3:-''}
+            NEW_PASSWORD=''
+
+            USER_TABLE='users';
+            USER_ROLES_TABLE='user_roles'
+
+            if [ -z "${NEW_PASSWORD_ENCRYPTED}" ]
+            then
+                NEW_PASSWORD=$(
+                    pwgen 30 1
+                    )
+                NEW_PASSWORD_ENCRYPTED="$(java -jar {{aghome}}/lib/shiro-tools-hasher-cli.jar -i 500000 -f shiro1 -a SHA-256 -gss 128 $NEW_PASSWORD)"
+            fi
+
+            mysql {{shirodbname}} << EOF
+            INSERT INTO $USER_TABLE (username, password) VALUES ("$NEW_USERNAME", "$NEW_PASSWORD_ENCRYPTED");
+            INSERT INTO $USER_ROLES_TABLE (username, role_name) VALUES ("$NEW_USERNAME", "$NEW_USERTYPE");
+            EOF
+
+            cat << EOF
+            {
+            "name": "${NEW_USERNAME}",
+            "type": "${NEW_USERTYPE}",
+            "pass": "${NEW_PASSWORD}",
+            "hash": "${NEW_PASSWORD_ENCRYPTED}"
+            }
+            EOF
 

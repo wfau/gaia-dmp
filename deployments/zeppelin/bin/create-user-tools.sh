@@ -37,17 +37,31 @@
             "
         }
 
+    createshirohash()
+        {
+        local password="${1:-''}"
+        #
+        # Call Zeppelin to hash the password.
+        # Returns JSON.
+        ssh zeppelin \
+            "
+            /opt/aglais/bin/create-shiro-hash.sh '${password}'
+            "
+        }
+
     createshirouser()
         {
         local username="${1:?'username required'}"
         local usertype="${2:?'usertype required'}"
-        local passhash="$(getpasshash \"${username}\")"
+        local userrole="${3:-'user'}"
+        local password="${4:-''}"
+        local passhash="${5:-$(getpasshash \"${username}\")}"
         #
         # Call Zeppelin to create a user account in the Shiro database.
         # Returns JSON.
         ssh zeppelin \
             "
-            create_mysql_user.sh '${username}' '${usertype}' '${passhash}'
+            /opt/aglais/bin/create-shiro-user.sh '${username}' '${usertype}' '${userrole}' '${password}' '${passhash}'
             "
         }
 
@@ -62,7 +76,6 @@
         # Returns JSON.
         ssh zeppelin \
             "
-            # If we run as root, /opt/aglais/bin isn't in our PATH.
             sudo /opt/aglais/bin/create-linux-user.sh '${username}' '${usertype}' '${userpkey}' '${useruid}'
             "
         }

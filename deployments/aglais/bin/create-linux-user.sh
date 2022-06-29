@@ -35,6 +35,7 @@ userid="${4}"
 minuid=20000
 maxuid=60000
 
+# TODO Move these to an Ansible managed config file.
 sshkeyname=id_rsa
 sshkeytype=rsa
 zepkeypath=/opt/aglais/ssh/fedora-rsa.pub

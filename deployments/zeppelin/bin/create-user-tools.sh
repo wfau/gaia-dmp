@@ -169,7 +169,7 @@ EOF
             jq -r '.uid' <<< ${linuxuserjson}
             )
 
-# Replaced by create-linux-user.sh
+# TODO Create user shares ..
 #        cephsharejson=$(
 #            createcephshare \
 #                "${username}" \

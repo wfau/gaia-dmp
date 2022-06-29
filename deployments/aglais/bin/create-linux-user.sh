@@ -82,7 +82,7 @@ else
         --user-group \
         --groups "users,${zepusergroup}" \
         "${username}" \
-    2> "${errorfile}"
+    2> "${debugerrorfile}"
 
     if [ $? -eq 0 ]
     then
@@ -100,7 +100,7 @@ if [ -e "${userhome}/.ssh" ]
 then
     skipmessage "mkdir [${userhome}/.ssh] skipped (done)"
 else
-    mkdir "${userhome}/.ssh" 2> "${errorfile}"
+    mkdir "${userhome}/.ssh" 2> "${debugerrorfile}"
     if [ $? -eq 0 ]
     then
         passmessage "mkdir [${userhome}/.ssh] done"
@@ -129,7 +129,7 @@ if [ $(grep -c "${zepkey}" "${userhome}/.ssh/authorized_keys" ) -ne 0 ]
 then
     skipmessage "adding public key for [zeppelin] skipped (done)"
 else
-    cat >> "${userhome}/.ssh/authorized_keys" 2> "${errorfile}" << EOF
+    cat >> "${userhome}/.ssh/authorized_keys" 2> "${debugerrorfile}" << EOF
 # zeppelin's public key"
 ${zepkey}
 EOF
@@ -150,7 +150,7 @@ else
     then
         skipmessage "adding public key for [${username}] skipped (done)"
     else
-        cat >> "${userhome}/.ssh/authorized_keys" 2> "${errorfile}" << EOF
+        cat >> "${userhome}/.ssh/authorized_keys" 2> "${debugerrorfile}" << EOF
 # ${username}'s public key"
 ${userkey}
 EOF
@@ -164,13 +164,13 @@ EOF
 fi
 
 # Fix ownership of the Linux user's ssh directory.
-chown -R "${username}:${username}" "${userhome}/.ssh" 2> "${errorfile}"
+chown -R "${username}:${username}" "${userhome}/.ssh" 2> "${debugerrorfile}"
 if [ $? -ne 0 ]
 then
     failmessage "chown [${userhome}/.ssh] failed"
 fi
 # Fix permissions on the Linux user's ssh directory.
-chmod -R "u=rwX,g=,o=" "${userhome}/.ssh" 2> "${errorfile}"
+chmod -R "u=rwX,g=,o=" "${userhome}/.ssh" 2> "${debugerrorfile}"
 if [ $? -ne 0 ]
 then
     failmessage "chmod [${userhome}/.ssh] failed"
@@ -183,11 +183,7 @@ cat << JSON
 "type":   "${usertype}",
 "home":   "${userhome}",
 "uid":    ${userid},
-"debug": {
-    "script": "${srcfile}",
-    "result": "$(jsonresult)",
-    "messages": $(jsonmessages)
-    }
+$(jsondebug)
 }
 JSON
 

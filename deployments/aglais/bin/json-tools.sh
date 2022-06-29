@@ -48,18 +48,20 @@ jsonarray()
     jq --compact-output --null-input '$ARGS.positional' --args -- "${array[@]}"
     }
 
-# A set of functions for collecting debug messages.
 #
-result="PASS"
-messages=()
-errorfile=$(mktemp)
+# Functions for collecting debug messages.
+# These functions rely on this file being included in the target script using 'source'.
+#
+debugresult="PASS"
+debugmessages=()
+debugerrorfile=$(mktemp)
 
 skipmessage()
     {
     local message=${1}
     if [ -n "${message}" ]
     then
-        messages+=("SKIP: ${message}")
+        debugmessages+=("SKIP: ${message}")
     fi
     }
 
@@ -68,30 +70,32 @@ passmessage()
     local message=${1}
     if [ -n "${message}" ]
     then
-        messages+=("PASS: ${message}")
+        debugmessages+=("PASS: ${message}")
     fi
     }
 
 failmessage()
     {
-    result="FAIL"
+    jsonresult="FAIL"
     local message=${1}
     if [ -n "${message}" ]
     then
-        messages+=("FAIL: ${message}")
+        debugmessages+=("FAIL: ${message}")
     fi
     local errors
-    readarray -t errors < "${errorfile}"
-    messages+=("${errors[@]}")
+    readarray -t errors < "${debugerrorfile}"
+    debugmessages+=("${errors[@]}")
     }
 
-jsonmessages()
+jsondebug()
     {
-    return jsonarray messages
+cat << JSON
+"debug": {
+    "script": "$(basename ${0})",
+    "result": "${debugresult}",
+    "messages": $(jsonarray debugmessages)
+    }
+JSON
     }
 
-jsonresult()
-    {
-    return result
-    }
 

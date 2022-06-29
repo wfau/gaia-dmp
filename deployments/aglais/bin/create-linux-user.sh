@@ -27,10 +27,10 @@ srcpath="$(dirname $(readlink -f ${0}))"
 # Include our JSON formatting tools.
 source "${srcpath}/json-tools.sh"
 
-username="${1}"
-usertype="${2}"
-userkey="${3}"
-userid="${4}"
+username=${1}
+usertype=${2}
+userkey=${3}
+userid=${4}
 
 minuid=20000
 maxuid=60000

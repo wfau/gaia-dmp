@@ -126,6 +126,23 @@ cat >> /etc/hosts << EOF
 ${ipaddress}    zeppelin
 EOF
 
+
+# -----------------------------------------------------
+# Update our DuckDNS record.
+# TODO Add this to the Ansible deployment.
+# TODO Move the secret function to a separate file.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    ducktoken=$(getsecret 'devops.duckdns.token')
+
+    echo "----"
+    echo "Updating DuckDNS record"
+    curl "https://www.duckdns.org/update/${cloudname:?}/${ducktoken:?}/${ipaddress:?}"
+    echo "----"
+
+
 # -----------------------------------------------------
 # Configure our client container.
 #[root@ansibler]

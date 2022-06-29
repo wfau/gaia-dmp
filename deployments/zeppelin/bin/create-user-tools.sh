@@ -26,11 +26,23 @@
     datahostname='data.aglais.uk'
     datahostuser='fedora'
 
+    # Get a secret.
+    # Calls 'getsecret' on the data VM.
+    getsecret()
+        {
+        local key=${1:?'key required'}
+        ssh -n "${datahostuser:?}@${datahostname:?}" \
+            "
+            getsecret '${key:?}'
+            "
+        }
+
+
     # Get the password hash for a user name.
-    # Calls 'getpasshash' on data project VM.
+    # Calls 'getpasshash' on the data VM.
     getpasshash()
         {
-        local username="${1:?'username required'}"
+        local username=${1:?'username required'}
         ssh -n "${datahostuser:?}@${datahostname:?}" \
             "
             getpasshash '${username:?}'
@@ -39,7 +51,7 @@
 
     createshirohash()
         {
-        local password="${1:-''}"
+        local password=${1:-''}
         #
         # Call Zeppelin to hash the password.
         # Returns JSON.
@@ -51,11 +63,11 @@
 
     createshirouser()
         {
-        local username="${1:?'username required'}"
-        local usertype="${2:?'usertype required'}"
-        local userrole="${3:-'user'}"
-        local password="${4:-''}"
-        local passhash="${5:-$(getpasshash \"${username}\")}"
+        local username=${1:?'username required'}
+        local usertype=${2:?'usertype required'}
+        local userrole=${3:-'user'}
+        local password=${4:-''}
+        local passhash=${5:-$(getpasshash \"${username}\")}
         #
         # Call Zeppelin to create a user account in the Shiro database.
         # Returns JSON.
@@ -67,10 +79,10 @@
 
     createlinuxuser()
         {
-        local username="${1:?'username required'}"
-        local usertype="${2:?'usertype required'}"
-        local userpkey="${3}"
-        local useruid="${4}"
+        local username=${1:?'username required'}
+        local usertype=${2:?'usertype required'}
+        local userpkey=${3}
+        local useruid=${4}
         #
         # Call Zeppelin to create the Linux user account.
         # Returns JSON.
@@ -82,8 +94,8 @@
 
     createhdfsspace()
         {
-        local username="${1:?'username required'}"
-        local usertype="${2:?'usertype required'}"
+        local username=${1:?'username required'}
+        local usertype=${2:?'usertype required'}
         #
         # Call Zeppelin to create the user's HDFS space.
         # Returns JSON.
@@ -95,15 +107,15 @@
 
     createcephshare()
         {
-        local cloudname="${1:?'cloudname required'}"
-        local username="${2:?'username required'}"
-        local usertype="${3:?'usertype required'}"
-        local uid="${4:?'user id required'}"
+        local cloudname=${1:?'cloudname required'}
+        local username=${2:?'username required'}
+        local usertype=${3:?'usertype required'}
+        local uid=${4:?'user id required'}
 
         local cephroot="/ceph-${usertype}"
-        local sharepath="${5:-${cephroot}/${username}}"
-        local sharesize="${6:-${defaultsharesize}}"
-        local sharename="${usertype}-${username}"
+        local sharepath=${5:-${cephroot}/${username}}
+        local sharesize=${6:-${defaultsharesize}}
+        local sharename=${usertype}-${username}
         local shareuuid=$(uuidgen)
 
         #
@@ -131,9 +143,9 @@ EOF
 
     cloneusernotebooks()
         {
-        local username="${1:?'username required'}"
-        local usertype="${2:?'usertype required'}"
-        local userpass="${3}"
+        local username=${1:?'username required'}
+        local usertype=${2:?'usertype required'}
+        local userpass=${3}
         #
         # Call Zeppelin to clone the user's notebooks.
         # Returns null (could return JSON list).
@@ -150,12 +162,12 @@ EOF
 
     createusermain()
         {
-        local username="${1:?'username required'}"
-        local usertype="${2:-'test'}"
-        local userpkey="${3}"
-        local useruid="${4}"
-        local datapath="${5}"
-        local datasize="${6}"
+        local username=${1:?'username required'}
+        local usertype=${2:-'test'}
+        local userpkey=${3}
+        local useruid=${4}
+        local datapath=${5}
+        local datasize=${6}
 
         linuxuserjson=$(
             createlinuxuser \

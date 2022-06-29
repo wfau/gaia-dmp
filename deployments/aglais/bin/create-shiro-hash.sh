@@ -31,7 +31,7 @@ source "${srcpath}/json-tools.sh"
 # Include our Shiro password tools.
 source "${srcpath}/shiro-tools.sh"
 
-password="${1:-''}"
+password=${1:-''}
 
 if [ -n "${password}" ]
 then

@@ -31,11 +31,11 @@ source "${srcpath}/json-tools.sh"
 # Include our Shiro password tools.
 source "${srcpath}/shiro-tools.sh"
 
-username="${1}"
-usertype="${2}"
-userrole="${3:-'user'}"
-password="${4:-''}"
-passhash="${5:-''}"
+username=${1}
+usertype=${2}
+userrole=${3:-'user'}
+password=${4:-''}
+passhash=${5:-''}
 
 passlength=10
 passcount=3

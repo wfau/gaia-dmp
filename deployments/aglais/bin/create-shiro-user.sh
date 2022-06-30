@@ -37,8 +37,8 @@ userrole=${3:-'user'}
 password=${4:-''}
 passhash=${5:-''}
 
-passlength=10
-passcount=3
+passlength=20
+passcount=1
 
 # TODO Move these to an Ansible managed config file.
 databasename='shirodata'
@@ -93,12 +93,14 @@ if [ -z "${username}" ]
 then
     failmessage "null username"
 elif [ -z "${passhash}" ]
+then
     failmessage "null passhash"
 elif [ -z "${userrole}" ]
+then
     failmessage "null userrole"
 else
     # Insert or update the database.
-    mysql --database "${shirodata}" --execute \
+    mysql --database "${databasename}" --execute \
         "
         INSERT INTO users (
             username,
@@ -108,7 +110,9 @@ else
             \"${username}\",
             \"${passhash}\"
             )
-        ON DUPLICATE KEY UPDATE ;
+        ON DUPLICATE KEY UPDATE
+            password = \"${passhash}\"
+            ;
         INSERT INTO user_roles (
             username,
             role_name
@@ -116,7 +120,10 @@ else
         VALUES (
             \"${username}\",
             \"${userrole}\"
-            ) ;
+            )
+        ON DUPLICATE KEY UPDATE
+            role_name = \"${userrole}\"
+            ;
         " \
     2> "${debugerrorfile}"
 

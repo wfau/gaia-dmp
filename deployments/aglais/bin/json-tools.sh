@@ -76,7 +76,7 @@ passmessage()
 
 failmessage()
     {
-    jsonresult="FAIL"
+    debugresult="FAIL"
     local message=${1}
     if [ -n "${message}" ]
     then

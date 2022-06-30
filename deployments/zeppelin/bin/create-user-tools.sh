@@ -101,7 +101,7 @@
         # Returns JSON.
         ssh zeppelin \
             "
-            create_hdfs_home.sh '${username}' '${usertype}'
+            create-hdfs-space.sh '${username}' '${usertype}'
             "
         }
 

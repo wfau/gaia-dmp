@@ -1,0 +1,167 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Diagnose the cause of problems
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+#[user@desktop]
+
+    sshhost=blue.aglais.uk
+    sshuser=fedora
+
+    ssh "${sshuser:?}@${sshhost:?}" \
+        -t \
+        -D "3000"  \
+            '
+            htop
+            '
+
+# -----------------------------------------------------
+# Login to the Spark UI using Firefox.
+# (*) using FoxyProxy Firefox plugin to select the SOCKS proxy for internal hostnames.
+#[user@desktop]
+
+    firefox --new-window 'http://master01:8088/cluster' &
+
+
+# -----------------------------------------------------
+# Login to Grafana using Firefox.
+# (*) using FoxyProxy Firefox plugin to select the SOCKS proxy for internal hostnames.
+#[user@desktop]
+
+    firefox --new-window 'http://monitor:3000/login' &
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # 4 Common Reasons for FetchFailed Exception in Apache Spark.
+    # https://dzone.com/articles/four-common-reasons-for-fetchfailed-exception-in-a
+    #
+
+    1. Out of Heap memory on Executors
+    2. Low Memory Overhead on Executors
+    3. Shuffle block greater than 2 GB
+    4. Network TimeOut
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    "Container killed on request. Exit code is 137"
+    http://worker10:8042/node/containerlogs/container_1656596967503_0003_01_000001/nch/stderr/?start=0
+
+
+--START--
+....
+2022-07-01 18:25:20,243 INFO yarn.YarnAllocator: Received 1 containers from YARN, launching executors on 1 of them.
+2022-07-01 18:25:20,246 INFO yarn.YarnAllocator: Completed container container_1656596967503_0003_01_000142 on host: worker08 (state: COMPLETE, exit status: 137)
+2022-07-01 18:25:20,248 WARN yarn.YarnAllocator: Container from a bad node: container_1656596967503_0003_01_000142 on host: worker08. Exit status: 137. Diagnostics: [2022-07-01 18:25:19.901]Container killed on request. Exit code is 137
+[2022-07-01 18:25:19.903]Container exited with a non-zero exit code 137.
+[2022-07-01 18:25:19.904]Killed by external signal
+....
+--END--
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Amazon
+    # Resolving "Exit code is 137"
+    # https://aws.amazon.com/premiumsupport/knowledge-center/container-killed-on-request-137-emr/
+
+        vi ... spark/conf/spark-defaults.conf
+
+        spark.executor.memory 10g
+        spark.driver.memory 10g
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Hadoop 'containers' are configured to kill themselves as soon as they get an OutOfMemoryError.
+    # -XX:OnOutOfMemoryError='kill %p'
+    # Don't know how this would appear in the logs though.
+    #
+
+    vi application_1656596967503_0003/container_1656596967503_0003_01_000009/launch_container.sh
+
+        exec \
+            /bin/bash \
+                -c "
+                    $JAVA_HOME/bin/java \
+                        -server \
+                        -Xmx6144m \
+                        -Djava.io.tmpdir=$PWD/tmp \
+                        '-Dspark.driver.port=35817' \
+                        -Dspark.yarn.app.container.log.dir=/var/hadoop/logs/application_1656596967503_0003/container_1656596967503_0003_01_000009 \
+                        -XX:OnOutOfMemoryError='kill %p' \
+                        org.apache.spark.executor.YarnCoarseGrainedExecutorBackend \
+                        --driver-url spark://CoarseGrainedScheduler@zeppelin:35817 \
+                        --executor-id 8 \
+                        --hostname worker09 \
+                        --cores 4 \
+                        --app-id application_1656596967503_0003 \
+                        --resourceProfileId 0 \
+                        --user-class-path file:$PWD/__app__.jar \
+                        1>/var/hadoop/logs/application_1656596967503_0003/container_1656596967503_0003_01_000009/stdout \
+                        2>/var/hadoop/logs/application_1656596967503_0003/container_1656596967503_0003_01_000009/stderr
+                    "
+
+    #
+    # This looks similar to our problem.
+    # "I see a whole bunch of connection refused during block fetches and one out of memory error. Hard to tell what is the underlying cause. "
+    # https://stackoverflow.com/questions/52951399/what-happens-when-outofmemory-error-happens-on-spark-container
+    #
+
+    #
+    # We could augment this to explicirly log the event.
+    # https://stackoverflow.com/questions/5792049/xxonoutofmemoryerror-kill-9-p-problem
+    # https://stackoverflow.com/a/49458175
+    #
+
+    #
+    # Code that sets the OnOutOfMemoryError option is here:
+    # https://github.com/Zarquan/aglais-spark/blob/master/resource-managers/yarn/src/main/scala/org/apache/spark/deploy/yarn/YarnSparkHadoopUtil.scala#L104-L130
+    #
+    # We should be able to override this by setting 'spark.executor.extraJavaOptions'
+    # https://spark.apache.org/docs/latest/configuration.html
+    # Add our own script that writes something to a log file before killing the job.
+    #
+

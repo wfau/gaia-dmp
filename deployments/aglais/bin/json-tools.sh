@@ -98,4 +98,38 @@ cat << JSON
 JSON
     }
 
+# Augmented mkdir, chown and chmod with debug messages.
+agmkdir()
+    {
+    local dirpath=${1:?'dirpath required'}
+    local diruser=${2:?'diruser required'}
+    local dirmode=${3:?'dirmode required'}
+
+    if [ -e "${dirpath}" ]
+    then
+        skipmessage "mkdir [${dirpath}] skipped (done)"
+    else
+        sudo mkdir -p $usernotebase
+        if [ $? -eq 0 ]
+        then
+            passmessage "mkdir [${dirpath}] done"
+        else
+            failmessage "mkdir [${dirpath}] failed"
+        fi
+        sudo chown "${diruser}" "${dirpath}"
+        if [ $? -eq 0 ]
+        then
+            passmessage "chown [${dirpath}] done"
+        else
+            failmessage "chown [${dirpath}] failed"
+        fi
+        sudo mod "${dirmode}" "${dirpath}"
+        if [ $? -eq 0 ]
+        then
+            passmessage "chmod [${dirpath}] done"
+        else
+            failmessage "chmod [${dirpath}] failed"
+        fi
+    fi
+    }
 

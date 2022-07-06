@@ -52,7 +52,7 @@
         ansible-playbook \
             --verbose \
             --inventory "${inventory:?}" \
-            "38-nginx-ssl.yml"
+            "43-setup-ssl.yml"
 
     popd
 

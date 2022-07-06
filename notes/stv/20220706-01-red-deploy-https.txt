@@ -1,0 +1,281 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+
+    Target:
+
+        Test deployment with NGINX proxy and HTTPS
+
+    Result:
+
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-red'
+    configname=zeppelin-26.43-spark-3.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >  Done
+
+
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+    
+
+
+# -----------------------------------------------------
+# Copy certificates from data server
+#[root@ansibler]
+
+    scp -r fedora@data.aglais.uk:/home/fedora/certs/ /root/
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "aglais-dev.ddns.net" \
+        | tee /tmp/create-all.log
+
+    >  Done
+
+
+	---- ----
+	Restarting Zeppelin
+	Zeppelin stop                                              [  OK  ]
+	Zeppelin start                                             [  OK  ]
+
+	real	58m0.139s
+	user	12m47.399s
+	sys	2m10.045s
+
+
+# Update the dns entry
+# Note: DNS was setup with https://my.noip.com/
+# Check if we can access http://aglais-dev.ddns.net/
+
+# [Success]
+
+# -----------------------------------------------------
+# Enable HTTPS
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/setup-ssl.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/setup-ssl.log
+
+        > Done
+ 
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+        > Done
+
+
+
+# -----------------------------------------------------
+# Copy notebooks from the live server.
+#[root@ansibler]
+
+
+     ssh zeppelin \
+        '
+        sshuser=fedora
+        sshhost=data.aglais.uk
+
+        sudo mkdir -p '/var/local/backups'
+        sudo mv "/home/fedora/zeppelin/notebook" \
+           "/var/local/backups/notebook-$(date '+%Y%m%d%H%M%S')"
+
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            "${sshuser:?}@${sshhost:?}://var/local/backups/notebook/" \
+            "/home/fedora/zeppelin/notebook"
+        '
+        
+        > Done
+        
+        
+# Remove test notebook:
+  ssh zeppelin 'rm "/home/fedora/zeppelin/notebook/Untitled Note 1_2H3R2UM2V.zpln"'
+
+
+# -----------------------------------------------------
+# Restart Zeppelin
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+        
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    cloudname=$(
+        yq eval \
+            '.aglais.spec.openstack.cloud.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r ".addresses | .\"${deployname}-internal-network\" | .[1]"
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+  
+> Zeppelin ID [020ccced-dbbe-4d38-9787-addde3bb6af2]
+> Zeppelin IP [128.232.227.195]
+
+
+
+# -----------------------------------------------------
+# Delete users, so that we can recreate them
+    ssh zeppelin 'sudo userdel -r stv'
+    ssh zeppelin 'sudo userdel -r zrq'
+    ssh zeppelin 'sudo userdel -r nch'
+    ssh zeppelin 'sudo userdel -r dcr'
+	
+# -----------------------------------------------------
+# Create users
+
+source /deployments/zeppelin/bin/create-user-tools.sh
+
+createusermain \
+        "stv" "admin" \
+    | jq '.'
+    
+{
+  "linuxuser": {
+    "name": "stv",
+    "type": "admin",
+    "home": "/home/stv",
+    "uid": 20001
+  },
+  "shirouser": {
+    "name": "stv",
+    "type": "admin",
+    "pass": "",
+    "hash": ""
+  },
+  "hdfsspace": {
+    "path": "/albert/stv",
+    "owner": "stv",
+    "group": "supergroup"
+  },
+  "notebooks": {}
+}
+
+
+
+	
+# -----------------------------------------------------	
+# Test & Validate user login & Spark job via UI
+# Success
+
+# Test simple Spark notebook
+# Success
+

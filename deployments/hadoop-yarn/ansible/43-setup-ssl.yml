@@ -1,0 +1,99 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+- name: "Setup SSL for NGINX proxy"
+  hosts: zeppelin
+  gather_facts: false
+  vars_files:
+    - config/ansible.yml
+    - /tmp/ansible-vars.yml
+  vars:
+    nginx_config_dir: "/etc/nginx/conf.d/"
+  tasks:
+    - name: "Install certbot using Yum"   
+      become: true
+      yum:
+        name: 
+          - certbot
+          - python3-certbot-nginx
+        update_cache: yes
+        state: present
+
+    - name: "Install Cron"
+      become: true
+      yum:
+        name: 
+          - cronie 
+          - cronie-anacron
+        update_cache: yes
+        state: present
+
+    - name: "Generate NGINX configuration"
+      become: true
+      template:
+        src:  "templates/nginx-ssl.j2"
+        dest: "{{ nginx_config_dir }}/zeppelin.conf"
+      vars:
+        hostname: "{{aglais.status.deployment.hostname}}"
+
+    - name: "Make sure certificate destination dir exists"
+      become: true
+      file:
+        path: "/etc/letsencrypt/live/{{aglais.status.deployment.hostname}}"
+        state: directory
+
+    - name: "Copy Certificates into Zeppelin"
+      become: true
+      copy:
+        src: "{{ lookup('env','HOME') }}/certs/fullchain.pem"
+        dest: "/etc/letsencrypt/live/{{aglais.status.deployment.hostname}}/fullchain.pem"
+
+    - name: "Copy Certificates into Zeppelin"
+      become: true
+      copy:
+        src: "{{ lookup('env','HOME') }}/certs/privkey.pem"
+        dest: "/etc/letsencrypt/live/{{aglais.status.deployment.hostname}}/privkey.pem"
+
+    - name: "Copy options-ssl-nginx.conf into Zeppelin"
+      become: true
+      copy:
+        src: "{{ lookup('env','HOME') }}/certs/options-ssl-nginx.conf"
+        dest: "/etc/letsencrypt/options-ssl-nginx.conf"
+
+    - name: "Copy ssl-dhparams.pem into Zeppelin"
+      become: true
+      copy:
+        src: "{{ lookup('env','HOME') }}/certs/ssl-dhparams.pem"
+        dest: "/etc/letsencrypt/ssl-dhparams.pem"
+
+    - name: "Restart NGINX"
+      service:
+        name: nginx
+        state: restarted
+      become: yes
+
+    - name: "Create Cronjob to renew certificate"
+      ansible.builtin.cron:
+        name: "Renew Certificate with certbot at 4:10 everyday"
+        minute: "10"
+        hour: "4"
+        job: "sudo certbot renew --quiet"

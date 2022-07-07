@@ -46,6 +46,8 @@
     deployname="${cloudname:?}-$(date '+%Y%m%d')"
     deploydate=$(date '+%Y%m%dT%H%M%S')
 
+    hostname="${3:-zeppelin.gaia-dmp.uk}"
+
     configyml='/tmp/aglais-config.yml'
     statusyml='/tmp/aglais-status.yml'
     touch "${statusyml:?}"
@@ -68,6 +70,11 @@
     yq eval \
         --inplace \
         ".aglais.status.deployment.date = \"${deploydate}\"" \
+        "${statusyml:?}"
+
+    yq eval \
+        --inplace \
+        ".aglais.status.deployment.hostname = \"${hostname}\"" \
         "${statusyml:?}"
 
     yq eval \
@@ -101,6 +108,7 @@
     echo "---- ---- ----"
     echo "Deploy conf [${deployconf}]"
     echo "Deploy name [${deployname}]"
+    echo "Deploy hostname [${hostname}]"
     echo "Deploy date [${deploydate}]"
     echo "---- ---- ----"
 

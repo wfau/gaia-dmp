@@ -1,0 +1,463 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+
+    Target:
+
+        Test deployment with pip libraries changes
+
+    Result:
+
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-blue'
+    configname=zeppelin-54.86-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >  Done
+
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+   	
+   	> Done
+
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+    
+
+
+# -----------------------------------------------------
+# Create our shiro-auth database.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-auth-database.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-auth-database.log
+
+        > Done
+
+
+
+# -----------------------------------------------------
+# Copy notebooks from the live server.
+#[root@ansibler]
+
+
+     ssh zeppelin \
+        '
+        sshuser=fedora
+        sshhost=data.aglais.uk
+
+        sudo mkdir -p '/var/local/backups'
+        sudo mv "/home/fedora/zeppelin/notebook" \
+           "/var/local/backups/notebook-$(date '+%Y%m%d%H%M%S')"
+
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --progress \
+            --human-readable \
+            --checksum \
+            --recursive \
+            "${sshuser:?}@${sshhost:?}://var/local/backups/notebook/" \
+            "/home/fedora/zeppelin/notebook"
+        '
+        
+
+
+# -----------------------------------------------------
+# Restart Zeppelin
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+
+# -----------------------------------------------------
+# Delete users, so that we can recreate them
+    ssh zeppelin 'sudo userdel -r stv'
+    ssh zeppelin 'sudo userdel -r zrq'
+    ssh zeppelin 'sudo userdel -r nch'
+    ssh zeppelin 'sudo userdel -r dcr'
+	
+# -----------------------------------------------------
+# Create users
+
+source /deployments/zeppelin/bin/create-user-tools.sh
+
+createusermain \
+        "stv" "admin" \
+    | jq '.'
+    
+{
+  "linuxuser": {
+    "name": "stv",
+    "type": "admin",
+    "home": "/home/stv",
+    "uid": 20001
+  },
+  "shirouser": {
+    "name": "stv",
+    "type": "admin",
+    "pass": "",
+    "hash": ""
+  },
+  "hdfsspace": {
+    "path": "/albert/stv",
+    "owner": "stv",
+    "group": "supergroup"
+  },
+  "notebooks": {}
+}
+
+
+createusermain \
+        "zrq" "admin" \
+    | jq '.'
+{
+  "linuxuser": {
+    "name": "zrq",
+    "type": "admin",
+    "home": "/home/zrq",
+    "uid": 20002
+  },
+  "shirouser": {
+    "name": "zrq",
+    "type": "admin",
+    "pass": "",
+    "hash": ""
+  },
+  "hdfsspace": {
+    "path": "/albert/zrq",
+    "owner": "zrq",
+    "group": "supergroup"
+  },
+  "notebooks": {}
+}
+
+
+createusermain \
+        "nch" "admin" \
+    | jq '.'
+{
+  "linuxuser": {
+    "name": "nch",
+    "type": "admin",
+    "home": "/home/nch",
+    "uid": 20003
+  },
+  "shirouser": {
+    "name": "nch",
+    "type": "admin",
+    "pass": "",
+    "hash": ""
+  },
+  "hdfsspace": {
+    "path": "/albert/nch",
+    "owner": "nch",
+    "group": "supergroup"
+  },
+  "notebooks": {}
+}
+
+
+createusermain \
+        "dcr" "user" \
+    | jq '.' 
+    
+{
+  "linuxuser": {
+    "name": "dcr",
+    "type": "user",
+    "home": "/home/dcr",
+    "uid": 20004
+  },
+  "shirouser": {
+    "name": "dcr",
+    "type": "user",
+    "pass": "",
+    "hash": ""
+  },
+  "hdfsspace": {
+    "path": "/albert/dcr",
+    "owner": "dcr",
+    "group": "supergroup"
+  },
+  "notebooks": {}
+}
+
+
+# -----------------------------------------------------	
+# Create GDR3 directory
+# Repeat for all nodes
+
+sudo mkdir /data/gaia/GDR3
+pushd /data/gaia/GDR3
+    sudo ln -s /user/nch/PARQUET/GDR3/GDR3_ASTROPHYSICAL_PARAMETERS                     GDR3_ASTROPHYSICAL_PARAMETERS
+    sudo ln -s /user/nch/PARQUET/GDR3/GDR3_EPOCH_PHOTOMETRY                     GDR3_EPOCH_PHOTOMETRY
+    sudo ln -s /user/nch/PARQUET/GDR3/GDR3_RVS_MEAN_SPECTRUM                     GDR3_RVS_MEAN_SPECTRUM
+    sudo ln -s /user/nch/PARQUET/GDR3/GDR3_XP_SAMPLED_MEAN_SPECTRUM                     GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    sudo ln -s /user/nch/PARQUET/GDR3/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP                     GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    sudo ln -s /user/nch/PARQUET/GDR3/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM                     GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    sudo ln -s /user/nch/PARQUET/GDR3/GDR3_XP_SUMMARY                     GDR3_XP_SUMMARY
+    sudo ln -s /user/nch/PARQUET/GDR3/GDR3_GAIA_SOURCE                  GDR3_GAIA_SOURCE
+    sudo ln -s /user/nch/PARQUET/GDR3/GDR3_GAIA_SOURCE                  GDR3_GAIASOURCE
+popd
+
+
+
+# -----------------------------------------------------	
+# Test & Validate user login & Spark job via UI
+# Success
+
+# Test simple Spark notebook (Source Count)
+# Success
+
+  
+# -----------------------------------------------------
+# Create 8 test users
+#[root@ansibler]
+
+    count=8
+
+    testernames=()
+
+    for i in $(seq $((count+1)))
+    do
+        testernames+=($(pwgen 12 1))
+    done
+
+    createarrayusers \
+        ${testernames[@]} \
+    | tee /tmp/testusers.json \
+    | jq '[ .users[].shirouser.name ]'
+
+# Success
+
+
+
+
+# -----------------------------------------------------
+# Run Quick Tests
+# Defaults for notebook deletion(True) & timeouts(0)
+#[root@ansibler]
+
+    num_users=1
+    concurrent=False
+    test_level=quick
+    cloudname=iris-gaia-red
+    configname=zeppelin-26.43-spark-6.26.43
+
+
+
+    time \
+        /deployments/hadoop-yarn/bin/run-tests.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "${test_level:?}"  \
+	     ${concurrent:?}  \
+	     ${num_users:?}  \
+        | tee /tmp/run-tests-quick.log
+	
+	# Cancel and run again for better output..
+	
+# -----------------------------------------------------
+# Run single user test
+# Users: 1
+# Delay_start: 0
+# Delay_notebook: 0
+# Delete Notebooks: True
+
+
+cat > /tmp/testprog.py << EOF
+import sys
+from aglais_benchmark import AglaisBenchmarker
+AglaisBenchmarker(
+    "/deployments/zeppelin/test/config/quick.json",
+    "/tmp/testusers.json",
+    "/tmp/",
+    "http://128.232.227.238:8080",
+    False
+    ).run(
+        concurrent=False,
+        users=1,
+        delay_start=0,
+        delay_notebook=0,
+        delete=True
+        )
+EOF
+
+python3 /tmp/testprog.py | tee /tmp/test-results.txt
+
+[{
+	"name": "GaiaDMPSetup",
+	"result": "ERROR",
+	"outputs": {
+		"valid": true
+	},
+	"messages": [],
+	"time": {
+		"result": "FAST",
+		"elapsed": "9.44",
+		"expected": "45.00",
+		"percent": "-79.03",
+		"start": "2022-07-07T18:53:14.095387",
+		"finish": "2022-07-07T18:53:23.531433"
+	},
+	"logs": "Fail to execute line 5: assert all(item in actual_tables for item in expected_tables)\nTraceback (most recent call last):\n  File \"/tmp/1657219660457-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 5, in <module>\nAssertionError"
+}, {
+	"name": "Mean_proper_motions_over_the_sky",
+	"result": "PASS",
+	"outputs": {
+		"valid": true
+	},
+	"messages": [],
+	"time": {
+		"result": "SLOW",
+		"elapsed": "114.18",
+		"expected": "55.00",
+		"percent": "107.60",
+		"start": "2022-07-07T18:53:23.531531",
+		"finish": "2022-07-07T18:55:17.712071"
+	},
+	"logs": ""
+}, {
+	"name": "Source_counts_over_the_sky.json",
+	"result": "PASS",
+	"outputs": {
+		"valid": true
+	},
+	"messages": [],
+	"time": {
+		"result": "SLOW",
+		"elapsed": "46.89",
+		"expected": "22.00",
+		"percent": "113.15",
+		"start": "2022-07-07T18:55:17.712479",
+		"finish": "2022-07-07T18:56:04.606532"
+	},
+	"logs": ""
+}, {
+	"name": "Library_Validation.json",
+	"result": "PASS",
+	"outputs": {
+		"valid": true
+	},
+	"messages": [],
+	"time": {
+		"result": "FAST",
+		"elapsed": "10.16",
+		"expected": "60.00",
+		"percent": "-83.06",
+		"start": "2022-07-07T18:56:04.606632",
+		"finish": "2022-07-07T18:56:14.769365"
+	},
+	"logs": ""
+}]
+
+# Results:
+
+# Error in Gaiadmpsetup
+Gaiadmpsetup failed, but we know why
+  New tables have been created for gaiadr3, and the notebook asserts whether the actual tables in spark.catalog match the expected, which is the previous set of tables
+  New issue has been created to reflect this and correct the list
+  For reference the list of tables we got here is:
+  ['astrophysical_parameters', 'astrophysical_parameters_supp', 'gaia_source', 'rvs_mean_spectrum', 'xp_continuous_mean_spectrum', 'xp_sampled_mean_spectrum', 'xp_summary']
+  
+
+
+# I also manually ran all the public notebooks:
+# -----------------------------------------------------------
+
+1. Start Here [Success]
+2. Data Holdings [Success]
+3. Source Counts over the sky [Success]
+4. Mean Proper motions over the sky [Success]
+5. Working with Gaia XP spectra [Seems to be working.. But takes a while and I did not wait for it to finish]
+6. Working with cross-matched surveys [Success]
+
+7. Good astrometric solutions via ML Random Forrest classifier [Success]
+
+
+
+
+
+

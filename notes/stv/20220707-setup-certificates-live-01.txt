@@ -1,0 +1,179 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2021, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#  
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#
+
+
+
+    Target:
+
+        Setup NGINX proxy for Zeppelin & Setup SSL for Zeppelin installation
+        Note this was running on an existing deploy (blue.aglais.uk)
+    Result:
+
+        SUCCESS
+
+
+# ---------------------------------------------
+# Update Yum
+# fedora@zeppelin
+
+sudo yum update
+
+
+# ---------------------------------------------
+# Install NGINX
+# fedora@zeppelin
+
+sudo yum install -y nginx
+
+# Needed to avoid permission errors
+
+setsebool -P httpd_can_network_connect 1
+
+
+# ---------------------------------------------
+# Setup NGINX Proxy Configuration for Zeppelin
+# fedora@zeppelin
+
+cat > "/etc/nginx/conf.d/zeppelin.conf" << EOF
+
+# Zeppelin Website
+
+server {
+    server_name dmp.gaia.ac.uk;            
+
+    location / {    # For regular websever support
+            proxy_pass http://zeppelin:8080/;
+            proxy_redirect     off;
+
+            proxy_set_header   Host             $host;
+            proxy_set_header   X-Real-IP        $remote_addr;
+            proxy_set_header   X-Forwarded-For  $proxy_add_x_forwarded_for;
+
+            client_max_body_size       10m;
+            client_body_buffer_size    128k;
+
+            proxy_connect_timeout      90;
+            proxy_send_timeout         90;
+            proxy_read_timeout         90;
+
+            proxy_buffer_size          4k;
+            proxy_buffers              4 32k;
+            proxy_busy_buffers_size    64k;
+            proxy_temp_file_write_size 64k;
+    }
+
+    location /ws {  # For websocket support
+            proxy_pass http://zeppelin:8080/ws;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade websocket;
+            proxy_set_header Connection upgrade;
+            proxy_read_timeout 86400;
+    }
+
+
+}
+
+EOF
+
+
+# Fix proxy set header which didn't end up properly in config file
+
+
+EOF
+
+# ---------------------------------------------
+# Restart NGINX
+# fedora@zeppelin
+
+sudo systemctl restart nginx.service
+
+
+
+# ---------------------------------------------
+# Install certbot and nginx plugin
+# fedora@zeppelin
+
+sudo yum install -y certbot
+sudo yum install -y certbot python3-certbot-nginx
+
+
+
+# Update the dns entry with new IP
+# dmp.gaia.ac.uk -> 128.232.227.196
+
+ducktoken=ENTER-TOKEN-HERE
+duckname=aglais-live
+zeppelinip=128.232.227.196
+curl "https://www.duckdns.org/update/${duckname:?}/${ducktoken:?}/${zeppelinip:?}"
+
+
+
+# ---------------------------------------------
+# Run certbot to install certificate for Nginx
+# fedora@zeppelin
+
+
+sudo certbot --nginx
+
+..
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Congratulations! You have successfully enabled https://dmp.gaia.ac.uk
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+
+
+# Check https://dmp.gaia.ac.uk
+# Success!
+
+# Targzip letsencrypt directory onto data.aglais.uk
+
+# fedora@zeppelin
+pushd /etc/
+  tar zcvf /tmp/certs.tar.gz letsencrypt
+popd
+
+# Deploy ansibler container (temp fix, need to fix ssh config to access from local)
+
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# root@ansibler  
+
+  scp fedora@blue.aglais.uk:/tmp/certs.tar.gz /home/
+  scp /home/certs.tar.gz fedora@data.aglais.uk:/home/fedora/certs/
+

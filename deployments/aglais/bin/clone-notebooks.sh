@@ -32,11 +32,10 @@ usertype=${2}
 userpass=${3}
 
 zeppelinurl='http://localhost:8080'
-zeppbasedir="/home/fedora/zeppelin"
-usernotebookdir="${zeppbasedir}/notebook/Users/${username}"
-userexamplesdir="${usernotebookdir}/examples"
 
-cookiefile=$(mktemp)
+#zeppbasedir="/home/fedora/zeppelin"
+#usernotebookdir="${zeppbasedir}/notebook/Users/${username}"
+#userexamplesdir="${usernotebookdir}/examples"
 
 # Check required params
 if [ -z "${username}" ]
@@ -57,41 +56,135 @@ then
     exit 1
 fi
 
-agmkdir "${usernotebookdir}" "${username}:${username}" "u=rwx,g=rx,o=rx"
+cookiefile=$(mktemp)
+resultfile=$(mktemp)
 
-agmkdir "${userexamplesdir}" "${username}:${username}" "u=rwx,g=rx,o=rx"
+# Login to Zeppelin
+curl \
+    --request 'POST' \
+    --no-progress-meter \
+    --cookie-jar "${cookiefile}" \
+    --data "userName=${username}" \
+    --data "password=${userpass}" \
+    "${zeppelinurl}/api/login" \
+    1> "${resultfile}" \
+    2> "${debugerrorfile}"
+    retcode=$?
 
-# Login
+if [ ${retcode} -ne 0 ]
+then
+    failmessage "Login [${username}] failed - retcode [${retcode}]"
+else
+    loginstatus=$(
+        jq -r '.status' "${resultfile}"
+        )
+    if [ "${loginstatus}" != "OK" ]
+    then
+        failmessage "Login [${username}] failed - status [${status}]"
+    else
+        passmessage "Login [${username}] done"
+    fi
+fi
 
-# Check for user examples
-userexamplespath=
+# If login worked.
+if [ ${loginstatus} == "PASS" ]
+then
 
+public_examples="/Public Examples"
+private_examples="/Users/${username}/examples"
 
+# List the (visible) notebooks
+curl \
+    --no-progress-meter \
+    --cookie "${cookiefile}" \
+    "${zeppelinurl:?}/api/notebook" \
+    1> "${resultfile}" \
+    2> "${errorfile}"
+    retcode=$?
 
-            echo '['
+# Count the user's examples
+if [ ${retcode} -ne 0 ]
+then
+    echo "Count failed - error code [${retcode}]"
+    cat "${errorfile}"
+else
+    if [ -s "${resultfile}" ]
+    then
+        count=$(
+            jq "
+                [
+                .body[] | select(.path | startswith(\"${private_examples}\")) | {id, path}
+                ] | length
+                " "${resultfile}"
+            )
+    else
+        count=0
+    fi
+    if [ ${count} -ne 0 ]
+    then
+        echo "Examples found [${count}]"
+    else
+        echo "Examples needed [${count}]"
+
+        # Clone the public examples
+        for noteid in $(
+            jq -r "
+                .body[] | select(.path | startswith(\"${public_examples}\")) | .id
+                " "${resultfile}"
+            )
+        do
+            notepath=$(
+                jq -r '
+                    .body[] | select(.id == "'${noteid}'") | .path
+                    ' "${resultfile}"
+                )
+            clonepath=${notepath/${public_examples}/${private_examples}}
+            echo
+            echo "ident [${noteid}]"
+            echo "path  [${notepath}]"
+            echo "path  [${clonepath}]"
 
             curl \
-            --silent \
-            --request 'POST' \
-            --cookie-jar "${zepcookies:?}" \
-            --data "userName=${NEW_USERNAME:?}" \
-            --data "password=${NEW_PASSWORD:?}" \
-            ${ZEPPELIN_URL:?}/api/login
+                --location \
+                --request POST \
+                --no-progress-meter \
+                --cookie "${cookiefile}" \
+                --header 'Content-Type: application/json' \
+                --data "{
+                    \"name\": \"${clonepath}\"
+                    }" \
+                "${zeppelinurl}/api/notebook/${noteid}" \
+                1> "${resultfile}" \
+                2> "${errorfile}"
+                retcode=$?
 
-            curl --silent --cookie "${zepcookies:?}" "${ZEPPELIN_URL:?}/api/notebook"| jq -r '.body[] | select(.path | startswith("/Public")) | [.id, .path] | @tsv' |
-            while IFS=$'\t' read -r id path; do
-              echo ','
-              curl --silent -L -H 'Content-Type: application/json' -d "{'name': '${path/Public Examples/Users/$NEW_USERNAME}' }" --request POST --cookie "${zepcookies:?}" $ZEPPELIN_URL/api/notebook/$id
-            done
-            echo ']'
+            if [ ${retcode} -ne 0 ]
+            then
+                echo "Clone failed - error code [${retcode}]"
+                cat "${errorfile}"
+            else
+                status=$(
+                    jq -r '.status' "${resultfile}"
+                    )
+                exception=$(
+                    jq -r '.exception' "${resultfile}"
+                    )
+                if [ -n "${exception}" ]
+                then
+                    echo "Clone failed - exception [${exception}] "
+                else
+                    echo "Clone done - [${clonepath}]"
+                fi
+            fi
+        done
+    fi
+fi
 
 
 
 cat << EOF
 {
-"path":  "${hdfspath}",
-"owner": "${username}",
-"group": "${hdfsgroup}",
+"user": "${username}",
 $(jsondebug)
 }
 EOF

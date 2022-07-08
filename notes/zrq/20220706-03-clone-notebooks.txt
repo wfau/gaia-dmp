@@ -1,0 +1,295 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Testing code for creating a user's the clone of public notebooks..
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase=arcus
+    cloudname=iris-gaia-red
+    configname=zeppelin-26.43-spark-3.26.43
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+--START--
+real    26m45.219s
+user    9m9.285s
+sys     1m36.137s
+--END--
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    createlinuxuser 'Benjamin' 'puppy' | jq '.'
+
+--START--
+{
+  "name": "Benjamin",
+  "type": "puppy",
+  "home": "/home/Benjamin",
+  "uid": 20001,
+  "debug": {
+    "script": "create-linux-user.sh",
+    "result": "PASS",
+    "messages": [
+      "PASS: adduser [Benjamin] done",
+      "PASS: mkdir [/home/Benjamin/.ssh] done",
+      "PASS: adding public key for [zepelin] done",
+      "SKIP: adding public key for [Benjamin] skipped (no key)"
+    ]
+  }
+}
+--END--
+
+
+    createshirouser 'Benjamin' 'puppy' | jq '.'
+
+--START--
+{
+  "name": "Benjamin",
+  "type": "puppy",
+  "role": "user",
+  "pass": "keeph7iel5oone7ya2Ek",
+  "hash": "$shiro1$SHA-256$500000$h+YlnFNEXd9brhm3oiMfDg==$4kyXOtWxvboW6cJL3Lab2+KYqJdJlzrjbYuu+p+Xf9M=",
+  "debug": {
+    "script": "create-shiro-user.sh",
+    "result": "PASS",
+    "messages": [
+      "PASS: passgen done",
+      "PASS: hashpass done",
+      "PASS: database INSERT done"
+    ]
+  }
+}
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # ....
+    #
+
+    cookiefile=$(mktemp)
+    resultfile=$(mktemp)
+    errorfile=$(mktemp)
+
+    zeppelinurl='http://localhost:8080'
+    zeppelinurl='http://zeppelin:8080'
+
+    username=Benjamin
+    usertype=puppy
+    userpass=keeph7iel5oone7ya2Ek
+
+    # Login
+    curl \
+        --request 'POST' \
+        --no-progress-meter \
+        --cookie-jar "${cookiefile}" \
+        --data "userName=${username}" \
+        --data "password=${userpass}" \
+        "${zeppelinurl}/api/login" \
+        1> "${resultfile}" \
+        2> "${errorfile}"
+        retcode=$?
+
+    if [ ${retcode} -ne 0 ]
+    then
+        echo "Login failed - error code [${retcode}]"
+        cat "${errorfile}"
+    else
+        status=$(
+            jq -r '.status' "${resultfile}"
+            )
+        if [ "${status}" != 'OK' ]
+        then
+            echo "Login failed - status [${status}]"
+        else
+            echo "Login pass - status [${status}]"
+        fi
+    fi
+
+    # Wrong URL
+--START--
+Login failed - error code [7]
+curl: (7) Failed to connect to localhost port 8080 after 0 ms: Connection refused
+--END--
+
+
+    # Wrong username
+--START--
+Login failed - status [FORBIDDEN]
+--END--
+
+
+    # Wrong password
+--START--
+Login failed - status [FORBIDDEN]
+--END--
+
+
+    # Success
+--START--
+Login pass - status [OK]
+--END--
+
+
+    public_examples="/Public Examples"
+    private_examples="/Users/${username}/examples"
+
+    # List the (visible) notebooks
+    curl \
+        --no-progress-meter \
+        --cookie "${cookiefile}" \
+        "${zeppelinurl:?}/api/notebook" \
+        1> "${resultfile}" \
+        2> "${errorfile}"
+        retcode=$?
+
+    # Count the user's examples
+    if [ ${retcode} -ne 0 ]
+    then
+        echo "Count failed - error code [${retcode}]"
+        cat "${errorfile}"
+    else
+        if [ -s "${resultfile}" ]
+        then
+            count=$(
+                jq "
+                    [
+                    .body[] | select(.path | startswith(\"${private_examples}\")) | {id, path}
+                    ] | length
+                    " "${resultfile}"
+                )
+        else
+            count=0
+        fi
+        if [ ${count} -ne 0 ]
+        then
+            echo "Examples found [${count}]"
+        else
+            echo "Examples needed [${count}]"
+
+            # Clone the public examples
+            for noteid in $(
+                jq -r "
+                    .body[] | select(.path | startswith(\"${public_examples}\")) | .id
+                    " "${resultfile}"
+                )
+            do
+                notepath=$(
+                    jq -r '
+                        .body[] | select(.id == "'${noteid}'") | .path
+                        ' "${resultfile}"
+                    )
+                clonepath=${notepath/${public_examples}/${private_examples}}
+                echo
+                echo "ident [${noteid}]"
+                echo "path  [${notepath}]"
+                echo "path  [${clonepath}]"
+
+                curl \
+                    --location \
+                    --request POST \
+                    --no-progress-meter \
+                    --cookie "${cookiefile}" \
+                    --header 'Content-Type: application/json' \
+                    --data "{
+                        \"name\": \"${clonepath}\"
+                        }" \
+                    "${zeppelinurl}/api/notebook/${noteid}" \
+                    1> "${resultfile}" \
+                    2> "${errorfile}"
+                    retcode=$?
+
+                if [ ${retcode} -ne 0 ]
+                then
+                    echo "Clone failed - error code [${retcode}]"
+                    cat "${errorfile}"
+                else
+                    status=$(
+                        jq -r '.status' "${resultfile}"
+                        )
+                    exception=$(
+                        jq -r '.exception' "${resultfile}"
+                        )
+                    if [ -n "${exception}" ]
+                    then
+                        echo "Clone failed - exception [${exception}] "
+                    else
+                        echo "Clone done - [${clonepath}]"
+                    fi
+                fi
+            done
+        fi
+    fi
+
+
+
+
+
+

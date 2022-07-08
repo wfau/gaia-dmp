@@ -145,19 +145,14 @@ EOF
         {
         local username=${1:?'username required'}
         local usertype=${2:?'usertype required'}
-        local userpass=${3}
+        local userpass=${3:?'userpass required'}
         #
         # Call Zeppelin to clone the user's notebooks.
-        # Returns null (could return JSON list).
-        if [ -n "${userpass}" ]
-        then
-            ssh zeppelin \
-                "
-                create_notebook_clone.sh '${username}' '${usertype}' '${userpass}'
-                "
-        else
-            echo "{}"
-        fi
+        # Returns JSON.
+        ssh zeppelin \
+            "
+            clone-notebooks.sh '${username}' '${usertype}' '${userpass}'
+            "
         }
 
     createusermain()

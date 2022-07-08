@@ -57,17 +57,20 @@ then
 fi
 
 cookiefile=$(mktemp)
-resultfile=$(mktemp)
+loginresult=$(mktemp)
+notebooklist=$(mktemp)
+cloneresult=$(mktemp)
 
 # Login to Zeppelin
 curl \
+    --silent \
+    --show-error \
     --request 'POST' \
-    --no-progress-meter \
     --cookie-jar "${cookiefile}" \
     --data "userName=${username}" \
     --data "password=${userpass}" \
     "${zeppelinurl}/api/login" \
-    1> "${resultfile}" \
+    1> "${loginresult}" \
     2> "${debugerrorfile}"
     retcode=$?
 
@@ -76,111 +79,107 @@ then
     failmessage "Login [${username}] failed - retcode [${retcode}]"
 else
     loginstatus=$(
-        jq -r '.status' "${resultfile}"
+        jq -r '.status' "${loginresult}"
         )
     if [ "${loginstatus}" != "OK" ]
     then
-        failmessage "Login [${username}] failed - status [${status}]"
+        failmessage "Login [${username}] failed - status [${loginstatus}]"
     else
         passmessage "Login [${username}] done"
     fi
 fi
 
 # If login worked.
-if [ ${loginstatus} == "PASS" ]
+if [ "${loginstatus}" == "OK" ]
 then
 
-public_examples="/Public Examples"
-private_examples="/Users/${username}/examples"
+    public_examples="/Public Examples"
+    private_examples="/Users/${username}/examples"
 
-# List the (visible) notebooks
-curl \
-    --no-progress-meter \
-    --cookie "${cookiefile}" \
-    "${zeppelinurl:?}/api/notebook" \
-    1> "${resultfile}" \
-    2> "${errorfile}"
-    retcode=$?
+    # List the (visible) notebooks
+    curl \
+        --silent \
+        --show-error \
+        --cookie "${cookiefile}" \
+        "${zeppelinurl}/api/notebook" \
+        1> "${notebooklist}" \
+        2> "${debugerrorfile}"
+        retcode=$?
 
-# Count the user's examples
-if [ ${retcode} -ne 0 ]
-then
-    echo "Count failed - error code [${retcode}]"
-    cat "${errorfile}"
-else
-    if [ -s "${resultfile}" ]
+    # Count the user's examples
+    if [ ${retcode} -ne 0 ]
     then
-        count=$(
-            jq "
-                [
-                .body[] | select(.path | startswith(\"${private_examples}\")) | {id, path}
-                ] | length
-                " "${resultfile}"
-            )
+        failmessage "Count failed - error code [${retcode}]"
     else
-        count=0
-    fi
-    if [ ${count} -ne 0 ]
-    then
-        echo "Examples found [${count}]"
-    else
-        echo "Examples needed [${count}]"
-
-        # Clone the public examples
-        for noteid in $(
-            jq -r "
-                .body[] | select(.path | startswith(\"${public_examples}\")) | .id
-                " "${resultfile}"
-            )
-        do
-            notepath=$(
-                jq -r '
-                    .body[] | select(.id == "'${noteid}'") | .path
-                    ' "${resultfile}"
+        # If the list isn't empty.
+        if [ -s "${notebooklist}" ]
+        then
+            # Count the user's examples.
+            count=$(
+                jq "
+                    [
+                    .body[] | select(.path | startswith(\"${private_examples}\")) | {id, path}
+                    ] | length
+                    " "${notebooklist}"
                 )
-            clonepath=${notepath/${public_examples}/${private_examples}}
-            echo
-            echo "ident [${noteid}]"
-            echo "path  [${notepath}]"
-            echo "path  [${clonepath}]"
 
-            curl \
-                --location \
-                --request POST \
-                --no-progress-meter \
-                --cookie "${cookiefile}" \
-                --header 'Content-Type: application/json' \
-                --data "{
-                    \"name\": \"${clonepath}\"
-                    }" \
-                "${zeppelinurl}/api/notebook/${noteid}" \
-                1> "${resultfile}" \
-                2> "${errorfile}"
-                retcode=$?
-
-            if [ ${retcode} -ne 0 ]
+            # Check if the user already has some examples.
+            if [ ${count} -ne 0 ]
             then
-                echo "Clone failed - error code [${retcode}]"
-                cat "${errorfile}"
+                skipmessage "Examples found [${count}]"
             else
-                status=$(
-                    jq -r '.status' "${resultfile}"
+                # Clone the public examples
+                for noteid in $(
+                    jq -r "
+                        .body[] | select(.path | startswith(\"${public_examples}\")) | .id
+                        " "${notebooklist}"
                     )
-                exception=$(
-                    jq -r '.exception' "${resultfile}"
-                    )
-                if [ -n "${exception}" ]
-                then
-                    echo "Clone failed - exception [${exception}] "
-                else
-                    echo "Clone done - [${clonepath}]"
-                fi
+                do
+                    notepath=$(
+                        jq -r '
+                            .body[] | select(.id == "'${noteid}'") | .path
+                            ' "${notebooklist}"
+                        )
+                    clonepath=${notepath/${public_examples}/${private_examples}}
+
+                    # Clone a notebook.
+                    curl \
+                        --silent \
+                        --show-error \
+                        --location \
+                        --request POST \
+                        --cookie "${cookiefile}" \
+                        --header 'Content-Type: application/json' \
+                        --data "{
+                            \"name\": \"${clonepath}\"
+                            }" \
+                        "${zeppelinurl}/api/notebook/${noteid}" \
+                        1> "${cloneresult}" \
+                        2> "${debugerrorfile}"
+                        retcode=$?
+
+                    if [ ${retcode} -ne 0 ]
+                    then
+                        failmessage "Clone failed - error code [${retcode}]"
+                    else
+                        status=$(
+                            jq -r '.status' "${cloneresult}"
+                            )
+                        if [ "${status}" == "OK" ]
+                        then
+                            passmessage "Clone done [${noteid}][${clonepath}]"
+                        else
+                            exception=$(
+                                jq -r '.exception' "${cloneresult}"
+                                )
+                            failmessage "Clone failed - exception [${exception}] "
+                        fi
+                    fi
+                done
             fi
-        done
+        fi
     fi
 fi
-
-
 
 cat << EOF
 {

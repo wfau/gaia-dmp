@@ -81,14 +81,14 @@
         {
         local username=${1:?'username required'}
         local usertype=${2:?'usertype required'}
-        local userpkey=${3}
-        local useruid=${4}
+        local publickey=${3}
+        local linuxuid=${4}
         #
         # Call Zeppelin to create the Linux user account.
         # Returns JSON.
         ssh zeppelin \
             "
-            sudo /opt/aglais/bin/create-linux-user.sh '${username}' '${usertype}' '${userpkey}' '${useruid}'
+            sudo /opt/aglais/bin/create-linux-user.sh '${username}' '${usertype}' '${publickey}' '${linuxuid}'
             "
         }
 
@@ -110,7 +110,7 @@
         local cloudname=${1:?'cloudname required'}
         local username=${2:?'username required'}
         local usertype=${3:?'usertype required'}
-        local uid=${4:?'user id required'}
+        local linuxuid=${4:?'user id required'}
 
         local cephroot="/ceph-${usertype}"
         local sharepath=${5:-${cephroot}/${username}}
@@ -120,16 +120,14 @@
 
         #
         # Call to Openstack to create the share.
-        #
         create-ceph-share.sh \
             "${cloudname}" \
             "${sharename}" \
             "${sharesize}"
 
-
         #
         # Call to Zeppelin to mount the share.
-        #
+        # ....
 
 cat << EOF
 {
@@ -145,13 +143,13 @@ EOF
         {
         local username=${1:?'username required'}
         local usertype=${2:?'usertype required'}
-        local userpass=${3:?'userpass required'}
+        local password=${3}
         #
         # Call Zeppelin to clone the user's notebooks.
         # Returns JSON.
         ssh zeppelin \
             "
-            clone-notebooks.sh '${username}' '${usertype}' '${userpass}'
+            clone-notebooks.sh '${username}' '${usertype}' '${password}'
             "
         }
 
@@ -159,21 +157,23 @@ EOF
         {
         local username=${1:?'username required'}
         local usertype=${2:-'test'}
-        local userpkey=${3}
-        local useruid=${4}
-        local datapath=${5}
-        local datasize=${6}
+        local userrole=${3:-'user'}
+        local publickey=${4}
+        local linuxuid=${5}
+        local password=${6}
+        local passhash=${7}
+        local datauuid=${8}
+        local datasize=${9}
 
         linuxuserjson=$(
             createlinuxuser \
                 "${username}" \
                 "${usertype}" \
-                "${userpkey}" \
-                "${useruid}"
+                "${publickey}" \
+                "${linuxuid}"
             )
-
-        useruid=$(
-            jq -r '.uid' <<< ${linuxuserjson}
+        linuxuid=$(
+            jq -r '.linuxuid' <<< ${linuxuserjson}
             )
 
 # TODO Create user shares ..
@@ -181,8 +181,8 @@ EOF
 #            createcephshare \
 #                "${username}" \
 #                "${usertype}" \
-#                "${useruid}"  \
-#                "${datapath}" \
+#                "${linuxuid}"  \
+#                "${datauuid}" \
 #                "${datasize}"
 #            )
 
@@ -195,18 +195,20 @@ EOF
         shirouserjson=$(
             createshirouser \
                 "${username}" \
-                "${usertype}"
+                "${usertype}" \
+                "${userrole}" \
+                "${password}" \
+                "${passhash}"
             )
-
         local userpass=$(
-            jq -r '.pass' <<< ${shirouserjson}
+            jq -r '.password' <<< ${shirouserjson}
             )
 
         notebooksjson=$(
             cloneusernotebooks \
                 "${username}" \
                 "${usertype}" \
-                "${userpass}"
+                "${password}"
             )
 
 cat << EOF
@@ -219,6 +221,8 @@ cat << EOF
 EOF
         }
 
+    #
+    # Create users from a bash array.
     createarrayusers()
         {
         local usernames=("$@")
@@ -233,27 +237,67 @@ EOF
         echo ']}'
         }
 
+    #
+    # Create users from a YAML input file.
     createyamlusers()
         {
         local yamlfile=${1:?'yamlfile required'}
         local yamlpath=${2:-'users'}
-        local comma=''
 
-        echo '{ "users": ['
-        while read -r userinfo
+        local userlist=$(
+            yq -I 0 -o json ".${yamlpath}" "${yamlfile}"
+            )
+
+        local comma
+        local username
+
+        echo '{"users":['
+        for username in $(
+            jq --raw-output '.[].name' <<< ${userlist}
+            )
         do
             echo "${comma}" ; comma=','
+            local userinfo=$(
+                jq --raw-output --null-input --argjson itemlist "${userlist}" "\$itemlist[] | select(.name == \"${username}\")"
+                )
             createusermain \
-                "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.name // empty')" \
-                "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.type // empty')" \
-                "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.uid  // empty')" \
-                "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.home // empty')" \
-                "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.data.path // empty')" \
-                "$(jq --raw-output --null-input --argjson user "${userinfo}" '$user.data.size // empty')"
-        done <<< $(
-            yq -I 0 -o json '.'${yamlpath}'[]' \
-                "${yamlfile}"
-            )
+                "${username}" \
+                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.type  // empty')"     \
+                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.role  // empty')"     \
+                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.publickey // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.linuxuid  // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.password  // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.passhash  // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.data.uuid // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.data.size // empty')"
+        done
         echo ']}'
+        }
+
+
+    #
+    # Convert JSON format into YAML format.
+    json-yaml-users()
+        {
+        local jsonfile=${1:-'input JSON filename required'}
+        local yamlfile=${2:-'output YAML filename required'}
+        jq '
+            {
+            users: [
+                .users[] |
+                    {
+                    name:      .linuxuser.name,
+                    type:      (.linuxuser.type // ""),
+                    role:      (.shirouser.role // ""),
+                    linuxuid:  (.linuxuser.linuxuid // ""),
+                    publickey: (.linuxuser.publickey // ""),
+                    password:  (.shirouser.pasword // ""),
+                    passhash:  (.shirouser.passhash // ""),
+                    }
+                ]
+            }
+            ' "${jsonfile}" \
+        | yq -P \
+        | tee "${yamlfile}"
         }
 

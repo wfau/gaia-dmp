@@ -29,8 +29,8 @@ source "${srcpath}/json-tools.sh"
 
 username=${1}
 usertype=${2}
-userkey=${3}
-userid=${4}
+publickey=${3}
+linuxuid=${4}
 
 minuid=20000
 maxuid=60000
@@ -64,10 +64,10 @@ fi
 
 # Get the next available uid
 # https://www.commandlinefu.com/commands/view/5684/determine-next-available-uid
-if [ -z "${userid}" ]
+if [ -z "${linuxuid}" ]
 then
-    userid=$(
-        getent passwd | awk -F: 'BEGIN {userid = '${minuid}'} ($3 < '${maxuid}') && ($3 > userid) { userid = $3 } END { print userid + 1 }'
+    linuxuid=$(
+        getent passwd | awk -F: 'BEGIN {linuxuid = '${minuid}'} ($3 < '${maxuid}') && ($3 > linuxuid) { linuxuid = $3 } END { print linuxuid + 1 }'
         )
 fi
 
@@ -78,7 +78,7 @@ then
     skipmessage "adduser [${username}] skipped (done)"
 else
     adduser \
-        --uid "${userid}" \
+        --uid "${linuxuid}" \
         --create-home \
         --user-group \
         --groups "users,${zepusergroup}" \
@@ -143,17 +143,17 @@ EOF
 fi
 
 # Add the Linux user's public key.
-if [ -z "${userkey}" ]
+if [ -z "${publickey}" ]
 then
     skipmessage "adding public key for [${username}] skipped (no key)"
 else
-    if [ $(grep -c "${userkey}" "${userhome}/.ssh/authorized_keys" ) -ne 0 ]
+    if [ $(grep -c "${publickey}" "${userhome}/.ssh/authorized_keys" ) -ne 0 ]
     then
         skipmessage "adding public key for [${username}] skipped (done)"
     else
         cat >> "${userhome}/.ssh/authorized_keys" 2> "${debugerrorfile}" << EOF
 # ${username}'s public key"
-${userkey}
+${publickey}
 EOF
         if [ $? -eq 0 ]
         then
@@ -180,10 +180,9 @@ fi
 # Generate our JSON response.
 cat << JSON
 {
-"name":   "${username}",
-"type":   "${usertype}",
-"home":   "${userhome}",
-"uid":    ${userid},
+"name": "${username}",
+"type": "${usertype}",
+"linuxuid":  "${linuxuid}",
 $(jsondebug)
 }
 JSON

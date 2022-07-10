@@ -52,130 +52,130 @@ fi
 
 if [ -z "${userpass}" ]
 then
-    jsonerror "[userpass] required"
-    exit 1
-fi
-
-cookiefile=$(mktemp)
-loginresult=$(mktemp)
-notebooklist=$(mktemp)
-cloneresult=$(mktemp)
-
-# Login to Zeppelin
-curl \
-    --silent \
-    --show-error \
-    --request 'POST' \
-    --cookie-jar "${cookiefile}" \
-    --data "userName=${username}" \
-    --data "password=${userpass}" \
-    "${zeppelinurl}/api/login" \
-    1> "${loginresult}" \
-    2> "${debugerrorfile}"
-    retcode=$?
-
-if [ ${retcode} -ne 0 ]
-then
-    failmessage "Login [${username}] failed - retcode [${retcode}]"
+    skipmessage "Notebooks skipped - null password"
 else
-    loginstatus=$(
-        jq -r '.status' "${loginresult}"
-        )
-    if [ "${loginstatus}" != "OK" ]
-    then
-        failmessage "Login [${username}] failed - status [${loginstatus}]"
-    else
-        passmessage "Login [${username}] done"
-    fi
-fi
 
-# If login worked.
-if [ "${loginstatus}" == "OK" ]
-then
+    cookiefile=$(mktemp)
+    loginresult=$(mktemp)
+    notebooklist=$(mktemp)
+    cloneresult=$(mktemp)
 
-    public_examples="/Public Examples"
-    private_examples="/Users/${username}/examples"
-
-    # List the (visible) notebooks
+    # Login to Zeppelin
     curl \
         --silent \
         --show-error \
-        --cookie "${cookiefile}" \
-        "${zeppelinurl}/api/notebook" \
-        1> "${notebooklist}" \
+        --request 'POST' \
+        --cookie-jar "${cookiefile}" \
+        --data "userName=${username}" \
+        --data "password=${userpass}" \
+        "${zeppelinurl}/api/login" \
+        1> "${loginresult}" \
         2> "${debugerrorfile}"
         retcode=$?
 
-    # Count the user's examples
     if [ ${retcode} -ne 0 ]
     then
-        failmessage "Count failed - error code [${retcode}]"
+        failmessage "Login [${username}] failed - retcode [${retcode}]"
     else
-        # If the list isn't empty.
-        if [ -s "${notebooklist}" ]
+        loginstatus=$(
+            jq -r '.status' "${loginresult}"
+            )
+        if [ "${loginstatus}" != "OK" ]
         then
-            # Count the user's examples.
-            count=$(
-                jq "
-                    [
-                    .body[] | select(.path | startswith(\"${private_examples}\")) | {id, path}
-                    ] | length
-                    " "${notebooklist}"
-                )
+            failmessage "Login [${username}] failed - status [${loginstatus}]"
+        else
+            passmessage "Login [${username}] done"
+        fi
+    fi
 
-            # Check if the user already has some examples.
-            if [ ${count} -ne 0 ]
+    # If login worked.
+    if [ "${loginstatus}" == "OK" ]
+    then
+
+        public_examples="/Public Examples"
+        private_examples="/Users/${username}/examples"
+
+        # List the (visible) notebooks
+        curl \
+            --silent \
+            --show-error \
+            --cookie "${cookiefile}" \
+            "${zeppelinurl}/api/notebook" \
+            1> "${notebooklist}" \
+            2> "${debugerrorfile}"
+            retcode=$?
+
+        # Count the user's examples
+        if [ ${retcode} -ne 0 ]
+        then
+            failmessage "Count failed - error code [${retcode}]"
+        else
+            # If the list isn't empty.
+            if [ -s "${notebooklist}" ]
             then
-                skipmessage "Examples found [${count}]"
-            else
-                # Clone the public examples
-                for noteid in $(
-                    jq -r "
-                        .body[] | select(.path | startswith(\"${public_examples}\")) | .id
+                # Count the user's examples.
+                count=$(
+                    jq "
+                        [
+                        .body[] | select(.path | startswith(\"${private_examples}\")) | {id, path}
+                        ] | length
                         " "${notebooklist}"
                     )
-                do
-                    notepath=$(
-                        jq -r '
-                            .body[] | select(.id == "'${noteid}'") | .path
-                            ' "${notebooklist}"
+
+                # Check if the user already has some examples.
+                if [ ${count} -ne 0 ]
+                then
+                    skipmessage "Examples found [${count}]"
+                else
+                    # Clone the public examples
+                    for noteid in $(
+                        jq -r "
+                            .body[] | select(.path | startswith(\"${public_examples}\")) | .id
+                            " "${notebooklist}"
                         )
-                    clonepath=${notepath/${public_examples}/${private_examples}}
-
-                    # Clone a notebook.
-                    curl \
-                        --silent \
-                        --show-error \
-                        --location \
-                        --request POST \
-                        --cookie "${cookiefile}" \
-                        --header 'Content-Type: application/json' \
-                        --data "{
-                            \"name\": \"${clonepath}\"
-                            }" \
-                        "${zeppelinurl}/api/notebook/${noteid}" \
-                        1> "${cloneresult}" \
-                        2> "${debugerrorfile}"
-                        retcode=$?
-
-                    if [ ${retcode} -ne 0 ]
-                    then
-                        failmessage "Clone failed - error code [${retcode}]"
-                    else
-                        status=$(
-                            jq -r '.status' "${cloneresult}"
+                    do
+                        notepath=$(
+                            jq -r '
+                                .body[] | select(.id == "'${noteid}'") | .path
+                                ' "${notebooklist}"
                             )
-                        if [ "${status}" == "OK" ]
+                        clonepath=${notepath/${public_examples}/${private_examples}}
+
+                        # Clone a notebook.
+                        curl \
+                            --silent \
+                            --show-error \
+                            --location \
+                            --request POST \
+                            --cookie "${cookiefile}" \
+                            --header 'Content-Type: application/json' \
+                            --data "{
+                                \"name\": \"${clonepath}\"
+                                }" \
+                            "${zeppelinurl}/api/notebook/${noteid}" \
+                            1> "${cloneresult}" \
+                            2> "${debugerrorfile}"
+                            retcode=$?
+
+                        if [ ${retcode} -ne 0 ]
                         then
-                            passmessage "Clone done [${noteid}][${clonepath}]"
+                            failmessage "Clone failed - error code [${retcode}]"
                         else
-                            exception=$(
-                                jq -r '.exception' "${cloneresult}"
+                            status=$(
+                                jq -r '.status' "${cloneresult}"
                                 )
-                            failmessage "Clone failed - exception [${exception}] "
+                            if [ "${status}" == "OK" ]
+                            then
+                                passmessage "Clone done [${noteid}][${clonepath}]"
+                            else
+                                exception=$(
+                                    jq -r '.exception' "${cloneresult}"
+                                    )
+                                failmessage "Clone failed - exception [${exception}] "
+                            fi
                         fi
-                    fi
-                done
+                    done
+                fi
             fi
         fi
     fi

@@ -57,26 +57,12 @@ then
     exit 1
 fi
 
-# Check for empty hash.
-if [ -n "${passhash}" ]
+# If password is not blank
+if [ -n "${password}" ]
 then
-    skipmessage "hashpass skipped (done)"
-else
-    if [ -n "${password}" ]
-    then
-        skipmessage "passgen skipped (done)"
-    else
-        password=$(
-            pwgen ${passlength} ${passcount} 2> "${debugerrorfile}"
-            )
-        if [ $? -eq 0 ]
-        then
-            passmessage "passgen done"
-        else
-            failmessage "passgen failed"
-        fi
-    fi
-
+    # Skip passgen
+    skipmessage "passgen skipped (given)"
+    # Generate the passhash
     passhash=$(
         hashpass "${password}" 2> "${debugerrorfile}"
         )
@@ -86,7 +72,38 @@ else
     else
         failmessage "hashpass failed"
     fi
+# If password is blank
+else
+    # If passhash is blank
+    if [ -z "${passhash}" ]
+    then
+        # Generate a new password
+        password=$(
+            pwgen ${passlength} ${passcount} 2> "${debugerrorfile}"
+            )
+        if [ $? -eq 0 ]
+        then
+            passmessage "passgen done"
+        else
+            failmessage "passgen failed"
+        fi
+        # Generate a new passhash
+        passhash=$(
+            hashpass "${password}" 2> "${debugerrorfile}"
+            )
+        if [ $? -eq 0 ]
+        then
+            passmessage "hashpass done"
+        else
+            failmessage "hashpass failed"
+        fi
+    # If passhash is set
+    else
+        skipmessage "passgen skipped  (none)"
+        skipmessage "hashpass skipped (given)"
+    fi
 fi
+
 
 # Check for empty values.
 if [ -z "${username}" ]
@@ -140,8 +157,8 @@ cat << EOF
 "name": "${username}",
 "type": "${usertype}",
 "role": "${userrole}",
-"pass": "${password}",
-"hash": "${passhash}",
+"password": "${password}",
+"passhash": "${passhash}",
 $(jsondebug)
 }
 EOF

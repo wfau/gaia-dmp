@@ -73,7 +73,7 @@
             --human-readable \
             --checksum \
             --recursive \
-            "${sshuser:?}@${sshhost:?}:/var/local/backups/notebook/" \
+            "${sshuser:?}@${sshhost:?}:/var/local/backups/notebooks/latest/" \
             "/home/fedora/zeppelin/notebook"
         '
 

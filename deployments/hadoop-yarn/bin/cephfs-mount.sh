@@ -217,7 +217,7 @@ EOF
 
     qpushd "${treetop:?}/hadoop-yarn/ansible"
 
-        # export ANSIBLE_STDOUT_CALLBACK=ansible.posix.json
+        export ANSIBLE_STDOUT_CALLBACK=ansible.posix.json
 
         ansible-playbook \
             --inventory "${inventory:?}" \

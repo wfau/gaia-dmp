@@ -1,0 +1,358 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Test deployment to check the Ansible scripts all work.
+        Deploying on red cloud with reduced number of resources.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Create a new deplopment config based on the current live one.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        pushd deployments/hadoop-yarn/ansible/config/
+
+            cp zeppelin-54.86-spark-6.26.43.yml \
+               zeppelin-26.43-spark-3.26.43.yml
+
+            gedit zeppelin-26.43-spark-3.26.43.yml &
+
+            diff zeppelin-54.86-spark-6.26.43.yml \
+               zeppelin-26.43-spark-3.26.43.yml
+
+        popd
+    popd
+
+    >   31c31
+    >   <         zeppelinflavor: 'gaia.vm.cclake.54vcpu'
+    >   ---
+    >   >         zeppelinflavor: 'gaia.vm.cclake.26vcpu'
+    >   42c42
+    >   <         workercount:  6
+    >   ---
+    >   >         workercount:  3
+    >   157c157
+    >   <                 worker[01:06]:
+    >   ---
+    >   >                 worker[01:03]:
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase='arcus'
+    cloudname='iris-gaia-red'
+    configname=zeppelin-26.43-spark-3.26.43
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   real    43m58.624s
+    >   user    12m43.529s
+    >   sys     2m0.474s
+
+
+# -----------------------------------------------------
+# Create some test users.
+# TODO Move the create-user-tools to ansible/client/bin.
+# TODO Add ansible/client/bin to the client PATH.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    testnames02=(
+        Hamar
+        Carclop
+        Halda
+        Jaden
+        Mavaca
+        Franilley
+        Masonania
+        Webbbron
+        Granwaler
+        )
+
+    createarrayusers \
+        "${testnames02[@]}" \
+    | tee /tmp/testusers-02.json \
+    | jq '[ .users[] | {"name": .shirouser.name, "pass": .shirouser.pass} ]'
+
+
+    >   [
+    >     {
+    >       "name": "Hamar",
+    >       "pass": "foog4chahghig0Chee2ahyo0oul6El"
+    >     },
+    >     {
+    >       "name": "Carclop",
+    >       "pass": "bieChahphooCh5Ho4gaiyeiMee4doh"
+    >     },
+    >     {
+    >       "name": "Halda",
+    >       "pass": "eeroa2aiCouqu9thae0uj3oow5isai"
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "name": "Granwaler",
+    >       "pass": "phoohoo0oozeeh3Eik4uuhie4hae9W"
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Create our benchmark script.
+#[root@ansibler]
+
+    cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print("{")
+print(
+"""
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }},
+\"output\":
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+print("---start---")
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+print("---end---")
+print("}")
+EOF
+
+    chmod 'a+x' /tmp/run-benchmark.py
+
+
+# -----------------------------------------------------
+# Add a function to filter our results.
+#[root@ansibler]
+
+    filter-results()
+        {
+        local testname=${1:?'testname required'}
+        sed "
+            /^---start---/ d
+            /^---end---/ d
+            /^Test started/   d
+            /^Test completed/ d
+            " \
+            "/tmp/results/${testname:?}.txt" \
+          | tee "/tmp/results/${testname:?}.json"
+        }
+
+
+# -----------------------------------------------------
+# Create our test-loop function.
+#[root@ansibler]
+
+    mkdir /tmp/results
+    endpoint="http://zeppelin:8080"
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/testusers-02.json
+
+    test-loop()
+        {
+        local usercount=${1:?'usercount required'}
+        local loopcount=${2:?'loopcount required'}
+        local looppause=${3:-10}
+        local delaystart=${4:-1}
+        local delaynotebook=${5:-1}
+
+        rm -f /tmp/results/*
+
+cat << EOF
+    {
+    "usercount": "${usercount}",
+    "loopcount": "${loopcount}",
+    "looppause": "${looppause}",
+    "delaystart": "${delaystart}",
+    "delaynotebook": "${delaynotebook}",
+    "iterations": [
+EOF
+
+        local comma=''
+        for i in $(seq 0 $((loopcount - 1)))
+        do
+
+            testname="multi-user-$(printf "%02d" ${usercount})-$(printf "%02d" ${i})"
+
+cat << EOF
+            ${comma}
+            {
+            "iteration": ${i},
+            "testname": "${testname}",
+            "threads":
+EOF
+
+            sleep "${looppause}"
+
+            /tmp/run-benchmark.py \
+                "${endpoint:?}" \
+                "${testconfig:?}" \
+                "${testusers:?}" \
+                "${usercount:?}" \
+                "${delaystart:?}" \
+                "${delaynotebook:?}" \
+            > "/tmp/results/${testname:?}.txt"
+
+            filter-results "${testname:?}"
+
+
+cat << EOF
+            }
+EOF
+            comma=','
+
+        done
+
+cat << EOF
+        ]
+    }
+EOF
+        }
+
+
+# -----------------------------------------------------
+# Test with 2 users doing 2 loops.
+#[root@ansibler]
+
+    test-loop 2 2 \
+    | tee /tmp/test-loop.json \
+    | jq '.'
+
+
+    jq '
+        .iterations[]
+      | .threads.output[][]
+      | {name, result}
+        ' /tmp/test-loop.json
+
+    >   {
+    >     "name": "GaiaDMPSetup",
+    >     "result": "PASS"
+    >   }
+    >   ....
+    >   ....
+    >   {
+    >     "name": "Library_Validation.json",
+    >     "result": "PASS"
+    >   }
+
+
+# -----------------------------------------------------
+# Test with 3 users doing 3 loops.
+#[root@ansibler]
+
+    test-loop 3 3 \
+    | tee /tmp/test-loop.json \
+    | jq '.'
+
+
+    jq '
+        .iterations[]
+      | .threads.output[][]
+      | {name, result}
+        ' /tmp/test-loop.json
+

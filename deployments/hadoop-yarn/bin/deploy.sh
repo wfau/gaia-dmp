@@ -49,13 +49,13 @@
 
 
 # -----------------------------------------------------
-# Copy notebooks from the live server.
+# Copy notebooks from our backup store.
 #[root@ansibler]
 
     ssh zeppelin \
         '
         sshuser=fedora
-        sshhost=zeppelin.aglais.uk
+        sshhost=data.aglais.uk
 
         sudo mkdir -p '/var/local/backups'
         sudo mv "/home/fedora/zeppelin/notebook" \
@@ -73,10 +73,9 @@
             --human-readable \
             --checksum \
             --recursive \
-            "${sshuser:?}@${sshhost:?}:zeppelin/notebook/" \
+            "${sshuser:?}@${sshhost:?}:/var/local/backups/notebooks/latest/" \
             "/home/fedora/zeppelin/notebook"
         '
-
 
 
 # -----------------------------------------------------
@@ -119,12 +118,32 @@
 # -----------------------------------------------------
 # Add the Zeppelin IP address to our hosts file.
 # TODO Add this to the Ansible deployment.
+# WARNING this is not idempotent.
+# Deploying more than once adds multiple rows
 #[root@ansibler]
 
 cat >> /etc/hosts << EOF
 # Zeppelin
 ${ipaddress}    zeppelin
 EOF
+
+
+# -----------------------------------------------------
+# Update our DuckDNS record.
+# TODO Add this to the Ansible deployment.
+# TODO Move the secret function to a separate file.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    ducktoken=$(getsecret 'devops.duckdns.token')
+
+    echo "----"
+    echo "Updating DuckDNS record"
+    curl "https://www.duckdns.org/update/${cloudname:?}/${ducktoken:?}/${ipaddress:?}"
+    echo
+    echo "----"
+
 
 # -----------------------------------------------------
 # Configure our client container.

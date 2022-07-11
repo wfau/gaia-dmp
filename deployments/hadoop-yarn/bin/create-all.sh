@@ -213,3 +213,12 @@
 
     "${treetop:?}/hadoop-yarn/bin/restart-zeppelin.sh"
 
+
+# -----------------------------------------------------
+# Display our deployment status.
+#[root@ansibler]
+
+    cat "${configyml}"
+
+
+

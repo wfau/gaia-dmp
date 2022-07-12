@@ -25,10 +25,11 @@ srcfile="$(basename ${0})"
 srcpath="$(dirname $(readlink -f ${0}))"
 
 # Include our JSON formatting tools.
-source "${srcpath}/json-tools.sh"
+source "${srcpath}/../../aglais/bin/json-tools.sh"
 
 username=${1}
 usertype=${2}
+cephname=${3}
 
 # Check required params
 if [ -z "${username}" ]
@@ -46,9 +47,13 @@ fi
 
 
 
+
+
+
 cat << EOF
 {
 "uuid":  "${cephuuid}",
+"name":  "${cephname}"
 "path":  "${mountpath}",
 "owner": "${fileowner}",
 "group": "${filegroup}",

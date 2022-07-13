@@ -29,7 +29,8 @@ source "${srcpath}/../../aglais/bin/json-tools.sh"
 
 username=${1}
 usertype=${2}
-cephname=${3}
+sharename=${3}
+sharecloud=${4}
 
 # Check required params
 if [ -z "${username}" ]
@@ -43,6 +44,174 @@ then
     jsonerror "[usertype] required"
     exit 1
 fi
+
+if [ -z "${sharename}" ]
+then
+    jsonerror "[share name] required"
+    exit 1
+fi
+
+if [ -z "${sharecloud}" ]
+then
+    jsonerror "[share cloud] required"
+    exit 1
+fi
+
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+export OS_SHARE_API_VERSION=2.51
+
+sharetype=ceph01_cephfs
+sharezone=nova
+shareprotocol=CEPHFS
+shareaccesstype=cephx
+
+sharecloud=${cloudname:?}
+sharename=test-$(pwgen 8 1)
+sharesize=5
+
+sharejson=$(mktemp)
+errorfile=$(mktemp)
+accessjson=$(mktemp)
+
+openstack \
+    --os-cloud "${sharecloud:?}" \
+    share show \
+        --format json \
+        "${sharename:?}" \
+    1> "${sharejson:?}" \
+    2> "${errorfile:?}"
+    retcode=$?
+
+if [ ${retcode} -gt 1 ]
+then
+    echo "FAIL : failed to select share [${sharename}], code [${retcode}]"
+    echo "---- ----"
+    cat "${errorfile}"
+    echo "---- ----"
+
+elif [ ${retcode} -eq 0 ]
+then
+    shareuuid=$(
+        jq -r '.id' "${sharejson}"
+        )
+    echo "PASS : Share [${sharename}] selected [${shareuuid}]"
+
+    # TODO
+    # Check and add access rules ...
+    #
+
+elif [ ${retcode} -eq 1 ]
+then
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share create \
+            --format json \
+            --name "${sharename:?}" \
+            --share-type "${sharetype:?}" \
+            --availability-zone "${sharezone:?}" \
+            "${shareprotocol:?}" \
+            "${sharesize:?}" \
+        1> "${sharejson:?}" \
+        2> "${errorfile:?}"
+        retcode=$?
+
+    if [ ${retcode} -ne 0 ]
+    then
+        echo "FAIL : failed to create share [${sharename}], return code [${retcode}]"
+        echo "---- ----"
+        cat "${errorfile}"
+        echo "---- ----"
+    else
+        shareuuid=$(
+            jq -r '.id' "${sharejson}"
+            )
+        sharestatus=$(
+            jq -r '.status' "${sharejson}"
+            )
+        echo "PASS : Share [${sharename}] created [${shareuuid}][${sharestatus}]"
+
+        while [ "${sharestatus}" == 'creating' ]
+        do
+            openstack \
+                --os-cloud "${sharecloud:?}" \
+                share show \
+                    --format json \
+                    "${shareuuid:?}" \
+                1> "${sharejson:?}" \
+                2> "${errorfile:?}"
+                retcode=$?
+
+            if [ ${retcode} -eq 0 ]
+            then
+                sharestatus=$(
+                    jq -r '.status' "${sharejson}"
+                    )
+                echo "PASS : Share [${sharename}] status [${shareuuid}][${sharestatus}]"
+            else
+                sharestatus="error"
+                echo "FAIL : Failed to check share [${sharename}] status, return code [${retcode}]"
+                echo "---- ----"
+                cat "${errorfile}"
+                echo "---- ----"
+            fi
+        done
+
+        if [ "${sharestatus}" != "good" ]
+        then
+            echo "FAIL : Failed to create share [${sharename}], share status [${sharestatus}]"
+        else
+            openstack \
+                --os-cloud "${sharecloud:?}" \
+                share access create \
+                    --format json \
+                    --access-level 'ro' \
+                    "${shareuuid:?}" \
+                    "${shareaccesstype:?}" \
+                    "${sharename:?}-ro" \
+                1> "${accessjson:?}" \
+                2> "${errorfile:?}"
+                retcode=$?
+
+            if [ ${retcode} -eq 0 ]
+            then
+                echo "PASS : [ro] access created"
+            else
+                echo "FAIL : Failed to create [ro] access to [${sharename}]"
+                echo "---- ----"
+                cat "${errorfile}"
+                echo "---- ----"
+            fi
+
+            openstack \
+                --os-cloud "${sharecloud:?}" \
+                share access create \
+                    --format json \
+                    --access-level 'rw' \
+                    "${shareuuid:?}" \
+                    "${shareaccesstype:?}" \
+                    "${sharename:?}-rw" \
+                1> "${accessjson:?}" \
+                2> "${errorfile:?}"
+                retcode=$?
+
+            if [ ${retcode} -eq 0 ]
+            then
+                echo "PASS : [rw] access created"
+            else
+                echo "FAIL : Failed to create [rw] access to [${sharename}]"
+                echo "---- ----"
+                cat "${errorfile}"
+                echo "---- ----"
+            fi
+        fi
+    fi
+fi
+
+
+
+
 
 
 

@@ -25,29 +25,27 @@ srcfile="$(basename ${0})"
 srcpath="$(dirname $(readlink -f ${0}))"
 
 # Include our JSON formatting tools.
-source "${srcpath}/../../aglais/bin/json-tools.sh"
+source "/deployments/aglais/bin/json-tools.sh"
 
-username=${1}
-usertype=${2}
-sharecloud=${3}
-sharename=${4}
-sharesize=${5}
+sharecloud=${1}
+sharename=${2}
+sharesize=${3}
+mountpath=${4}
+mountowner=${5}
+mountgroup=${6}
+mountmode=${7:-'rw'}
+public=${8:-'True'}
 
-sharepublic=True
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+export OS_SHARE_API_VERSION=2.51
+
+sharetype=ceph01_cephfs
+sharezone=nova
+shareprotocol=CEPHFS
+shareaccesstype=cephx
 
 # Check required params
-if [ -z "${username}" ]
-then
-    jsonerror "[username] required"
-    exit 1
-fi
-
-if [ -z "${usertype}" ]
-then
-    jsonerror "[usertype] required"
-    exit 1
-fi
-
 if [ -z "${sharename}" ]
 then
     jsonerror "[share name] required"
@@ -60,25 +58,48 @@ then
     exit 1
 fi
 
-# Set the Manila API version.
-# https://stackoverflow.com/a/58806536
-export OS_SHARE_API_VERSION=2.51
+if [ -z "${sharesize}" ]
+then
+    jsonerror "[share size] required"
+    exit 1
+fi
 
-sharetype=ceph01_cephfs
-sharezone=nova
-shareprotocol=CEPHFS
-shareaccesstype=cephx
+if [ -z "${mountpath}" ]
+then
+    jsonerror "[mount path] required"
+    exit 1
+fi
 
-sharejson=$(mktemp)
-accessjson=$(mktemp)
+if [ -z "${mountowner}" ]
+then
+    jsonerror "[mount owner] required"
+    exit 1
+fi
+
+if [ -z "${mountgroup}" ]
+then
+    jsonerror "[mount group] required"
+    exit 1
+fi
+
+
+# Temp files to save JSON outputs.
+sharejson=$(mktemp --suffix 'json')
+echo "{}" > "${sharejson}"
+
+accessjson=$(mktemp --suffix 'json')
+echo "{}" > "${accessjson}"
+
+ansiblejson=$(mktemp --suffix 'json')
+echo "{}" > "${ansiblejson}"
 
 openstack \
-    --os-cloud "${sharecloud:?}" \
+    --os-cloud "${sharecloud}" \
     share show \
         --format json \
-        "${sharename:?}" \
-    1> "${sharejson:?}" \
-    2> "${debugerrorfile:?}"
+        "${sharename}" \
+    1> "${sharejson}" \
+    2> "${debugerrorfile}"
     retcode=$?
 
 if [ ${retcode} -gt 1 ]
@@ -107,17 +128,17 @@ elif [ ${retcode} -eq 1 ]
 then
 
     openstack \
-        --os-cloud "${sharecloud:?}" \
+        --os-cloud "${sharecloud}" \
         share create \
             --format json \
-            --name "${sharename:?}" \
-            --public "${sharepublic}" \
-            --share-type "${sharetype:?}" \
-            --availability-zone "${sharezone:?}" \
-            "${shareprotocol:?}" \
-            "${sharesize:?}" \
-        1> "${sharejson:?}" \
-        2> "${debugerrorfile:?}"
+            --name "${sharename}" \
+            --public "${public}" \
+            --share-type "${sharetype}" \
+            --availability-zone "${sharezone}" \
+            "${shareprotocol}" \
+            "${sharesize}" \
+        1> "${sharejson}" \
+        2> "${debugerrorfile}"
         retcode=$?
 
     if [ ${retcode} -ne 0 ]
@@ -135,12 +156,12 @@ then
         while [ "${sharestatus}" == 'creating' ]
         do
             openstack \
-                --os-cloud "${sharecloud:?}" \
+                --os-cloud "${sharecloud}" \
                 share show \
                     --format json \
-                    "${shareuuid:?}" \
-                1> "${sharejson:?}" \
-                2> "${debugerrorfile:?}"
+                    "${shareuuid}" \
+                1> "${sharejson}" \
+                2> "${debugerrorfile}"
                 retcode=$?
 
             if [ ${retcode} -eq 0 ]
@@ -160,15 +181,15 @@ then
             failmessage "Failed to create share [${sharename}][${shareuuid}], status [${sharestatus}]"
         else
             openstack \
-                --os-cloud "${sharecloud:?}" \
+                --os-cloud "${sharecloud}" \
                 share access create \
                     --format json \
                     --access-level 'ro' \
-                    "${shareuuid:?}" \
-                    "${shareaccesstype:?}" \
-                    "${sharename:?}-ro" \
-                1> "${accessjson:?}" \
-                2> "${debugerrorfile:?}"
+                    "${shareuuid}" \
+                    "${shareaccesstype}" \
+                    "${sharename}-ro" \
+                1> "${accessjson}" \
+                2> "${debugerrorfile}"
                 retcode=$?
 
             if [ ${retcode} -eq 0 ]
@@ -179,15 +200,15 @@ then
             fi
 
             openstack \
-                --os-cloud "${sharecloud:?}" \
+                --os-cloud "${sharecloud}" \
                 share access create \
                     --format json \
                     --access-level 'rw' \
-                    "${shareuuid:?}" \
-                    "${shareaccesstype:?}" \
-                    "${sharename:?}-rw" \
-                1> "${accessjson:?}" \
-                2> "${debugerrorfile:?}"
+                    "${shareuuid}" \
+                    "${shareaccesstype}" \
+                    "${sharename}-rw" \
+                1> "${accessjson}" \
+                2> "${debugerrorfile}"
                 retcode=$?
 
             if [ ${retcode} -eq 0 ]
@@ -200,14 +221,142 @@ then
     fi
 fi
 
+if [ "${sharestatus}" != "available" ]
+then
+    skipmessage "Mounting share [${sharename}][${shareuuid}] skipped, status [${sharestatus}]"
+else
+
+    locations=$(
+        jq '.export_locations' "${sharejson}"
+        )
+
+    cephpath=$(
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\2/
+            ' <<< ${locations}
+            )
+
+    cephnodes=$(
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\1/
+            ' <<< ${locations}
+            )
+
+    accesslist=$(mktemp --suffix 'json')
+    openstack \
+        --os-cloud "${sharecloud}" \
+        share access list \
+            --format json \
+            "${shareuuid}" \
+        1> "${accesslist}" \
+        2> "${debugerrorfile}"
+        retcode=$?
+
+    if [ ${retcode} -ne 0 ]
+    then
+        failmessage "Failed to select access rules for [${sharename}][${shareuuid}]"
+    else
+
+        # Yes, some numpty thought it was a good idea to change the JSON field names.
+        # Changing 'id' to 'ID', and 'access_level' to 'Access Level'.
+        # Possibly because they thought it would be pretty ?
+        # Waste of an afternoon chasing that down.
+        accessrule=$(
+            jq -r '.[] | select(.access_level == "'${mountmode}'") | .id' "${accesslist}"
+            )
+        if [ -z "${accessrule}" ]
+        then
+            accessrule=$(
+                jq -r '.[] | select(."Access Level" == "'${mountmode}'") | .ID' "${accesslist}"
+                )
+        fi
+        if [ -z "${accessrule}" ]
+        then
+            failmessage "Failed to find [${mountmode}] access rule for [${sharename}][${shareuuid}]"
+        else
+            openstack \
+                --os-cloud "${sharecloud}" \
+                share access show \
+                    --format json \
+                    "${accessrule}" \
+                1> "${accessjson}" \
+                2> "${debugerrorfile}"
+                retcode=$?
+
+            if [ ${retcode} -ne 0 ]
+            then
+                failmessage "Failed to select access rule [${accessrule}] for [${sharename}][${shareuuid}]"
+            else
+                cephname=$(
+                    jq -r '.access_to' "${accessjson}"
+                    )
+                cephkey=$(
+                    jq -r '.access_key' "${accessjson}"
+                    )
+
+                pushd "/deployments/hadoop-yarn/ansible" &> /dev/null
+
+                    mountyaml=$(mktemp --suffix 'yaml')
+                    cat > "${mountyaml}" << EOF
+mountpath:  '${mountpath}'
+mountmode:  '${mountmode}'
+mountowner: '${mountowner}'
+mountgroup: '${mountgroup}'
+
+cephname:   '${cephname}'
+cephnodes:  '${cephnodes}'
+cephpath:   '${cephpath}'
+cephkey:    '${cephkey}'
+EOF
+
+                    export ANSIBLE_STDOUT_CALLBACK=ansible.posix.json
+
+                    config=$(
+                        yq '.aglais.status.deployment.conf' "${HOME}/aglais-config.yml"
+                        )
+
+                    ansible-playbook \
+                        --inventory  "config/${config}.yml" \
+                        --extra-vars "@${mountyaml}" \
+                        '51-cephfs-mount.yml' \
+                    1> "${ansiblejson}" \
+                    2> "${debugerrorfile}"
+                    retcode=$?
+
+                    if [ ${retcode} -eq 0 ]
+                    then
+                        passmessage "Ansible mount playbook succeded"
+                    else
+                        failmessage "Ansible mount playbook failed"
+                    fi
+
+                popd &> /dev/null
+            fi
+        fi
+    fi
+fi
+
 cat << EOF
 {
 "name":   "${sharename}",
 "uuid":   "${shareuuid}",
 "status": "${sharestatus}",
-"path":   "${mountpath}",
-"owner":  "${fileowner}",
-"group":  "${filegroup}",
+"ceph": {
+    "nodes": "${cephnodes}",
+    "path":  "${cephpath}",
+    "name":  "${cephname}",
+    "key":   "${cephkey}"
+    },
+"mount": {
+    "path":  "${mountpath}",
+    "mode":  "${mountmode}",
+    "owner": "${mountowner}",
+    "group": "${mountgroup}"
+    },
+"openstack": $(cat "${sharejson}"),
+"ansible": $(cat "${ansiblejson}"),
 $(jsondebug)
 }
 EOF

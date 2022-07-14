@@ -38,16 +38,20 @@
     sharecloud=${2:?'cloud name required'}
     sharename=${3:?'share name required'}
     mountpath=${4:?'mount path required'}
-    mounthost=${5:-'zeppelin:masters:workers'}
-    mountmode=${6:-'ro'}
+    mountmode=${5:-'ro'}
+    mountowner=${6:-'fedora'}
+    mountgroup=${7:-'users'}
+    mounthosts=${8:-'zeppelin:masters:workers'}
 
     echo "---- ---- ----"
-    echo "Inventory  [${inventory}]"
-    echo "Cloud name [${sharecloud}]"
-    echo "Share name [${sharename}]"
-    echo "Mount path [${mountpath}]"
-    echo "Mount host [${mounthost}]"
-    echo "Mount mode [${mountmode}]"
+    echo "Inventory   [${inventory}]"
+    echo "Cloud name  [${sharecloud}]"
+    echo "Share name  [${sharename}]"
+    echo "Mount path  [${mountpath}]"
+    echo "Mount mode  [${mountmode}]"
+    echo "Mount owner [${mountowner}]"
+    echo "Mount group [${mountgroup}]"
+    echo "Mount hosts [${mounthosts}]"
     echo "---- ---- ----"
     echo ""
 
@@ -100,7 +104,6 @@
         sed '
             s/^.*path = \([^\\]*\).*$/\1/
             s/^\(.*\):\(\/.*\)$/\1/
-            s/,/ /g
             '
             )
 
@@ -165,7 +168,7 @@
     | jq '.' \
     > "${accessfile:?}"
 
-    cephuser=$(
+    cephname=$(
         jq -r '.access_to' "${accessfile:?}"
         )
 
@@ -174,7 +177,7 @@
         )
 
     echo "----"
-    echo "Ceph user [${cephuser}]"
+    echo "Ceph user [${cephname}]"
     echo "Ceph key  [${cephkey}]"
     echo ""
 
@@ -184,29 +187,17 @@
 
     cat > /tmp/ceph-mount-vars.yml << EOF
 
-mntpath:  '${mountpath:?}'
-mntopts:  'async,auto,nodev,noexec,nosuid,${mountmode:?},_netdev'
-mnthost:  '${mounthost:?}'
-mntmode:  '${mountmode:?}'
+mountpath:  '${mountpath:?}'
+mountmode:  '${mountmode:?}'
+mountowner: '${mountowner:?}'
+mountgroup: '${mountgroup:?}'
 
-cephuser:  '${cephuser:?}'
-cephkey:   '${cephkey:?}'
-cephpath:  '${cephpath:?}'
-cephnodes: '${cephnodes// /,}'
+cephname:   '${cephname:?}'
+cephnodes:  '${cephnodes:?}'
+cephpath:   '${cephpath:?}'
+cephkey:    '${cephkey:?}'
 
 EOF
-
-# -----------------------------------------------------
-# Define quiet versions of pushd and popd.
-# https://stackoverflow.com/a/25288289
-
-    qpushd () {
-        command pushd "$@" > /dev/null
-        }
-
-    qpopd () {
-        command popd "$@" > /dev/null
-        }
 
 # -----------------------------------------------------
 # Run the Ansible playbook.
@@ -215,16 +206,15 @@ EOF
 # https://serverfault.com/a/836181
 # https://docs.ansible.com/ansible/latest/reference_appendices/config.html#envvar-ANSIBLE_STDOUT_CALLBACK
 
-    qpushd "${treetop:?}/hadoop-yarn/ansible"
+    pushd "${treetop:?}/hadoop-yarn/ansible"
 
         #export ANSIBLE_STDOUT_CALLBACK=ansible.posix.json
-
         ansible-playbook \
             --inventory "${inventory:?}" \
             --extra-vars '@/tmp/ceph-mount-vars.yml' \
             '51-cephfs-mount.yml'
 
-    qpopd
+    popd
 
 
 

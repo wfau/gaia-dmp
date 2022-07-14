@@ -58,7 +58,6 @@
 
     sharelist="${treetop:?}/common/manila/usershares.yaml"
     mountmode='rw'
-    mounthost='zeppelin:masters:workers'
 
     for shareid in $(
         yq eval ".usershares.[].id" "${sharelist:?}"
@@ -82,7 +81,6 @@
             "${sharecloud:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
-            "${mounthost:?}" \
             "${mountmode:?}"
 
     done

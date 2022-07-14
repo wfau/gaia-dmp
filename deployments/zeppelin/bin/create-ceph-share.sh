@@ -29,8 +29,11 @@ source "${srcpath}/../../aglais/bin/json-tools.sh"
 
 username=${1}
 usertype=${2}
-sharename=${3}
-sharecloud=${4}
+sharecloud=${3}
+sharename=${4}
+sharesize=${5}
+
+sharepublic=True
 
 # Check required params
 if [ -z "${username}" ]
@@ -66,12 +69,7 @@ sharezone=nova
 shareprotocol=CEPHFS
 shareaccesstype=cephx
 
-sharecloud=${cloudname:?}
-sharename=test-$(pwgen 8 1)
-sharesize=5
-
 sharejson=$(mktemp)
-errorfile=$(mktemp)
 accessjson=$(mktemp)
 
 openstack \
@@ -80,22 +78,26 @@ openstack \
         --format json \
         "${sharename:?}" \
     1> "${sharejson:?}" \
-    2> "${errorfile:?}"
+    2> "${debugerrorfile:?}"
     retcode=$?
 
 if [ ${retcode} -gt 1 ]
 then
-    echo "FAIL : failed to select share [${sharename}], code [${retcode}]"
-    echo "---- ----"
-    cat "${errorfile}"
-    echo "---- ----"
-
+    failmessage "Failed to select share [${sharename}], code [${retcode}]"
 elif [ ${retcode} -eq 0 ]
 then
     shareuuid=$(
         jq -r '.id' "${sharejson}"
         )
-    echo "PASS : Share [${sharename}] selected [${shareuuid}]"
+    sharestatus=$(
+        jq -r '.status' "${sharejson}"
+        )
+    if [ "${sharestatus}" == "available" ]
+    then
+        passmessage "Share [${sharename}][${shareuuid}] status [${sharestatus}]"
+    else
+        failmessage "Share [${sharename}][${shareuuid}] status [${sharestatus}]"
+    fi
 
     # TODO
     # Check and add access rules ...
@@ -109,20 +111,18 @@ then
         share create \
             --format json \
             --name "${sharename:?}" \
+            --public "${sharepublic}" \
             --share-type "${sharetype:?}" \
             --availability-zone "${sharezone:?}" \
             "${shareprotocol:?}" \
             "${sharesize:?}" \
         1> "${sharejson:?}" \
-        2> "${errorfile:?}"
+        2> "${debugerrorfile:?}"
         retcode=$?
 
     if [ ${retcode} -ne 0 ]
     then
-        echo "FAIL : failed to create share [${sharename}], return code [${retcode}]"
-        echo "---- ----"
-        cat "${errorfile}"
-        echo "---- ----"
+        failmessage "Failed to create share [${sharename}], return code [${retcode}]"
     else
         shareuuid=$(
             jq -r '.id' "${sharejson}"
@@ -130,7 +130,7 @@ then
         sharestatus=$(
             jq -r '.status' "${sharejson}"
             )
-        echo "PASS : Share [${sharename}] created [${shareuuid}][${sharestatus}]"
+        passmessage "Share [${sharename}] created [${shareuuid}][${sharestatus}]"
 
         while [ "${sharestatus}" == 'creating' ]
         do
@@ -140,7 +140,7 @@ then
                     --format json \
                     "${shareuuid:?}" \
                 1> "${sharejson:?}" \
-                2> "${errorfile:?}"
+                2> "${debugerrorfile:?}"
                 retcode=$?
 
             if [ ${retcode} -eq 0 ]
@@ -148,19 +148,16 @@ then
                 sharestatus=$(
                     jq -r '.status' "${sharejson}"
                     )
-                echo "PASS : Share [${sharename}] status [${shareuuid}][${sharestatus}]"
+                passmessage "Share [${sharename}][${shareuuid}] status [${sharestatus}]"
             else
                 sharestatus="error"
-                echo "FAIL : Failed to check share [${sharename}] status, return code [${retcode}]"
-                echo "---- ----"
-                cat "${errorfile}"
-                echo "---- ----"
+                failmessage "Failed to get status for [${sharename}][${shareuuid}], return code [${retcode}]"
             fi
         done
 
-        if [ "${sharestatus}" != "good" ]
+        if [ "${sharestatus}" != "available" ]
         then
-            echo "FAIL : Failed to create share [${sharename}], share status [${sharestatus}]"
+            failmessage "Failed to create share [${sharename}][${shareuuid}], status [${sharestatus}]"
         else
             openstack \
                 --os-cloud "${sharecloud:?}" \
@@ -171,17 +168,14 @@ then
                     "${shareaccesstype:?}" \
                     "${sharename:?}-ro" \
                 1> "${accessjson:?}" \
-                2> "${errorfile:?}"
+                2> "${debugerrorfile:?}"
                 retcode=$?
 
             if [ ${retcode} -eq 0 ]
             then
-                echo "PASS : [ro] access created"
+                passmessage "Share [${sharename}][${shareuuid}] [ro] access created"
             else
-                echo "FAIL : Failed to create [ro] access to [${sharename}]"
-                echo "---- ----"
-                cat "${errorfile}"
-                echo "---- ----"
+                failmessage "Failed to create [ro] access for [${sharename}][${shareuuid}]"
             fi
 
             openstack \
@@ -193,39 +187,27 @@ then
                     "${shareaccesstype:?}" \
                     "${sharename:?}-rw" \
                 1> "${accessjson:?}" \
-                2> "${errorfile:?}"
+                2> "${debugerrorfile:?}"
                 retcode=$?
 
             if [ ${retcode} -eq 0 ]
             then
-                echo "PASS : [rw] access created"
+                passmessage "Share [${sharename}][${shareuuid}] [rw] access created"
             else
-                echo "FAIL : Failed to create [rw] access to [${sharename}]"
-                echo "---- ----"
-                cat "${errorfile}"
-                echo "---- ----"
+                failmessage "Failed to create [rw] access for [${sharename}][${shareuuid}]"
             fi
         fi
     fi
 fi
 
-
-
-
-
-
-
-
-
-
-
 cat << EOF
 {
-"uuid":  "${cephuuid}",
-"name":  "${cephname}"
-"path":  "${mountpath}",
-"owner": "${fileowner}",
-"group": "${filegroup}",
+"name":   "${sharename}",
+"uuid":   "${shareuuid}",
+"status": "${sharestatus}",
+"path":   "${mountpath}",
+"owner":  "${fileowner}",
+"group":  "${filegroup}",
 $(jsondebug)
 }
 EOF

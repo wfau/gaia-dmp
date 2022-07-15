@@ -218,7 +218,7 @@
 # Display our deployment status.
 #[root@ansibler]
 
-    cat "${configyml}"
+    cat "${statusyml}"
 
 
 

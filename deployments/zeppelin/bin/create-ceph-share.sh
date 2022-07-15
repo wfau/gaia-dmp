@@ -82,16 +82,10 @@ then
     exit 1
 fi
 
-
 # Temp files to save JSON outputs.
-sharejson=$(mktemp --suffix 'json')
-echo "{}" > "${sharejson}"
-
-accessjson=$(mktemp --suffix 'json')
-echo "{}" > "${accessjson}"
-
-ansiblejson=$(mktemp --suffix 'json')
-echo "{}" > "${ansiblejson}"
+sharejson=$(mktemp --suffix '.json')
+accessjson=$(mktemp --suffix '.json')
+ansiblejson=$(mktemp --suffix '.json')
 
 openstack \
     --os-cloud "${sharecloud}" \
@@ -244,7 +238,7 @@ else
             ' <<< ${locations}
             )
 
-    accesslist=$(mktemp --suffix 'json')
+    accesslist=$(mktemp --suffix '.json')
     openstack \
         --os-cloud "${sharecloud}" \
         share access list \
@@ -298,7 +292,7 @@ else
 
                 pushd "/deployments/hadoop-yarn/ansible" &> /dev/null
 
-                    mountyaml=$(mktemp --suffix 'yaml')
+                    mountyaml=$(mktemp --suffix '.yaml')
                     cat > "${mountyaml}" << EOF
 mountpath:  '${mountpath}'
 mountmode:  '${mountmode}'
@@ -311,25 +305,31 @@ cephpath:   '${cephpath}'
 cephkey:    '${cephkey}'
 EOF
 
-                    export ANSIBLE_STDOUT_CALLBACK=ansible.posix.json
-
-                    config=$(
-                        yq '.aglais.status.deployment.conf' "${HOME}/aglais-config.yml"
+                    statusyml="/tmp/aglais-status.yml"
+                    deployconf=$(
+                        yq '.aglais.status.deployment.conf' "${statusyml}" \
+                        2> "${debugerrorfile}"
                         )
-
-                    ansible-playbook \
-                        --inventory  "config/${config}.yml" \
-                        --extra-vars "@${mountyaml}" \
-                        '51-cephfs-mount.yml' \
-                    1> "${ansiblejson}" \
-                    2> "${debugerrorfile}"
                     retcode=$?
-
-                    if [ ${retcode} -eq 0 ]
+                    if [ ${retcode} -ne 0 ]
                     then
-                        passmessage "Ansible mount playbook succeded"
+                        failmessage "Failed to read Ansible config [${statusyml}]"
                     else
-                        failmessage "Ansible mount playbook failed"
+                        export ANSIBLE_STDOUT_CALLBACK=ansible.posix.json
+                        ansible-playbook \
+                            --inventory  "config/${deployconf}.yml" \
+                            --extra-vars "@${mountyaml}" \
+                            '51-cephfs-mount.yml' \
+                        1> "${ansiblejson}" \
+                        2> "${debugerrorfile}"
+                        retcode=$?
+
+                        if [ ${retcode} -eq 0 ]
+                        then
+                            passmessage "Ansible mount playbook succeded"
+                        else
+                            failmessage "Ansible mount playbook failed"
+                        fi
                     fi
 
                 popd &> /dev/null
@@ -355,9 +355,10 @@ cat << EOF
     "owner": "${mountowner}",
     "group": "${mountgroup}"
     },
-"openstack": $(cat "${sharejson}"),
-"ansible": $(cat "${ansiblejson}"),
+"openstack": $([ -s "${sharejson}"   ] && cat "${sharejson}"   || echo "{}"),
+"ansible":   $([ -s "${ansiblejson}" ] && cat "${ansiblejson}" || echo "{}"),
 $(jsondebug)
 }
 EOF
+
 

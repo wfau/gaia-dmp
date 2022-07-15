@@ -53,11 +53,9 @@
 
 # -----------------------------------------------------
 # Mount the data shares.
-# Using a hard coded cloud name to make it portable.
 
     sharelist="${treetop:?}/common/manila/datashares.yaml"
     mountmode='ro'
-    mounthost='zeppelin:masters:workers'
 
     for shareid in $(
         yq eval '.datashares.[].id' "${sharelist:?}"
@@ -81,7 +79,6 @@
             "${sharecloud:?}" \
             "${sharename:?}" \
             "${mountpath:?}" \
-            "${mounthost:?}" \
             "${mountmode:?}"
 
     done

@@ -200,7 +200,7 @@ EOF
                 "${password}" \
                 "${passhash}"
             )
-        local userpass=$(
+        local password=$(
             jq -r '.password' <<< ${shirouserjson}
             )
 
@@ -214,8 +214,8 @@ EOF
 cat << EOF
 {
 "linuxuser": ${linuxuserjson},
-"shirouser": ${shirouserjson},
 "hdfsspace": ${hdfsspacejson},
+"shirouser": ${shirouserjson},
 "notebooks": ${notebooksjson}
 }
 EOF

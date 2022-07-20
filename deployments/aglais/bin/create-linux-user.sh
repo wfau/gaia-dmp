@@ -29,8 +29,9 @@ source "${srcpath}/json-tools.sh"
 
 username=${1}
 usertype=${2}
-publickey=${3}
-linuxuid=${4}
+userhome=${3}
+publickey=${4}
+linuxuid=${5}
 
 minuid=20000
 maxuid=60000
@@ -61,7 +62,6 @@ then
     exit 1
 fi
 
-
 # Get the next available uid
 # https://www.commandlinefu.com/commands/view/5684/determine-next-available-uid
 if [ -z "${linuxuid}" ]
@@ -71,15 +71,19 @@ then
         )
 fi
 
-# Create the Linux user's account.
-id "${username}" 2>1 > /dev/null
+# Check the user's home directory exists.
+
+
+# Create the Linux user account.
+id "${username}" 2>&1 > /dev/null
 if [ $? -eq 0 ]
 then
     skipmessage "adduser [${username}] skipped (done)"
 else
     adduser \
         --uid "${linuxuid}" \
-        --create-home \
+        --home "${userhome}" \
+        --no-create-home \
         --user-group \
         --groups "users,${zepusergroup}" \
         "${username}" \
@@ -93,10 +97,7 @@ else
     fi
 fi
 
-# Get the user's home directory.
-userhome=$(getent passwd "${username}" | cut -d: -f6)
-
-# Create the Linux user's ssh directory.
+# Create the user's .ssh directory.
 if [ -e "${userhome}/.ssh" ]
 then
     skipmessage "mkdir [${userhome}/.ssh] skipped (done)"
@@ -118,7 +119,7 @@ fi
 #       -f "${userhome}/.ssh/${sshkeyname}" \
 #   > /dev/null 2>&1
 
-# Create the Linux user's authorized_keys file.
+# Create the user's authorized_keys file.
 if [ ! -e "${userhome}/.ssh/authorized_keys" ]
 then
     touch "${userhome}/.ssh/authorized_keys"
@@ -142,7 +143,7 @@ EOF
     fi
 fi
 
-# Add the Linux user's public key.
+# Add the user's own public key.
 if [ -z "${publickey}" ]
 then
     skipmessage "adding public key for [${username}] skipped (no key)"
@@ -164,13 +165,26 @@ EOF
     fi
 fi
 
-# Fix ownership of the Linux user's ssh directory.
+# Fix ownership of the user's home directory.
+chown -R "${username}:${username}" "${userhome}" 2> "${debugerrorfile}"
+if [ $? -ne 0 ]
+then
+    failmessage "chown [${userhome}] failed"
+fi
+# Fix permissions on the user's home directory.
+chmod -R "u=rwx,g=rx,o=" "${userhome}" 2> "${debugerrorfile}"
+if [ $? -ne 0 ]
+then
+    failmessage "chmod [${userhome}] failed"
+fi
+
+# Fix ownership of the user's .ssh directory.
 chown -R "${username}:${username}" "${userhome}/.ssh" 2> "${debugerrorfile}"
 if [ $? -ne 0 ]
 then
     failmessage "chown [${userhome}/.ssh] failed"
 fi
-# Fix permissions on the Linux user's ssh directory.
+# Fix permissions on the user's .ssh directory.
 chmod -R "u=rwX,g=,o=" "${userhome}/.ssh" 2> "${debugerrorfile}"
 if [ $? -ne 0 ]
 then

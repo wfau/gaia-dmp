@@ -39,9 +39,7 @@
     sharename=${3:?'share name required'}
     mountpath=${4:?'mount path required'}
     mountmode=${5:-'ro'}
-    mountowner=${6:-'fedora'}
-    mountgroup=${7:-'users'}
-    mounthosts=${8:-'zeppelin:masters:workers'}
+    mounthosts=${6:-'zeppelin:masters:workers'}
 
     echo "---- ---- ----"
     echo "Inventory   [${inventory}]"
@@ -49,8 +47,6 @@
     echo "Share name  [${sharename}]"
     echo "Mount path  [${mountpath}]"
     echo "Mount mode  [${mountmode}]"
-    echo "Mount owner [${mountowner}]"
-    echo "Mount group [${mountgroup}]"
     echo "Mount hosts [${mounthosts}]"
     echo "---- ---- ----"
     echo ""
@@ -189,8 +185,6 @@
 
 mountpath:  '${mountpath:?}'
 mountmode:  '${mountmode:?}'
-mountowner: '${mountowner:?}'
-mountgroup: '${mountgroup:?}'
 
 cephname:   '${cephname:?}'
 cephnodes:  '${cephnodes:?}'

@@ -29,12 +29,11 @@ source "/deployments/aglais/bin/json-tools.sh"
 
 sharecloud=${1}
 sharename=${2}
-sharesize=${3}
-mountpath=${4}
-mountowner=${5}
-mountgroup=${6}
-mountmode=${7:-'rw'}
-public=${8:-'True'}
+mountpath=${3}
+mounthosts=${4}
+sharesize=${5}
+mountmode=${6}
+publicshare=${7}
 
 # Set the Manila API version.
 # https://stackoverflow.com/a/58806536
@@ -67,18 +66,6 @@ fi
 if [ -z "${mountpath}" ]
 then
     jsonerror "[mount path] required"
-    exit 1
-fi
-
-if [ -z "${mountowner}" ]
-then
-    jsonerror "[mount owner] required"
-    exit 1
-fi
-
-if [ -z "${mountgroup}" ]
-then
-    jsonerror "[mount group] required"
     exit 1
 fi
 
@@ -126,7 +113,7 @@ then
         share create \
             --format json \
             --name "${sharename}" \
-            --public "${public}" \
+            --public "${publicshare}" \
             --share-type "${sharetype}" \
             --availability-zone "${sharezone}" \
             "${shareprotocol}" \
@@ -296,9 +283,7 @@ else
                     cat > "${mountyaml}" << EOF
 mountpath:  '${mountpath}'
 mountmode:  '${mountmode}'
-mountowner: '${mountowner}'
-mountgroup: '${mountgroup}'
-
+mounthosts: '${mounthosts}'
 cephname:   '${cephname}'
 cephnodes:  '${cephnodes}'
 cephpath:   '${cephpath}'
@@ -351,9 +336,7 @@ cat << EOF
     },
 "mount": {
     "path":  "${mountpath}",
-    "mode":  "${mountmode}",
-    "owner": "${mountowner}",
-    "group": "${mountgroup}"
+    "mode":  "${mountmode}"
     },
 "openstack": $([ -s "${sharejson}"   ] && cat "${sharejson}"   || echo "{}"),
 "ansible":   $([ -s "${ansiblejson}" ] && cat "${ansiblejson}" || echo "{}"),

@@ -21,10 +21,14 @@
 #
 #
 
-    defaultsharesize=10
 
     datahostname='data.aglais.uk'
     datahostuser='fedora'
+
+    datacloud=iris-gaia-data
+
+    homesize=1
+    usersize=10
 
     # Get a secret.
     # Calls 'getsecret' on the data VM.
@@ -81,14 +85,15 @@
         {
         local username=${1:?'username required'}
         local usertype=${2:?'usertype required'}
-        local publickey=${3}
-        local linuxuid=${4}
+        local userhome=${3:?'userhome required'}
+        local publickey=${4}
+        local linuxuid=${5}
         #
         # Call Zeppelin to create the Linux user account.
         # Returns JSON.
         ssh zeppelin \
             "
-            sudo /opt/aglais/bin/create-linux-user.sh '${username}' '${usertype}' '${publickey}' '${linuxuid}'
+            sudo /opt/aglais/bin/create-linux-user.sh '${username}' '${usertype}' '${userhome}' '${publickey}' '${linuxuid}'
             "
         }
 
@@ -107,36 +112,24 @@
 
     createcephshare()
         {
-        local cloudname=${1:?'cloudname required'}
-        local username=${2:?'username required'}
-        local usertype=${3:?'usertype required'}
-        local linuxuid=${4:?'user id required'}
-
-        local cephroot="/ceph-${usertype}"
-        local sharepath=${5:-${cephroot}/${username}}
-        local sharesize=${6:-${defaultsharesize}}
-        local sharename=${usertype}-${username}
-        local shareuuid=$(uuidgen)
-
+        local sharecloud=${1:?'sharecloud required'}
+        local sharename=${2:?'sharename required'}
+        local mountpath=${3:?'mountpath required'}
+        local mounthosts=${4:?'zeppelin'}
+        local sharesize=${5:-10}
+        local mountmode=${6:?'rw'}
+        local publicshare=${7:?'True'}
         #
-        # Call to Openstack to create the share.
+        # Call our Openstack script to create the share.
+        # Returns JSON.
         create-ceph-share.sh \
-            "${cloudname}" \
-            "${sharename}" \
-            "${sharesize}"
-
-        #
-        # Call to Zeppelin to mount the share.
-        # ....
-
-cat << EOF
-{
-"name": "${sharename}",
-"uuid": "${shareuuid}",
-"path": "${sharepath}",
-"size":  ${sharesize}
-}
-EOF
+            "${sharecloud}"  \
+            "${sharename}"  \
+            "${mountpath}"  \
+            "${mounthosts}" \
+            "${sharesize}"  \
+            "${mountmode}"  \
+            "${publicshare}"
         }
 
     cloneusernotebooks()
@@ -162,8 +155,35 @@ EOF
         local linuxuid=${5}
         local password=${6}
         local passhash=${7}
-        local datauuid=${8}
-        local datasize=${9}
+
+        if [ "${usertype}" == 'live' ]
+        then
+            sharecloud=${datacloud}
+        else
+            sharecloud=${cloudname}
+        fi
+
+        homesharejson=$(
+            createcephshare \
+                "${sharecloud}" \
+                "${sharecloud}-home-${username}"  \
+                "/home/${username}" \
+                "zeppelin" \
+                "${homesize}" \
+                "rw" \
+                "True"
+            )
+
+        usersharejson=$(
+            createcephshare \
+                "${sharecloud}" \
+                "${sharecloud}-user-${username}"  \
+                "/user/${username}" \
+                "zeppelin:workers" \
+                "${usersize}" \
+                "rw" \
+                "True"
+            )
 
         linuxuserjson=$(
             createlinuxuser \
@@ -172,19 +192,6 @@ EOF
                 "${publickey}" \
                 "${linuxuid}"
             )
-        linuxuid=$(
-            jq -r '.linuxuid' <<< ${linuxuserjson}
-            )
-
-# TODO Create user shares ..
-#        cephsharejson=$(
-#            createcephshare \
-#                "${username}" \
-#                "${usertype}" \
-#                "${linuxuid}"  \
-#                "${datauuid}" \
-#                "${datasize}"
-#            )
 
         hdfsspacejson=$(
             createhdfsspace \
@@ -213,6 +220,8 @@ EOF
 
 cat << EOF
 {
+"homeshare": ${homesharejson},
+"usershare": ${usersharejson},
 "linuxuser": ${linuxuserjson},
 "hdfsspace": ${hdfsspacejson},
 "shirouser": ${shirouserjson},

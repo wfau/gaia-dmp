@@ -115,14 +115,14 @@
         local sharecloud=${1:?'sharecloud required'}
         local sharename=${2:?'sharename required'}
         local mountpath=${3:?'mountpath required'}
-        local mounthosts=${4:?'zeppelin'}
+        local mounthosts=${4:-'zeppelin'}
         local sharesize=${5:-10}
-        local mountmode=${6:?'rw'}
-        local publicshare=${7:?'True'}
+        local mountmode=${6:-'rw'}
+        local publicshare=${7:-'True'}
         #
         # Call our Openstack script to create the share.
         # Returns JSON.
-        create-ceph-share.sh \
+        /deployments/zeppelin/bin/create-ceph-share.sh \
             "${sharecloud}"  \
             "${sharename}"  \
             "${mountpath}"  \
@@ -163,71 +163,66 @@
             sharecloud=${cloudname}
         fi
 
-        homesharejson=$(
-            createcephshare \
-                "${sharecloud}" \
-                "${sharecloud}-home-${username}"  \
-                "/home/${username}" \
-                "zeppelin" \
-                "${homesize}" \
-                "rw" \
-                "True"
-            )
+echo "{"
+echo "\"homeshare\": "
+        createcephshare \
+            "${sharecloud}" \
+            "${sharecloud}-home-${username}"  \
+            "/home/${username}" \
+            "zeppelin" \
+            "${homesize}" \
+            "rw"
 
-        usersharejson=$(
-            createcephshare \
-                "${sharecloud}" \
-                "${sharecloud}-user-${username}"  \
-                "/user/${username}" \
-                "zeppelin:workers" \
-                "${usersize}" \
-                "rw" \
-                "True"
-            )
+echo ","
+echo "\"usershare\": "
+        createcephshare \
+            "${sharecloud}" \
+            "${sharecloud}-user-${username}"  \
+            "/user/${username}" \
+            "zeppelin:workers" \
+            "${usersize}" \
+            "rw"
 
-        linuxuserjson=$(
-            createlinuxuser \
-                "${username}" \
-                "${usertype}" \
-                "${publickey}" \
-                "${linuxuid}"
-            )
+echo ","
+echo "\"linuxuser\": "
+        local linuxuserjson=$(mktemp)
+        createlinuxuser \
+            "${username}" \
+            "${usertype}" \
+            "/home/${username}" \
+            "${publickey}" \
+            "${linuxuid}" \
+        | tee "${linuxuserjson}"
 
-        hdfsspacejson=$(
-            createhdfsspace \
-                "${username}" \
-                "${usertype}"
-            )
+echo ","
+echo "\"hdfsspace\": "
+        createhdfsspace \
+            "${username}" \
+            "${usertype}"
 
-        shirouserjson=$(
-            createshirouser \
-                "${username}" \
-                "${usertype}" \
-                "${userrole}" \
-                "${password}" \
-                "${passhash}"
-            )
+echo ","
+echo "\"shirouser\": "
+        local shirouserjson=$(mktemp)
+        createshirouser \
+            "${username}" \
+            "${usertype}" \
+            "${userrole}" \
+            "${password}" \
+            "${passhash}" \
+        | tee "${shirouserjson}"
+
         local password=$(
-            jq -r '.password' <<< ${shirouserjson}
+            jq -r '.password' "${shirouserjson}"
             )
 
-        notebooksjson=$(
-            cloneusernotebooks \
-                "${username}" \
-                "${usertype}" \
-                "${password}"
-            )
+echo ","
+echo "\"notebooks\": "
+        cloneusernotebooks \
+            "${username}" \
+            "${usertype}" \
+            "${password}"
 
-cat << EOF
-{
-"homeshare": ${homesharejson},
-"usershare": ${usersharejson},
-"linuxuser": ${linuxuserjson},
-"hdfsspace": ${hdfsspacejson},
-"shirouser": ${shirouserjson},
-"notebooks": ${notebooksjson}
-}
-EOF
+echo "}"
         }
 
     #
@@ -276,16 +271,13 @@ EOF
                 "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.publickey // empty')" \
                 "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.linuxuid  // empty')" \
                 "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.password  // empty')" \
-                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.passhash  // empty')" \
-                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.data.uuid // empty')" \
-                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.data.size // empty')"
+                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.passhash  // empty')"
         done
         echo ']}'
         }
 
-
     #
-    # Convert JSON format into YAML format.
+    # Convert JSON format array into YAML format array.
     json-yaml-users()
         {
         local jsonfile=${1:-'input JSON filename required'}
@@ -304,6 +296,27 @@ EOF
                     passhash:  (.shirouser.passhash // ""),
                     }
                 ]
+            }
+            ' "${jsonfile}" \
+        | yq -P \
+        | tee "${yamlfile}"
+        }
+
+    #
+    # Convert JSON format entry into YAML format entry.
+    json-yaml-user()
+        {
+        local jsonfile=${1:-'input JSON filename required'}
+        local yamlfile=${2:-'output YAML filename required'}
+        jq '
+            {
+            name:      .linuxuser.name,
+            type:      (.linuxuser.type // ""),
+            role:      (.shirouser.role // ""),
+            linuxuid:  (.linuxuser.linuxuid // ""),
+            publickey: (.linuxuser.publickey // ""),
+            password:  (.shirouser.pasword // ""),
+            passhash:  (.shirouser.passhash // ""),
             }
             ' "${jsonfile}" \
         | yq -P \

@@ -75,7 +75,7 @@ fi
 
 
 # Create the Linux user account.
-id "${username}" 2>&1 > /dev/null
+id "${username}" &> /dev/null
 if [ $? -eq 0 ]
 then
     skipmessage "adduser [${username}] skipped (done)"

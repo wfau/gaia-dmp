@@ -1,0 +1,317 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Clean deploy on red to test everything.
+
+    Result:
+
+        Work in progress ...
+
+        TODO Ask our existing users if they want fill names.
+        TODO Rename our existing user's /user shares.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase=arcus
+    cloudname=iris-gaia-red
+    configname=zeppelin-26.43-spark-3.26.43
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+--START--
+real    36m54.831s
+user    13m59.679s
+sys     2m41.547s
+--END--
+
+
+# -----------------------------------------------------
+# Check our deployment config.
+#[root@ansibler]
+
+    cat /tmp/aglais-status.yml
+
+--START--
+aglais:
+  status:
+    deployment:
+      type: hadoop-yarn
+      conf: zeppelin-26.43-spark-3.26.43
+      name: iris-gaia-red-20220721
+      date: 20220721T115341
+      hostname: zeppelin.gaia-dmp.uk
+  spec:
+    openstack:
+      cloud:
+        base: arcus
+        name: iris-gaia-red
+--END--
+
+
+# -----------------------------------------------------
+# Create some test users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    cat > /tmp/test-users-001.yml << EOF
+users:
+  - name: "Rhaelhall"
+    password: ""
+    passhash: ""
+    publickey: "$(cat /deployments/common/ssh/keys/dmr.roe.ac.uk.rsa.pub)"
+
+  - name: "Fipa"
+    password: "simple password"
+    passhash: ""
+    publickey: "$(cat /deployments/common/ssh/keys/dmr.roe.ac.uk.rsa.pub)"
+
+  - name: "Mythicson"
+    password: "spray goldsmith native heftiness"
+    publickey: "not-a-valid-key"
+
+  - name: "Balline"
+  # password: "spray goldsmith native heftiness"
+    passhash: "$shiro1$SHA-256$500000$1ucx+RkCWIMVnJIJCFKL2A==$55SWIC7EJcV5VxcncvJZHBEdla2+3WT9YX45PLbwKFc="
+    publickey: "not-a-valid-key"
+
+EOF
+
+    createyamlusers \
+        /tmp/test-users-001.yml \
+    | tee /tmp/test-users-001.json
+
+--START--
+....
+....
+--END--
+
+
+    list-shiro-info \
+        /tmp/test-users-001.json
+
+--START--
+....
+....
+--END--
+
+
+    list-ceph-info \
+        /tmp/test-users-001.json
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Check we can ssh into the accounts using our ssh key.
+#[root@ansibler]
+
+    jq -r '
+        .users[] | .username
+        ' /tmp/test-users-001.json
+
+--START--
+Rhaelhall
+Fipa
+Mythicson
+Balline
+--END--
+
+    # TODO Disable SElinux to allow access to /ssh/authorised_keys on CephFS mount.
+    # https://github.com/wfau/aglais/issues/873
+    ssh zeppelin \
+        '
+        sudo setenforce Permissive
+        '
+
+    for username in $(
+        jq -r '
+            .users[] | .username
+            ' /tmp/test-users-001.json
+        )
+    do
+        echo
+        ssh "${username}@zeppelin" \
+            '
+            echo "{"
+            echo "\"hostname\": \"$(hostname)\","
+            echo "\"date\":     \"$(date --iso-8601=seconds)\","
+            echo "\"id\":       $(id | jc --id),"
+            echo "\"homedir\": {"
+            echo "\"path\": \"${HOME}\","
+            echo "\"df\": $(df ${HOME} | jc --df)"
+            echo "},"
+            echo "\"userdir\": {"
+            echo "\"path\": \"/user/$(id -un)\","
+            echo "\"df\":   $(df /user/$(id -un) | jc --df)"
+            echo "}"
+            echo "}"
+            ' \
+        | jq '.'
+    done
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Create our live users.
+# The exsiting user accounts should pick up their passhashes from the set on our data node.
+#[root@ansibler]
+
+    cat > /tmp/live-users.yml << EOF
+users:
+  - name: "dcr"
+    type: "live"
+    publickey: "$(cat /deployments/common/ssh/keys/dcr.roe.ac.uk.rsa.pub)"
+    homeshare:
+      cloud: iris-gaia-data
+    usershare:
+      name:  aglais-user-dcr
+      cloud: iris-gaia-data
+
+  - name: "nch"
+    type: "live"
+    publickey: "$(cat /deployments/common/ssh/keys/nch.roe.ac.uk.rsa.pub)"
+    homeshare:
+      cloud: iris-gaia-data
+    usershare:
+      name:  aglais-user-nch
+      cloud: iris-gaia-data
+
+  - name: "stv"
+    type: "live"
+    publickey: "$(cat /deployments/common/ssh/keys/stv.roe.ac.uk.rsa.pub)"
+    homeshare:
+      cloud: iris-gaia-data
+    usershare:
+      name:  aglais-user-stv
+      cloud: iris-gaia-data
+
+  - name: "DaveMorris"
+    type: "live"
+    password: ""
+    passhash: ""
+    publickey: "$(cat /deployments/common/ssh/keys/dmr.roe.ac.uk.rsa.pub)"
+    homeshare:
+      cloud: iris-gaia-data
+    usershare:
+      name:  aglais-user-zrq
+      cloud: iris-gaia-data
+
+  - name: "MSemczuk"
+    type: "live"
+    homeshare:
+      cloud: iris-gaia-data
+    usershare:
+      cloud: iris-gaia-data
+
+EOF
+
+    createyamlusers \
+        /tmp/live-users.yml \
+    | tee /tmp/live-users.json
+
+--START--
+....
+....
+--END--
+
+
+    jq '
+        .users[] | {
+            username: .username,
+            password: .shirouser.password,
+            passhash: .shirouser.passhash
+            }
+        ' /tmp/live-users.json
+
+--START--
+....
+....
+--END--
+
+
+    jq '
+        .users[] | {
+            username: .username,
+            usershare: {
+                name:   .usershare.name,
+                cloud:  .usershare.cloud,
+                status: .usershare.status
+                },
+            homeshare: {
+                name:   .usershare.name,
+                cloud:  .usershare.cloud,
+                status: .usershare.status
+                }
+            }
+        ' /tmp/live-users.json
+
+--START--
+....
+....
+--END--
+

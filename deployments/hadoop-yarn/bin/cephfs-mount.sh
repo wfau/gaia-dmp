@@ -58,10 +58,9 @@
 # -----------------------------------------------------
 # Set the Manila API version.
 # https://stackoverflow.com/a/58806536
-# TODO Move this to an openstack script.
 
-   #export OS_SHARE_API_VERSION=2.51
-    export OS_SHARE_API_VERSION=2.46
+    source /deployments/openstack/bin/settings.sh
+
 
 # -----------------------------------------------------
 # Identify the Manila share.

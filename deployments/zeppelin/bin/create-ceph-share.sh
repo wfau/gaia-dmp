@@ -37,7 +37,7 @@ publicshare=${7}
 
 # Set the Manila API version.
 # https://stackoverflow.com/a/58806536
-export OS_SHARE_API_VERSION=2.51
+source /deployments/openstack/bin/settings.sh
 
 sharetype=ceph01_cephfs
 sharezone=nova

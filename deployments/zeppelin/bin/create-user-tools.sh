@@ -328,7 +328,7 @@ echo "}"
                     type:      (.linuxuser.type // ""),
                     role:      (.shirouser.role // ""),
                     linuxuid:  (.linuxuser.linuxuid // ""),
-                    password:  (.shirouser.pasword // ""),
+                    password:  (.shirouser.password // ""),
                     passhash:  (.shirouser.passhash // ""),
                     publickey: (.linuxuser.publickey // ""),
                     homeshare: {
@@ -359,7 +359,7 @@ echo "}"
             type:      (.linuxuser.type // ""),
             role:      (.shirouser.role // ""),
             linuxuid:  (.linuxuser.linuxuid // ""),
-            password:  (.shirouser.pasword // ""),
+            password:  (.shirouser.password // ""),
             passhash:  (.shirouser.passhash // ""),
             publickey: (.linuxuser.publickey // ""),
             homeshare: {

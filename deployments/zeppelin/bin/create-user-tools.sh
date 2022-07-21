@@ -376,3 +376,41 @@ echo "}"
         | tee "${yamlfile}"
         }
 
+
+    #
+    # List the shiro account information.
+    list-shiro-info()
+        {
+        local jsonfile=${1:-'input JSON filename required'}
+        jq '[
+            .users[] | {
+                username: .username,
+                password: .shirouser.password,
+                passhash: .shirouser.passhash
+                }
+            ]' "${jsonfile}"
+        }
+
+    #
+    # List the CephFS share information.
+    list-ceph-info()
+        {
+        local jsonfile=${1:-'input JSON filename required'}
+        jq '[
+            .users[] | {
+                username: .username,
+                usershare: {
+                    name:   .usershare.name,
+                    cloud:  .usershare.cloud,
+                    status: .usershare.status
+                    },
+                homeshare: {
+                    name:   .usershare.name,
+                    cloud:  .usershare.cloud,
+                    status: .usershare.status
+                    }
+                }
+            ]' "${jsonfile}"
+        }
+
+

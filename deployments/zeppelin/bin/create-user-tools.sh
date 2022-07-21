@@ -86,14 +86,14 @@
         local username=${1:?'username required'}
         local usertype=${2:?'usertype required'}
         local userhome=${3:?'userhome required'}
-        local publickey=${4}
-        local linuxuid=${5}
+        local linuxuid=${4}
+        local publickey=${5}
         #
         # Call Zeppelin to create the Linux user account.
         # Returns JSON.
         ssh zeppelin \
             "
-            sudo /opt/aglais/bin/create-linux-user.sh '${username}' '${usertype}' '${userhome}' '${publickey}' '${linuxuid}'
+            sudo /opt/aglais/bin/create-linux-user.sh '${username}' '${usertype}' '${userhome}' '${linuxuid}' '${publickey}'
             "
         }
 
@@ -151,10 +151,10 @@
         local username=${1:?'username required'}
         local usertype=${2:-'test'}
         local userrole=${3:-'user'}
-        local publickey=${4}
-        local linuxuid=${5}
-        local password=${6}
-        local passhash=${7}
+        local linuxuid=${4}
+        local password=${5}
+        local passhash=${6}
+        local publickey=${7}
 
         if [ "${usertype}" == 'live' ]
         then
@@ -192,8 +192,8 @@ echo "\"linuxuser\": "
             "${username}" \
             "${usertype}" \
             "/home/${username}" \
-            "${publickey}" \
             "${linuxuid}" \
+            "${publickey}" \
         | tee "${linuxuserjson}"
 
 echo ","
@@ -275,10 +275,10 @@ echo "}"
                 "${username}" \
                 "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].type  // empty')"     \
                 "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].role  // empty')"     \
-                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].publickey // empty')" \
                 "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].linuxuid  // empty')" \
                 "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].password  // empty')" \
-                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].passhash  // empty')"
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].passhash  // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].publickey // empty')"
         done
         echo ']}'
         }
@@ -298,9 +298,9 @@ echo "}"
                     type:      (.linuxuser.type // ""),
                     role:      (.shirouser.role // ""),
                     linuxuid:  (.linuxuser.linuxuid // ""),
-                    publickey: (.linuxuser.publickey // ""),
                     password:  (.shirouser.pasword // ""),
                     passhash:  (.shirouser.passhash // ""),
+                    publickey: (.linuxuser.publickey // "")
                     }
                 ]
             }
@@ -321,9 +321,9 @@ echo "}"
             type:      (.linuxuser.type // ""),
             role:      (.shirouser.role // ""),
             linuxuid:  (.linuxuser.linuxuid // ""),
-            publickey: (.linuxuser.publickey // ""),
             password:  (.shirouser.pasword // ""),
             passhash:  (.shirouser.passhash // ""),
+            publickey: (.linuxuser.publickey // "")
             }
             ' "${jsonfile}" \
         | yq -P \

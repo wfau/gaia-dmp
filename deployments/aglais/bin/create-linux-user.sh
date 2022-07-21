@@ -30,8 +30,8 @@ source "${srcpath}/json-tools.sh"
 username=${1}
 usertype=${2}
 userhome=${3}
-publickey=${4}
-linuxuid=${5}
+linuxuid=${4}
+publickey=${5}
 
 minuid=20000
 maxuid=60000

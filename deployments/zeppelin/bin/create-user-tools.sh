@@ -164,6 +164,8 @@
         fi
 
 echo "{"
+echo "\"username\": \"${username}\","
+echo "\"usertype\": \"${usertype}\","
 echo "\"homeshare\": "
         createcephshare \
             "${sharecloud}" \
@@ -241,8 +243,13 @@ echo "}"
         echo ']}'
         }
 
+    # TODO
+    # Create a single user from a YAML input file.
+    # createyamluser()
+
     #
     # Create users from a YAML input file.
+    # If we have more than one entry with the same name it will only read the first and skip the rest.
     createyamlusers()
         {
         local yamlfile=${1:?'yamlfile required'}
@@ -261,17 +268,17 @@ echo "}"
             )
         do
             echo "${comma}" ; comma=','
-            local userinfo=$(
-                jq --raw-output --null-input --argjson itemlist "${userlist}" "\$itemlist[] | select(.name == \"${username}\")"
+            local userjson=$(
+                jq --raw-output --null-input --argjson itemlist "${userlist}" "[\$itemlist[] | select(.name == \"${username}\")]"
                 )
             createusermain \
                 "${username}" \
-                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.type  // empty')"     \
-                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.role  // empty')"     \
-                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.publickey // empty')" \
-                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.linuxuid  // empty')" \
-                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.password  // empty')" \
-                "$(jq --raw-output --null-input --argjson itemx "${userinfo}" '$itemx.passhash  // empty')"
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].type  // empty')"     \
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].role  // empty')"     \
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].publickey // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].linuxuid  // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].password  // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].passhash  // empty')"
         done
         echo ']}'
         }

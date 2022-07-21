@@ -327,6 +327,7 @@ cat << EOF
 {
 "name":   "${sharename}",
 "uuid":   "${shareuuid}",
+"cloud":  "${sharecloud}",
 "status": "${sharestatus}",
 "ceph": {
     "nodes": "${cephnodes}",

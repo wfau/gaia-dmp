@@ -155,12 +155,38 @@
         local password=${5}
         local passhash=${6}
         local publickey=${7}
+        local homesharename=${8}
+        local homesharecloud=${9}
+        local usersharename=${10}
+        local usersharecloud=${11}
 
+        local typesharecloud
         if [ "${usertype}" == 'live' ]
         then
-            sharecloud=${datacloud}
+            typesharecloud=${datacloud}
         else
-            sharecloud=${cloudname}
+            typesharecloud=${cloudname}
+        fi
+
+        local homesharepath="/home/${username}"
+
+        if [ -z "${homesharecloud}" ]
+        then
+            homesharecloud="${typesharecloud}"
+        fi
+        if [ -z "${homesharename}" ]
+        then
+            homesharename="${homesharecloud}-home-${username}"
+        fi
+
+        local usersharepath="/user/${username}"
+        if [ -z "${usersharecloud}" ]
+        then
+            usersharecloud="${typesharecloud}"
+        fi
+        if [ -z "${usersharename}" ]
+        then
+            usersharename="${usersharecloud}-user-${username}"
         fi
 
 echo "{"
@@ -168,9 +194,9 @@ echo "\"username\": \"${username}\","
 echo "\"usertype\": \"${usertype}\","
 echo "\"homeshare\": "
         createcephshare \
-            "${sharecloud}" \
-            "${sharecloud}-home-${username}"  \
-            "/home/${username}" \
+            "${homesharecloud}" \
+            "${homesharename}"  \
+            "${homesharepath}"  \
             "zeppelin" \
             "${homesize}" \
             "rw"
@@ -178,9 +204,9 @@ echo "\"homeshare\": "
 echo ","
 echo "\"usershare\": "
         createcephshare \
-            "${sharecloud}" \
-            "${sharecloud}-user-${username}"  \
-            "/user/${username}" \
+            "${usersharecloud}" \
+            "${usersharename}"  \
+            "${usersharepath}"  \
             "zeppelin:workers" \
             "${usersize}" \
             "rw"
@@ -278,7 +304,11 @@ echo "}"
                 "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].linuxuid  // empty')" \
                 "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].password  // empty')" \
                 "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].passhash  // empty')" \
-                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].publickey // empty')"
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].publickey // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].homeshare.name  // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].homeshare.cloud // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].usershare.name  // empty')" \
+                "$(jq --raw-output --null-input --argjson itemx "${userjson}" '$itemx[0].usershare.cloud // empty')"
         done
         echo ']}'
         }
@@ -300,7 +330,15 @@ echo "}"
                     linuxuid:  (.linuxuser.linuxuid // ""),
                     password:  (.shirouser.pasword // ""),
                     passhash:  (.shirouser.passhash // ""),
-                    publickey: (.linuxuser.publickey // "")
+                    publickey: (.linuxuser.publickey // ""),
+                    homeshare: {
+                        name:  (.homeshare.name // ""),
+                        cloud: (.homeshare.cloud // "")
+                        },
+                    usershare: {
+                        name:  (.usershare.name // ""),
+                        cloud: (.usershare.cloud // "")
+                        }
                     }
                 ]
             }
@@ -323,7 +361,15 @@ echo "}"
             linuxuid:  (.linuxuser.linuxuid // ""),
             password:  (.shirouser.pasword // ""),
             passhash:  (.shirouser.passhash // ""),
-            publickey: (.linuxuser.publickey // "")
+            publickey: (.linuxuser.publickey // ""),
+            homeshare: {
+                name:  (.homeshare.name // ""),
+                cloud: (.homeshare.cloud // "")
+                },
+            usershare: {
+                name:  (.usershare.name // ""),
+                cloud: (.usershare.cloud // "")
+                }
             }
             ' "${jsonfile}" \
         | yq -P \

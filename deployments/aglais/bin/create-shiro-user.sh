@@ -37,8 +37,8 @@ userrole=${3:-'user'}
 password=${4:-''}
 passhash=${5:-''}
 
-passlength=20
-passcount=1
+passlength=8
+passcount=4
 
 # TODO Move these to an Ansible managed config file.
 databasename='shirodata'
@@ -79,7 +79,7 @@ else
     then
         # Generate a new password
         password=$(
-            pwgen ${passlength} ${passcount} 2> "${debugerrorfile}"
+            xkcdpass -n ${passcount} 2> "${debugerrorfile}"
             )
         if [ $? -eq 0 ]
         then

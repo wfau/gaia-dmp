@@ -395,14 +395,14 @@ echo "}"
 
     #
     # List the shiro account information (full).
-    list-shiro-hash()
+    list-shiro-full()
         {
         local jsonfile=${1:-'input JSON filename required'}
         jq '[
             .users[] | {
                 username: .username,
                 password: .shirouser.password,
-                passhash: .shirouser.passhash
+                passhash: .shirouser.passhash,
                 hashhash: .shirouser.hashhash
                 }
             ]' "${jsonfile}"

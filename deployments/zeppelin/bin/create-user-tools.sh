@@ -21,17 +21,19 @@
 #
 #
 
-
+    # TODO Move this to a separate script, client-tools or client-setup.
+    # https://github.com/wfau/aglais/issues/893
     datahostname='data.aglais.uk'
     datahostuser='fedora'
-
-    datacloud=iris-gaia-data
+    datacloud='iris-gaia-data'
 
     homesize=1
     usersize=10
 
     # Get a secret.
     # Calls 'getsecret' on the data VM.
+    # TODO Move this to a separate script, client-tools or client-setup.
+    # https://github.com/wfau/aglais/issues/893
     getsecret()
         {
         local key=${1:?'key required'}
@@ -55,7 +57,7 @@
 
     createshirohash()
         {
-        local password=${1:-''}
+        local password=${1:?'password required'}
         #
         # Call Zeppelin to hash the password.
         # Returns JSON.

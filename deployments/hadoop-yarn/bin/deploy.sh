@@ -29,25 +29,12 @@
 
 # -----------------------------------------------------
 # Create everything.
-# (*) apart from the user database.
 #[root@ansibler]
 
     /deployments/hadoop-yarn/bin/create-all.sh \
         "${cloudname:?}" \
         "${configname:?}" \
     | tee /tmp/create-all.log
-
-
-# -----------------------------------------------------
-# Create our shiro-auth database.
-# TODO Move this into deploy-all
-# https://github.com/wfau/aglais/issues/858
-#[root@ansibler]
-
-    /deployments/hadoop-yarn/bin/create-auth-database.sh \
-        "${cloudname:?}" \
-        "${configname:?}" \
-    | tee /tmp/create-auth-database.log
 
 
 # -----------------------------------------------------

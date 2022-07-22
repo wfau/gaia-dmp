@@ -415,4 +415,22 @@ echo "}"
             ]' "${jsonfile}"
         }
 
+    #
+    # Import our live users
+    import-live-users()
+        {
+        createyamlusers \
+            /deployments/common/users/live-users.yml \
+        | tee /tmp/live-users.json
+        }
+
+    #
+    # Import some simple test users
+    import-test-users()
+        {
+        createyamlusers \
+            /deployments/common/users/test-users.yml \
+        | tee /tmp/test-users.json
+        }
+
 

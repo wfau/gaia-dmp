@@ -152,6 +152,12 @@ else
     fi
 fi
 
+# Hash the password hash.
+# https://github.com/wfau/aglais/issues/898
+hashhash=$(
+    md5sum - <<< passhash | sed 's/^\([^ ]*\).*/\1/'
+    )
+
 cat << EOF
 {
 "name": "${username}",
@@ -159,6 +165,7 @@ cat << EOF
 "role": "${userrole}",
 "password": "${password}",
 "passhash": "${passhash}",
+"hashhash": "${hashhash}",
 $(jsondebug)
 }
 EOF

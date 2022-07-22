@@ -380,7 +380,7 @@ echo "}"
 
 
     #
-    # List the shiro account information.
+    # List the shiro account information (safe).
     list-shiro-info()
         {
         local jsonfile=${1:-'input JSON filename required'}
@@ -388,7 +388,22 @@ echo "}"
             .users[] | {
                 username: .username,
                 password: .shirouser.password,
+                hashhash: .shirouser.hashhash
+                }
+            ]' "${jsonfile}"
+        }
+
+    #
+    # List the shiro account information (full).
+    list-shiro-hash()
+        {
+        local jsonfile=${1:-'input JSON filename required'}
+        jq '[
+            .users[] | {
+                username: .username,
+                password: .shirouser.password,
                 passhash: .shirouser.passhash
+                hashhash: .shirouser.hashhash
                 }
             ]' "${jsonfile}"
         }

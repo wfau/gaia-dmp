@@ -422,9 +422,9 @@ echo "}"
                     status: .usershare.status
                     },
                 homeshare: {
-                    name:   .usershare.name,
-                    cloud:  .usershare.cloud,
-                    status: .usershare.status
+                    name:   .homeshare.name,
+                    cloud:  .homeshare.cloud,
+                    status: .homeshare.status
                     }
                 }
             ]' "${jsonfile}"

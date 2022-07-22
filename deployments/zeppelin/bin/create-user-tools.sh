@@ -380,6 +380,22 @@ echo "}"
 
 
     #
+    # List the Linux account information.
+    list-linux-info()
+        {
+        local jsonfile=${1:-'input JSON filename required'}
+        jq '[
+            .users[] | {
+                username:  .username,
+                homedir:   .linuxuser.homedir,
+                linuxuid:  .linuxuser.linuxuid,
+                publickey: .linuxuser.publickey
+                }
+            ]' "${jsonfile}"
+        }
+
+
+    #
     # List the shiro account information (safe).
     list-shiro-info()
         {

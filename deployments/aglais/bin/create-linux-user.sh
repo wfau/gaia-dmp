@@ -196,7 +196,9 @@ cat << JSON
 {
 "name": "${username}",
 "type": "${usertype}",
+"homedir":   "${userhome}",
 "linuxuid":  "${linuxuid}",
+"publickey": "${publickey}",
 $(jsondebug)
 }
 JSON

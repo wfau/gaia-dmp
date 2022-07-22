@@ -21,6 +21,10 @@
 #
 #
 
+# TODO Once we have moved gaiaxpy to pip we can delete this.
+# https://github.com/wfau/aglais/issues/825
+
+
 # -----------------------------------------------------
 # Settings ...
 

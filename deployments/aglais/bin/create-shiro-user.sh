@@ -155,7 +155,7 @@ fi
 # Hash the password hash.
 # https://github.com/wfau/aglais/issues/898
 hashhash=$(
-    md5sum - <<< passhash | sed 's/^\([^ ]*\).*/\1/'
+    md5sum - <<< ${passhash} | sed 's/^\([^ ]*\).*/\1/'
     )
 
 cat << EOF

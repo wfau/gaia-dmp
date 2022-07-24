@@ -40,6 +40,24 @@
     echo "Cloud name [${cloudname:?}]"
     echo "---- ---- ----"
 
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+
+    source /deployments/openstack/bin/settings.sh
+
+
+# -----------------------------------------------------
+# Sanity check.
+
+    if [ "${cloudname}" == "iris-gaia-data" ]
+    then
+        echo
+        echo "DANGER: Do not run delete-all on [${cloudname}]"
+        echo
+        exit 1
+    fi
+
 
 # -----------------------------------------------------
 # Delete any Mangum clusters.
@@ -109,7 +127,7 @@
 
 
 # -----------------------------------------------------
-# Delete any remaining servers.
+# Delete any servers.
 
     echo ""
     echo "---- ----"
@@ -132,8 +150,7 @@
 
 
 # -----------------------------------------------------
-# Delete any remaining volumes.
-
+# Delete any volumes.
 
     echo ""
     echo "---- ----"
@@ -156,7 +173,37 @@
 
 
 # -----------------------------------------------------
-# Release any remaining floating IP addresses.
+# Delete any shares.
+
+    echo ""
+    echo "---- ----"
+    echo "Deleting shares"
+
+    if [ "${cloudname}" == "iris-gaia-data" ]
+    then
+        echo
+        echo "Skipping delete shares for [${cloudname}]"
+        echo
+    else
+        for sharename in $(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                share list \
+                    --format json \
+            | jq -r ".[] | select(.Name | startswith(\"${cloudname}\")) | .Name"
+            )
+        do
+            echo "- Deleting share [${sharename}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                share delete \
+                    "${sharename}"
+        done
+    fi
+
+
+# -----------------------------------------------------
+# Release any floating IP addresses.
 
     echo ""
     echo "---- ----"
@@ -184,7 +231,7 @@
 
 
 # -----------------------------------------------------
-# Delete any remaining routers.
+# Delete any routers.
 
     echo ""
     echo "---- ----"
@@ -346,7 +393,7 @@
 
 
 # -----------------------------------------------------
-# Delete keypairs that start with 'aglais'.
+# Delete any keypairs that match this cloud.
 
     echo ""
     echo "---- ----"
@@ -357,7 +404,7 @@
             --os-cloud "${cloudname:?}" \
             keypair list \
                 --format json \
-        | jq -r '.[] | select(.Name | startswith("aglais")) | .Name'
+        | jq -r ".[] | select(.Name | startswith(\"${cloudname}\")) | .Name"
         )
     do
         echo "- Deleting key [${keyname:?}]"
@@ -450,6 +497,13 @@
     openstack \
         --os-cloud "${cloudname:?}" \
         volume list
+
+    echo ""
+    echo "---- ----"
+    echo "List shares"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
 
     echo ""
     echo "---- ----"

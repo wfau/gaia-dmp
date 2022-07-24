@@ -1,3 +1,4 @@
+#!/bin/sh
 #
 # <meta:header>
 #   <meta:licence>
@@ -18,45 +19,15 @@
 #   </meta:licence>
 # </meta:header>
 #
-#zrq-notes-time
-#zrq-notes-indent
-#zrq-notes-crypto
-#zrq-notes-ansible
-#zrq-notes-osformat
-#zrq-notes-zeppelin
 #
 
-    Target:
-
-        Next steps ....
-
-    Result:
-
-        Work in progress ...
-
 # -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
 
-    Integrate create-share with create-user.
-
-        sharename = <username>-<usertype>-<deployname>
-
-        usertype: test
-            Shares created in the current project
-
-        usertype: live
-            Shares created in the data project
-            https://github.com/wfau/aglais/issues/882
+   #export OS_SHARE_API_VERSION=2.46
+   export OS_SHARE_API_VERSION=2.51
 
 
-    Read the share name/uuid from the users yaml file.
-
-    Create a yaml file for our existing live users.
-
-        Add live users to our basic deployment
-
-    Create a careful delete-share script.
-
-    Add a careful delete-share step to the delete-all script.
-    https://github.com/wfau/aglais/issues/874
 
 

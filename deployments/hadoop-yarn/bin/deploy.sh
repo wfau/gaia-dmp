@@ -40,6 +40,8 @@
 
 # -----------------------------------------------------
 # Create our shiro-auth database.
+# TODO Move this into deploy-all
+# https://github.com/wfau/aglais/issues/858
 #[root@ansibler]
 
     /deployments/hadoop-yarn/bin/create-auth-database.sh \
@@ -92,6 +94,7 @@
 # Add the ssh key for our data node.
 # This is used by the getpasshash function in the client container.
 # TODO Add this to a client-setup.sh in ansible/client/bin.
+# https://github.com/wfau/aglais/issues/893
 #[root@ansibler]
 
     ssh-keyscan 'data.aglais.uk' 2>/dev/null >> "${HOME}/.ssh/known_hosts"
@@ -100,6 +103,7 @@
 # -----------------------------------------------------
 # Get the IP address from the ssh config file.
 # TODO Save the IP address during the deployment process.
+# https://github.com/wfau/aglais/issues/860
 #[root@ansibler]
 
     ipaddress=$(
@@ -118,6 +122,7 @@
 # -----------------------------------------------------
 # Add the Zeppelin IP address to our hosts file.
 # TODO Add this to the Ansible deployment.
+# https://github.com/wfau/aglais/issues/862
 # WARNING this is not idempotent.
 # Deploying more than once adds multiple rows
 #[root@ansibler]
@@ -131,9 +136,10 @@ EOF
 # -----------------------------------------------------
 # Update our DuckDNS record.
 # TODO Add this to the Ansible deployment.
-# TODO Move the secret function to a separate file.
 #[root@ansibler]
 
+    # This should be done automatically.
+    # https://github.com/wfau/aglais/issues/893
     source /deployments/zeppelin/bin/create-user-tools.sh
 
     ducktoken=$(getsecret 'devops.duckdns.token')
@@ -149,6 +155,8 @@ EOF
 # Configure our client container.
 #[root@ansibler]
 
+    # TODO Add git to the client container.
+    # https://github.com/wfau/aglais/issues/734
     dnf install -y git
 
     pip install git+https://github.com/wfau/aglais-testing@v0.2.3

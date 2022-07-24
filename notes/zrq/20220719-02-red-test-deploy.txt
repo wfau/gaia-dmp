@@ -1,0 +1,280 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Clean deploy on red to test everything.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name ansibler \
+        --hostname ansibler \
+        --publish 3000:3000 \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.03.19 \
+        bash
+
+
+# -----------------------------------------------------
+# Set the target configuration.
+#[root@ansibler]
+
+    cloudbase=arcus
+    cloudname=iris-gaia-red
+    configname=zeppelin-26.43-spark-3.26.43
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   ....
+    >   TASK [Create Cinder volumes for [zeppelin]] ************************************
+    >   skipping: [localhost] => (item={'type': 'local', 'format': 'ext4', 'mntpath': '/mnt/local/vdb', 'devname': 'vdb'})
+    >   failed: [localhost] (item={'type': 'cinder', 'size': 1024, 'format': 'btrfs', 'mntpath': '/mnt/cinder/vdc', 'devname': 'vdc'})
+    >    => {
+    >       "ansible_loop_var": "item",
+    >       "changed": false,
+    >       "extra_data": {
+    >           "data": null,
+    >           "details": "HttpException: 500: Server Error for url: https://arcus.openstack.hpc.cam.ac.uk:8776/v3/0dd8cc5ee5a7455c8748cc06d04c93c3/volumes/detail"
+    >   ....
+
+    # Logged an issue in Aglais GitHub and Cambridge Jira.
+    # https://github.com/wfau/aglais/issues/869
+    # https://jira.hpc.cam.ac.uk/servicedesk/customer/portal/2/HPCSSUP-46878
+    #
+    # Try again at 00:55 - seems to be fixed.
+    #
+
+    >   real    34m39.360s
+    >   user    12m32.882s
+    >   sys     2m31.774s
+
+
+# -----------------------------------------------------
+# Create a new share
+#[root@ansibler]
+
+    useruid=20002
+    username=Progat
+    userhome=/home/${username:?}
+
+    /deployments/zeppelin/bin/create-ceph-share.sh \
+        "${cloudname:?}" \
+        "${cloudname:?}-home-${username:?}" \
+        "${userhome:?}" \
+        10 \
+        "rw" \
+        "zeppelin" \
+    | tee /tmp/create-share.json \
+    | jq '.'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create a Linux user.
+#[root@ansibler]
+
+    inventory=/deployments/hadoop-yarn/ansible/config/${configname}.yml
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            -v \
+            --inventory "${inventory:?}" \
+            --extra-vars "useruid=${useruid}" \
+            --extra-vars "username=${username}" \
+            --extra-vars "userhome=${userhome}" \
+            "62-create-linux-user.yml"
+
+    popd
+
+    >   ....
+    >   ....
+
+    #
+    # The Ansible 'authorized_key' module tries to set the SELinux context.
+    # Problem - we can't change the SELinux context of a network mounted directory ?
+    # https://github.com/ansible/ansible/issues/5632#issuecomment-32387237
+    #
+    # Possible fix - create the user's home in /tmp and then move it into place.
+    # https://github.com/ansible/ansible/issues/5632#issuecomment-249794114
+    # Problem - the 'usermod' command won't work if the destination already exists.
+    #
+
+    #
+    # cephfs and selinux
+    # https://lists.ceph.io/hyperkitty/list/ceph-users@ceph.io/thread/UTGQNNP6DITPXSYRBMMZPAB7N5RQMWSG/
+
+
+# -----------------------------------------------------
+# Experiment with chcon.
+#[root@zeppelin]
+
+    ls -Z -1 /home
+
+    >   system_u:object_r:cephfs_t:s0 Halda
+    >   system_u:object_r:cephfs_t:s0 Jalda
+    >   system_u:object_r:cephfs_t:s0 Progat
+    >   unconfined_u:object_r:user_home_dir_t:s0 fedora
+
+
+    sudo chcon -u unconfined_u /home/Jalda/
+
+    >   chcon: failed to change context of '/home/Jalda/' to ‘unconfined_u:object_r:cephfs_t:s0’: Operation not supported
+
+
+    sudo chcon -t user_home_dir_t /home/Jalda/
+
+    >   chcon: failed to change context of '/home/Jalda/' to ‘system_u:object_r:user_home_dir_t:s0’: Operation not supported
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Disable SELinux
+#[user@zeppelin]
+
+    sudo setenforce Permissive
+
+    # No difference ..
+
+
+# -----------------------------------------------------
+# Copy the context from another directory ..
+#[user@zeppelin]
+
+    semanage fcontext -a -e /home/fedora /home/Jalda
+
+    >   ValueError: SELinux policy is not managed or store cannot be accessed.
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a new share
+#[root@ansibler]
+
+    useruid=20006
+    usertype=test
+    username=Drilf
+    userhome=/home/${username:?}
+
+    /deployments/zeppelin/bin/create-ceph-share.sh \
+        "${cloudname:?}" \
+        "${cloudname:?}-home-${username:?}" \
+        "${userhome:?}" \
+        10 \
+        "rw" \
+        "zeppelin" \
+    | tee /tmp/create-share.json \
+    | jq '.'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Update our create-linux-user script.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        pushd /opt/aglais/bin
+            sudo chmod a+w .
+            sudo chmod a+w *
+        popd
+        '
+
+    scp /deployments/aglais/bin/create-linux-user.sh \
+        zeppelin:/opt/aglais/bin/
+
+    >   create-linux-user.sh        100% 4781   271.0KB/s   00:00
+
+
+# -----------------------------------------------------
+# Create a new user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    createlinuxuser \
+        ${username} \
+        ${usertype} \
+        ${userhome} \
+    | tee /tmp/linuxuser.json \
+    | jq '.'
+
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a new share
+#[root@ansibler]
+
+    usertype=test
+    username=
+    userhome=/home/${username:?}
+
+    /deployments/zeppelin/bin/create-ceph-share.sh \
+        "${cloudname:?}" \
+        "${cloudname:?}-home-${username:?}" \
+        "${userhome:?}" \
+        10 \
+        "rw" \
+        "zeppelin" \
+    | tee /tmp/create-share.json \
+    | jq '.'
+
+
+
+
+
+
+

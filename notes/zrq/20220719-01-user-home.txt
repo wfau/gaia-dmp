@@ -1,0 +1,385 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Thoughts about how to handle home directories.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+
+    What we currently have
+
+        /home/<username>        Local system drive on the Zeppelin node.
+                                rsync backup pulled by data node
+
+        /user/<username>        per-user CephFS share
+                                mounted on all nodes
+
+    To improve security we should create a gateway node that handles external access via SSH and HTTPS.
+    Using SSH, the user logs in to the gateway node, not the zeppelin node.
+    The gateway node provides access to the user's home directory and their data directory, nothing else.
+
+    In order to do this, the users's home directory needs to be visible from both the Zeppelin node and the Gateway node.
+    Easiest way to make a directory visible from more than one VM is to use a CephFS share.
+
+    We could do this using one large CephFS share for everyone's home directories.
+
+        /home                   single CephFS share for all users
+                                mounted on Gateway and Zeppelin nodes
+
+        /user/<username>        per-user CephFS share
+                                mounted on all nodes
+                                no backup
+
+
+    This has problems when creating test user accounts.
+    If the /home share works the same way that the current /user and /data shares work,
+    then it will be visible on all the clouds.
+    If is mounted on all nodes, then we can't create a /home/<username> home directory
+    on a test deployment without it also appearing as /home/<username> on the live deployment too.
+    We could mitigate this by not creating /home/<username> for test accounts, or creating
+    test user's home directories in /test/<username> rather than /home/<username>.
+    But whenever we make test accounts behave differently to live accounts we leave a gap
+    for something to pass tests on the test system but fail on the live deployment.
+
+    How do we test things like scp transfers and DropBox integration if our test accounts
+    are configured differently to the live accounts.
+
+    The alternative is to have separate CephFS shares for each user's home directory.
+
+
+        /home/<username>        per-user CephFS share
+                                mounted on Gateway and Zeppelin nodes
+
+        /user/<username>        per-user CephFS share
+                                mounted on all nodes
+
+
+    If we have per-user CephFS shares for /home/<username> and /user/<username>,
+    then why have two ? Why not just have one CephFS share for /home/<username>
+    and make it big enough to hold the user's data as well.
+    This makes it easier to explain to users where to save their data.
+    Everything goes in /home/<username> rather than some in /home and some in /users.
+
+
+        /home/<username>        per-user CephFS share
+                                mounted on all nodes
+                                This is the simplest from the user's perspective
+
+    ... but there is a problem during creation.
+    We use adduser to create the user account, uid and home directories all at the same time.
+    If the home directory is mounted on a CephFS share, then the share needs to be in place when adduser creates the user account and populates the home directory.
+    but in order to create and mount the share, we need to know the username and the uid, which we won't know until after we call adduser.
+
+    The work around is to create the account and share separately and bring them together afterwards.
+    We can create the account with home directory in /tmp/<username>.
+    Then create the share using the username and uid to set the permissions,
+    and then use usermod to re-locate the user's home directory to use the mounted share.
+
+
+    ... and there is a problem with access permissions.
+    The Zeppelin interpreter tasks run as the user's own Linux account uid,
+    but the Spark applications running on the worker nodes run as the
+    generic hadoop user uid.
+    In order to write data frames to disc, the generic hadoop user uid will
+    need to be able to write to the user's data directory.
+    If we merge the user's home and data directories, then the
+    generic hadoop user can read and write data to the
+    user's home directory.
+    Any user can acces another user's home directory by creating
+    a Spark job that uses the generic hadoop user uid to access
+    the other user's home directory.
+
+    Not sure there is a work around for this one.
+    We can't make a sub-directory more permissive that it's parent.
+
+    Spark/Yarn handle user impersonation using Kerberos, which is a whole other ball game.
+    https://community.cloudera.com/t5/Support-Questions/User-impersonation-in-Spark-and-Samza/m-p/136851
+
+    So no, we can't combine /home/<username> and /user/<username> because Spark worker nodes
+    need to be able to read and write to /user/<username>.
+
+    Back to having separate /home/<username> and /user/<username> shares then ..
+    We still need to use an intermediate home directory /tmp/<username> when we create the Linux account,
+    use the username and uid to create and mount the share as /home/<username> and then use usermod to
+    change the Linux account's home directory to /home/<username> once the share has been mounted.
+
+    This keeps the user's home directory private and allows the generic Hadoop/Yarn process
+    to write to the user's data directory.
+    Using the same functions to create live and test accounts enables us to test the account
+    handling functions without having to create exceptions.
+
+    The only difference will be that the CephFS shares for test accounts are created
+    in the same project as the deployment, whereas shares for live accounts are created
+    in the iris-gaia-data project.
+    We can clean up after a test by extending delete-all to delete all the shares associated
+    with a red/green/blue project but not the iris-gaia-data project.
+
+# -----------------------------------------------------
+
+    Experiments ...
+
+    podman run -it --rm fedora:latest bash
+
+        mkdir /home/albert
+        mkdir /home/hanna
+
+        ls -al /home/albert/
+
+    >   drwxr-xr-x. 2 root root 40 Jul 19 03:28 .
+    >   drwxr-xr-x. 4 root root 22 Jul 19 03:28 ..
+
+        # adduser won't wrte to an existing directory.
+
+        adduser \
+            albert \
+            --create-home \
+            --home-dir /home/albert
+
+    >   adduser: warning: the home directory /home/albert already exists.
+    >   adduser: Not copying any file from skel directory into it.
+
+        ls -al /home/albert/
+
+    >   drwxr-xr-x. 2 root root 40 Jul 19 03:28 .
+    >   drwxr-xr-x. 4 root root 22 Jul 19 03:28 ..
+
+
+        # adduser can write to a temp home directory
+
+        adduser \
+            hanna \
+            --create-home \
+            --home-dir /tmp/hanna
+
+        ls -al /tmp/hanna/
+
+    >   drwx------. 2 hanna hanna 104 Jul 19 03:29 .
+    >   drwxrwxrwt. 3 root  root   10 Jul 19 03:29 ..
+    >   -rw-r--r--. 1 hanna hanna  18 Jan 26  2021 .bash_logout
+    >   -rw-r--r--. 1 hanna hanna 141 Jan 26  2021 .bash_profile
+    >   -rw-r--r--. 1 hanna hanna 492 Jan 26  2021 .bashrc
+
+        ls -al /home/hanna/
+
+    >   drwxr-xr-x. 2 root root 40 Jul 19 03:28 .
+    >   drwxr-xr-x. 4 root root 22 Jul 19 03:28 ..
+
+
+        # usermod won't write to an existing directory.
+
+        usermod \
+            hanna \
+            --move-home \
+            --home /home/hanna
+
+    >   usermod: directory /home/hanna exists
+
+        ls -al /home/hanna/
+
+    >   drwxr-xr-x. 2 root root 40 Jul 19 03:28 .
+    >   drwxr-xr-x. 4 root root 22 Jul 19 03:28 ..
+
+        grep 'hanna' /etc/passwd
+
+    >   hanna:x:1001:1001::/home/hanna:/bin/bash
+
+# -----------------------------------------------------
+
+    1) Add a flag to create-linux-user to disable creating the home directory.
+
+    2) Create CephFS share as <cloudname>-user-<username>.
+    3) Mount the share on the Zeppelin and Gateway nodes as /home/<username>.
+       Leave the share as root:root.
+
+    4) Create Linux account on the Zeppelin and Gateway nodes, disable create-home.
+
+    6) On Zeppelin node, copy the skeleton files into /home/<username>.
+    7) On Zeppelin node, set the ownership and permissions on /home/<username>.
+
+    podman run -it --rm fedora:latest bash
+
+        mkdir /home/albert
+
+        ls -al /home/albert/
+
+    >   drwxr-xr-x. 2 root root 40 Jul 19 03:37 .
+    >   drwxr-xr-x. 4 root root 22 Jul 19 03:37 ..
+
+        # Create a user but don't create the home directory.
+
+        adduser \
+            albert \
+            --no-create-home \
+            --home-dir /home/albert
+
+        ls -al /home/albert
+
+    >   drwxr-xr-x. 2 root root 40 Jul 19 03:41 .
+    >   drwxr-xr-x. 3 root root 12 Jul 19 03:41 ..
+
+        grep 'albert' /etc/passwd
+
+    >   albert:x:1000:1000::/home/albert:/bin/bash
+
+        ls -al /etc/skel/
+
+    >   ....
+    >   -rw-r--r--.  1 root root  18 Jan 26  2021 .bash_logout
+    >   -rw-r--r--.  1 root root 141 Jan 26  2021 .bash_profile
+    >   -rw-r--r--.  1 root root 492 Jan 26  2021 .bashrc
+
+        # https://superuser.com/questions/61611/how-to-copy-with-cp-to-include-hidden-files-and-hidden-directories-and-their-con
+        # https://superuser.com/a/367303
+        cp -r /etc/skel/. /home/albert
+
+        ls -al /home/albert
+
+    >   ....
+    >   -rw-r--r--. 1 root root  18 Jul 19 03:51 .bash_logout
+    >   -rw-r--r--. 1 root root 141 Jul 19 03:51 .bash_profile
+    >   -rw-r--r--. 1 root root 492 Jul 19 03:51 .bashrc
+
+
+    chown -R albert:albert /home/albert
+    chmod u=rwx,g=,o=  /home/albert
+
+    >   drwx------. 2 albert albert 104 Jul 19 03:51 .
+    >   drwxr-xr-x. 3 root   root    12 Jul 19 03:50 ..
+    >   -rw-r--r--. 1 albert albert  18 Jul 19 03:51 .bash_logout
+    >   -rw-r--r--. 1 albert albert 141 Jul 19 03:51 .bash_profile
+    >   -rw-r--r--. 1 albert albert 492 Jul 19 03:51 .bashrc
+
+# -----------------------------------------------------
+
+    Remove the chmod and chown steps from the Ansible create-mount.
+    Add a flag to create-linux-user to disable creating the home directory.
+
+    1) Create CephFS share as <cloudname>-user-<username>.
+    2) Mount the share on the Zeppelin and Gateway nodes as /home/<username>.
+
+    3) Create Linux account on the Zeppelin and Gateway nodes, disable create-home.
+
+    4) On Zeppelin node, copy the skeleton files into /home/<username>.
+    5) On Zeppelin node, set the ownership and permissions on /home/<username>.
+
+    6) On Zeppelin node, create the user's ssh directory and install the Zeppelin user's public key.
+    7) On Zeppelin node, install the user's own public key.
+
+    podman run -it --rm fedora:latest bash
+
+        sudo adduser \
+            albert \
+            --no-create-home \
+            --home-dir /home/albert
+
+        grep 'albert' /etc/passwd
+
+    >   albert:x:1000:1000::/home/albert:/bin/bash
+
+        ls -al /home/albert
+
+    >   ls: cannot access '/home/albert': No such file or directory
+
+        # Simulate the CephFS mount
+        sudo mkdir /home/albert
+
+        ls -al /home/albert/
+
+    >   drwxr-xr-x. 2 root root 40 Jul 19 04:39 .
+    >   drwxr-xr-x. 3 root root 12 Jul 19 04:39 ..
+
+        # https://superuser.com/questions/61611/how-to-copy-with-cp-to-include-hidden-files-and-hidden-directories-and-their-con
+        # https://superuser.com/a/367303
+        sudo cp --recursive \
+           --no-clobber \
+           /etc/skel/. \
+           /home/albert
+
+        ls -alZ /home/albert
+
+    >   drwxr-xr-x. 2 root root system_u:object_r:fusefs_t:s0 104 Jul 19 04:42 .
+    >   drwxr-xr-x. 3 root root system_u:object_r:fusefs_t:s0  12 Jul 19 04:42 ..
+    >   -rw-r--r--. 1 root root system_u:object_r:fusefs_t:s0  18 Jul 19 04:42 .bash_logout
+    >   -rw-r--r--. 1 root root system_u:object_r:fusefs_t:s0 141 Jul 19 04:42 .bash_profile
+    >   -rw-r--r--. 1 root root system_u:object_r:fusefs_t:s0 492 Jul 19 04:42 .bashrc
+
+        chown -R albert:albert /home/albert
+        chmod u=rwx,g=,o=      /home/albert
+
+        dnf install policycoreutils
+
+
+        ls -alZ /home/albert
+
+    >   drwx------. 2 albert albert system_u:object_r:fusefs_t:s0 104 Jul 19 13:49 .
+    >   drwxr-xr-x. 3 root   root   system_u:object_r:fusefs_t:s0  12 Jul 19 13:49 ..
+    >   -rw-r--r--. 1 albert albert system_u:object_r:fusefs_t:s0  18 Jul 19 13:49 .bash_logout
+    >   -rw-r--r--. 1 albert albert system_u:object_r:fusefs_t:s0 141 Jul 19 13:49 .bash_profile
+    >   -rw-r--r--. 1 albert albert system_u:object_r:fusefs_t:s0 492 Jul 19 13:49 .bashrc
+
+        restorecon /home/albert
+
+        ls -alZ /home/albert
+
+    >   drwx------. 2 albert albert system_u:object_r:fusefs_t:s0 104 Jul 19 13:49 .
+    >   drwxr-xr-x. 3 root   root   system_u:object_r:fusefs_t:s0  12 Jul 19 13:49 ..
+    >   -rw-r--r--. 1 albert albert system_u:object_r:fusefs_t:s0  18 Jul 19 13:49 .bash_logout
+    >   -rw-r--r--. 1 albert albert system_u:object_r:fusefs_t:s0 141 Jul 19 13:49 .bash_profile
+    >   -rw-r--r--. 1 albert albert system_u:object_r:fusefs_t:s0 492 Jul 19 13:49 .bashrc
+
+
+# -----------------------------------------------------
+
+    We need to use openstack calls to create the share.
+    We could do everything else using Ansible.
+    If we want to have user accounts on multiple hosts, then Ansible is the best tool.
+
+    1) Create CephFS share as <cloudname>-user-<username>.
+    2) Mount the share on the Zeppelin and Gateway nodes as /home/<username>.
+
+    3) Create Linux account on the Zeppelin and Gateway nodes, disable create-home.
+
+    4) On Zeppelin node, copy the skeleton files into /home/<username>.
+    5) On Zeppelin node, set the ownership and permissions on /home/<username>.
+
+    6) On Zeppelin node, create the user's ssh directory and install the Zeppelin user's public key.
+    7) On Zeppelin node, install the user's own public key.
+
+
+
+
+
+
+
+
+

@@ -71,8 +71,9 @@ then
         )
 fi
 
-# Check the user's home directory exists.
-
+# TODO Check the user's home directory exists.
+# If not, then create and add the skeleton contents.
+# https://github.com/wfau/aglais/issues/903
 
 # Create the Linux user account.
 id "${username}" &> /dev/null
@@ -125,44 +126,44 @@ then
     touch "${userhome}/.ssh/authorized_keys"
 fi
 
-# Add the Zeppelin user's public key.
-zepkey=$(cat "${zepkeypath}")
-if [ $(grep -c "${zepkey}" "${userhome}/.ssh/authorized_keys" ) -ne 0 ]
-then
-    skipmessage "adding public key for [zeppelin] skipped (done)"
-else
-    cat >> "${userhome}/.ssh/authorized_keys" 2> "${debugerrorfile}" << EOF
-# zeppelin's public key"
-${zepkey}
-EOF
-    if [ $? -eq 0 ]
-    then
-        passmessage "adding public key for [zepelin] done"
-    else
-        failmessage "adding public key for [zepelin] failed"
-    fi
-fi
+# Add public keys for zeppelin and the user.
+headmark="# BEGIN GaiaDMp managed keys"
+tailmark="# END GaiaDMp managed keys"
 
-# Add the user's own public key.
-if [ -z "${publickey}" ]
-then
-    skipmessage "adding public key for [${username}] skipped (no key)"
-else
-    if [ $(grep -c "${publickey}" "${userhome}/.ssh/authorized_keys" ) -ne 0 ]
-    then
-        skipmessage "adding public key for [${username}] skipped (done)"
-    else
-        cat >> "${userhome}/.ssh/authorized_keys" 2> "${debugerrorfile}" << EOF
-# ${username}'s public key"
+authorized=${userhome:?}/.ssh/authorized_keys
+
+tempfile=$(mktemp)
+
+cat > "${tempfile}" << EOF
+# Do not edit this section
+
+# Public key for Zeppelin
+$(cat "${zepkeypath}")
+
+# Public key for ${username}
 ${publickey}
+
 EOF
-        if [ $? -eq 0 ]
-        then
-            passmessage "adding public key for [${username}] done"
-        else
-            failmessage "adding public key for [${username}] failed"
-        fi
-    fi
+
+if [ $(grep -c "${headmark}" "${authorized}") -eq 0 ]
+then
+    echo "${headmark}" >> "${authorized}"
+    cat  "${tempfile}" >> "${authorized}"
+    echo "${tailmark}" >> "${authorized}"
+    passmessage "added public keys for [zepelin] and [${username}] (new)"
+else
+    sed -i "
+        /${headmark}/,/${tailmark}/ {
+            /${headmark}/ n
+            /${tailmark}/ ! d
+            }
+        " ${authorized}
+    sed -i "
+        /${headmark}/ {
+            r ${tempfile}
+            }
+        " ${authorized}
+    passmessage "updates public keys for [zepelin] and [${username}] (sed)"
 fi
 
 # Fix ownership of the user's home directory.
@@ -196,7 +197,9 @@ cat << JSON
 {
 "name": "${username}",
 "type": "${usertype}",
+"homedir":   "${userhome}",
 "linuxuid":  "${linuxuid}",
+"publickey": "${publickey}",
 $(jsondebug)
 }
 JSON

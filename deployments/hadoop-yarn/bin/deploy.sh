@@ -139,14 +139,17 @@ EOF
 
 
 # -----------------------------------------------------
-# Configure our client container.
+# Install our integration tests.
 #[root@ansibler]
 
-    # TODO Add git to the client container.
-    # https://github.com/wfau/aglais/issues/734
-    dnf install -y git
-
     pip install git+https://github.com/wfau/aglais-testing@v0.2.3
+
+
+# -----------------------------------------------------
+# Display our deployment status.
+#[root@ansibler]
+
+    cat '/tmp/aglais-status.yml'
 
 
 

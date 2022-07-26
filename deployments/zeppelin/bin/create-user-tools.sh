@@ -83,6 +83,25 @@
             "
         }
 
+    #
+    # Check for a local file:// reference and try to resolve it.
+    resolvepublickey()
+        {
+        local publickey=${1:?'publickey required'}
+        if [[ "${publickey}" =~ ^file://.* ]]
+        then
+            local filename=${publickey##file://}
+            if [ -e "${filename}" ]
+            then
+                cat "${filename}"
+            else
+                echo "FAIL - unable to load [${filename}]"
+            fi
+        else
+            echo "${publickey}"
+        fi
+        }
+
     createlinuxuser()
         {
         local username=${1:?'username required'}
@@ -90,6 +109,11 @@
         local userhome=${3:?'userhome required'}
         local linuxuid=${4}
         local publickey=${5}
+        #
+        # Check for a local file:// reference and try tp resolve it.
+        publickey=$(
+            resolvepublickey "${publickey}"
+            )
         #
         # Call Zeppelin to create the Linux user account.
         # Returns JSON.

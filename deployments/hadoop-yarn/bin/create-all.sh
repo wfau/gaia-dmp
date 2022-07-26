@@ -48,8 +48,7 @@
 
     hostname="${3:-zeppelin.gaia-dmp.uk}"
 
-    configyml='/tmp/aglais-config.yml'
-    statusyml='/tmp/aglais-status.yml'
+    statusyml='/opt/aglais/aglais-status.yml'
     touch "${statusyml:?}"
 
     yq eval \
@@ -101,7 +100,6 @@
 #        "${treetop:?}/common/openstack/config/${cloudbase:?}.yml"
 
     echo "---- ---- ----"
-#   echo "Config yml [${configyml}]"
     echo "Cloud base [${cloudbase}]"
     echo "Cloud name [${cloudname}]"
     echo "Build name [${buildname}]"
@@ -112,14 +110,8 @@
     echo "Deploy date [${deploydate}]"
     echo "---- ---- ----"
 
-# -----------------------------------------------------
-# Link our Ansible vars filea.
 
-    ln -sf "${statusyml}" '/tmp/ansible-vars.yml'
-
-#   ln -sf "${treetop:?}/common/openstack/config/${cloudbase:?}.yml" '/tmp/openstack-vars.yml'
-
-# -----------------------------------------------------
+ -----------------------------------------------------
 # Delete any existing known hosts file..
 # Temp fix until we get a better solution.
 # https://github.com/wfau/aglais/issues/401

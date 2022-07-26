@@ -149,7 +149,7 @@ EOF
 # Display our deployment status.
 #[root@ansibler]
 
-    cat '/tmp/aglais-status.yml'
+    cat '/opt/aglais/aglais-status.yml'
 
 
 

@@ -166,14 +166,42 @@ else
     passmessage "updates public keys for [zepelin] and [${username}] (sed)"
 fi
 
+# If the user's home directory is empty.
+if [ $(ls -1 "${userhome}" | wc -l) -eq 0 ]
+then
+    # Install the skeleton files.
+    cp \
+       --recursive   \
+       --no-clobber  \
+         /etc/skel/. \
+         "${userhome}"
+    if [ $? -ne 0 ]
+    then
+        failmessage "Copying [/etc/skel] failed"
+    fi
+
+    # Fix ownership of the copied files.
+    chown "${username}:${username}" "${userhome}/*" 2> "${debugerrorfile}"
+    if [ $? -ne 0 ]
+    then
+        failmessage "chown [${userhome}/*] failed"
+    fi
+    # Fix permissions on the copied files.
+    chmod "u=rw,g=r,o=" "${userhome}/*" 2> "${debugerrorfile}"
+    if [ $? -ne 0 ]
+    then
+        failmessage "chmod [${userhome}/*] failed"
+    fi
+fi
+
 # Fix ownership of the user's home directory.
-chown -R "${username}:${username}" "${userhome}" 2> "${debugerrorfile}"
+chown "${username}:${username}" "${userhome}" 2> "${debugerrorfile}"
 if [ $? -ne 0 ]
 then
     failmessage "chown [${userhome}] failed"
 fi
 # Fix permissions on the user's home directory.
-chmod -R "u=rwx,g=rx,o=" "${userhome}" 2> "${debugerrorfile}"
+chmod "u=rwx,g=rx,o=" "${userhome}" 2> "${debugerrorfile}"
 if [ $? -ne 0 ]
 then
     failmessage "chmod [${userhome}] failed"

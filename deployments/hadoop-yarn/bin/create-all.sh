@@ -211,6 +211,23 @@
 
 
 # -----------------------------------------------------
+# Save our deployment status on the target.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        if [ ! -e '$(dirname ${statusyml})' ]
+        then
+            mkdir '$(dirname ${statusyml})'
+        fi
+        "
+
+    scp "${statusyml}" "zeppelin:${statusyml}"
+
+    touch "${statusyml}"
+
+
+# -----------------------------------------------------
 # Display our deployment status.
 #[root@ansibler]
 

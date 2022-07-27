@@ -184,6 +184,7 @@
 
 mountpath:  '${mountpath:?}'
 mountmode:  '${mountmode:?}'
+mounthosts: '${mounthosts:?}'
 
 cephname:   '${cephname:?}'
 cephnodes:  '${cephnodes:?}'

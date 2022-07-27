@@ -58,7 +58,6 @@
             --group \
             --owner \
             --stats \
-            --progress \
             --human-readable \
             --checksum \
             --recursive \

@@ -48,44 +48,47 @@
 
     hostname="${3:-zeppelin.gaia-dmp.uk}"
 
-    configyml='/tmp/aglais-config.yml'
-    statusyml='/tmp/aglais-status.yml'
-    touch "${statusyml:?}"
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    touch "${statusyml}"
 
     yq eval \
         --inplace \
         ".aglais.status.deployment.type = \"hadoop-yarn\"" \
-        "${statusyml:?}"
+        "${statusyml}"
 
     yq eval \
         --inplace \
         ".aglais.status.deployment.conf = \"${deployconf}\"" \
-        "${statusyml:?}"
+        "${statusyml}"
 
     yq eval \
         --inplace \
         ".aglais.status.deployment.name = \"${deployname}\"" \
-        "${statusyml:?}"
+        "${statusyml}"
 
     yq eval \
         --inplace \
         ".aglais.status.deployment.date = \"${deploydate}\"" \
-        "${statusyml:?}"
+        "${statusyml}"
 
     yq eval \
         --inplace \
         ".aglais.status.deployment.hostname = \"${hostname}\"" \
-        "${statusyml:?}"
+        "${statusyml}"
 
     yq eval \
         --inplace \
         ".aglais.spec.openstack.cloud.base = \"${cloudbase}\"" \
-        "${statusyml:?}"
+        "${statusyml}"
 
     yq eval \
         --inplace \
         ".aglais.spec.openstack.cloud.name = \"${cloudname}\"" \
-        "${statusyml:?}"
+        "${statusyml}"
 
 #rm '/usr/bin/yq'
 #wget -O '/usr/bin/yq' 'https://github.com/mikefarah/yq/releases/download/v4.16.2/yq_linux_amd64'
@@ -93,15 +96,14 @@
 #
 #    cloudconfig="${treetop:?}/common/openstack/config/${cloudbase:?}.yml"  yq eval \
 #        ".aglais.spec.openstack.cloud.config |= load(strenv(cloudconfig))" \
-#        "${statusyml:?}"
+#        "${statusyml}"
 #
 #    yq eval-all \
 #        "" \
-#        "${statusyml:?}" \
+#        "${statusyml}" \
 #        "${treetop:?}/common/openstack/config/${cloudbase:?}.yml"
 
     echo "---- ---- ----"
-#   echo "Config yml [${configyml}]"
     echo "Cloud base [${cloudbase}]"
     echo "Cloud name [${cloudname}]"
     echo "Build name [${buildname}]"
@@ -112,12 +114,6 @@
     echo "Deploy date [${deploydate}]"
     echo "---- ---- ----"
 
-# -----------------------------------------------------
-# Link our Ansible vars filea.
-
-    ln -sf "${statusyml}" '/tmp/ansible-vars.yml'
-
-#   ln -sf "${treetop:?}/common/openstack/config/${cloudbase:?}.yml" '/tmp/openstack-vars.yml'
 
 # -----------------------------------------------------
 # Delete any existing known hosts file..
@@ -212,6 +208,24 @@
 # Restart the Zeppelin service.
 
     "${treetop:?}/hadoop-yarn/bin/restart-zeppelin.sh"
+
+
+# -----------------------------------------------------
+# Save our deployment status on the target.
+#[root@ansibler]
+
+    scp "${statusyml}" "zeppelin:/tmp/aglais-status.yml"
+
+    destpath=$(dirname ${statusyml})
+    ssh zeppelin \
+        "
+        if [ ! -e '${destpath}' ]
+        then
+            echo 'making [${destpath}]'
+            sudo mkdir '${destpath})'
+        fi
+        sudo mv /tmp/aglais-status.yml '${destpath}'
+        "
 
 
 # -----------------------------------------------------

@@ -28,6 +28,7 @@
     datacloud='iris-gaia-data'
 
     homesize=1
+    testsize=1
     usersize=10
 
     # Get a secret.
@@ -83,6 +84,25 @@
             "
         }
 
+    #
+    # Check for a local file:// reference and try to resolve it.
+    resolvepublickey()
+        {
+        local publickey=${1:?'publickey required'}
+        if [[ "${publickey}" =~ ^file://.* ]]
+        then
+            local filename=${publickey##file://}
+            if [ -e "${filename}" ]
+            then
+                cat "${filename}"
+            else
+                echo "FAIL - unable to load [${filename}]"
+            fi
+        else
+            echo "${publickey}"
+        fi
+        }
+
     createlinuxuser()
         {
         local username=${1:?'username required'}
@@ -90,6 +110,11 @@
         local userhome=${3:?'userhome required'}
         local linuxuid=${4}
         local publickey=${5}
+        #
+        # Check for a local file:// reference and try tp resolve it.
+        publickey=$(
+            resolvepublickey "${publickey}"
+            )
         #
         # Call Zeppelin to create the Linux user account.
         # Returns JSON.
@@ -162,29 +187,39 @@
         local usersharename=${10}
         local usersharecloud=${11}
 
-        local typesharecloud
-        if [ "${usertype}" == 'live' ]
-        then
-            typesharecloud=${datacloud}
-        else
-            typesharecloud=${cloudname}
-        fi
-
         local homesharepath="/home/${username}"
+        local usersharepath="/user/${username}"
+
+        local homesharesize=${homesize}
+        local usersharesize=${usersize}
+
+        if [ "${usertype}" == 'test' ]
+        then
+            usersharesize=${testsize}
+        fi
 
         if [ -z "${homesharecloud}" ]
         then
-            homesharecloud="${typesharecloud}"
+            if [ "${usertype}" == 'live' ]
+            then
+                homesharecloud=${datacloud}
+            else
+                homesharecloud=${cloudname}
+            fi
         fi
         if [ -z "${homesharename}" ]
         then
             homesharename="${homesharecloud}-home-${username}"
         fi
 
-        local usersharepath="/user/${username}"
         if [ -z "${usersharecloud}" ]
         then
-            usersharecloud="${typesharecloud}"
+            if [ "${usertype}" == 'live' ]
+            then
+                usersharecloud=${datacloud}
+            else
+                usersharecloud=${cloudname}
+            fi
         fi
         if [ -z "${usersharename}" ]
         then
@@ -200,7 +235,7 @@ echo "\"homeshare\": "
             "${homesharename}"  \
             "${homesharepath}"  \
             "zeppelin" \
-            "${homesize}" \
+            "${homesharesize}" \
             "rw"
 
 echo ","
@@ -210,7 +245,7 @@ echo "\"usershare\": "
             "${usersharename}"  \
             "${usersharepath}"  \
             "zeppelin:workers" \
-            "${usersize}" \
+            "${usersharesize}" \
             "rw"
 
 echo ","
@@ -434,11 +469,13 @@ echo "}"
                 username: .username,
                 usershare: {
                     name:   .usershare.name,
+                    size:   .usershare.openstack.size,
                     cloud:  .usershare.cloud,
                     status: .usershare.status
                     },
                 homeshare: {
                     name:   .homeshare.name,
+                    size:   .homeshare.openstack.size,
                     cloud:  .homeshare.cloud,
                     status: .homeshare.status
                     }

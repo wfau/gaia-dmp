@@ -166,14 +166,38 @@ else
     passmessage "updates public keys for [zepelin] and [${username}] (sed)"
 fi
 
+# If the user's home directory is empty.
+if [ $(ls -a -1 "${userhome}" | wc -l) -eq 2 ]
+then
+    # Install the skeleton files.
+    cp \
+       --recursive   \
+       --no-clobber  \
+       --preserve    \
+         /etc/skel/. \
+         "${userhome}"
+    if [ $? -eq 0 ]
+    then
+        passmessage "Copying [/etc/skel] done"
+    else
+        failmessage "Copying [/etc/skel] failed"
+    fi
+    # Fix ownership of the copied files.
+    chown -R "${username}:${username}" "${userhome}" 2> "${debugerrorfile}"
+    if [ $? -ne 0 ]
+    then
+        failmessage "chown [${userhome}] failed"
+    fi
+fi
+
 # Fix ownership of the user's home directory.
-chown -R "${username}:${username}" "${userhome}" 2> "${debugerrorfile}"
+chown "${username}:${username}" "${userhome}" 2> "${debugerrorfile}"
 if [ $? -ne 0 ]
 then
     failmessage "chown [${userhome}] failed"
 fi
 # Fix permissions on the user's home directory.
-chmod -R "u=rwx,g=rx,o=" "${userhome}" 2> "${debugerrorfile}"
+chmod "u=rwx,g=rx,o=" "${userhome}" 2> "${debugerrorfile}"
 if [ $? -ne 0 ]
 then
     failmessage "chmod [${userhome}] failed"
@@ -199,7 +223,8 @@ cat << JSON
 "type": "${usertype}",
 "homedir":   "${userhome}",
 "linuxuid":  "${linuxuid}",
-"publickey": "${publickey}",
+"publickey":  $(jq --null-input --arg publickey "${publickey}" '$publickey'),
+"pkeyhash":  "$(md5sum - <<< ${publickey} | sed 's/^\([^ ]*\).*/\1/')"
 $(jsondebug)
 }
 JSON

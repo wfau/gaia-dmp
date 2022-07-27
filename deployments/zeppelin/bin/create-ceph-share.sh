@@ -24,8 +24,17 @@
 srcfile="$(basename ${0})"
 srcpath="$(dirname $(readlink -f ${0}))"
 
+# Include our general settings.
+# source "/deployments/zeppelin/bin/settings.sh"
+
 # Include our JSON formatting tools.
 source "/deployments/aglais/bin/json-tools.sh"
+
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+source /deployments/openstack/bin/settings.sh
+
+statusyml="/opt/aglais/aglais-status.yml"
 
 sharecloud=${1}
 sharename=${2}
@@ -34,10 +43,6 @@ mounthosts=${4}
 sharesize=${5}
 mountmode=${6}
 publicshare=${7}
-
-# Set the Manila API version.
-# https://stackoverflow.com/a/58806536
-source /deployments/openstack/bin/settings.sh
 
 sharetype=ceph01_cephfs
 sharezone=nova
@@ -290,9 +295,8 @@ cephpath:   '${cephpath}'
 cephkey:    '${cephkey}'
 EOF
 
-                    statusyml="/tmp/aglais-status.yml"
                     deployconf=$(
-                        yq '.aglais.status.deployment.conf' "${statusyml}" \
+                        yq '.aglais.status.deployment.conf' "${statusyml:?}" \
                         2> "${debugerrorfile}"
                         )
                     retcode=$?

@@ -115,7 +115,7 @@
     echo "---- ---- ----"
 
 
- -----------------------------------------------------
+# -----------------------------------------------------
 # Delete any existing known hosts file..
 # Temp fix until we get a better solution.
 # https://github.com/wfau/aglais/issues/401
@@ -214,17 +214,18 @@
 # Save our deployment status on the target.
 #[root@ansibler]
 
+    scp "${statusyml}" "zeppelin:/tmp/aglais-status.yml"
+
+    destpath=$(dirname ${statusyml})
     ssh zeppelin \
         "
-        if [ ! -e '$(dirname ${statusyml})' ]
+        if [ ! -e '${destpath}' ]
         then
-            mkdir '$(dirname ${statusyml})'
+            echo 'making [${destpath}]'
+            sudo mkdir '${destpath})'
         fi
+        sudo mv /tmp/aglais-status.yml '${destpath}'
         "
-
-    scp "${statusyml}" "zeppelin:${statusyml}"
-
-    touch "${statusyml}"
 
 
 # -----------------------------------------------------

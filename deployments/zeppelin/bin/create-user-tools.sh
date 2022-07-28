@@ -112,9 +112,12 @@
         local publickey=${5}
         #
         # Check for a local file:// reference and try tp resolve it.
-        publickey=$(
-            resolvepublickey "${publickey}"
-            )
+        if [ -n "${publickey}" ]
+        then
+            publickey=$(
+                resolvepublickey "${publickey}"
+                )
+        fi
         #
         # Call Zeppelin to create the Linux user account.
         # Returns JSON.
@@ -424,7 +427,7 @@ echo "}"
                 username:  .username,
                 homedir:   .linuxuser.homedir,
                 linuxuid:  .linuxuser.linuxuid,
-                publickey: .linuxuser.publickey
+                pkeyhash:  .linuxuser.pkeyhash
                 }
             ]' "${jsonfile}"
         }
@@ -482,6 +485,20 @@ echo "}"
                 }
             ]' "${jsonfile}"
         }
+
+    #
+    # List the notebook clone information.
+    list-note-clone()
+        {
+        local jsonfile=${1:-'input JSON filename required'}
+        jq '[
+            .users[] | {
+                username:  .username,
+                notebooks: .notebooks.debug.messages
+                }
+            ]' "${jsonfile}"
+        }
+
 
     #
     # Import our live users

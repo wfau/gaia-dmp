@@ -1,0 +1,118 @@
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+
+# ------------------------------------    
+# Setup connection to existing deploy
+
+agcolour=green
+
+# -----------------------------------------------------
+# Download our deployment status.
+#[root@ansibler]
+
+    mkdir -p /opt/aglais
+
+    scp "${agcolour}.aglais.uk:/opt/aglais/aglais-status.yml" \
+        /opt/aglais/aglais-status.yml
+
+
+# -----------------------------------------------------
+# Extract the cloud and configuration name.
+#[root@ansibler]
+
+    configname=$(
+        yq '.aglais.status.deployment.conf' /opt/aglais/aglais-status.yml
+        )
+
+    cloudname=$(
+        yq '.aglais.spec.openstack.cloud.name' /opt/aglais/aglais-status.yml
+        )
+
+
+# -----------------------------------------------------
+# Configure our Ansible client.
+#[root@ansibler]
+
+    inventory="/deployments/hadoop-yarn/ansible/config/${configname:?}.yml"
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "${inventory:?}" \
+            '05-config-ssh.yml'
+
+    popd
+
+
+# -----------------------------------------------------
+# Copy certificates from data server
+#[root@ansibler]
+
+    scp -r fedora@data.aglais.uk:/home/fedora/certs/ /root/
+    
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    cloudname=$(
+        yq eval \
+            '.aglais.spec.openstack.cloud.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            '/tmp/aglais-status.yml'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r ".addresses | .\"${deployname}-internal-network\" | .[1]"
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+
+> Zeppelin IP [128.232.227.224]
+
+
+
+# --------------------------------------------
+# Update the dns entry with new IP
+# dmp.gaia.ac.uk -> 128.232.227.224
+
+ducktoken=..
+duckname=aglais-live
+zeppelinip=128.232.227.224
+curl "https://www.duckdns.org/update/${duckname:?}/${ducktoken:?}/${zeppelinip:?}"
+
+
+# -----------------------------------------------------
+# Enable HTTPS
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/setup-ssl.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/setup-ssl.log
+
+        > Done
+
+

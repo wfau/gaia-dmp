@@ -224,7 +224,7 @@ cat << JSON
 "homedir":   "${userhome}",
 "linuxuid":  "${linuxuid}",
 "publickey":  $(jq --null-input --arg publickey "${publickey}" '$publickey'),
-"pkeyhash":  "$(md5sum - <<< ${publickey} | sed 's/^\([^ ]*\).*/\1/')"
+"pkeyhash":  "$(md5sum - <<< ${publickey} | sed 's/^\([^ ]*\).*/\1/')",
 $(jsondebug)
 }
 JSON

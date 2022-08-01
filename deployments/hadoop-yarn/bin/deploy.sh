@@ -61,8 +61,22 @@
             --human-readable \
             --checksum \
             --recursive \
-            "${sshuser:?}@${sshhost:?}:/var/local/backups/notebooks/latest/" \
+            --exclude "~Trash" \
+            "${sshuser:?}@${sshhost:?}:/var/local/backups/notebooks/latest/notebook/" \
             "/home/fedora/zeppelin/notebook"
+
+        rsync \
+            --perms \
+            --times \
+            --group \
+            --owner \
+            --stats \
+            --human-readable \
+            --checksum \
+            --recursive \
+            "${sshuser:?}@${sshhost:?}:/var/local/backups/notebooks/latest/notebook-authorization.json" \
+            "/home/fedora/zeppelin/conf/notebook-authorization.json"
+
         '
 
 

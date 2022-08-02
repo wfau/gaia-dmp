@@ -28,10 +28,13 @@
     - config/ansible.yml
     - config/zeppelin.yml
     - /opt/aglais/aglais-status.yml
-
+  vars:
+    zepkeytype: "rsa"
+    zepkeyname: "id_{{zepkeytype}}"
+    zeppubkeyfile: "/etc/ssh/zeppelin-{{zepkeytype}}.pub"
   tasks:
 
-    - name: "Create the Zeppelin user's SSH directory"
+    - name: "Create Zeppelin's SSH directory"
       become: true
       ansible.builtin.file:
         path:  "{{zepuserhome}}/.ssh"
@@ -41,44 +44,56 @@
         mode:  'u=rwx,g=,o='
 
     # https://docs.ansible.com/ansible/latest/collections/community/crypto/openssh_keypair_module.html
-    - name: "Generate the Zeppelin user's SSH keypair"
+    - name: "Generate Zeppelin's SSH keypair"
       become: true
       community.crypto.openssh_keypair:
         path:  "{{zepuserhome}}/.ssh/{{zepkeyname}}"
         owner: "{{zepuser}}"
         group: "{{zepuser}}"
 
-    - name: "Create our public keys directory [{{aghome}}/ssh]"
-      become: true
-      ansible.builtin.file:
-        path:  "{{aghome}}/ssh"
-        owner: 'root'
-        group: 'root'
-        state: directory
-        mode:  'u=rwx,g=rwx,o=rx'
+#   - name: "Create our public keys directory [{{zeppubkeypath}}]"
+#     become: true
+#     ansible.builtin.file:
+#       path:  "{{zeppubkeypath}}"
+#       owner: 'root'
+#       group: 'root'
+#       state: directory
+#       mode:  'u=rwx,g=rwx,o=rx'
 
-    - name: "Publish the Zeppelin user's public key"
+    - name: "Save Zeppelin's public key as [{{zeppubkeyfile}}]"
       become: true
       ansible.builtin.copy:
         remote_src: true
         src:   "{{zepuserhome}}/.ssh/{{zepkeyname}}.pub"
-        dest:  "{{zeppubkeypath}}"
+        dest:  "{{zeppubkeyfile}}"
         owner: 'root'
         group: 'root'
-        mode:  'a=r'
+        mode:  'u=r,g=r,o=r'
 
-    - name: "Add the Zeppelin's public key to Zeppelin's authorized_keys"
+    # https://serverfault.com/questions/434896/ssh-one-authorized-keys-for-multiple-service-accounts
+    # https://serverfault.com/a/1021416
+    - name: "Add Zeppelin's public key to the global [AuthorizedKeysFile] list"
       become: true
-      ansible.builtin.shell: |
-        cat "{{zepuserhome}}/.ssh/{{zepkeyname}}.pub" \
-        >>  "{{zepuserhome}}/.ssh/authorized_keys"
+      ansible.builtin.replace:
+        path: "/etc/ssh/sshd_config"
+        regexp:  "^(AuthorizedKeysFile).*$"
+        replace: "\\1 .ssh/authorized_keys {{zeppubkeyfile}}"
+        owner: root
+        group: root
+        mode: 'u=rw,g=,o='
 
-    - name: "Add the localhost public keys to known_hosts"
+#   - name: "Add the Zeppelin's public key to Zeppelin's authorized_keys"
+#     become: true
+#     ansible.builtin.shell: |
+#       cat "{{zepuserhome}}/.ssh/{{zepkeyname}}.pub" \
+#       >>  "{{zepuserhome}}/.ssh/authorized_keys"
+
+    - name: "Add a fingerprint for [localhost] to known_hosts"
       become: true
       ansible.builtin.shell: |
         ssh-keyscan 'localhost' >> "{{zepuserhome}}/.ssh//known_hosts"
 
-    - name: "Add a localhost config entry"
+    - name: "Add a [localhost] config entry"
       ansible.builtin.blockinfile:
         path: "{{zepuserhome}}/.ssh/config"
         create: true
@@ -87,7 +102,7 @@
               IdentityFile ~/.ssh/{{zepkeyname}}
               IdentitiesOnly yes
 
-    - name: "Set permissions and ownership"
+    - name: "Set permissions and ownership on Zeppelin's [.ssh] directory"
       become: true
       ansible.builtin.file:
         recurse: true
@@ -96,4 +111,11 @@
         group: "{{zepuser}}"
         state: directory
         mode:  'u=rwX,g=,o='
+
+    - name: "Reload the [sshd] service"
+      become: true
+      ansible.builtin.systemd:
+        name: sshd.service
+        state: reloaded
+
 

@@ -418,6 +418,16 @@ echo "}"
 
 
     #
+    # List the username.
+    list-usernames()
+        {
+        local jsonfile=${1:-'input JSON filename required'}
+        jq -r '
+            .users[] |  .username
+            ' "${jsonfile}"
+        }
+
+    #
     # List the Linux account information.
     list-linux-info()
         {

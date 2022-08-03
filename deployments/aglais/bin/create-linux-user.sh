@@ -37,9 +37,6 @@ minuid=20000
 maxuid=60000
 
 # TODO Move these to an Ansible managed config file.
-sshkeyname=id_rsa
-sshkeytype=rsa
-zepkeypath=/opt/aglais/ssh/fedora-rsa.pub
 zepusergroup=zeppelinusers
 
 # Check we are root
@@ -112,21 +109,13 @@ else
     fi
 fi
 
-#   # Generate our local ssh key pair.
-#   # Not sure what this is used for ....
-#   ssh-keygen \
-#       -t "${sshkeytype}" \
-#       -N '' \
-#       -f "${userhome}/.ssh/${sshkeyname}" \
-#   > /dev/null 2>&1
-
 # Create the user's authorized_keys file.
 if [ ! -e "${userhome}/.ssh/authorized_keys" ]
 then
     touch "${userhome}/.ssh/authorized_keys"
 fi
 
-# Add public keys for zeppelin and the user.
+# Add the user's public key.
 headmark="# BEGIN GaiaDMp managed keys"
 tailmark="# END GaiaDMp managed keys"
 
@@ -136,9 +125,6 @@ tempfile=$(mktemp)
 
 cat > "${tempfile}" << EOF
 # Do not edit this section
-
-# Public key for Zeppelin
-$(cat "${zepkeypath}")
 
 # Public key for ${username}
 ${publickey}
@@ -150,7 +136,7 @@ then
     echo "${headmark}" >> "${authorized}"
     cat  "${tempfile}" >> "${authorized}"
     echo "${tailmark}" >> "${authorized}"
-    passmessage "added public keys for [zepelin] and [${username}] (new)"
+    passmessage "added public key for [${username}] (new)"
 else
     sed -i "
         /${headmark}/,/${tailmark}/ {
@@ -163,7 +149,7 @@ else
             r ${tempfile}
             }
         " ${authorized}
-    passmessage "updates public keys for [zepelin] and [${username}] (sed)"
+    passmessage "updated public keys for [${username}] (sed)"
 fi
 
 # If the user's home directory is empty.

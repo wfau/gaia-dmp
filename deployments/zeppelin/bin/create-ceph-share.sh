@@ -42,10 +42,10 @@ mountpath=${3}
 mounthosts=${4}
 sharesize=${5}
 mountmode=${6}
-publicshare=${7}
 
 sharetype=ceph01_cephfs
 sharezone=nova
+sharepublic=False
 shareprotocol=CEPHFS
 shareaccesstype=cephx
 
@@ -118,7 +118,7 @@ then
         share create \
             --format json \
             --name "${sharename}" \
-            --public "${publicshare}" \
+            --public "${sharepublic}" \
             --share-type "${sharetype}" \
             --availability-zone "${sharezone}" \
             "${shareprotocol}" \

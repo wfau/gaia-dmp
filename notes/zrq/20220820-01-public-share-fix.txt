@@ -1,0 +1,665 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Fix an issue with public Manila shares.
+        Basically, we don't need to make any of them public.
+
+        Live is blue, so using green for testing.
+        Test the changes with shares for DMorris and SVoutsinas
+
+    Result:
+
+        Success.
+        Shares are still accesible even though they are not public.
+
+        The public flag only controls access from Openstack.
+        Which projects can see the access details for a share.
+        Once you have the access details for a share, anyone can mount it.
+
+
+# -----------------------------------------------------
+# Create a new branch to work on.
+#[user@desktop]
+
+    branchname=public-share-fix
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        oldbranch=$(git branch --show-current)
+        newbranch=$(date '+%Y%m%d')-zrq-${branchname:?}
+
+        git checkout -b "${newbranch:?}"
+
+        git push --set-upstream 'origin' "$(git branch --show-current)"
+
+    popd
+
+    >   Total 0 (delta 0), reused 0 (delta 0), pack-reused 0
+    >   ....
+    >   ....
+    >   To github.com:Zarquan/aglais.git
+    >    * [new branch]      20220820-zrq-public-share-fix -> 20220820-zrq-public-share-fix
+    >   branch '20220820-zrq-public-share-fix' set up to track 'origin/20220820-zrq-public-share-fix'.
+
+
+# -----------------------------------------------------
+# Edit the deployment code to remove the public flag for future shares.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit deployments/zeppelin/bin/create-ceph-share.sh &
+
+	    gedit deployments/zeppelin/bin/create-user-tools.sh &
+
+        git add .
+
+        git commit -m "Making all shares private"
+
+    popd
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check which cloud is live.
+#[user@desktop]
+
+    ssh fedora@live.aglais.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Fri 19 Aug 15:18:21 UTC 2022
+    >   iris-gaia-blue-20220803-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Starting a new pattern for creating the client container.
+    # Working towards a launch-script.
+    # https://github.com/wfau/aglais/issues/894
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=green
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+    configname=zeppelin-26.43-spark-3.26.43
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-26.43-spark-3.26.43
+    >         name: iris-gaia-green-20220819
+    >         date: 20220819T153715
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+
+    >   real    29m13.417s
+    >   user    9m14.732s
+    >   sys     1m48.469s
+
+
+# -----------------------------------------------------
+# List our existing shares.
+#[root@ansibler]
+
+    # Set the Manila API version.
+    # https://stackoverflow.com/a/58806536
+    source /deployments/openstack/bin/settings.sh
+
+    sharecloud=iris-gaia-data
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share list
+
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                                       |  Size | Share Proto | Status    | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | 1e1ed68a-e5fe-47a3-a663-7096231a9324 | aglais-data-gaia-dr2-6514                  |   512 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | c3c83cf6-5897-4194-b150-a29e83022a13 | aglais-data-gaia-dr3-2048                  |  4196 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 46bf20e9-b109-4427-bca8-df210c640cf5 | aglais-data-gaia-dr3-mcmc-samples-gsp-phot |  3072 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 5b1ff330-22f6-4bc7-bc03-529a55726c72 | aglais-data-gaia-edr3-11932                |   540 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 298ad303-9d81-4540-b4f0-d099ade46be2 | aglais-data-gaia-edr3-2048                 |  1024 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 8ff99245-70fe-4c44-9c61-4979c10e7d06 | aglais-data-gaia-edr3-4096                 |  1024 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 2ec7b3d6-8d70-44a0-9424-9d869f18c0f0 | aglais-data-gaia-edr3-8192                 |  1024 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | d07a403d-12aa-4b72-9a2e-9136d29721fb | aglais-data-panstarrs-ps1                  |   300 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 9faa8e39-ba47-474f-8abd-d6303fb9436e | aglais-data-twomass-allsky                 |    40 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 417fb77f-5659-46e3-a074-7c1d7c18a0fe | aglais-data-wise-allwise                   |   350 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 79574044-f43f-4992-b953-365fabd4b142 | aglais-tools                               |  1024 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | e3ad95b3-6d7e-484b-8cbc-2e3e521683bf | aglais-user-dcr                            |  1024 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 2f6ef970-27d1-47a1-b7a5-3ac7a9027f21 | aglais-user-nch                            | 50000 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | e4a87621-2e57-4a38-a7fb-283d0731572e | aglais-user-stv                            |  1024 | CEPHFS      | extending | True      | ceph01_cephfs   |      | nova              |
+    >   | 493b34ad-cbec-42ca-9308-36bc09b79528 | aglais-user-zrq                            |  1025 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | a164112f-9266-455d-9e69-e15122fddff1 | iris-gaia-data-home-AZijlstra              |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 22dff9b5-2d91-44c1-a8e5-e3521692862c | iris-gaia-data-home-DCrake                 |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 55b28681-5efe-4c40-90a0-d3e408632fb7 | iris-gaia-data-home-DMorris                |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | d07c3a2a-2746-439b-a6e8-2319171267f7 | iris-gaia-data-home-FLykou                 |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 328f044e-8337-4e24-baf1-92bc68dfefd0 | iris-gaia-data-home-GHughes                |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 6f5d4977-283a-4fc7-8cc0-9ab748e5a8a9 | iris-gaia-data-home-JSwinbank              |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | fd4269af-ddeb-4083-ba4e-a0d779a98ec2 | iris-gaia-data-home-MSemczuk               |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 38cc5c54-7bd5-4322-9fdd-95ae3a9212af | iris-gaia-data-home-NHambly                |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 095c3fec-c59e-4b31-a8ed-7a2e49f0a5ae | iris-gaia-data-home-SBertocco              |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 48032a45-81ac-419e-b210-9cf8cf779098 | iris-gaia-data-home-SGoughKelly            |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 300e8348-a1bb-4cce-8037-7a086923ec14 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 4e83129b-14b3-4cc0-8041-597e92f02539 | iris-gaia-data-home-dcr                    |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | de71385d-9f5f-49c4-ba52-6936b3fafb5b | iris-gaia-data-home-nch                    |     1 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | c9d0f4b0-cebc-49bf-8db5-29873e7fe1e9 | iris-gaia-data-user-AZijlstra              |    10 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 06c470da-de88-471b-b80f-b51a4adf6abc | iris-gaia-data-user-FLykou                 |    10 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 345f1351-ac26-420b-ba77-52bf7a637221 | iris-gaia-data-user-GHughes                |    10 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | a3b14320-9aed-4022-8db6-b041b203ad8f | iris-gaia-data-user-JSwinbank              |    10 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | 3e797f3f-ef02-468a-b28b-a1a38f8dedc8 | iris-gaia-data-user-MSemczuk               |    10 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | a87ea475-1fb6-464f-b7d1-422b60bda579 | iris-gaia-data-user-SBertocco              |    10 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   | c029a675-80b7-4866-9cbb-8d39595b98c2 | iris-gaia-data-user-SGoughKelly            |    10 | CEPHFS      | available | True      | ceph01_cephfs   |      | nova              |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+
+    #
+    # Science data.
+
+        aglais-data-gaia-dr2-6514
+        aglais-data-gaia-dr3-2048
+        aglais-data-gaia-dr3-mcmc-samples-gsp-phot
+        aglais-data-gaia-edr3-11932
+        aglais-data-gaia-edr3-2048
+        aglais-data-gaia-edr3-4096
+        aglais-data-gaia-edr3-8192
+        aglais-data-panstarrs-ps1
+        aglais-data-twomass-allsky
+        aglais-data-wise-allwise
+
+    #
+    # Live users' homes.
+
+        iris-gaia-data-home-AZijlstra
+        iris-gaia-data-home-DCrake
+        iris-gaia-data-home-DMorris
+        iris-gaia-data-home-FLykou
+        iris-gaia-data-home-GHughes
+        iris-gaia-data-home-JSwinbank
+        iris-gaia-data-home-MSemczuk
+        iris-gaia-data-home-NHambly
+        iris-gaia-data-home-SBertocco
+        iris-gaia-data-home-SGoughKelly
+        iris-gaia-data-home-SVoutsinas
+
+    #
+    # Live users' data.
+
+        iris-gaia-data-user-AZijlstra
+        iris-gaia-data-user-FLykou
+        iris-gaia-data-user-GHughes
+        iris-gaia-data-user-JSwinbank
+        iris-gaia-data-user-MSemczuk
+        iris-gaia-data-user-SBertocco
+        iris-gaia-data-user-SGoughKelly
+
+    #
+    # Unused - we can free this now.
+
+        aglais-tools
+
+    #
+    # Rename users' data.
+
+        aglais-user-dcr
+        aglais-user-nch
+        aglais-user-stv
+        aglais-user-zrq
+
+    #
+    # Copy users' home files.
+
+        iris-gaia-data-home-dcr
+        iris-gaia-data-home-nch
+
+
+# -----------------------------------------------------
+# Rename two of our data shares and make them private.
+#[root@ansibler]
+
+    oldname=aglais-user-zrq
+    newname=iris-gaia-data-user-DMorris
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share set \
+            --name "${newname:?}" \
+            --public False \
+            "${oldname}"
+
+    >   ....
+    >   ....
+
+
+    oldname=aglais-user-stv
+    newname=iris-gaia-data-user-SVoutsinas
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share set \
+            --name "${newname:?}" \
+            --public False \
+            "${oldname}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Update four of our home shares to make them private.
+#[root@ansibler]
+
+    sharenames=(
+        iris-gaia-data-home-DCrake
+        iris-gaia-data-home-DMorris
+        iris-gaia-data-home-NHambly
+        iris-gaia-data-home-SVoutsinas
+        )
+
+    for sharename in "${sharenames[@]}"
+    do
+        echo ""
+        echo "Share [${sharename}]"
+
+        openstack \
+            --os-cloud "${sharecloud:?}" \
+            share set \
+                --public False \
+                "${sharename}"
+    done
+
+
+# -----------------------------------------------------
+# List our updated shares.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share list
+
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                                       |  Size | Share Proto | Status    | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ....                                 | ....                                       |    .. | ....        | ....      | ..        | ....            |      | ..                |
+    >   | 22dff9b5-2d91-44c1-a8e5-e3521692862c | iris-gaia-data-home-DCrake                 |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 55b28681-5efe-4c40-90a0-d3e408632fb7 | iris-gaia-data-home-DMorris                |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ....                                 | ....                                       |    .. | ....        | ....      | ..        | ....            |      | ..                |
+    >   | 38cc5c54-7bd5-4322-9fdd-95ae3a9212af | iris-gaia-data-home-NHambly                |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ....                                 | ....                                       |    .. | ....        | ....      | ..        | ....            |      | ..                |
+    >   | 300e8348-a1bb-4cce-8037-7a086923ec14 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ....                                 | ....                                       |    .. | ....        | ....      | ..        | ....            |      | ..                |
+    >   | 493b34ad-cbec-42ca-9308-36bc09b79528 | iris-gaia-data-user-DMorris                |  1025 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ....                                 | ....                                       |    .. | ....        | ....      | ..        | ....            |      | ..                |
+    >   | e4a87621-2e57-4a38-a7fb-283d0731572e | iris-gaia-data-user-SVoutsinas             |  1024 | CEPHFS      | extending | False     | ceph01_cephfs   |      | nova              |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-26.43-spark-3.26.43
+    >         name: iris-gaia-green-20220820
+    >         date: 20220820T003307
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+
+    >   real    32m52.502s
+    >   user    11m53.443s
+    >   sys     2m45.589s
+
+
+# -----------------------------------------------------
+# Import our test users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-test-users
+
+    >   ....
+    >   ....
+
+
+    list-linux-info \
+        /tmp/test-users.json
+
+    >   [
+    >     {
+    >       "username": "Reyesfan",
+    >       "homedir": "/home/Reyesfan",
+    >       "linuxuid": "20001",
+    >       "pkeyhash": "6e46966e088b3b966a65779686c71800"
+    >     },
+    >     {
+    >       "username": "Evison",
+    >       "homedir": "/home/Evison",
+    >       "linuxuid": "20002",
+    >       "pkeyhash": "6e46966e088b3b966a65779686c71800"
+    >     }
+    >   ]
+
+
+    list-ceph-info \
+        /tmp/test-users.json
+
+    >   [
+    >     {
+    >       "username": "Reyesfan",
+    >       "usershare": {
+    >         "name": "iris-gaia-green-user-Reyesfan",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-green",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-green-home-Reyesfan",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-green",
+    >         "status": "available"
+    >       }
+    >     },
+    >     {
+    >       "username": "Evison",
+    >       "usershare": {
+    >         "name": "iris-gaia-green-user-Evison",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-green",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-green-home-Evison",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-green",
+    >         "status": "available"
+    >       }
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# List the cloud shares.
+#[root@ansibler]
+
+    # Set the Manila API version.
+    # https://stackoverflow.com/a/58806536
+    source /deployments/openstack/bin/settings.sh
+
+    sharecloud=${cloudname:?}
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share list
+
+    >   +--------------------------------------+-------------------------------+------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                          | Size | Share Proto | Status    | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+-------------------------------+------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | 1f9c78ed-9c23-4fbc-872a-8a499b26c22d | iris-gaia-green-home-Evison   |    1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | eae3f6b5-8e35-497a-bd9b-720f788268f5 | iris-gaia-green-home-Reyesfan |    1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 54a93c41-7248-495a-83ae-5188f9893ee5 | iris-gaia-green-user-Evison   |    1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 1f4f787f-981f-4112-ad85-1105b3444134 | iris-gaia-green-user-Reyesfan |    1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   +--------------------------------------+-------------------------------+------+-------------+-----------+-----------+-----------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# Import our live users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users
+
+    >   ....
+    >   ....
+
+
+    list-linux-info \
+        /tmp/live-users.json
+
+    >   [
+    >     ....
+    >     ....
+    >     {
+    >       "username": "SVoutsinas",
+    >       "homedir": "/home/SVoutsinas",
+    >       "linuxuid": "10003",
+    >       "pkeyhash": "2b8cf5d662453b38de9c345cb5faef8f"
+    >     },
+    >     {
+    >       "username": "DMorris",
+    >       "homedir": "/home/DMorris",
+    >       "linuxuid": "10004",
+    >       "pkeyhash": "7763ae76c0d07f278465ad0a2162a492"
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+    list-ceph-info \
+        /tmp/live-users.json
+
+    >   [
+    >     ....
+    >     ....
+    >     {
+    >       "username": "SVoutsinas",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-SVoutsinas",
+    >         "size": 1024,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "extending"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-SVoutsinas",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     {
+    >       "username": "DMorris",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-DMorris",
+    >         "size": 1025,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-DMorris",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+# -----------------------------------------------------
+# List the live user shares.
+#[root@ansibler]
+
+    # Set the Manila API version.
+    # https://stackoverflow.com/a/58806536
+    source /deployments/openstack/bin/settings.sh
+
+    sharecloud=iris-gaia-data
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share list
+
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                                       |  Size | Share Proto | Status    | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ....                                 | ....                                       |    .. | ....        | ....      | ..        | ....            |      | ..                |
+    >   | 55b28681-5efe-4c40-90a0-d3e408632fb7 | iris-gaia-data-home-DMorris                |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ....                                 | ....                                       |    .. | ....        | ....      | ..        | ....            |      | ..                |
+    >   | 300e8348-a1bb-4cce-8037-7a086923ec14 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ....                                 | ....                                       |    .. | ....        | ....      | ..        | ....            |      | ..                |
+    >   | 493b34ad-cbec-42ca-9308-36bc09b79528 | iris-gaia-data-user-DMorris                |  1025 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ....                                 | ....                                       |    .. | ....        | ....      | ..        | ....            |      | ..                |
+    >   | e4a87621-2e57-4a38-a7fb-283d0731572e | iris-gaia-data-user-SVoutsinas             |  1024 | CEPHFS      | extending | False     | ceph01_cephfs   |      | nova              |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# Login to Zeppelin node and check our shares.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sudo ls -al /home/DMorris
+
+    >   -rw-------.  1 DMorris DMorris  986 Jul 29 15:15 .bash_history
+    >   drwx------.  3 DMorris DMorris    1 Jul 29 04:40 .cache
+    >   drwx------.  3 DMorris DMorris    1 Jul 29 04:40 .config
+    >   drwx------.  5 DMorris DMorris    3 Jul 29 04:40 .ipython
+    >   drwxrwxr-x.  3 DMorris DMorris    2 Aug  3 03:44 owncloud
+    >   -rw-rw-r--.  1 DMorris DMorris  162 Aug  3 03:41 owncloud.env
+    >   drwx------.  2 DMorris DMorris    1 Aug 20 02:47 .ssh
+
+
+        sudo ls -al /user/DMorris
+
+    >   drwxr-xr-x.  2 fedora users    602 Jul 14 18:39 2MASSJ00531123+6730023-GaiaXPSpectrum.csv
+    >   -rw-rw-r--.  1 fedora fedora     0 Aug 26  2021 frog
+    >   -rw-rw-r--.  1 fedora fedora  4660 Aug 17  2021 index.html
+    >   drwxr-xr-x.  2 fedora users    402 Jul 29 13:37 my-first-results
+    >   drwxrwxr-x.  9 fedora fedora     7 Feb 22  2021 notebooks
+    >   drwxrwxr-x.  3 fedora fedora     2 Mar 14  2021 owncloud
+    >   -rw-rw-r--.  1 fedora fedora   158 Mar 14  2021 owncloud.env
+    >   drwxr-xr-x.  2 fedora users    402 Jul 27 01:18 proper-motion
+    >   drwxr-xr-x.  2 fedora users    402 Jul 26 23:15 proper-motions
+    >   drwxrwxr-x.  6 fedora fedora     4 May 10  2021 repartitioned
+    >   drwxr-xr-x.  2 fedora users    402 Jul 14 19:00 source-counts
+    >   drwxr-xr-x.  2 fedora users    402 Jul 27 03:19 source-counts-001
+    >   -rw-rw-r--.  1 fedora fedora 45209 Dec  6  2021 test.pdf
+    >   drwxrwxr-x.  2 fedora fedora     4 Mar 11  2021 transfer
+    >   drwxrwxr-x.  3 fedora fedora     1 Aug 26  2021 zeppelin
+
+
+        sudo df -h /user/DMorris
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/0471daf5-5ba4-4fda-8b7c-2bfc7ebb4eff  398T  125T  273T  32% /user/DMorris
+
+    #
+    # Dave's data looks OK.
+    #
+
+        sudo ls -al /home/SVoutsinas
+
+    >   -rw-------.  1 SVoutsinas SVoutsinas 1574 Jul 28 15:27 .bash_history
+    >   drwx------.  3 SVoutsinas SVoutsinas    1 Jul 28 16:11 .cache
+    >   drwx------.  3 SVoutsinas SVoutsinas    1 Jul 28 16:11 .config
+    >   drwx------.  2 SVoutsinas SVoutsinas    1 Aug 20 02:47 .ssh
+    >   -rw-rw-r--.  1 SVoutsinas SVoutsinas    0 Jul 28 15:27 test
+    >   -rw-------.  1 SVoutsinas SVoutsinas    0 Jul 28 15:55 test2
+
+
+        sudo ls -al /user/SVoutsinas
+
+    >   ls: cannot access '/user/SVoutsinas': No such file or directory
+
+
+        sudo df -h /user/SVoutsinas
+
+    >   df: /user/SVoutsinas: No such file or directory
+
+
+    #
+    # Stelios's data failed to mount because the share is not 'available'.
+    # The share is stuck in 'extending' state.
+    # There is an issue logged.
+    #
+
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                                       |  Size | Share Proto | Status    | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ....                                 | ....                                       |    .. | ....        | ....      | ..        | ....            |      | ..                |
+    >   | e4a87621-2e57-4a38-a7fb-283d0731572e | iris-gaia-data-user-SVoutsinas             |  1024 | CEPHFS      | extending | False     | ceph01_cephfs   |      | nova              |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+
+
+

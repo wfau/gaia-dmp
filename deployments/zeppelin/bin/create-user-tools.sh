@@ -148,7 +148,6 @@
         local mounthosts=${4:-'zeppelin'}
         local sharesize=${5:-10}
         local mountmode=${6:-'rw'}
-        local publicshare=${7:-'True'}
         #
         # Call our Openstack script to create the share.
         # Returns JSON.
@@ -158,8 +157,7 @@
             "${mountpath}"  \
             "${mounthosts}" \
             "${sharesize}"  \
-            "${mountmode}"  \
-            "${publicshare}"
+            "${mountmode}"
         }
 
     cloneusernotebooks()

@@ -23,7 +23,7 @@
 
     # TODO Move this to a separate script, client-tools or client-setup.
     # https://github.com/wfau/aglais/issues/893
-    datahostname='data.aglais.uk'
+    datahostname='data.gaia-dmp.uk'
     datahostuser='fedora'
     datacloud='iris-gaia-data'
 

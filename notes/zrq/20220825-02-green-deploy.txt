@@ -1,0 +1,850 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Deploy everything from clean on a system capable of running HDBSCAN.
+
+    Result:
+
+        FAIL -  None of the plots work.
+                No errors, just nothing displayed.
+
+
+# -----------------------------------------------------
+# Check the difference between the medium and large configurations.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        pushd deployments/hadoop-yarn/ansible/config/
+
+            diff zeppelin-26.43-spark-6.26.43.yml \
+                 zeppelin-54.86-spark-6.26.43.yml
+
+        popd
+    popd
+
+    >   31c31
+    >   <         zeppelinflavor: 'gaia.vm.cclake.26vcpu'
+    >   ---
+    >   >         zeppelinflavor: 'gaia.vm.cclake.54vcpu'
+    >   37,38c37,38
+    >   <         zeppelinmemory: 44032
+    >   <         zeppelincores:  26
+    >   ---
+    >   >         zeppelinmemory: 88064
+    >   >         zeppelincores:  54
+    >   66,67c66,67
+    >   <             spark.driver.memory                 37888m
+    >   <             spark.driver.memoryOverhead           5120
+    >   ---
+    >   >             spark.driver.memory                 58982m
+    >   >             spark.driver.memoryOverhead           9216
+    >   69c69
+    >   <             spark.driver.maxResultSize          20480m
+    >   ---
+    >   >             spark.driver.maxResultSize          40960m
+    >   93d92
+    >   <
+
+    #
+    # The differences make sense to me.
+    # We have used the zeppelin-54.86 before for DCrake's work so this is not untedted.
+    # I'm happy to deploy this as the new live.
+    #
+
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Thu 25 Aug 06:05:49 UTC 2022
+    >   iris-gaia-blue-20220803-zeppelin
+
+
+# -----------------------------------------------------
+# Stop the live service while we build the new one.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        zeppelin-daemon.sh stop
+        '
+
+    >   Zeppelin stop                                              [  OK  ]
+
+    #
+    # Doing this because we are deploying an editied version of the notebooks.
+    # We don't want user edits to happen in between.
+    #
+    # TODO We need a mechnaism to check is anyone is tunning anything at the time.
+    #
+    # TODO We need a nice 'service offline' page.
+    # Stopping Zeppelin causes the NGinx proxy to display '502 Bad Gateway'
+    #
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is blue, using green for the next deployment.
+    #
+
+    # Starting a new pattern for creating the client container.
+    # Working towards a launch-script.
+    # https://github.com/wfau/aglais/issues/894
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=green
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-green-20220825
+    >         date: 20220825T061105
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+
+    >   real    43m23.585s
+    >   user    15m48.742s
+    >   sys     4m15.124s
+
+# -----------------------------------------------------
+# Import our live users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users
+
+    >   ....
+    >   ....
+
+
+    list-linux-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "homedir": "/home/DCrake",
+    >       "linuxuid": "10001",
+    >       "pkeyhash": "3a2afa4552c09330033182326a1e6fe5"
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "username": "GHughes",
+    >       "homedir": "/home/GHughes",
+    >       "linuxuid": "10011",
+    >       "pkeyhash": "68b329da9893e34099c7d8ad5cb9c940"
+    >     }
+    >   ]
+
+
+    list-shiro-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "password": "",
+    >       "hashhash": "363f543c44ac0b298b10734900419412"
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "username": "GHughes",
+    >       "password": "",
+    >       "hashhash": "1afa10fcdf3257a30dd72509029e76a8"
+    >     }
+    >   ]
+
+
+    list-ceph-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "usershare": {
+    >         "name": "aglais-user-dcr",
+    >         "size": 10,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-DCrake",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "username": "GHughes",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-GHughes",
+    >         "size": 10,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-GHughes",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# https://unix.stackexchange.com/questions/34004/how-does-tcp-keepalive-work-in-ssh
+# https://unix.stackexchange.com/a/34201
+#[root@ansibler]
+
+    ssh \
+        -n \
+        -f \
+        -N \
+        -D '*:3000' \
+        -o ServerAliveInterval=10 \
+        -o ServerAliveCountMax=12 \
+        zeppelin
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login and check the notebooks.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        'http://zeppelin:8080/' &
+
+    #
+    # Logegd in as DMorris - all loooks good (ran all the examples).
+    # Logged in as DCrake  - looks good (didn't run the notebooks).
+    # Logged in as NHambly - looks good (didn't run the notebooks).
+    #
+
+
+# -----------------------------------------------------
+# Edit the hostname in the aglais-status config file
+#[root@ansibler]
+
+    vi  /opt/aglais/aglais-status.yml
+
+        aglais:
+          status:
+            deployment:
+              type: hadoop-yarn
+              conf: zeppelin-26.43-spark-3.26.43
+              name: iris-gaia-green-20220728
+              date: 20220728T095540
+    -         hostname: zeppelin.gaia-dmp.uk
+    +         hostname: dmp.gaia.ac.uk
+          spec:
+            openstack:
+              cloud:
+                base: arcus
+                name: iris-gaia-reg
+
+
+# -----------------------------------------------------
+# Copy certificates from data server
+#[root@ansibler]
+
+    scp -r fedora@data.aglais.uk:/home/fedora/certs/ /root/
+
+    >   certs.tar.gz                    100% 9822   307.6KB/s   00:00
+    >   zeppelin.gaia-dmp.uk.tar.gz     100%   50KB 760.7KB/s   00:00
+
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            '/opt/aglais/aglais-status.yml'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r ".addresses | .\"${deployname}-internal-network\" | .[1]"
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+    >   Zeppelin ID [d705094b-f4b5-4f78-bd83-730cc36b4c2b]
+    >   Zeppelin IP [128.232.227.153]
+
+
+# --------------------------------------------
+# Update the dns entry with new IP
+# dmp.gaia.ac.uk -> 128.232.227.224
+
+    # This should be done automatically.
+    # https://github.com/wfau/aglais/issues/893
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    ducktoken=$(getsecret 'devops.duckdns.token')
+
+    duckname=aglais-live
+
+    curl "https://www.duckdns.org/update/${duckname:?}/${ducktoken:?}/${zeppelinip:?}"
+
+    >   OK
+
+
+# -----------------------------------------------------
+# Enable HTTPS
+#[root@ansibler]
+
+    /deployments/hadoop-yarn/bin/setup-ssl.sh \
+        "${cloudname:?}" \
+        "${configname:?}" \
+    | tee /tmp/setup-ssl.log
+
+    >   ....
+    >   ....
+
+    #
+    # This is the wrong way round - we should configure HTTPS *before* we update the DNS record.
+    #
+
+
+# -----------------------------------------------------
+# Check the Nginx service status.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        systemctl status nginx.service
+        '
+
+    >   ....
+    >   ....
+    >   Aug 25 09:49:34 iris-gaia-green-20220825-zeppelin systemd[1]: Starting The nginx HTTP and reverse proxy server...
+    >   Aug 25 09:49:34 iris-gaia-green-20220825-zeppelin nginx[82034]: nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+    >   Aug 25 09:49:34 iris-gaia-green-20220825-zeppelin nginx[82034]: nginx: configuration file /etc/nginx/nginx.conf test is successful
+    >   Aug 25 09:49:34 iris-gaia-green-20220825-zeppelin systemd[1]: Started The nginx HTTP and reverse proxy server.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Test the HTTPS endpoint using curl.
+#[user@desktop]
+
+    curl \
+        --verbose \
+        'http://dmp.gaia.ac.uk/#/'
+
+    >   ....
+    >   ....
+    >   < HTTP/1.1 301 Moved Permanently
+    >   ....
+    >   ....
+    >   < Location: https://dmp.gaia.ac.uk/
+
+
+    curl \
+        --verbose \
+        'https://dmp.gaia.ac.uk/#/'
+
+    >   ....
+    >   ....
+    >   * SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384
+    >   * ALPN, server accepted to use http/1.1
+    >   * Server certificate:
+    >   *  subject: CN=dmp.gaia.ac.uk
+    >   *  start date: Jul  7 11:20:17 2022 GMT
+    >   *  expire date: Oct  5 11:20:16 2022 GMT
+    >   *  subjectAltName: host "dmp.gaia.ac.uk" matched cert's "dmp.gaia.ac.uk"
+    >   *  issuer: C=US; O=Let's Encrypt; CN=R3
+    >   *  SSL certificate verify ok.
+    >   * TLSv1.2 (OUT), TLS header, Supplemental data (23):
+    >   > GET / HTTP/1.1
+    >   > Host: dmp.gaia.ac.uk
+    >   > User-Agent: curl/7.82.0
+    >   > Accept: */*
+    >   >
+    >   ....
+    >   ....
+    >   < HTTP/1.1 200 OK
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Test the HTTPS endpoint using firefox.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        'http://dmp.gaia.ac.uk/'
+
+    #
+    # Looks good.
+    # Redirects to the HTTPS endpoint.
+    # Login works.
+    # I can only see my /User notebooks and the public ones.
+    #
+    # BUG - none of the plots show up.
+    #
+    # Restart the browser ... nope.
+    # Tried a different browser .. nope.
+    #
+
+
+# -----------------------------------------------------
+# Check the notebook files on the server.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd zeppelin/notebook
+
+            pushd Users/DMorris/examples
+
+                jq '.' '3. Source counts over the sky_2HBZQDEAW.zpln'
+
+
+
+
+{
+  "paragraphs": [
+    {
+      "text": "%md\n\n<!--\n\n    Gaia Data Processing and Analysis Consortium (DPAC) \n    Co-ordination Unit 9 Work Package 930\n    \n    (c) 2005-2025 Gaia DPAC\n    \n    This program is free software: you can redistribute it and/or modify\n    it under the terms of the GNU General Public License as published by\n    the Free Software Foundation, either version 3 of the License, or\n    (at your option) any later version.\n\n    This program is distributed in the hope that it will be useful,\n    but WITHOUT ANY WARRANTY; without even the implied warranty of\n    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n    GNU General Public License for more details.\n\n    You should have received a copy of the GNU General Public License\n    along with this program.  If not, see <https://www.gnu.org/licenses/>.\n    -->\n\nThis simple example shows how to use the PySpark SQL API to execute a simple query on the main source catalogue and plot the results.\n\nNotes:\n\n* The cell containing the query below finishes instantly since it merely defines a \"transformation\" (in the language of Spark) without actually actioning it. It is only when something is done with the data selected by this transform (i.e. it is explicitly actioned as in the following cell) that execution occurs\n* Visualisation takes advantage of HEALPix pixelisation encoded in the Gaia source IDs, and the healpy Python package in conjunction with matplotlib\n* Links are provided in the final cell to the documentation for the packages used, along with other relevant resources.\n\n",
+      "user": "DMorris",
+      "dateUpdated": "2022-08-25 11:01:37.624",
+      "progress": 0,
+      "config": {
+        "tableHide": false,
+        "editorSetting": {
+          "language": "markdown",
+          "editOnDblClick": true,
+          "completionKey": "TAB",
+          "completionSupport": false
+        },
+        "colWidth": 12,
+        "editorMode": "ace/mode/markdown",
+        "fontSize": 9,
+        "editorHide": true,
+        "results": {},
+        "enabled": true
+      },
+      "settings": {
+        "params": {},
+        "forms": {}
+      },
+      "results": {
+        "code": "SUCCESS",
+        "msg": [
+          {
+            "type": "HTML",
+            "data": "<div class=\"markdown-body\">\n<!--\n\n    Gaia Data Processing and Analysis Consortium (DPAC) \n    Co-ordination Unit 9 Work Package 930\n    \n    (c) 2005-2025 Gaia DPAC\n    \n    This program is free software: you can redistribute it and/or modify\n    it under the terms of the GNU General Public License as published by\n    the Free Software Foundation, either version 3 of the License, or\n    (at your option) any later version.\n\n    This program is distributed in the hope that it will be useful,\n    but WITHOUT ANY WARRANTY; without even the implied warranty of\n    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n    GNU General Public License for more details.\n\n    You should have received a copy of the GNU General Public License\n    along with this program.  If not, see <https://www.gnu.org/licenses/>.\n    -->\n<p>This simple example shows how to use the PySpark SQL API to execute a simple query on the main source catalogue and plot the results.</p>\n<p>Notes:</p>\n<ul>\n<li>The cell containing the query below finishes instantly since it merely defines a &ldquo;transformation&rdquo; (in the language of Spark) without actually actioning it. It is only when something is done with the data selected by this transform (i.e. it is explicitly actioned as in the following cell) that execution occurs</li>\n<li>Visualisation takes advantage of HEALPix pixelisation encoded in the Gaia source IDs, and the healpy Python package in conjunction with matplotlib</li>\n<li>Links are provided in the final cell to the documentation for the packages used, along with other relevant resources.</li>\n</ul>\n\n</div>"
+          }
+        ]
+      },
+      "apps": [],
+      "runtimeInfos": {},
+      "progressUpdateIntervalMs": 500,
+      "jobName": "paragraph_1659001346294_125417483",
+      "id": "20210507-084613_357121151",
+      "dateCreated": "2022-07-28 09:42:26.294",
+      "dateStarted": "2022-08-25 11:01:37.634",
+      "dateFinished": "2022-08-25 11:01:37.639",
+      "status": "FINISHED"
+    },
+    {
+      "title": "Set the resolution level and define the query",
+      "text": "%pyspark\nimport gaiadmpsetup\nimport math\n\n# set the resolution of the counts\nhealpix_level = 6\n# HEALPix level : no. of pixels\n# 4 : 3072\n# 5 : 12288\n# 6 : 49152 ~ 1 square degree pixels\n# 7 : 196608\n\n# Note: the most significant four-byte word of the 8-byte Gaia source ID contains a HEALPix level 12 index from bit 35 and higher\nnside = int(math.pow(2, healpix_level))\npowers_of_2 = 35 + (12 - healpix_level)*2\ndivisor = int(math.pow(2, powers_of_2))\n\ndivisor\n\n# make the query: integer division via the PySpark SQL FLOOR function is used to create bin UIDs by which to group the count\ndf = spark.sql(\"SELECT FLOOR(source_id / %d\"%(divisor) + \") AS hpx_id, COUNT(*) AS n FROM gaiadr3.gaia_source GROUP BY hpx_id\")\n\n",
+      "user": "DMorris",
+      "dateUpdated": "2022-08-25 11:01:37.734",
+      "progress": 0,
+      "config": {
+        "editorSetting": {
+          "language": "python",
+          "editOnDblClick": false,
+          "completionKey": "TAB",
+          "completionSupport": true
+        },
+        "colWidth": 12,
+        "editorMode": "ace/mode/python",
+        "fontSize": 9,
+        "editorHide": false,
+        "title": true,
+        "results": {},
+        "enabled": true,
+        "tableHide": false
+      },
+      "settings": {
+        "params": {},
+        "forms": {}
+      },
+      "results": {
+        "code": "SUCCESS",
+        "msg": [
+          {
+            "type": "ANGULAR",
+            "data": ""
+          }
+        ]
+      },
+      "apps": [],
+      "runtimeInfos": {},
+      "progressUpdateIntervalMs": 500,
+      "jobName": "paragraph_1659001346295_2131284603",
+      "id": "20200826-105718_1698521515",
+      "dateCreated": "2022-07-28 09:42:26.295",
+      "dateStarted": "2022-08-25 11:01:37.742",
+      "dateFinished": "2022-08-25 11:01:41.182",
+      "status": "FINISHED"
+    },
+    {
+      "title": "Plot up the results",
+      "text": "%pyspark\n\n# plot up the sky counts\nimport numpy as np\nimport healpy as hp\nimport matplotlib.pyplot as plot\n\n# set a figure to use along with a plot size (landscape, golden ratio)\nplot.figure(1, figsize = (16.18, 10.0))\n\n# healpy constants appropriate to the HEALPix indexing encoded in Gaia source IDs\nnpix = hp.nside2npix(nside)\n\n# do the visualisation\narray_data = np.empty(npix)\n# access the underlying Spark Resilient Distributed Data object of the data frame to get the relevant data for plotting ...\nfor item in df.rdd.collect():  array_data[item[0]] = item[1]\n# ... this is just one way of several ...\n\n# plot the counts in Mollweide projection ...\nhp.mollview(array_data, fig=1, nest=True, coord='CG', unit = 'Star counts per HEALPixel', title='Gaia DR3 source counts at HEALPix level %d'%(healpix_level), cmap='viridis', norm = 'log')\n# ... with an Equatorial graticule\nhp.graticule(coord='C', color='white')\n",
+      "user": "DMorris",
+      "dateUpdated": "2022-08-25 11:01:41.252",
+      "progress": 0,
+      "config": {
+        "editorSetting": {
+          "language": "python",
+          "editOnDblClick": false,
+          "completionKey": "TAB",
+          "completionSupport": true
+        },
+        "colWidth": 12,
+        "editorMode": "ace/mode/python",
+        "fontSize": 9,
+        "editorHide": false,
+        "title": true,
+        "results": {},
+        "enabled": true,
+        "tableHide": false
+      },
+      "settings": {
+        "params": {},
+        "forms": {}
+      },
+      "results": {
+        "code": "SUCCESS",
+        "msg": [
+          {
+            "type": "ANGULAR",
+            "data": ""
+          }
+        ]
+      },
+      "apps": [],
+      "runtimeInfos": {
+        "jobUrl": {
+          "propertyName": "jobUrl",
+          "label": "SPARK JOB",
+          "tooltip": "View in Spark web UI",
+          "group": "spark",
+          "values": [
+            {
+              "jobUrl": "http://zeppelin:4040/jobs/job?id=86"
+            }
+          ],
+          "interpreterSettingId": "spark"
+        }
+      },
+      "progressUpdateIntervalMs": 500,
+      "jobName": "paragraph_1659001346295_1615829887",
+      "id": "20200826-110030_2095441495",
+      "dateCreated": "2022-07-28 09:42:26.295",
+      "dateStarted": "2022-08-25 11:01:41.261",
+      "dateFinished": "2022-08-25 11:02:16.200",
+      "status": "FINISHED"
+    },
+    {
+      "title": "Further reading and resources",
+      "text": "%md\n\n* [Gaia source ID definition (for HEALPix indexing)](https://dms.cosmos.esa.int/COSMOS/doc_fetch.php?id=2779219)\n* [Python package healpy](https://healpy.readthedocs.io/en/latest/index.html)\n* [Python matplotlib plotting library](https://matplotlib.org)\n* [Handy HEALPixel characteristics for various levels](https://lambda.gsfc.nasa.gov/toolbox/tb_pixelcoords.cfm)\n",
+      "user": "DMorris",
+      "dateUpdated": "2022-08-25 11:02:16.257",
+      "progress": 0,
+      "config": {
+        "tableHide": false,
+        "editorSetting": {
+          "language": "markdown",
+          "editOnDblClick": true,
+          "completionKey": "TAB",
+          "completionSupport": false
+        },
+        "colWidth": 12,
+        "editorMode": "ace/mode/markdown",
+        "fontSize": 9,
+        "editorHide": true,
+        "title": true,
+        "results": {},
+        "enabled": true
+      },
+      "settings": {
+        "params": {},
+        "forms": {}
+      },
+      "results": {
+        "code": "SUCCESS",
+        "msg": [
+          {
+            "type": "HTML",
+            "data": "<div class=\"markdown-body\">\n<ul>\n<li><a href=\"https://dms.cosmos.esa.int/COSMOS/doc_fetch.php?id=2779219\">Gaia source ID definition (for HEALPix indexing)</a></li>\n<li><a href=\"https://healpy.readthedocs.io/en/latest/index.html\">Python package healpy</a></li>\n<li><a href=\"https://matplotlib.org\">Python matplotlib plotting library</a></li>\n<li><a href=\"https://lambda.gsfc.nasa.gov/toolbox/tb_pixelcoords.cfm\">Handy HEALPixel characteristics for various levels</a></li>\n</ul>\n\n</div>"
+          }
+        ]
+      },
+      "apps": [],
+      "runtimeInfos": {},
+      "progressUpdateIntervalMs": 500,
+      "jobName": "paragraph_1659001346299_1756824834",
+      "id": "20210507-091244_670006530",
+      "dateCreated": "2022-07-28 09:42:26.299",
+      "dateStarted": "2022-08-25 11:02:16.270",
+      "dateFinished": "2022-08-25 11:02:16.273",
+      "status": "FINISHED"
+    },
+    {
+      "text": "%md\n",
+      "user": "DMorris",
+      "dateUpdated": "2022-08-25 11:02:16.368",
+      "progress": 0,
+      "config": {
+        "editorSetting": {
+          "language": "markdown",
+          "editOnDblClick": true,
+          "completionKey": "TAB",
+          "completionSupport": false
+        },
+        "colWidth": 12,
+        "editorMode": "ace/mode/markdown",
+        "fontSize": 9,
+        "results": {},
+        "enabled": true,
+        "tableHide": false
+      },
+      "settings": {
+        "params": {},
+        "forms": {}
+      },
+      "results": {
+        "code": "SUCCESS",
+        "msg": [
+          {
+            "type": "HTML",
+            "data": "<div class=\"markdown-body\">\n\n</div>"
+          }
+        ]
+      },
+      "apps": [],
+      "runtimeInfos": {},
+      "progressUpdateIntervalMs": 500,
+      "jobName": "paragraph_1659001346299_425745347",
+      "id": "paragraph_1648610499944_1376690736",
+      "dateCreated": "2022-07-28 09:42:26.299",
+      "dateStarted": "2022-08-25 11:02:16.377",
+      "dateFinished": "2022-08-25 11:02:16.379",
+      "status": "FINISHED"
+    }
+  ],
+  "name": "3. Source counts over the sky",
+  "id": "2HBZQDEAW",
+  "defaultInterpreterGroup": "spark",
+  "version": "0.10.0",
+  "noteParams": {},
+  "noteForms": {},
+  "angularObjects": {
+    "spark-DMorris": [
+      {
+        "name": "figure_578e3ce4372844a7a3738356105403fc",
+        "object": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAkA...................0wAAAABJRU5ErkJggg==",
+        "noteId": "2HBZQDEAW"
+      },
+      {
+        "name": "figure_87edeb09586c49f89ef272f127fc9748",
+        "object": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABIw...................EwAAAABJRU5ErkJggg==",
+        "noteId": "2HBZQDEAW"
+      },
+      {
+        "name": "figure_2c9b6257df9f4ceb92dd6775ca652b8b",
+        "object": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAlg...................RMjiAAAAAElFTkSuQmCC",
+        "noteId": "2HBZQDEAW"
+      }
+    ]
+  },
+  "config": {
+    "personalizedMode": "false",
+    "looknfeel": "default",
+    "isZeppelinNotebookCronEnable": false
+  },
+  "info": {
+    "isRunning": true
+  }
+}
+
+
+    #
+    # Basically - broken.
+    # Need to switch this instance off for now ...
+    # Update the DNS records to switch back to the blue deployment for now.
+    #
+    # Login to DuckDNS and manually change the record for aglais-live
+    # from : 128.232.227.153 (green)
+    # to:    128.232.227.216 (blue)
+
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Thu 25 Aug 11:25:40 UTC 2022
+    >   iris-gaia-blue-20220803-zeppelin
+
+
+# -----------------------------------------------------
+# Check the service is disabled.
+#[user@desktop]
+
+    curl \
+        --verbose \
+        'https://dmp.gaia.ac.uk/#/'
+
+    >   *   Trying 128.232.227.216:443...
+    >   * Connected to dmp.gaia.ac.uk (128.232.227.216) port 443 (#0)
+    >   ....
+    >   ....
+    >   > GET / HTTP/1.1
+    >   > Host: dmp.gaia.ac.uk
+    >   > User-Agent: curl/7.79.1
+    >   > Accept: */*
+    >   >
+    >   ....
+    >   ....
+    >   < HTTP/1.1 502 Bad Gateway
+    >   ....
+    >   ....
+    >   <html>
+    >   <head><title>502 Bad Gateway</title></head>
+    >   <body>
+    >   <center><h1>502 Bad Gateway</h1></center>
+    >   <hr><center>nginx/1.18.0</center>
+    >   </body>
+    >   </html>
+    >   ....
+
+    #
+    # Our live service is broken ...
+    # We are safe from users modifying notebooks on the other service and complicating things even further.
+    #
+    # TODO We need a nice maintenance page.
+    # https://github.com/wfau/gaia-dmp/issues/986
+    #
+    #
+    # Kick off a new deployment on green.
+    # Initial version using medium Zeppelin node, for comparison.
+    #
+
+

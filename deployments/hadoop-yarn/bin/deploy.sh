@@ -44,7 +44,7 @@
     ssh zeppelin \
         '
         sshuser=fedora
-        sshhost=data.aglais.uk
+        sshhost=data.gaia-dmp.uk
 
         sudo mkdir -p '/var/local/backups'
         sudo mv "/home/fedora/zeppelin/notebook" \
@@ -97,7 +97,7 @@
 # https://github.com/wfau/aglais/issues/893
 #[root@ansibler]
 
-    ssh-keyscan 'data.aglais.uk' 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+    ssh-keyscan 'data.gaia-dmp.uk' 2>/dev/null >> "${HOME}/.ssh/known_hosts"
 
 
 # -----------------------------------------------------

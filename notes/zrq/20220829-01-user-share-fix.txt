@@ -1,0 +1,1449 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Problem - user data for DCrake and NHambly haven't been loaded correctly.
+        We need to fix the live server and fix the deployment config for next time.
+
+        Continuing issue
+        "Restore notebooks for NHambly and DCrake #973"
+        https://github.com/wfau/gaia-dmp/issues/973
+
+        Previous work re-named the data shares, but didn't update the user configuration.
+        https://github.com/wfau/gaia-dmp/blob/259bb7dd7f497721d073a305a69d1013d3712757/notes/zrq/20220820-02-public-share-fix.txt#L67-L75
+        https://github.com/wfau/gaia-dmp/blob/259bb7dd7f497721d073a305a69d1013d3712757/deployments/common/users/live-users.yml#L29-L31
+
+        Turns out the original pull request hasn't been merged yet, so converted it to draft and will add the changes to the end of that.
+
+        Plan is to deploy a copy of the live system, use that to develop a script to fix the user shares and then apply that to the live system.
+
+    Result:
+
+        Success.
+
+        Live deployment updated and tested.
+        Test deployment created and tested.
+
+
+# -----------------------------------------------------
+# Checkout the working branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        git branch
+
+    >     20220823-zrq-github-rename
+    >   * master
+
+
+        git checkout '20220823-zrq-github-rename'
+
+    >   Switched to branch '20220823-zrq-github-rename'
+    >   Your branch is up to date with 'origin/20220823-zrq-github-rename'.
+
+    popd
+
+
+# -----------------------------------------------------
+# Check which cloud is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        cat /opt/aglais/aglais-status.yml
+        '
+
+    >   Mon 29 Aug 11:35:59 UTC 2022
+    >   iris-gaia-green-20220825-zeppelin
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-green-20220825
+    >         date: 20220825T115236
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash -c \
+            '
+            mkdir "${HOME}/.ssh"
+            ssh-keyscan "live.gaia-dmp.uk" 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+
+            ssh fedora@live.gaia-dmp.uk \
+                "
+                cat /opt/aglais/aglais-status.yml
+                " \
+            | yq '.aglais.spec.openstack.cloud.name'
+            '
+
+    >   iris-gaia-green
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, using blue for testing.
+    #
+
+    # Starting a new pattern for creating the client container.
+    # Working towards a launch-script.
+    # https://github.com/wfau/aglais/issues/894
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-26.43-spark-3.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-26.43-spark-3.26.43
+    >         name: iris-gaia-blue-20220829
+    >         date: 20220829T124827
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-blue
+
+    >   real    29m6.733s
+    >   user    8m33.483s
+    >   sys     1m34.640s
+
+
+# -----------------------------------------------------
+# Try again ....
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-26.43-spark-3.26.43
+    >         name: iris-gaia-blue-20220829
+    >         date: 20220829T151546
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-blue
+
+    >   real    32m13.578s
+    >   user    11m32.522s
+    >   sys     2m34.959s
+
+
+
+# -----------------------------------------------------
+# Import our live users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users
+
+    >   ....
+    >   ....
+
+
+    list-linux-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "homedir": "/home/DCrake",
+    >       "linuxuid": "10001",
+    >       "pkeyhash": "3a2afa4552c09330033182326a1e6fe5"
+    >     },
+    >     {
+    >       "username": "NHambly",
+    >       "homedir": "/home/NHambly",
+    >       "linuxuid": "10002",
+    >       "pkeyhash": "f83ced7b4be2bc239a537c92fdb531ce"
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+    list-shiro-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "password": "",
+    >       "hashhash": "363f543c44ac0b298b10734900419412"
+    >     },
+    >     {
+    >       "username": "NHambly",
+    >       "password": "",
+    >       "hashhash": "ee67f62b6a095ea2817b67d46d2050c2"
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+    list-ceph-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "usershare": {
+    >         "name": "aglais-user-dcr",
+    >         "size": 10,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-DCrake",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     {
+    >       "username": "NHambly",
+    >       "usershare": {
+    >         "name": "aglais-user-nch",
+    >         "size": 10,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-NHambly",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+    #
+    # This is the problem we need to fix.
+    # We renamed the user shares for DCrake and NHambly, but we didn't update the live-users.yml file to match.
+    # The current live-users.yml still has the old share names, [aglais-user-dcr] and [aglais-user-nch].
+    # The shares have been re-named to [iris-gaia-data-user-DCrake] and [iris-gaia-data-user-NHambly] respectively.
+    # The deployment script looked for the old names, didn't find them, so it created new (empty) 10G shares for them.
+    #
+    # This is a bug, documented in a new issue.
+    # https://github.com/wfau/gaia-dmp/issues/989
+    #
+    # What we need to do now is write a script to un-mount the new empty shares created by the deployment and mount the old shares with the user's data.
+    #
+
+
+    TODO
+
+        Un-mount the share and remove the fstab entry.
+
+            Ansible or manual ?
+            https://docs.ansible.com/ansible/latest/collections/ansible/posix/mount_module.html#parameter-state
+
+                state = absent specifies that the device mount’s entry will be removed from fstab and will also unmount the device and remove the mount point.
+
+            - name: Unmount a mounted volume
+              ansible.posix.mount:
+                path: /tmp/mnt-pnt
+                state: absent
+
+        Fix the name in live-users.yml.
+
+        Mount the correct shares.
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the shares.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sed -n '
+            /user\/DCrake/  p
+            /user\/NHambly/ p
+            ' /etc/fstab
+
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/7478835f-9570-482e-8c13-ad0c04a20402 /user/DCrake ceph name=aglais-user-dcr-rw,async,auto,nodev,noexec,nosuid,_netdev,rw 0 0
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/ea21c96d-ccac-4362-8810-6c12bf3667e7 /user/NHambly ceph name=aglais-user-nch-rw,async,auto,nodev,noexec,nosuid,_netdev,rw 0 0
+
+
+        df -h /user/DCrake/
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/7478835f-9570-482e-8c13-ad0c04a20402  399T  122T  277T  31% /user/DCrake
+
+
+        df -h /user/NHambly/
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/ea21c96d-ccac-4362-8810-6c12bf3667e7  399T  122T  277T  31% /user/NHambly
+
+
+        sudo du -h /user/DCrake/
+
+    >   0   /user/DCrake/ML_cuts/plots
+    >   0   /user/DCrake/ML_cuts/data
+    >   0   /user/DCrake/ML_cuts
+    >   0   /user/DCrake/
+
+
+        sudo du -h /user/NHambly/
+
+    >   0   /user/NHambly/
+
+
+# -----------------------------------------------------
+# Create a mini-ansible playbook to remove the share.
+#[root@ansibler]
+
+    cat > /tmp/remove-share.yml << 'EOF'
+- name: "Unmount and remove a CephFS share"
+  hosts: "zeppelin:masters:workers"
+  gather_facts: false
+  vars_files:
+    - /deployments/hadoop-yarn/ansible/config/ansible.yml
+    - /opt/aglais/aglais-status.yml
+  tasks:
+    - name: "Unmount and remove CephFS [{{mountpath}}]"
+      become: true
+      mount:
+        path: "{{mountpath}}"
+        state: absent
+EOF
+
+
+# -----------------------------------------------------
+# Find the mount path for the user shares.
+#[root@ansibler]
+
+    jq '[
+        .users[] | select ((.username == "DCrake") or (.username == "NHambly")) | .usershare |
+            {
+            name:   .name,
+            path:   .mount.path,
+            size:   .openstack.size,
+            cloud:  .cloud,
+            status: .status
+            }
+        ]' \
+        '/tmp/live-users.json'
+
+    >   [
+    >     {
+    >       "name": "aglais-user-dcr",
+    >       "path": "/user/DCrake",
+    >       "size": 10,
+    >       "cloud": "iris-gaia-data",
+    >       "status": "available"
+    >     },
+    >     {
+    >       "name": "aglais-user-nch",
+    >       "path": "/user/NHambly",
+    >       "size": 10,
+    >       "cloud": "iris-gaia-data",
+    >       "status": "available"
+    >     }
+    >   ]
+
+
+    usernames=(
+        DCrake
+        NHambly
+        )
+
+    for username in "${usernames[@]}"
+    do
+        mountpath=$(
+            jq -r '
+                .users[] | select (.username == "'${username}'") | .usershare.mount.path
+                ' \
+                '/tmp/live-users.json'
+            )
+        echo "User [${username:?}] path [${mountpath:?}]"
+    done
+
+
+    >   User [DCrake] path [/user/DCrake]
+    >   User [NHambly] path [/user/NHambly]
+
+
+# -----------------------------------------------------
+# Unmount the user shares.
+#[root@ansibler]
+
+    for username in "${usernames[@]}"
+    do
+        mountpath=$(
+            jq -r '
+                .users[] | select (.username == "'${username}'") | .usershare.mount.path
+                ' \
+                '/tmp/live-users.json'
+            )
+
+        echo
+        echo "User [${username:?}] path [${mountpath:?}]"
+
+        ansible-playbook \
+            --inventory  "/deployments/hadoop-yarn/ansible/config/${configname:?}.yml" \
+            --extra-vars "mountpath=${mountpath:?}" \
+            '/tmp/remove-share.yml'
+    done
+
+    >   User [DCrake] path [/user/DCrake]
+    >   
+    >   PLAY [Unmount and remove a CephFS share] ****************************************************************************
+    >   
+    >   TASK [Unmount and remove CephFS [/user/DCrake]] *********************************************************************
+    >   ok: [master01]
+    >   changed: [zeppelin]
+    >   changed: [worker02]
+    >   changed: [worker03]
+    >   changed: [worker01]
+    >   
+    >   PLAY RECAP **********************************************************************************************************
+    >   master01                   : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker01                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker02                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker03                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   zeppelin                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+    >   User [NHambly] path [/user/NHambly]
+    >   
+    >   PLAY [Unmount and remove a CephFS share] ****************************************************************************
+    >   
+    >   TASK [Unmount and remove CephFS [/user/NHambly]] ********************************************************************
+    >   changed: [zeppelin]
+    >   changed: [worker02]
+    >   ok: [master01]
+    >   changed: [worker03]
+    >   changed: [worker01]
+    >   
+    >   PLAY RECAP **********************************************************************************************************
+    >   master01                   : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker01                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker02                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker03                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   zeppelin                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the shares.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sed -n '
+            /user\/DCrake/  p
+            /user\/NHambly/ p
+            ' /etc/fstab
+
+    >   -
+
+
+        ls -al /user/DCrake/
+
+    >   ls: cannot access '/user/DCrake/': No such file or directory
+
+
+        ls -al /user/NHambly/
+
+    >   ls: cannot access '/user/NHambly/': No such file or directory
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Fix the user config files.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit deployments/common/users/live-users.yml &
+
+              - name: "DCrake"
+                ....
+                usershare:
+        -         name:  aglais-user-dcr
+        +         name:  iris-gaia-data-user-DCrake
+                  cloud: iris-gaia-data
+
+              - name: "NHambly"
+                ....
+                usershare:
+        -         name:  aglais-user-nch
+        +         name:  iris-gaia-data-user-NHambly
+                  cloud: iris-gaia-data
+
+    popd
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a subset of the users we want to update.
+#[root@ansibler]
+
+    yq '{
+        "users": [
+            .users[] | select(.name | test("DCrake|NHambly"))
+            ]
+        }
+        ' /deployments/common/users/live-users.yml \
+    | tee /tmp/update-user-list.yml
+
+    >   users:
+    >     - name: "DCrake"
+    >       type: "live"
+    >       linuxuid: 10001
+    >       publickey: "file:///deployments/common/ssh/keys/dcr.roe.ac.uk.rsa.pub"
+    >       usershare:
+    >         name: iris-gaia-data-user-DCrake
+    >         cloud: iris-gaia-data
+    >     - name: "NHambly"
+    >       type: "live"
+    >       linuxuid: 10002
+    >       publickey: "file:///deployments/common/ssh/keys/nch.roe.ac.uk.rsa.pub"
+    >       usershare:
+    >         name: iris-gaia-data-user-NHambly
+    >         cloud: iris-gaia-data
+
+
+# -----------------------------------------------------
+# Update the target users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    createyamlusers \
+        /tmp/update-user-list.yml \
+    | tee /tmp/update-user-done.json
+
+    >   ....
+    >   ....
+
+
+    list-ceph-info \
+        /tmp/update-user-done.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-DCrake",
+    >         "size": 1024,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-DCrake",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     {
+    >       "username": "NHambly",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-NHambly",
+    >         "size": 50000,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-NHambly",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the shares.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sed -n '
+            /user\/DCrake/  p
+            /user\/NHambly/ p
+            ' /etc/fstab
+
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/4603a9f6-24dd-4194-8a7a-7096d8502140 /user/DCrake ceph name=aglais-user-dcr-rw,async,auto,nodev,noexec,nosuid,_netdev,rw 0 0
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/ca9d0c81-f7a3-4e53-bea3-9a5725016dee /user/NHambly ceph name=aglais-user-nch-rw,async,auto,nodev,noexec,nosuid,_netdev,rw 0 0
+
+
+        df -h /user/DCrake/
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/4603a9f6-24dd-4194-8a7a-7096d8502140  399T  122T  277T  31% /user/DCrake
+
+
+        df -h /user/NHambly/
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/ca9d0c81-f7a3-4e53-bea3-9a5725016dee  399T  122T  277T  31% /user/NHambly
+
+
+        sudo du -h -d 1 /user/DCrake/
+
+    >   34G     /user/DCrake/ML_cuts
+    >   335K    /user/DCrake/CNN
+    >   48G     /user/DCrake/HDBSCAN
+    >   118M    /user/DCrake/WD_detection
+    >   837M    /user/DCrake/data
+    >   82G     /user/DCrake/
+
+
+        sudo du -h -d 1 /user/NHambly/
+
+    >   3.7T    /user/NHambly/PARQUET
+    >   28T     /user/NHambly/CSV
+    >   31T     /user/NHambly/
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # OK, that does what we want ... now apply the same process to the live system.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check which cloud is live.
+#[user@desktop]
+
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        cat /opt/aglais/aglais-status.yml
+        '
+
+    >   Mon 29 Aug 11:35:59 UTC 2022
+    >   iris-gaia-green-20220825-zeppelin
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-green-20220825
+    >         date: 20220825T115236
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    # Starting a new pattern for creating the client container.
+    # Working towards a launch-script.
+    # https://github.com/wfau/aglais/issues/894
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=live
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Download the deployment status from the live deployment.
+#[root@ansibler]
+
+    mkdir -p "/opt/aglais"
+    mkdir -p "${HOME}/.ssh"
+
+    ssh-keyscan "live.gaia-dmp.uk" 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+
+    scp "live.gaia-dmp.uk:/opt/aglais/aglais-status.yml" \
+        /opt/aglais/aglais-status.yml
+
+    >   aglais-status.yml           100%  287     8.9KB/s   00:00
+
+
+# -----------------------------------------------------
+# Extract the cloud and configuration name.
+#[root@ansibler]
+
+    configname=$(
+        yq '.aglais.status.deployment.conf' /opt/aglais/aglais-status.yml
+        )
+
+    cloudname=$(
+        yq '.aglais.spec.openstack.cloud.name' /opt/aglais/aglais-status.yml
+        )
+
+# -----------------------------------------------------
+# Configure our Ansible client.
+#[root@ansibler]
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "config/${configname:?}.yml" \
+            '05-config-ssh.yml'
+
+    popd
+
+    >   ....
+    >   ....
+    >   PLAY RECAP ***********************************************************************************************
+    >   localhost       : ok=5    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Check we can login using ssh.
+# TODO Need to accept the server fingerprint.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        '
+
+    >   The authenticity of host '128.232.227.193 (128.232.227.193)' can't be established.
+    >   ED25519 key fingerprint is SHA256:OoBTWPXhw7eT9j+RIgAHEeaj+2XCyUMCmC0YHHKut/U.
+    >   This host key is known by the following other names/addresses:
+    >       ~/.ssh/known_hosts:3: live.gaia-dmp.uk
+    >   Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+    >   Warning: Permanently added '128.232.227.193' (ED25519) to the list of known hosts.
+
+    >   Mon Aug 29 23:28:51 UTC 2022
+    >   iris-gaia-green-20220825-zeppelin
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the shares.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sed -n '
+            /user\/DCrake/  p
+            /user\/NHambly/ p
+            ' /etc/fstab
+
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/7478835f-9570-482e-8c13-ad0c04a20402 /user/DCrake ceph name=aglais-user-dcr-rw,async,auto,nodev,noexec,nosuid,_netdev,rw 0 0
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/ea21c96d-ccac-4362-8810-6c12bf3667e7 /user/NHambly ceph name=aglais-user-nch-rw,async,auto,nodev,noexec,nosuid,_netdev,rw 0 0
+
+
+        df -h /user/DCrake/
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/7478835f-9570-482e-8c13-ad0c04a20402  399T  122T  277T  31% /user/DCrake
+
+
+        df -h /user/NHambly/
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/ea21c96d-ccac-4362-8810-6c12bf3667e7  399T  122T  277T  31% /user/NHambly
+
+
+        sudo du -h /user/DCrake/
+
+    >   0   /user/DCrake/ML_cuts/plots
+    >   0   /user/DCrake/ML_cuts/data
+    >   0   /user/DCrake/ML_cuts
+    >   0   /user/DCrake/
+
+
+        sudo du -h /user/NHambly/
+
+    >   0   /user/NHambly/
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a mini-ansible playbook to remove the share.
+#[root@ansibler]
+
+    cat > /tmp/remove-share.yml << 'EOF'
+- name: "Unmount and remove a CephFS share"
+  hosts: "zeppelin:masters:workers"
+  gather_facts: false
+  vars_files:
+    - /deployments/hadoop-yarn/ansible/config/ansible.yml
+    - /opt/aglais/aglais-status.yml
+  tasks:
+    - name: "Unmount and remove CephFS [{{mountpath}}]"
+      become: true
+      mount:
+        path: "{{mountpath}}"
+        state: absent
+EOF
+
+
+# -----------------------------------------------------
+# Unmount the user shares.
+#[root@ansibler]
+
+    mountpaths=(
+        /user/DCrake
+        /user/NHambly
+        )
+
+    for mountpath in "${mountpaths[@]}"
+    do
+
+        echo
+        echo "Mount [${mountpath:?}]"
+
+        ansible-playbook \
+            --inventory  "/deployments/hadoop-yarn/ansible/config/${configname:?}.yml" \
+            --extra-vars "mountpath=${mountpath:?}" \
+            '/tmp/remove-share.yml'
+    done
+
+    >   Mount [/user/DCrake]
+    >   
+    >   PLAY [Unmount and remove a CephFS share] ****************************************************************************
+    >   
+    >   TASK [Unmount and remove CephFS [/user/DCrake]] *********************************************************************
+    >   changed: [zeppelin]
+    >   changed: [worker01]
+    >   ok: [master01]
+    >   changed: [worker02]
+    >   changed: [worker03]
+    >   changed: [worker06]
+    >   changed: [worker05]
+    >   changed: [worker04]
+    >   
+    >   PLAY RECAP **********************************************************************************************************
+    >   master01                   : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker01                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker02                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker03                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker04                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker05                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker06                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   zeppelin                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+    >   Mount [/user/NHambly]
+    >   
+    >   PLAY [Unmount and remove a CephFS share] ****************************************************************************
+    >   
+    >   TASK [Unmount and remove CephFS [/user/NHambly]] ********************************************************************
+    >   changed: [zeppelin]
+    >   changed: [worker01]
+    >   changed: [worker02]
+    >   ok: [master01]
+    >   changed: [worker03]
+    >   changed: [worker05]
+    >   changed: [worker04]
+    >   changed: [worker06]
+    >   
+    >   PLAY RECAP **********************************************************************************************************
+    >   master01                   : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker01                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker02                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker03                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker04                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker05                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   worker06                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   zeppelin                   : ok=1    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the shares.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sed -n '
+            /user\/DCrake/  p
+            /user\/NHambly/ p
+            ' /etc/fstab
+
+    >   -
+
+
+        ls -al /user/DCrake/
+
+    >   ls: cannot access '/user/DCrake/': No such file or directory
+
+
+        ls -al /user/NHambly/
+
+    >   ls: cannot access '/user/NHambly/': No such file or directory
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a subset of the users we want to update.
+#[root@ansibler]
+
+    yq '{
+        "users": [
+            .users[] | select(.name | test("DCrake|NHambly"))
+            ]
+        }
+        ' /deployments/common/users/live-users.yml \
+    | tee /tmp/update-user-list.yml
+
+    >   users:
+    >     - name: "DCrake"
+    >       ....
+    >       ....
+    >       usershare:
+    >         name: iris-gaia-data-user-DCrake
+    >         cloud: iris-gaia-data
+    >     - name: "NHambly"
+    >       ....
+    >       ....
+    >       usershare:
+    >         name: iris-gaia-data-user-NHambly
+    >         cloud: iris-gaia-data
+
+
+# -----------------------------------------------------
+# Update the target users.
+# TODO shirouser part needs to have accepted ssh fingerprint for data.gaia-dmp.uk
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    createyamlusers \
+        /tmp/update-user-list.yml \
+    | tee /tmp/update-user-done.json
+
+    >   ....
+    >   ....
+
+
+    list-ceph-info \
+        /tmp/update-user-done.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-DCrake",
+    >         "size": 1024,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-DCrake",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     {
+    >       "username": "NHambly",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-NHambly",
+    >         "size": 50000,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-NHambly",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the shares.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sed -n '
+            /user\/DCrake/  p
+            /user\/NHambly/ p
+            ' /etc/fstab
+
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/4603a9f6-24dd-4194-8a7a-7096d8502140 /user/DCrake ceph name=aglais-user-dcr-rw,async,auto,nodev,noexec,nosuid,_netdev,rw 0 0
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/ca9d0c81-f7a3-4e53-bea3-9a5725016dee /user/NHambly ceph name=aglais-user-nch-rw,async,auto,nodev,noexec,nosuid,_netdev,rw 0 0
+
+
+        df -h /user/DCrake/
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/4603a9f6-24dd-4194-8a7a-7096d8502140  399T  122T  277T  31% /user/DCrake
+
+
+        df -h /user/NHambly/
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/ca9d0c81-f7a3-4e53-bea3-9a5725016dee  399T  122T  277T  31% /user/NHambly
+
+
+        sudo du -h -d 1 /user/DCrake/
+
+    >   34G     /user/DCrake/ML_cuts
+    >   335K    /user/DCrake/CNN
+    >   48G     /user/DCrake/HDBSCAN
+    >   118M    /user/DCrake/WD_detection
+    >   837M    /user/DCrake/data
+    >   82G     /user/DCrake/
+
+
+        sudo du -h -d 1 /user/NHambly/
+
+    >   3.7T    /user/NHambly/PARQUET
+    >   28T     /user/NHambly/CSV
+    >   31T     /user/NHambly/
+
+
+# -----------------------------------------------------
+# Now we can delete (rename) the extra shares that were created.
+#[root@ansibler]
+
+    # Set the Manila API version.
+    # https://stackoverflow.com/a/58806536
+    source /deployments/openstack/bin/settings.sh
+
+    sharecloud=iris-gaia-data
+
+    oldname=aglais-user-nch
+    newname=aglais-user-nch-not-used
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share set \
+            --name "${newname:?}" \
+            "${oldname}"
+
+    >   ....
+    >   ....
+
+
+    oldname=aglais-user-dcr
+    newname=aglais-user-dcr-not-used
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share set \
+            --name "${newname:?}" \
+            "${oldname}"
+
+    >   ....
+    >   ....
+
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share list
+
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                                       |  Size | Share Proto | Status    | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ....                                 | ....                                       |  .... | ....        | ....      | ....      | ....            |      | ....              |
+    >   | ....                                 | ....                                       |  .... | ....        | ....      | ....      | ....            |      | ....              |
+    >   | cab5e611-ec2f-44e3-9596-fce205d2dcfb | aglais-user-dcr-not-used                   |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 11e49a4e-29c4-4783-8e76-dd0dadd9883e | aglais-user-nch-not-used                   |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ....                                 | ....                                       |  .... | ....        | ....      | ....      | ....            |      | ....              |
+    >   | e3ad95b3-6d7e-484b-8cbc-2e3e521683bf | iris-gaia-data-user-DCrake                 |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ....                                 | ....                                       |  .... | ....        | ....      | ....      | ....            |      | ....              |
+    >   | 2f6ef970-27d1-47a1-b7a5-3ac7a9027f21 | iris-gaia-data-user-NHambly                | 50000 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ....                                 | ....                                       |  .... | ....        | ....      | ....      | ....            |      | ....              |
+    >   | ....                                 | ....                                       |  .... | ....        | ....      | ....      | ....            |      | ....              |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # OK, all good so far.
+    # Now run a new (test) deploy from clean and make sure it gets the right shares.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check which cloud is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Tue 30 Aug 00:16:33 UTC 2022
+    >   iris-gaia-green-20220825-zeppelin
+
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        cat /opt/aglais/aglais-status.yml
+        '
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-green-20220825
+    >         date: 20220825T115236
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, using blue for testing.
+    #
+
+    # Starting a new pattern for creating the client container.
+    # Working towards a launch-script.
+    # https://github.com/wfau/aglais/issues/894
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-26.43-spark-3.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-26.43-spark-3.26.43
+    >         name: iris-gaia-blue-20220830
+    >         date: 20220830T002133
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-blue
+
+    >   real    28m2.939s
+    >   user    8m42.950s
+    >   sys     1m43.511s
+
+
+# -----------------------------------------------------
+# Try again ...
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-26.43-spark-3.26.43
+    >         name: iris-gaia-blue-20220830
+    >         date: 20220830T010553
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-blue
+
+    >   real    32m12.211s
+    >   user    10m32.523s
+    >   sys     2m20.203s
+
+
+# -----------------------------------------------------
+# Import our live users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users
+
+    >   ....
+    >   ....
+
+
+    list-linux-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "homedir": "/home/DCrake",
+    >       "linuxuid": "10001",
+    >       "pkeyhash": "3a2afa4552c09330033182326a1e6fe5"
+    >     },
+    >     {
+    >       "username": "NHambly",
+    >       "homedir": "/home/NHambly",
+    >       "linuxuid": "10002",
+    >       "pkeyhash": "f83ced7b4be2bc239a537c92fdb531ce"
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+    list-shiro-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "password": "",
+    >       "hashhash": "363f543c44ac0b298b10734900419412"
+    >     },
+    >     {
+    >       "username": "NHambly",
+    >       "password": "",
+    >       "hashhash": "ee67f62b6a095ea2817b67d46d2050c2"
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+    list-ceph-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-DCrake",
+    >         "size": 1024,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-DCrake",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     {
+    >       "username": "NHambly",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-NHambly",
+    >         "size": 50000,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-NHambly",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+# -----------------------------------------------------
+# Login to the Zeppelin node and check the shares.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sed -n '
+            /user\/DCrake/  p
+            /user\/NHambly/ p
+            ' /etc/fstab
+
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/4603a9f6-24dd-4194-8a7a-7096d8502140 /user/DCrake ceph name=aglais-user-dcr-rw,async,auto,nodev,noexec,nosuid,_netdev,rw 0 0
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/ca9d0c81-f7a3-4e53-bea3-9a5725016dee /user/NHambly ceph name=aglais-user-nch-rw,async,auto,nodev,noexec,nosuid,_netdev,rw 0 0
+
+
+        df -h /user/DCrake/
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/4603a9f6-24dd-4194-8a7a-7096d8502140  399T  122T  277T  31% /user/DCrake
+
+
+        df -h /user/NHambly/
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/ca9d0c81-f7a3-4e53-bea3-9a5725016dee  399T  122T  277T  31% /user/NHambly
+
+
+        sudo du -h -d 1 /user/DCrake/
+
+    >   34G     /user/DCrake/ML_cuts
+    >   335K    /user/DCrake/CNN
+    >   48G     /user/DCrake/HDBSCAN
+    >   118M    /user/DCrake/WD_detection
+    >   837M    /user/DCrake/data
+    >   82G     /user/DCrake/
+
+
+        sudo du -h -d 1 /user/NHambly/
+
+    >   3.7T    /user/NHambly/PARQUET
+    >   28T     /user/NHambly/CSV
+    >   31T     /user/NHambly/
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # OK, all good.
+    #
+
+

@@ -1,0 +1,313 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+# Target:
+  Work on finding the right configuration to run Nigel' spectra notebook without fails
+  Try reducing parallelism  
+
+
+# -----------------------------------------------
+# Run new deploy with same configuration as live
+# zeppelin-26.43-spark-6.26.43
+
+
+# -----------------------------------------------------
+# Create test users.
+#[root@ansibler]
+
+ source /deployments/zeppelin/bin/create-user-tools.sh
+
+ import-test-users
+
+
+
+
+# -----------------------------------------
+# Try modifying the cores per executor
+# fedora@zeppelin
+
+
+spark.driver.memory                 37888m
+spark.driver.memoryOverhead           5120
+spark.driver.cores                       5
+spark.driver.maxResultSize          20480m
+
+spark.executor.memory                7168m
+spark.executor.memoryOverhead         1024
+spark.executor.cores                     4
+#spark.executor.instances               30
+
+#spark.default.parallelism              300
+#spark.sql.shuffle.partitions          300
+
+# YARN Application Master settings
+spark.yarn.am.memory                 2048m
+spark.yarn.am.cores                      1
+
+
+
+
+# -------------------------------------------------------------------------------
+# Login and import the example notebook that causes the errors mentioned by Nigel
+
+# Notebook: Work in progress with Gaia XP spectra (Copied from Live deploy)
+
+# Errors: Notebook gets failed tasks, and eventually fails for the full dataset
+# If selecting a subset (10%) the notebook completes, but with failed tasks
+# [root@ansibler]
+
+
+
+
+# -------------------------------------------------------------------------------
+# Manually Edit notebook, modify cell that selects a subset
+# Remove Mod so that we get the full dataset
+
+%pyspark
+
+# select a template for the search, e.g. Proxima Cen
+#sid = 5853498713190525696 # Proxima Cen
+sid = 2585856120791459584 # HIP 7585 (Solar twin)
+template_df = spark.sql('SELECT * FROM xp_continuous_mean_spectrum WHERE source_id = %d'%(sid))
+#spark.sql('SELECT xp.*, g.parallax FROM xp_sampled_mean_spectrum AS xp INNER JOIN gaia_source AS g ON g.source_id = xp.source_id WHERE g.source_id = %d'%(sid))
+
+# grab the template parallax
+#template_parallax = template_df.collect()[0]['parallax']
+
+# define a query over the entire dataset, restricting to low reddening for simplicity
+query = 'SELECT xp.*  ' + \
+        'FROM xp_continuous_mean_spectrum AS xp INNER JOIN gaia_source AS g ON g.source_id = xp.source_id ' + \
+        'WHERE g.ag_gspphot < 0.1'
+        
+# ---------------------------------------------------------------
+# The following cell runs for several hours for the full dataset
+
+
+%pyspark
+#similar_df.count()
+
+# collect/cash stats to the head for plotting in the next cell - this actually actions the full workflow on the Spark cluster
+stats_pdf = similar_df.select('p_xp_similar').toPandas()
+# benchmarks: 1 in 10000 in 45min 21sec; no failed tasks
+#             1 in 1000  in 45min 21sec; ditto
+#             1 in 10    in 46min 57sec; successful completion albeit with 10 failed tasks 
+
+
+
+# ------------------------------------------------------------
+# Run test
+
+# Observe Spark UI & Grafana Monitor / Report 
+
+# After a few mins we see:
+# 32 Failed tasks
+# 116 Active Tasks
+# RAM used: up to 40/42 on a few nodes
+
+
+# Kill job
+
+
+
+
+
+# -----------------------------------------
+# Try modifying the cores per executor to even less
+# fedora@zeppelin
+
+
+spark.driver.memory                 37888m
+spark.driver.memoryOverhead           5120
+spark.driver.cores                       5
+spark.driver.maxResultSize          20480m
+
+spark.executor.memory                7168m
+spark.executor.memoryOverhead         1024
+spark.executor.cores                     2
+#spark.executor.instances               30
+
+#spark.default.parallelism              300
+#spark.sql.shuffle.partitions          300
+
+# YARN Application Master settings
+spark.yarn.am.memory                 2048m
+spark.yarn.am.cores                      1
+
+
+
+# ------------------------------------------------------------
+# Run test
+
+# Observe Spark UI & Grafana Monitor / Report 
+
+# After a few mins we see:
+# 42 Failed tasks
+# 54 Active Tasks
+# RAM used: up to 40/42 on a few nodes
+
+# Seems like tasks are failing even more frequently now
+
+# Check worker02 logs (which had some of the failed tasks)
+
+2022-09-07 11:09:49,391 INFO org.apache.hadoop.util.JvmPauseMonitor: Detected pause in JVM or host machine (eg GC): pause of approximately 1542ms
+No GCs detected
+2022-09-07 11:09:49,902 WARN org.apache.hadoop.yarn.server.nodemanager.DefaultContainerExecutor: Exit code from container container_1661872020086_0006_01_000078 is : 137
+2022-09-07 11:09:49,904 INFO org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerImpl: Container container_1661872020086_0006_01_000078 transitioned from RUNNING to EXITED_WITH_FAILURE
+
+
+
+# Kill job
+
+
+
+
+
+
+# --------------------------------------------------------------------
+# Reset the setting, try reducing the dynamicAllocation maxExecutors
+# spark.dynamicAllocation.maxExecutors:   20
+# fedora@zeppelin
+
+
+# Calculated using Cheatsheet.xlsx
+spark.driver.memory                 37888m
+spark.driver.memoryOverhead           5120
+spark.driver.cores                       5
+spark.driver.maxResultSize          20480m
+
+spark.executor.memory                7168m
+spark.executor.memoryOverhead         1024
+spark.executor.cores                     5
+#spark.executor.instances               30
+
+#spark.default.parallelism              300
+#spark.sql.shuffle.partitions          300
+
+# YARN Application Master settings
+spark.yarn.am.memory                 2048m
+spark.yarn.am.cores                      1
+
+spark.dynamicAllocation.enabled          true
+spark.shuffle.service.enabled            true
+spark.dynamicAllocation.minExecutors	  1
+ # spark.executor.instances from Cheatsheet
+spark.dynamicAllocation.maxExecutors     20
+ # maxExecutors / 2
+spark.dynamicAllocation.initialExecutors          15
+
+
+# ------------------------------------------------------------
+# Run test
+
+# Observe Spark UI & Grafana Monitor / Report 
+
+# After a few mins we see:
+# 15 Failed tasks
+# 101 Active Tasks
+# RAM used: up to 40/42 on one node, around 32-36 on other nodes
+
+# Error logs on worker03:
+
+2022-09-07 11:39:50,410 WARN org.apache.hadoop.yarn.server.nodemanager.DefaultContainerExecutor: Exit code from container container_1661872020086_0009_01_000003 is : 143
+2022-09-07 11:39:50,410 WARN org.apache.hadoop.yarn.server.nodemanager.DefaultContainerExecutor: Exit code from container container_1661872020086_0009_01_000015 is : 143
+2022-09-07 11:39:50,410 WARN org.apache.hadoop.yarn.server.nodemanager.DefaultContainerExecutor: Exit code from container container_1661872020086_0009_01_000030 is : 143
+2022-09-07 11:39:50,410 WARN org.apache.hadoop.yarn.server.nodemanager.DefaultContainerExecutor: Exit code from container container_1661872020086_0009_01_000009 is : 143
+
+# Kill job
+
+
+
+# --------------------------------------------------------------------
+# Reset the setting, try reducing the memory per executor
+# spark.executor.memory :   3072m
+# fedora@zeppelin
+
+
+spark.driver.memory                 37888m
+spark.driver.memoryOverhead           5120
+spark.driver.cores                       5
+spark.driver.maxResultSize          20480m
+
+spark.executor.memory                3072m
+spark.executor.memoryOverhead         1024
+spark.executor.cores                     5
+#spark.executor.instances               30
+
+#spark.default.parallelism              300
+#spark.sql.shuffle.partitions          300
+
+# YARN Application Master settings
+spark.yarn.am.memory                 2048m
+spark.yarn.am.cores                      1
+
+spark.dynamicAllocation.enabled          true
+spark.shuffle.service.enabled            true
+spark.dynamicAllocation.minExecutors	  1
+ # spark.executor.instances from Cheatsheet
+spark.dynamicAllocation.maxExecutors     30
+ # maxExecutors / 2
+spark.dynamicAllocation.initialExecutors          15
+
+
+# ------------------------------------------------------------
+# Run test
+
+
+# Cell completed after 6.7 hours: 
+#   stats_pdf = similar_df.select('p_xp_similar').toPandas() 
+
+> Took 6 hrs 41 min 48 sec. Last updated by Evison at September 07 2022, 10:18:06 PM.
+
+
+
+# The following cell failed:
+
+# Plot Results
+
+%pyspark
+
+# convert to a Pandas dataframe for GaiaXPy
+continuous_spectra = similar_df.toPandas()
+# convert to sampled form:
+sampled_spectra, sampling = convert(continuous_spectra, save_file = False)
+# plot to sanity check:
+plot_spectra(sampled_spectra, sampling = sampling, multi=True, show_plot=True, output_path=None, legend=True)
+
+
+> Took 15 min 34 sec. Last updated by Evison at September 07 2022, 10:33:42 PM.
+
+
+# 5 Failed tasks
+
+# Various RAM usage patterns for the different workers
+# worker01: Some spikes in usage going up to 39/42 used, then a consistent 20 / 42 for most of the duration
+# worker06: Some spikes in usage going up to 41.80/42 used, then a consistent 38 / 42 for most of the duration. During the initial spikes, we also see a gap with no reporting, soon after the 41.80/42 usage was reached
+# zeppelin: 3/42 consistently, no spikes
+
+
+# Most worker nodes show a spike in RAM around 10:30 PM reaching 41+/42 usage and then a sudden drop down to 5/42
+# This matches with the failure we see above
+ 
+	
+	
+
+
+

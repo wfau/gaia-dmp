@@ -1,0 +1,234 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+    Target:
+
+        Clean deploy on red with changes to worker memory on 6 worker node config
+        Test Ingest of mcmc_samples_gsp_phot_test
+    Result:
+
+        Work in progress ....
+
+
+# Add 1 Tb for worder nodes hadoop/temp directory, for ingests
+nano zeppelin-26.43-spark-6.26.43.yml
+
+..
+        workers:
+            hosts:
+                worker[01:06]:
+            vars:
+                login:  'fedora'
+                image:  "{{baseimage}}"
+                flavor: "{{workerflavor}}"
+                discs:
+                  - type: 'local'
+                    format: 'ext4'
+                    mntpath: "/mnt/local/vdb"
+                    devname: 'vdb'
+                  - type: 'cinder'
+                    size: 1024
+                    format: 'btrfs'
+                    mntpath: "/mnt/cinder/vdc"
+                    devname: 'vdc'
+                  - type: 'cinder'
+                    size: 1024
+                    format: 'btrfs'
+                    mntpath: "/mnt/cinder/vdd"
+                    devname: 'vdd'
+                  - type: 'cinder'
+                    size: 1024
+                    format: 'btrfs'
+                    mntpath: "/mnt/cinder/vde"
+                    devname: 'vde'
+                paths:
+                    hddatalink: "/var/hadoop/data"
+                    hddatadest: "/mnt/cinder/vdd/hadoop/data"
+                    # Used on workers
+                    # /var/hadoop/temp/nm-local-dir/
+                    hdtemplink: "/var/hadoop/temp"
+                    hdtempdest: "/mnt/cinder/vde/hadoop/temp"
+                    # Used on workers
+                    hdlogslink: "/var/hadoop/logs"
+                    hdlogsdest: "/mnt/local/vdb/hadoop/logs"
+                    # Empty on workers
+                    hdfslogslink: "/var/hdfs/logs"
+                    hdfslogsdest: "/mnt/local/vdb/hdfs/logs"
+                    # Empty on workers
+                    hdfsdatalink: "/var/hdfs/data"
+                    hdfsdatadest: "/mnt/cinder/vdc/hdfs/data"
+
+..
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+    agproxymap=3000:3000
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+    configname=zeppelin-26.43-spark-6.26.43
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    > Done
+  
+
+# -----------------------------------------------------
+# Import our live users.
+#[root@ansibler]
+
+# Modify users config, to only include NHambly and SVoutsinas
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+    import-live-users
+
+    > Done
+
+
+# Tunnel connection to Zeppelin (& master node)
+
+ssh -L '8080:localhost:8080' fedora@128.232.227.147
+ssh -L '8088:master01:8088' fedora@128.232.227.147
+
+
+# Import DR3 Ingest notebook from Nigel's notebook dir on live service
+
+
+# ------------------------------------------------------------
+# Ingest data to SVoutsinas directory
+
+%pyspark
+
+# uncomment as necessary
+#spark.sql('DROP TABLE mcmc_samples_gsp_phot')
+
+mcmc_samples_gsp_phot_schema = StructType([
+    StructField('solution_id', LongType(), True), # Solution Identifier
+    StructField('source_id', LongType(), False), # Unique source identifier (unique within a particular Data Release)
+    StructField('nsamples', ShortType(), True), # Number of samples in the chain from GSP-Phot
+    StructField('teff', ArrayType(FloatType()), True), # MCMC samples for $T_{\rm eff}$ from GSP-Phot
+    StructField('azero', ArrayType(FloatType()), True), # MCMC samples for extinction $A_0$ from GSP-Phot
+    StructField('logg', ArrayType(FloatType()), True), # MCMC samples for $\log g$ from GSP-Phot
+    StructField('mh', ArrayType(FloatType()), True), # MCMC samples for the metallicity from GSP-Phot
+    StructField('ag', ArrayType(FloatType()), True), # MCMC samples for extinction in G band from GSP-Phot
+    StructField('mg', ArrayType(FloatType()), True), # MCMC samples for $M_{\rm G}$ from GSP-Phot
+    StructField('distancepc', ArrayType(FloatType()), True), # MCMC samples for distance from GSP-Phot
+    StructField('abp', ArrayType(FloatType()), True), # MCMC samples for extinction in $G_{\rm BP}$ band from GSP-Phot
+    StructField('arp', ArrayType(FloatType()), True), # MCMC samples for extinction in $G_{\rm RP}$ band from GSP-Phot
+    StructField('ebpminrp', ArrayType(FloatType()), True), # MCMC samples for reddening $E(G_{\rm BP} - G_{\rm RP})$ from GSP-Phot
+    StructField('log_pos', ArrayType(FloatType()), True), # MCMC samples for the log-posterior from GSP-Phot
+    StructField('log_lik', ArrayType(FloatType()), True), # MCMC samples for the log-likelihood from GSP-Phot
+    StructField('radius', ArrayType(FloatType()), True), # MCMC samples for stellar radius from GSP-Phot
+])
+
+# interim structure for the above with strings for the arrays
+interim_schema = create_interim_schema_for_csv(mcmc_samples_gsp_phot_schema)
+
+# read the csv files against the interim schema
+gdr3_mcmcgsp_schema_df = sqlContext.read.option('mode','failfast').option('comment', '#').option('header','true').option('nullValue','null').schema(interim_schema).csv('file:////user/NHambly/CSV/GDR3/cdn.gea.esac.esa.int/Gaia/gdr3/Astrophysical_parameters/mcmc_samples_gsp_phot/*.csv')
+
+recast_df = cast_all_arrays(gdr3_mcmcgsp_schema_df, mcmc_samples_gsp_phot_schema)
+
+saveToBinnedParquet(recast_df, outputParquetPath = 'file:////user/SVoutsinas/data/GDR3_MCMC_SAMPLES_GSP_PHOT/', buckets = 8192, name = 'mcmc_samples_gsp_phot')
+
+
+> Took 10 hrs 48 min 3 sec. Last updated by SVoutsinas at September 22 2022, 3:34:04 AM.
+
+
+# Check Yarn/Spark UI for failed tasks
+# No failed tasks
+
+# Check Monitor for RAM usage
+#  Usage on worker nodes ranging from 20/43 to 25/43
+
+
+# ----------------------------
+# Test ingested data
+
+%pyspark
+
+reattachParquetFileResourceToSparkContext(table_name = 'mcmc_samples_gsp_phot_test', file_path = 'file:////user/SVoutsinas/data/GDR3_MCMC_SAMPLES_GSP_PHOT/', schema_structures = (mcmc_samples_gsp_phot_schema,))
+# ... replaces csv-backed table resource with the parquet one in the system catalogue 
+
+# DF backed by the parquet file set
+pdf = spark.sql('select count(*) from mcmc_samples_gsp_phot_test')
+pdf.show()
+
++---------+
+| count(1)|
++---------+
+|449297716|
++---------+
+
+
+# ----------------------------
+# Run all Public Examples
+
+# 1. Start Here [Success]
+
+# 2. Data holdings [Success]
+
+# 3. Source counts over the sky [Success]  
+#     Duration: 1min 59 seconds
+
+# 4. Mean proper motions over the sky
+#     Duration: 7 min 4 sec.
+
+# 5. Working with Gaia XP spectra
+#     Duration: 5 hours 9 minutes
+
+# 6. Working with cross-matched surveys
+#     Duration: 3 min 29 seconds
+
+# 7. Good astrometric solutions via ML Random Forest classifier
+#     Duration: 13 mins
+
+
+# Note, we are using Ceph for tmp storage, so it make sense that these are slower than usual

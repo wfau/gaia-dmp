@@ -189,9 +189,9 @@ else
 
                             infomessage "jq filter [${notefile}] to [${tempfile}]"
                             jq \
-                                --arg 'fullname' "${notepath}" \
+                                --arg 'notepath' "${notepath}" \
                                 '
-                                .name="$fullname" |
+                                .name=$notepath |
                                 .path="" |
                                 .id=""
                                 ' \

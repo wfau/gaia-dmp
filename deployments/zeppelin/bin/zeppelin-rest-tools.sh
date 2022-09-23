@@ -284,7 +284,9 @@ EOF
 
 
 # -----------------------------------------------------
-# Run all the notebooks for a user.
+# Run a set of notebooks based on name startswith().
+# TODO Split this into runone and runall.
+# https://github.com/wfau/gaia-dmp/issues/1006
 #[root@ansibler]
 
     testall()

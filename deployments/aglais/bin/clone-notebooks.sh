@@ -20,7 +20,16 @@
 # </meta:header>
 #
 #
+# The error trapping and pass/fail messages are too complicated.
+# A nice idea to solve a small problem, but there must be a simpler way.
+# Designed to produce nice JSON output with easily readable error messages captured as an array of strings.
+# Gardening task to replace a lot of the extra code with a simpler wrapper
+# that runs the whole script as one function, captures any outout
+# and formats it as a JSON friendly result.
+#
 
+
+#
 srcfile="$(basename ${0})"
 srcpath="$(dirname $(readlink -f ${0}))"
 
@@ -32,10 +41,6 @@ usertype=${2}
 userpass=${3}
 
 zeppelinurl='http://localhost:8080'
-
-#zeppbasedir="/home/fedora/zeppelin"
-#usernotebookdir="${zeppbasedir}/notebook/Users/${username}"
-#userexamplesdir="${usernotebookdir}/examples"
 
 # Check required params
 if [ -z "${username}" ]
@@ -58,7 +63,7 @@ else
     cookiefile=$(mktemp)
     loginresult=$(mktemp)
     notebooklist=$(mktemp)
-    cloneresult=$(mktemp)
+    importjson=$(mktemp)
 
     # Login to Zeppelin
     curl \
@@ -92,8 +97,10 @@ else
     if [ "${loginstatus}" == "OK" ]
     then
 
-        public_examples="/Public Examples"
-        private_examples="/Users/${username}/examples"
+        #public_examples="/Public Examples"
+        #private_examples="/Users/${username}/examples"
+
+        userexamples="/Users/${username}/examples"
 
         # List the (visible) notebooks
         curl \
@@ -105,7 +112,6 @@ else
             2> "${debugerrorfile}"
             retcode=$?
 
-        # Count the user's examples
         if [ ${retcode} -ne 0 ]
         then
             failmessage "Count failed - error code [${retcode}]"
@@ -117,7 +123,7 @@ else
                 count=$(
                     jq "
                         [
-                        .body[] | select(.path | startswith(\"${private_examples}\")) | {id, path}
+                        .body[] | select(.path | startswith(\"${userexamples}\")) | {id, path}
                         ] | length
                         " "${notebooklist}"
                     )
@@ -127,54 +133,108 @@ else
                 then
                     skipmessage "Examples found [${count}]"
                 else
-                    # Clone the public examples
-                    for noteid in $(
-                        jq -r "
-                            .body[] | select(.path | startswith(\"${public_examples}\")) | .id
-                            " "${notebooklist}"
-                        )
-                    do
-                        notepath=$(
-                            jq -r '
-                                .body[] | select(.id == "'${noteid}'") | .path
-                                ' "${notebooklist}"
-                            )
-                        clonepath=${notepath/${public_examples}/${private_examples}}
 
-                        # Clone a notebook.
-                        curl \
-                            --silent \
-                            --show-error \
-                            --location \
-                            --request POST \
-                            --cookie "${cookiefile}" \
-                            --header 'Content-Type: application/json' \
-                            --data "{
-                                \"name\": \"${clonepath}\"
-                                }" \
-                            "${zeppelinurl}/api/notebook/${noteid}" \
-                            1> "${cloneresult}" \
-                            2> "${debugerrorfile}"
-                            retcode=$?
+                    gitbase='/opt/aglais/notebooks'
+                    gitname='aglais-notebooks'
+                    gitpath="${gitbase}/${gitname}"
+                    gitrepo="https://github.com/wfau/${gitname}"
 
-                        if [ ${retcode} -ne 0 ]
+                    version='v1.0.1'
+
+                    if [ ! -e "${gitpath}" ]
+                    then
+                        if [ ! -e "$(dirname ${gitpath})" ]
                         then
-                            failmessage "Clone failed - error code [${retcode}]"
-                        else
-                            status=$(
-                                jq -r '.status' "${cloneresult}"
-                                )
-                            if [ "${status}" == "OK" ]
-                            then
-                                passmessage "Clone done [${noteid}][${clonepath}]"
-                            else
-                                exception=$(
-                                    jq -r '.exception' "${cloneresult}"
-                                    )
-                                failmessage "Clone failed - exception [${exception}] "
-                            fi
+                            agmkdir "$(dirname ${gitpath})"
                         fi
-                    done
+                        qpushd "$(dirname ${gitpath})"
+                            git clone "${gitrepo}" "$(basename ${gitpath})" 1> "${debugerrorfile}" 2>&1
+                            if [ $? -ne 0 ]
+                            then
+                                failmessage "git clone [${gitrepo}] failed"
+                            fi
+                        qpopd
+                    else
+                        qpushd "${gitpath}"
+                            git checkout 'main' 1> "${debugerrorfile}" 2>&1
+                            if [ $? -ne 0 ]
+                            then
+                                failmessage "git checkout [main] failed"
+                            fi
+                            git pull 1> "${debugerrorfile}" 2>&1
+                            if [ $? -ne 0 ]
+                            then
+                                failmessage "git pull [${gitrepo}] failed"
+                            fi
+                        qpopd
+                    fi
+
+                    qpushd "${gitpath}"
+
+                        git checkout "${version}" 1> "${debugerrorfile}" 2>&1
+                        if [ $? -ne 0 ]
+                        then
+                            failmessage "git checkout [${version}] failed"
+                        fi
+
+                        # This is horribly fragile
+                        for notefile in "Public Examples"/*.zpln
+                        do
+                            notename=$(
+                                 jq -r '.name' "${notefile}"
+                                )
+                            notepath="${userexamples}/${notename}"
+                            tempfile="$(mktemp --suffix '.zpln')"
+
+                            infomessage "jq filter [${notefile}] to [${tempfile}]"
+                            jq \
+                                --arg 'fullname' "${notepath}" \
+                                '
+                                .name=$fullname |
+                                .path="" |
+                                .id=""
+                                ' \
+                                "${notefile}" 1> "${tempfile}" \
+                                2> "${debugerrorfile}"
+                            if [ $? -ne 0 ]
+                            then
+                                failmessage "jq filter [${notefile}] to [${tempfile}] failed"
+                            fi
+
+                            infomessage "Importing [${tempfile}] as [${notepath}]"
+                            # Import the notebook.
+                            curl \
+                                --silent \
+                                --show-error \
+                                --location \
+                                --request POST \
+                                --cookie "${cookiefile}" \
+                                --header 'Content-Type: application/json' \
+                                --data "@${tempfile}" \
+                                "${zeppelinurl}/api/notebook/import" \
+                                1> "${importjson}" \
+                                2> "${debugerrorfile}"
+                                retcode=$?
+
+                            if [ ${retcode} -ne 0 ]
+                            then
+                                failmessage "Import failed - error code [${retcode}]"
+                            else
+                                status=$(
+                                    jq -r '.status' "${importjson}"
+                                    )
+                                if [ "${status}" == "OK" ]
+                                then
+                                    passmessage "Imported [${notefile}] as [${notepath}]"
+                                else
+                                    exception=$(
+                                        jq -r '.exception' "${importjson}"
+                                        )
+                                    failmessage "Import failed - exception [${exception}] "
+                                fi
+                            fi
+                        done
+                    qpopd
                 fi
             fi
         fi

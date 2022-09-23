@@ -74,6 +74,15 @@ passmessage()
     fi
     }
 
+infomessage()
+    {
+    local message=${1}
+    if [ -n "${message}" ]
+    then
+        debugmessages+=("INFO: ${message}")
+    fi
+    }
+
 failmessage()
     {
     debugresult="FAIL"
@@ -102,28 +111,28 @@ JSON
 agmkdir()
     {
     local dirpath=${1:?'dirpath required'}
-    local diruser=${2:?'diruser required'}
-    local dirmode=${3:?'dirmode required'}
+    local dirmode=${2:-'u=rwxs,g=wrxs,o=rx'}
+    local diruser=${3:-$(id -un)}
 
     if [ -e "${dirpath}" ]
     then
         skipmessage "mkdir [${dirpath}] skipped (done)"
     else
-        sudo mkdir -p $usernotebase
+        sudo mkdir -p "${dirpath}" 1> "${debugerrorfile}" 2>&1
         if [ $? -eq 0 ]
         then
             passmessage "mkdir [${dirpath}] done"
         else
             failmessage "mkdir [${dirpath}] failed"
         fi
-        sudo chown "${diruser}" "${dirpath}"
+        sudo chown "${diruser}" "${dirpath}" 1> "${debugerrorfile}" 2>&1
         if [ $? -eq 0 ]
         then
             passmessage "chown [${dirpath}] done"
         else
             failmessage "chown [${dirpath}] failed"
         fi
-        sudo mod "${dirmode}" "${dirpath}"
+        sudo chmod "${dirmode}" "${dirpath}" 1> "${debugerrorfile}" 2>&1
         if [ $? -eq 0 ]
         then
             passmessage "chmod [${dirpath}] done"
@@ -132,4 +141,26 @@ agmkdir()
         fi
     fi
     }
+
+# Quiet version of pushd, with debug messages.
+qpushd()
+    {
+    local path=${1:?'dirpath required'}
+    pushd "${path}" 1> "${debugerrorfile}" 2>&1
+    if [ $? -ne 0 ]
+    then
+        failmessage "pushd [${path}] failed"
+    fi
+    }
+
+# Quiet version of popd, with debug messages.
+qpopd()
+    {
+    popd 1> "${debugerrorfile}" 2>&1
+    if [ $? -ne 0 ]
+    then
+        failmessage "pushd [${dirpath}] failed"
+    fi
+    }
+
 

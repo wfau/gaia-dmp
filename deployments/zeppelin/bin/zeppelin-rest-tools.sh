@@ -125,25 +125,36 @@
         {
         local nbident=${1:?}
         zepnbjsonclr ${nbident}
-cat << EOF
-{
-"noteid": "${nbident}",
-"paragraphs": [
-EOF
 
-        # Fetch the notbook details.
+        # Fetch the notebook details.
+        nbjsonfile=$(zepnbjsonfile ${nbident})
         curl \
             --silent \
             --request GET \
             --cookie "${zepcookies:?}" \
             "${zeppelinurl:?}/api/notebook/${nbident:?}" \
-            > $(zepnbjsonfile ${nbident})
+            > "${nbjsonfile}"
 
-        # List the title, status and ident.
+        nbname=$(
+            jq -r '.body.name' "${nbjsonfile}"
+            )
+        nbpath=$(
+            jq -r '.body.path' "${nbjsonfile}"
+            )
+
+cat << EOF
+{
+"id":   "${nbident}",
+"name": "${nbname}",
+"path": "${nbpath}",
+"paragraphs": [
+EOF
+
+        # Paragraph title, status and ident.
         paralist=$(mktemp --suffix '.json')
         jq '
             [.body.paragraphs[]? | {id, status, title}]
-            ' "$(zepnbjsonfile ${nbident})" \
+            ' "${nbjsonfile}" \
             > "${paralist}"
 
         local comma=''
@@ -163,9 +174,8 @@ EOF
 cat << EOF
 ${comma}
     {
-    "noteid": "${nbident}",
-    "paraid": "${paraid}",
-    "title":  "${title}",
+    "id":    "${paraid}",
+    "title": "${title}",
     "execute":
 EOF
 comma=','
@@ -281,6 +291,7 @@ EOF
         {
         local username=${1:?'username required'}
         local password=${2:?'password required'}
+        local notepath=${3:-"/Users/${username}/examples"}
         local teststart=$(date "+%H:%M:%S.%N")
 cat << EOF
 {
@@ -296,7 +307,16 @@ EOF
                 --silent \
                 --cookie "${zepcookies:?}" \
                 "${zeppelinurl:?}/api/notebook" \
-            | jq -r ".body[] | select(.path | startswith(\"/Users/${username:?}\")) | .id"
+            | jq \
+                --raw-output \
+                --arg 'notepath' "${notepath}" \
+                '
+                .body[] |
+                select(
+                    .path | startswith($notepath)
+                    ) |
+                .id
+                '
             )
         do
 

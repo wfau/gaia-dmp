@@ -121,11 +121,12 @@ else
             then
                 # Count the user's examples.
                 count=$(
-                    jq "
+                    jq --arg notepath "${userexamples}" \
+                        '
                         [
-                        .body[] | select(.path | startswith(\"${userexamples}\")) | {id, path}
+                        .body[] | select(.path | startswith("$notepath")) | {id, path}
                         ] | length
-                        " "${notebooklist}"
+                        ' "${notebooklist}"
                     )
 
                 # Check if the user already has some examples.
@@ -190,7 +191,7 @@ else
                             jq \
                                 --arg 'fullname' "${notepath}" \
                                 '
-                                .name=$fullname |
+                                .name="$fullname" |
                                 .path="" |
                                 .id=""
                                 ' \

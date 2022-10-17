@@ -1,0 +1,123 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Debug the cause of problems with orphanned threads.
+
+    Result:
+
+        Work in progress ...
+
+        Still don't know the cause for the system locking up.
+        It happens on the live system, but I can't reproduce it on the test system.
+
+
+
+# -----------------------------------------------------
+# Login to the blue deployment to work on Dennis's notebook.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        'http://blue.gaia-dmp.uk:8080/'
+
+
+# -----------------------------------------------------
+# Upload a copy os Dennis's notebook to my own namespace.
+#[user@desktop]
+
+    /Users/DMorris/runtimes_2HD77TDGW
+    runtimes_2HD77TDGW.zpln
+
+    The multi-threaded code in measure_memory_usage() has some issues that result in orphaned threads that continue to run after they should have finished. The memory logging loop is supposed to finish when the thread running the target function has finished.
+
+        while(True):
+            ....
+            ....
+            if my_thread.isShutdown():
+                print("Memory measurement complete!")
+                break
+
+    However, if the target function being measured fails with an Exception, the run() method exits early and never sets the __has_shutdown flag.
+
+        def run(self):
+            ....
+            super(StoppableThread, self).run() <-- if this fails, the run() method ends here
+            ....
+            self.__has_shutdown = True <-- this is never set
+
+    As a result, the while(True) loop monitoring the memory use never reaches it's break statement.
+
+        while(True):
+            ....
+            ....
+            if my_thread.isShutdown():  <-- this is never set
+                print("Memory measurement complete!")
+                break
+
+    Which means the memory monitoring loop continues running forever, locking up the notebook, and the PySpark interpreter.
+
+    Suggested fix is to add a time-out to the while(True) loop
+
+        t1 = time.time()
+        while(True):
+            t2 = time.time()
+            t3 = t2 - t1
+            if (t3 > 30):
+                print("Timeout [{}]".format(t3))
+                break
+            ....
+            ....
+
+    This time-out will guarantee that the memory logging while(True) loop will eventually end, even if the target function your are measuring throws an Exception.
+
+    After adding the time-out I was able to identify the initial cause of the Exception.
+
+        Exception in thread Thread-11:
+        Traceback (most recent call last):
+          File "/usr/lib64/python3.7/threading.py", line 926, in _bootstrap_inner
+            self.run()
+          File "<stdin>", line 33, in run
+          File "/usr/lib64/python3.7/threading.py", line 870, in run
+            self._target(*self._args, **self._kwargs)
+          File "<stdin>", line 696, in __init__
+          File "<stdin>", line 622, in __init__
+          File "<stdin>", line 536, in __init__
+          File "<stdin>", line 398, in __init__
+          File "<stdin>", line 415, in getNregions
+        TypeError: unsupported operand type(s) for -: 'str' and 'int'
+
+    Adding a debug print statement to the getNregions() function showed that it is being passed a string 'index' rather than a numeric value.
+
+        def getNregions(self):
+            '''Returns number of regions needed.'''
+            print("N [{}]".format(self.N))
+            return (2*self.N-1)**len(self.split_columns)
+
+

@@ -1,0 +1,557 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Deploy everything from clean on a new system with upstream changes.
+        https://github.com/wfau/gaia-dmp/issues/1002
+
+        Including fix for hdbscan/joblib issue
+        https://github.com/wfau/gaia-dmp/issues/1028
+
+    Result:
+
+        Looks good.
+        Manual tests all pass.
+        Only issue are that the old examples are included in the notebooks backup.
+        Need to re-deploy without the old examples.
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Tue 11 Oct 05:37:59 UTC 2022
+    >   iris-gaia-green-20220825-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting blue for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-blue-20221011
+    >         date: 20221011T055425
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-blue
+
+    >   real    46m18.993s
+    >   user    14m14.089s
+    >   sys     3m45.203s
+
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    username=$(pwgen 16 1)
+
+    createusermain "${username}" \
+    | tee "/tmp/${username}.json" \
+    | jq '.shirouser | {"username": .name, "password": .password}'
+
+    >   {
+    >     "username": "quaik5Yei0aeNgux",
+    >     "password": "lagging repose trickily lethargic"
+    >   }
+
+
+# -----------------------------------------------------
+# Login as the new user.
+#[root@ansibler]
+
+    password=$(
+        jq -r '.shirouser.password' "/tmp/${username}.json"
+        )
+
+    zeppelinurl=http://zeppelin:8080
+    zepcookies=/tmp/${username:?}.cookies
+
+    curl \
+        --silent \
+        --request 'POST' \
+        --cookie-jar "${zepcookies:?}" \
+        --data "userName=${username:?}" \
+        --data "password=${password:?}" \
+        "${zeppelinurl:?}/api/login" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "quaik5Yei0aeNgux",
+    >       "ticket": "3af6ba7b-87e8-4e1a-a77f-83a3bb429c8c",
+    >       "roles": "[]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# List notebooks the user can see.
+#[root@ansibler]
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": [
+    >       {
+    >         "id": "2GRTQZFUM",
+    >         "path": "/Public Examples/1. Start here"
+    >       },
+    >       {
+    >         "id": "2GRA39HCN",
+    >         "path": "/Public Examples/2. Data holdings"
+    >       },
+    >       {
+    >         "id": "2GQ6WMH9W",
+    >         "path": "/Public Examples/3. Source counts over the sky"
+    >       },
+    >       {
+    >         "id": "2GSNYBDWB",
+    >         "path": "/Public Examples/4. Mean proper motions over the sky"
+    >       },
+    >       {
+    >         "id": "2H2YRJCKM",
+    >         "path": "/Public Examples/5. Working with Gaia XP spectra"
+    >       },
+    >       {
+    >         "id": "2GZME59KY",
+    >         "path": "/Public Examples/6. Working with cross-matched surveys"
+    >       },
+    >       {
+    >         "id": "2GQDKZ59J",
+    >         "path": "/Public Examples/7. Good astrometric solutions via ML Random Forest classifier"
+    >       },
+    >       {
+    >         "id": "2GVXKC266",
+    >         "path": "/Public Examples/8. Tips and tricks"
+    >       },
+    >       {
+    >         "id": "2HGRGJB3D",
+    >         "path": "/Users/quaik5Yei0aeNgux/examples/1. Start here"
+    >       },
+    >       {
+    >         "id": "2HGYDXGVS",
+    >         "path": "/Users/quaik5Yei0aeNgux/examples/2. Data holdings"
+    >       },
+    >       {
+    >         "id": "2HFXXAEQC",
+    >         "path": "/Users/quaik5Yei0aeNgux/examples/3. Source counts over the sky"
+    >       },
+    >       {
+    >         "id": "2HFEJ1K1U",
+    >         "path": "/Users/quaik5Yei0aeNgux/examples/4. Mean proper motions over the sky"
+    >       },
+    >       {
+    >         "id": "2HH64E4PV",
+    >         "path": "/Users/quaik5Yei0aeNgux/examples/5. Working with Gaia XP spectra"
+    >       },
+    >       {
+    >         "id": "2HGWMWTA4",
+    >         "path": "/Users/quaik5Yei0aeNgux/examples/6. Working with cross-matched surveys"
+    >       },
+    >       {
+    >         "id": "2HF4SGXDP",
+    >         "path": "/Users/quaik5Yei0aeNgux/examples/7. Good astrometric solutions via ML Random Forest classifier"
+    >       },
+    >       {
+    >         "id": "2HH1ZCAGK",
+    >         "path": "/Users/quaik5Yei0aeNgux/examples/8. Tips and tricks"
+    >       }
+    >     ]
+    >   }
+
+    #
+    # TODO Need to remove the public examples from the backup.
+    #
+
+
+# -----------------------------------------------------
+# Run the ML RandomForest classifier example.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/zeppelin-rest-tools.sh
+
+    testall \
+        "${username}" \
+        "${password}" \
+        "/Users/${username}/examples/7" \
+    | tee "/tmp/${username}-testone.json" \
+    | jq '
+       .notebooks[] | {
+            "id": .noteid,
+            "name": .execute.name,
+            "path": .execute.path,
+            "duration": .execute.duration,
+            "paragraphs": [
+                .execute.paragraphs[] | {
+                    "title": .title,
+                    "duration": .duration
+                    }
+                ]
+            }
+       '
+
+    >   {
+    >     "id": "2HF4SGXDP",
+    >     "name": "7. Good astrometric solutions via ML Random Forest classifier",
+    >     "path": "/Users/quaik5Yei0aeNgux/examples/7. Good astrometric solutions via ML Random Forest classifier",
+    >     "duration": "0:11:32",
+    >     "paragraphs": [
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:4"
+    >       },
+    >       {
+    >         "title": "Basic catalogue query selections and predicates",
+    >         "duration": "0:0:32"
+    >       },
+    >       {
+    >         "title": "Raw catalogue with selected columns",
+    >         "duration": "0:6:41"
+    >       },
+    >       {
+    >         "title": "Visualisation (colour / absolute-magnitue diagram) of the raw catalogue",
+    >         "duration": "0:0:4"
+    >       },
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Define the training samples",
+    >         "duration": "0:0:3"
+    >       },
+    >       {
+    >         "title": "Assemble training and reserve test sets",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Train up the Random Forest",
+    >         "duration": "0:3:2"
+    >       },
+    >       {
+    >         "title": "Check feature set for nulls",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Classify the reserved test sets",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Classification confusion matrix",
+    >         "duration": "0:0:12"
+    >       },
+    >       {
+    >         "title": "Relative importance of the selected features",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Apply the classification model and plot sample results",
+    >         "duration": "0:0:12"
+    >       },
+    >       {
+    >         "title": "Histogram of classification probability",
+    >         "duration": "0:0:27"
+    >       },
+    >       {
+    >         "title": "Sky distribution of good source sample",
+    >         "duration": "0:0:5"
+    >       },
+    >       {
+    >         "title": "Sky distribution of bad source sample",
+    >         "duration": "0:0:4"
+    >       },
+    >       {
+    >         "title": "Tidy up",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Further reading and resources",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:0"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Import our live users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users
+
+    >   ....
+    >   ....
+
+
+    list-linux-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "homedir": "/home/DCrake",
+    >       "linuxuid": "10001",
+    >       "pkeyhash": "3a2afa4552c09330033182326a1e6fe5"
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "username": "AKrause",
+    >       "homedir": "/home/AKrause",
+    >       "linuxuid": "10012",
+    >       "pkeyhash": "68b329da9893e34099c7d8ad5cb9c940"
+    >     }
+    >   ]
+
+
+    list-shiro-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "password": "",
+    >       "hashhash": "363f543c44ac0b298b10734900419412"
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "username": "AKrause",
+    >       "password": "",
+    >       "hashhash": "10180a1d9e992984d01eaaeb705d7ee4"
+    >     }
+    >   ]
+
+
+    list-ceph-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-DCrake",
+    >         "size": 1024,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-DCrake",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "username": "AKrause",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-AKrause",
+    >         "size": 10,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-AKrause",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Allow port 8080 (HTTP).
+#[root@ansibler]
+
+    groupid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            security group list \
+                --format json \
+        | jq -r '.[] | select(.Name | match("zeppelin-security")) | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --protocol 'tcp' \
+            --dst-port '8080:8080' \
+            "${groupid}"
+
+    >   +-------------------------+--------------------------------------+
+    >   | Field                   | Value                                |
+    >   +-------------------------+--------------------------------------+
+    >   | created_at              | 2022-10-11T06:44:35Z                 |
+    >   | description             |                                      |
+    >   | direction               | ingress                              |
+    >   | ether_type              | IPv4                                 |
+    >   | id                      | 65dafc54-4b19-42d6-8198-5813e622d28d |
+    >   | name                    | None                                 |
+    >   | port_range_max          | 8080                                 |
+    >   | port_range_min          | 8080                                 |
+    >   | project_id              | e918a13fed2648758175a15fac083569     |
+    >   | protocol                | tcp                                  |
+    >   | remote_address_group_id | None                                 |
+    >   | remote_group_id         | None                                 |
+    >   | remote_ip_prefix        | 0.0.0.0/0                            |
+    >   | revision_number         | 0                                    |
+    >   | security_group_id       | 8014840a-68b6-43b9-9017-01c96747d159 |
+    >   | tags                    | []                                   |
+    >   | tenant_id               | e918a13fed2648758175a15fac083569     |
+    >   | updated_at              | 2022-10-11T06:44:35Z                 |
+    >   +-------------------------+--------------------------------------+
+
+
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# https://unix.stackexchange.com/questions/34004/how-does-tcp-keepalive-work-in-ssh
+# https://unix.stackexchange.com/a/34201
+#[root@ansibler]
+
+    ssh \
+        -n \
+        -f \
+        -N \
+        -D '*:3000' \
+        -o ServerAliveInterval=10 \
+        -o ServerAliveCountMax=12 \
+        zeppelin
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Login via the SOCKS proxy and test.
+#[user@desktop]
+
+    firefox --new-window "http://zeppelin:8080/"
+
+        # Manual checks of example notebooks
+        # PASS : all good
+
+        Source counts
+        Mean proper motions
+        Gaia XP spectra
+        Cross matched surveys
+
+        # Manual check of hdbscan
+        # PASS : all good
+
+        %pyspark
+        import hdbscan
+
+    #
+    # All looks good.
+    # Only issue is the old examples are included in the backup.
+    #
+
+
+
+
+
+
+
+
+
+
+
+
+

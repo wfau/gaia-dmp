@@ -1,0 +1,639 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        New deployment to see if yesterday's performance issues are still a problem.
+
+        Deploy everything from clean on a new system with upstream changes.
+        https://github.com/wfau/gaia-dmp/issues/1002
+        https://github.com/wfau/gaia-dmp/issues/1028
+
+    Result:
+
+        Success.
+        New deployment passes manual tests.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Thu 13 Oct 18:33:56 UTC 2022
+    >   iris-gaia-green-20220825-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting blue for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-blue-20221013
+    >         date: 20221013T183746
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-blue
+
+    >   real    43m52.136s
+    >   user    15m8.582s
+    >   sys     4m0.616s
+
+    20221011T055425 46m18.993s <-- normal
+    20221011T105132 80m38.029s
+    20221013T152151 105m3.383s
+    20221013T183746 43m52.136s <-- back to normal
+
+# -----------------------------------------------------
+# Allow port 8080 (HTTP).
+# TODO Fix the HTTPS proxy to work on all deployments.
+# https://github.com/wfau/gaia-dmp/issues/838
+#[root@ansibler]
+
+    groupid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            security group list \
+                --format json \
+        | jq -r '.[] | select(.Name | match("zeppelin-security")) | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --protocol 'tcp' \
+            --dst-port '8080:8080' \
+            "${groupid}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    username=$(pwgen 16 1)
+
+    createusermain "${username}" \
+    | tee "/tmp/${username}.json" \
+    | jq '.shirouser | {"username": .name, "password": .password}'
+
+    >   {
+    >     "username": "Oor7cheitoiz8Fie",
+    >     "password": "limit deity stability thirstily"
+    >   }
+
+
+# -----------------------------------------------------
+# Login as the new user.
+#[root@ansibler]
+
+    password=$(
+        jq -r '.shirouser.password' "/tmp/${username}.json"
+        )
+
+    zeppelinurl=http://zeppelin:8080
+    zepcookies=/tmp/${username:?}.cookies
+
+    curl \
+        --silent \
+        --request 'POST' \
+        --cookie-jar "${zepcookies:?}" \
+        --data "userName=${username:?}" \
+        --data "password=${password:?}" \
+        "${zeppelinurl:?}/api/login" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "Oor7cheitoiz8Fie",
+    >       "ticket": "73abd2de-aa57-4b10-a2cb-f3e77c260366",
+    >       "roles": "[]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# List notebooks the user can see.
+#[root@ansibler]
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": [
+    >       {
+    >         "id": "2HG5CNDNV",
+    >         "path": "/Users/Oor7cheitoiz8Fie/examples/1. Start here"
+    >       },
+    >       {
+    >         "id": "2HFNEMWRP",
+    >         "path": "/Users/Oor7cheitoiz8Fie/examples/2. Data holdings"
+    >       },
+    >       {
+    >         "id": "2HGZQAAMH",
+    >         "path": "/Users/Oor7cheitoiz8Fie/examples/3. Source counts over the sky"
+    >       },
+    >       {
+    >         "id": "2HHFGQ6FM",
+    >         "path": "/Users/Oor7cheitoiz8Fie/examples/4. Mean proper motions over the sky"
+    >       },
+    >       {
+    >         "id": "2HG9F8D3S",
+    >         "path": "/Users/Oor7cheitoiz8Fie/examples/5. Working with Gaia XP spectra"
+    >       },
+    >       {
+    >         "id": "2HHV1FDJK",
+    >         "path": "/Users/Oor7cheitoiz8Fie/examples/6. Working with cross-matched surveys"
+    >       },
+    >       {
+    >         "id": "2HJ4RY318",
+    >         "path": "/Users/Oor7cheitoiz8Fie/examples/7. Good astrometric solutions via ML Random Forest classifier"
+    >       },
+    >       {
+    >         "id": "2HF9WJ4DK",
+    >         "path": "/Users/Oor7cheitoiz8Fie/examples/8. Tips and tricks"
+    >       }
+    >     ]
+    >   }
+
+    #
+    # Only their own notebooks.
+    # Public examples are gone.
+    #
+
+
+# -----------------------------------------------------
+# Run the ML RandomForest classifier example.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/zeppelin-rest-tools.sh
+
+    testall \
+        "${username}" \
+        "${password}" \
+        "/Users/${username}/examples/7" \
+    | tee "/tmp/${username}-testone.json" \
+    | jq '
+       .notebooks[] | {
+            "id": .noteid,
+            "name": .execute.name,
+            "path": .execute.path,
+            "duration": .execute.duration,
+            "paragraphs": [
+                .execute.paragraphs[] | {
+                    "title": .title,
+                    "duration": .duration
+                    }
+                ]
+            }
+       '
+
+    >   {
+    >     "id": "2HJ4RY318",
+    >     "name": "7. Good astrometric solutions via ML Random Forest classifier",
+    >     "path": "/Users/Oor7cheitoiz8Fie/examples/7. Good astrometric solutions via ML Random Forest classifier",
+    >     "duration": "0:9:14",
+    >     "paragraphs": [
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:4"
+    >       },
+    >       {
+    >         "title": "Basic catalogue query selections and predicates",
+    >         "duration": "0:0:33"
+    >       },
+    >       {
+    >         "title": "Raw catalogue with selected columns",
+    >         "duration": "0:4:19"
+    >       },
+    >       {
+    >         "title": "Visualisation (colour / absolute-magnitue diagram) of the raw catalogue",
+    >         "duration": "0:0:4"
+    >       },
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Define the training samples",
+    >         "duration": "0:0:3"
+    >       },
+    >       {
+    >         "title": "Assemble training and reserve test sets",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Train up the Random Forest",
+    >         "duration": "0:2:58"
+    >       },
+    >       {
+    >         "title": "Check feature set for nulls",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Classify the reserved test sets",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Classification confusion matrix",
+    >         "duration": "0:0:16"
+    >       },
+    >       {
+    >         "title": "Relative importance of the selected features",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Apply the classification model and plot sample results",
+    >         "duration": "0:0:15"
+    >       },
+    >       {
+    >         "title": "Histogram of classification probability",
+    >         "duration": "0:0:27"
+    >       },
+    >       {
+    >         "title": "Sky distribution of good source sample",
+    >         "duration": "0:0:5"
+    >       },
+    >       {
+    >         "title": "Sky distribution of bad source sample",
+    >         "duration": "0:0:5"
+    >       },
+    >       {
+    >         "title": "Tidy up",
+    >         "duration": "0:0:1"
+    >       },
+    >       {
+    >         "title": "Further reading and resources",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:0"
+    >       }
+    >     ]
+    >   }
+
+
+    20221011T055425 0:11:32
+    20221011T105132 1:27:58
+    20221013T152151 0:09:02 <-- back to normal ?
+    20221013T183746 0:09:14 <-- back to normal
+
+
+# -----------------------------------------------------
+# Run the source counts example.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/zeppelin-rest-tools.sh
+
+    testall \
+        "${username}" \
+        "${password}" \
+        "/Users/${username}/examples/3" \
+    | tee "/tmp/${username}-testone.json" \
+    | jq '
+       .notebooks[] | {
+            "id": .noteid,
+            "name": .execute.name,
+            "path": .execute.path,
+            "duration": .execute.duration,
+            "paragraphs": [
+                .execute.paragraphs[] | {
+                    "title": .title,
+                    "duration": .duration
+                    }
+                ]
+            }
+       '
+
+    >   {
+    >     "id": "2HGZQAAMH",
+    >     "name": "3. Source counts over the sky",
+    >     "path": "/Users/Oor7cheitoiz8Fie/examples/3. Source counts over the sky",
+    >     "duration": "0:0:42",
+    >     "paragraphs": [
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Set the resolution level and define the query",
+    >         "duration": "0:0:1"
+    >       },
+    >       {
+    >         "title": "Plot up the results",
+    >         "duration": "0:0:40"
+    >       },
+    >       {
+    >         "title": "Further reading and resources",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:1"
+    >       }
+    >     ]
+    >   }
+
+    20221011T105132 0:07:32
+    20221013T152151 0:00:42 <-- back to normal ?
+    20221013T183746 0:00:42 <-- back to normal
+
+
+# -----------------------------------------------------
+# Run the proper motions example.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/zeppelin-rest-tools.sh
+
+    testall \
+        "${username}" \
+        "${password}" \
+        "/Users/${username}/examples/4" \
+    | tee "/tmp/${username}-testone.json" \
+    | jq '
+       .notebooks[] | {
+            "id": .noteid,
+            "name": .execute.name,
+            "path": .execute.path,
+            "duration": .execute.duration,
+            "paragraphs": [
+                .execute.paragraphs[] | {
+                    "title": .title,
+                    "duration": .duration
+                    }
+                ]
+            }
+       '
+
+    >   {
+    >     "id": "2HHFGQ6FM",
+    >     "name": "4. Mean proper motions over the sky",
+    >     "path": "/Users/Oor7cheitoiz8Fie/examples/4. Mean proper motions over the sky",
+    >     "duration": "0:0:57",
+    >     "paragraphs": [
+    >       {
+    >         "title": "Introduction",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Set HEALPix resolution",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Define a data frame by SQL query",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Mean RA proper motion plot",
+    >         "duration": "0:0:53"
+    >       },
+    >       {
+    >         "title": "Mean Dec proper motion plot",
+    >         "duration": "0:0:1"
+    >       },
+    >       {
+    >         "title": "Further reading and resources",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "Tidy-up",
+    >         "duration": "0:0:0"
+    >       },
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:0"
+    >       }
+    >     ]
+    >   }
+
+    20221011T105132 0:12:50
+    20221013T152151 0:01:10 <-- back to normal ?
+    20221013T183746 0:00:57 <-- back to normal
+
+    #
+    # Looks like everything is back to normal.
+    # Add the live user accounts and hand it over to Nigel & Dennis for final checks.
+    #
+
+
+# -----------------------------------------------------
+# Import our live users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users
+
+    >   ....
+    >   ....
+
+
+    list-linux-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "homedir": "/home/DCrake",
+    >       "linuxuid": "10001",
+    >       "pkeyhash": "3a2afa4552c09330033182326a1e6fe5"
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "username": "AKrause",
+    >       "homedir": "/home/AKrause",
+    >       "linuxuid": "10012",
+    >       "pkeyhash": "68b329da9893e34099c7d8ad5cb9c940"
+    >     }
+    >   ]
+
+
+    list-shiro-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "password": "",
+    >       "hashhash": "363f543c44ac0b298b10734900419412"
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "username": "AKrause",
+    >       "password": "",
+    >       "hashhash": "10180a1d9e992984d01eaaeb705d7ee4"
+    >     }
+    >   ]
+
+
+    list-ceph-info \
+        /tmp/live-users.json
+
+    >   [
+    >     {
+    >       "username": "DCrake",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-DCrake",
+    >         "size": 1024,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-DCrake",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     ....
+    >     ....
+    >     {
+    >       "username": "AKrause",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-AKrause",
+    >         "size": 10,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-AKrause",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# https://unix.stackexchange.com/questions/34004/how-does-tcp-keepalive-work-in-ssh
+# https://unix.stackexchange.com/a/34201
+#[root@ansibler]
+
+    ssh \
+        -n \
+        -f \
+        -N \
+        -D '*:3000' \
+        -o ServerAliveInterval=10 \
+        -o ServerAliveCountMax=12 \
+        zeppelin
+
+    >   ....
+    >   ....
+
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login and check the notebooks.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        'http://zeppelin:8080/' &
+
+
+    #
+    # Login as DMorris - own notebooks work OK.
+    # Looks good to go.
+    #
+
+
+
+

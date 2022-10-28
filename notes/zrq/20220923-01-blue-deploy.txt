@@ -1,0 +1,512 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Deploy everything from clean on a new system with upstream changes.
+        https://github.com/wfau/gaia-dmp/issues/1002
+
+    Result:
+
+        Success.
+        Lots of debugging and hacking along the way.
+        Needs a clen deploy to test.
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Fri 23 Sep 04:10:16 UTC 2022
+    >   iris-gaia-green-20220825-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, Stelios is using red, so selecting blue for the deployment.
+    #
+
+    # Starting a new pattern for creating the client container.
+    # Working towards a launch-script.
+    # https://github.com/wfau/aglais/issues/894
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-blue-20220923
+    >         date: 20220923T041443
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-blue
+
+    >   real    44m2.860s
+    >   user    14m12.856s
+    >   sys     3m48.526s
+
+
+# -----------------------------------------------------
+# Allow port 8080 (HTTP).
+#[root@ansibler]
+
+    groupid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            security group list \
+                --format json \
+        | jq -r '.[] | select(.Name | match("zeppelin-security")) | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --protocol 'tcp' \
+            --dst-port '8080:8080' \
+            "${groupid}"
+
+    >   +-------------------------+--------------------------------------+
+    >   | Field                   | Value                                |
+    >   +-------------------------+--------------------------------------+
+    >   | created_at              | 2022-09-23T10:08:31Z                 |
+    >   | description             |                                      |
+    >   | direction               | ingress                              |
+    >   | ether_type              | IPv4                                 |
+    >   | id                      | a1d5380d-1c65-469b-b46e-80938d86d0d8 |
+    >   | name                    | None                                 |
+    >   | port_range_max          | 8080                                 |
+    >   | port_range_min          | 8080                                 |
+    >   | project_id              | e918a13fed2648758175a15fac083569     |
+    >   | protocol                | tcp                                  |
+    >   | remote_address_group_id | None                                 |
+    >   | remote_group_id         | None                                 |
+    >   | remote_ip_prefix        | 0.0.0.0/0                            |
+    >   | revision_number         | 0                                    |
+    >   | security_group_id       | b7562f18-10d5-480c-865a-a6f1e986a54d |
+    >   | tags                    | []                                   |
+    >   | tenant_id               | e918a13fed2648758175a15fac083569     |
+    >   | updated_at              | 2022-09-23T10:08:31Z                 |
+    >   +-------------------------+--------------------------------------+
+
+
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# https://unix.stackexchange.com/questions/34004/how-does-tcp-keepalive-work-in-ssh
+# https://unix.stackexchange.com/a/34201
+#[root@ansibler]
+
+    ssh \
+        -n \
+        -f \
+        -N \
+        -D '*:3000' \
+        -o ServerAliveInterval=10 \
+        -o ServerAliveCountMax=12 \
+        zeppelin
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    username=$(pwgen 16 1)
+
+    createusermain "${username}" \
+    | tee "/tmp/${username}.json" \
+    | jq '.shirouser | {"username": .name, "password": .password}'
+
+    >   {
+    >     "username": "Oomie5aetohp5wae",
+    >     "password": "molehill serrated unshaken safeguard"
+    >   }
+
+
+# -----------------------------------------------------
+# Login as the new user.
+#[root@ansibler]
+
+    password=$(
+        jq -r '.shirouser.password' "/tmp/${username}.json"
+        )
+
+    zeppelinurl=http://zeppelin:8080
+    zepcookies=/tmp/${username:?}.cookies
+
+    curl \
+        --silent \
+        --request 'POST' \
+        --cookie-jar "${zepcookies:?}" \
+        --data "userName=${username:?}" \
+        --data "password=${password:?}" \
+        "${zeppelinurl:?}/api/login" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "Oomie5aetohp5wae",
+    >       "ticket": "fc7fc042-eef9-43b6-b8ae-f80a37ba1edc",
+    >       "roles": "[]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# List notebooks the user can see.
+#[root@ansibler]
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": [
+    >       {
+    >         "id": "2HFDM1QMF",
+    >         "path": "/Users/Oomie5aetohp5wae/examples/1. Start here"
+    >       },
+    >       {
+    >         "id": "2HFDXDNKN",
+    >         "path": "/Users/Oomie5aetohp5wae/examples/2. Data holdings"
+    >       },
+    >       {
+    >         "id": "2HEDUDK8F",
+    >         "path": "/Users/Oomie5aetohp5wae/examples/3. Source counts over the sky"
+    >       },
+    >       {
+    >         "id": "2HEJJXPAJ",
+    >         "path": "/Users/Oomie5aetohp5wae/examples/4. Mean proper motions over the sky"
+    >       },
+    >       {
+    >         "id": "2HE1X5YAV",
+    >         "path": "/Users/Oomie5aetohp5wae/examples/5. Working with Gaia XP spectra"
+    >       },
+    >       {
+    >         "id": "2HE4VSNU7",
+    >         "path": "/Users/Oomie5aetohp5wae/examples/6. Working with cross-matched surveys"
+    >       },
+    >       {
+    >         "id": "2HEJU1CEY",
+    >         "path": "/Users/Oomie5aetohp5wae/examples/7. Good astrometric solutions via ML Random Forest classifier"
+    >       },
+    >       {
+    >         "id": "2HE4Z9U6U",
+    >         "path": "/Users/Oomie5aetohp5wae/examples/8. Tips and tricks"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# Run the ML RandomForest classifier example.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/zeppelin-rest-tools.sh
+
+    testall \
+        "${username}" \
+        "${password}" \
+        "/Users/${username}/examples/7" \
+    | tee "/tmp/${username}-testone.json" \
+    | jq '
+       .notebooks[] | {
+            "id": .noteid,
+            "name": .execute.name,
+            "path": .execute.path,
+            "duration": .execute.duration,
+            "paragraphs": [
+                .execute.paragraphs[] | {
+                    "title": .title,
+                    "duration": .duration
+                    }
+                ]
+            }
+       '
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Import our test users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-test-users
+
+    >   ....
+    >   ....
+
+
+    list-linux-info \
+        /tmp/test-users.json
+
+    >   [
+    >     {
+    >       "username": "Reyesfan",
+    >       "homedir": "/home/Reyesfan",
+    >       "linuxuid": "20003",
+    >       "pkeyhash": "6e46966e088b3b966a65779686c71800"
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+    list-shiro-info \
+        /tmp/test-users.json
+
+    >   [
+    >     {
+    >       "username": "Reyesfan",
+    >       "password": "siren decompose liqueur bling",
+    >       "hashhash": "7c80988607dd2671ac61a11abdc9b376"
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+    list-ceph-info \
+        /tmp/test-users.json
+
+    >   [
+    >     {
+    >       "username": "Reyesfan",
+    >       "usershare": {
+    >         "name": "iris-gaia-blue-user-Reyesfan",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-blue",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-blue-home-Reyesfan",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-blue",
+    >         "status": "available"
+    >       }
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+# -----------------------------------------------------
+# Import our live users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users
+
+    >   ....
+    >   ....
+
+
+    list-linux-info \
+        /tmp/live-users.json
+
+    >   [
+    >     ....
+    >     ....
+    >     {
+    >       "username": "DMorris",
+    >       "homedir": "/home/DMorris",
+    >       "linuxuid": "10004",
+    >       "pkeyhash": "7763ae76c0d07f278465ad0a2162a492"
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+    list-shiro-info \
+        /tmp/live-users.json
+
+    >   [
+    >     ....
+    >     ....
+    >     {
+    >       "username": "DMorris",
+    >       "password": "",
+    >       "hashhash": "99106f7237588b98e844d7de497956f4"
+    >     },
+    >     ....
+    >     ....
+    >   ]
+
+
+    list-ceph-info \
+        /tmp/live-users.json
+
+    >   [
+    >     ....
+    >     ....
+    >     {
+    >       "username": "DMorris",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-DMorris",
+    >         "size": 1025,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-DMorris",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     },
+    >     ....
+    >     ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Add a new account for Amy Krause (EPCC)
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit deployments/common/users/live-users.yml
+
+            users:
+                ....
+        +       - name: "AKrause"
+        +         type: "live"
+        +         linuxuid: 10012
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Import the new user account.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users
+
+    >   ....
+    >   ....
+
+
+    list-shiro-full \
+        /tmp/live-users.json
+
+    >   [
+    >     ....
+    >     ....
+    >     {
+    >       "username": "AKrause",
+    >       "password": ".... ....",             <-- send this to the user
+    >       "passhash": "$shiro1$SHA-....=",     <-- save this on the data server
+    >       "hashhash": "...."
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Save the passhash on the data server.
+#[user@desktop]
+
+    ssh fedora@data.gaia-dmp.uk
+
+        vi passhashes
+
+            users:
+              passhash:
+                ....
+                ....
+        +       "AKrause":     "$shiro1$SHA-....="
+
+
+
+
+
+

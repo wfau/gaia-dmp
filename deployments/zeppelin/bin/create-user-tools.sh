@@ -160,17 +160,17 @@
             "${mountmode}"
         }
 
-    cloneusernotebooks()
+    copyusernotebooks()
         {
         local username=${1:?'username required'}
         local usertype=${2:?'usertype required'}
         local password=${3}
         #
-        # Call Zeppelin to clone the user's notebooks.
+        # Call Zeppelin to copy the user's notebooks.
         # Returns JSON.
         ssh zeppelin \
             "
-            clone-notebooks.sh '${username}' '${usertype}' '${password}'
+            copy-notebooks.sh '${username}' '${usertype}' '${password}'
             "
         }
 
@@ -283,7 +283,7 @@ echo "\"shirouser\": "
 
 echo ","
 echo "\"notebooks\": "
-        cloneusernotebooks \
+        copyusernotebooks \
             "${username}" \
             "${usertype}" \
             "${password}"
@@ -495,8 +495,8 @@ echo "}"
         }
 
     #
-    # List the notebook clone information.
-    list-note-clone()
+    # List the notebook copy information.
+    list-note-copy()
         {
         local jsonfile=${1:-'input JSON filename required'}
         jq '[

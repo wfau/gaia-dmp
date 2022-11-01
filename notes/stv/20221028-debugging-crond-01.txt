@@ -1,0 +1,180 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Debug what went wrong with automated certificate renewal
+
+    Result:
+  
+        Success
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   iris-gaia-blue-20221013-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    # Use Red for deploy
+    
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+    configname=zeppelin-26.43-spark-3.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >  Done
+
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "dmp.gaia.ac.uk" \
+        | tee /tmp/create-all.log
+
+    >  Done
+
+    
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+    
+
+
+# -----------------------------------------------------
+# Copy certificates from data server
+#[root@ansibler]
+
+    scp -r fedora@data.aglais.uk:/home/fedora/certs/ /root/
+    
+    
+# -----------------------------------------------------
+# Enable HTTPS
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/setup-ssl.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/setup-ssl.log
+
+        > Done
+ 
+# -----------------------------------------------------
+# Check status of cronjob for cerbot renewal
+# fedora@zeppelin
+
+crontab -l
+#Ansible: Renew Certificate with certbot at 4:10 everyday
+10 4 * * * sudo certbot renew --quiet
+
+
+# Crontab gets created, but not run?
+
+# Is cron running?
+    
+sudo systemctl status crond
+● crond.service - Command Scheduler
+   Loaded: loaded (/usr/lib/systemd/system/crond.service; enabled; vendor preset: enabled)
+   Active: inactive (dead)
+
+
+# We are installing crond, but not starting it
+# Start manually
+sudo systemctl restart crond
+
+ 
+# (Checked status of crond on dmp.gaia.ac.uk, it is also not running there, so that seems to be the issue) 
+ 
+# Check status
+sudo systemctl status crond
+
+● crond.service - Command Scheduler
+   Loaded: loaded (/usr/lib/systemd/system/crond.service; enabled; vendor preset: enabled)
+   Active: active (running) since Mon 2022-10-31 20:04:39 UTC; 27s ago
+ Main PID: 61259 (crond)
+    Tasks: 2 (limit: 51743)
+   Memory: 5.7M
+      CPU: 162ms
+   CGroup: /system.slice/crond.service
+           ├─60801 /usr/sbin/anacron -s
+           └─61259 /usr/sbin/crond -n
+
+
+
+# Create a cronjob to create a file
+crontab -l
+#Ansible: Renew Certificate with certbot at 4:10 everyday
+* * * * * sudo touch /tmp/test
+
+
+# File created successfully, so cronjob seems to be working now
+

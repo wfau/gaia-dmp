@@ -1,0 +1,169 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Deploy with HTTPS and test that cron renew job is active
+
+    Result:
+  
+        Success
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   iris-gaia-blue-20221013-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    # Use Red for deploy
+    
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+    configname=zeppelin-26.43-spark-3.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >  Done
+
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+            "dmp.gaia.ac.uk" \
+        | tee /tmp/create-all.log
+
+    >  Done
+	    
+    > real	48m31.672s
+    > user	5m15.714s
+    > sys	1m3.531s
+
+    
+# -----------------------------------------------------
+# Add the ssh key for our data node.
+# This is used by the getpasshash function in the client container.
+#[root@ansibler]
+
+    ssh-keyscan 'data.aglais.uk' >> "${HOME}/.ssh/known_hosts"
+    
+
+
+# -----------------------------------------------------
+# Copy certificates from data server
+#[root@ansibler]
+
+    scp -r fedora@data.aglais.uk:/home/fedora/certs/ /root/
+    
+    
+# -----------------------------------------------------
+# Enable HTTPS
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/setup-ssl.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/setup-ssl.log
+
+        > Done
+        
+        
+# -----------------------------------------------------
+# Check status of cronjob for cerbot renewal
+# fedora@zeppelin
+
+crontab -l
+#Ansible: Renew Certificate with certbot at 4:10 everyday
+10 4 * * * sudo certbot renew --quiet
+
+
+
+sudo service crond status
+Redirecting to /bin/systemctl status crond.service
+● crond.service - Command Scheduler
+   Loaded: loaded (/usr/lib/systemd/system/crond.service; enabled; vendor preset: enabled)
+   Active: active (running) since Tue 2022-11-01 14:50:34 UTC; 1min 26s ago
+ Main PID: 67254 (crond)
+    Tasks: 1 (limit: 51743)
+   Memory: 1.1M
+      CPU: 131ms
+   CGroup: /system.slice/crond.service
+           └─67254 /usr/sbin/crond -n
+
+Nov 01 14:50:34 iris-gaia-red-20221101-zeppelin systemd[1]: Started Command Scheduler.
+Nov 01 14:50:34 iris-gaia-red-20221101-zeppelin crond[67254]: (CRON) STARTUP (1.5.4)
+Nov 01 14:50:34 iris-gaia-red-20221101-zeppelin crond[67254]: (CRON) INFO (Syslog will be used instead of sendmail.)
+Nov 01 14:50:34 iris-gaia-red-20221101-zeppelin crond[67254]: (CRON) INFO (RANDOM_DELAY will be scaled with factor 41% if used.)
+Nov 01 14:50:34 iris-gaia-red-20221101-zeppelin crond[67254]: (CRON) INFO (running with inotify support)
+
+
+
+
+
+
+

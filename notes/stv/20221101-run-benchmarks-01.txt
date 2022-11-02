@@ -1,0 +1,1726 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Run the benchmarking tests
+
+    Result:
+  
+        Success
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   iris-gaia-blue-20221013-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    # Use Red for deploy
+    
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+    configname=zeppelin-26.43-spark-3.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >  Done
+
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    time \
+        /deployments/hadoop-yarn/bin/create-all.sh \
+            "${cloudname:?}" \
+            "${configname:?}" \
+        | tee /tmp/create-all.log
+
+    >  Done
+	   
+    > real	46m27.603s
+    > user	3m53.585s
+    > sys	0m50.546s
+
+
+
+# -----------------------------------------------------
+# Setup a SSH tunnel.
+# https://linux.die.net/man/1/ssh
+#[root@ansibler]
+
+    ssh \
+        -n \
+        -f \
+        -N \
+        -L 8080:zeppelin:8080 \
+        zeppelin
+
+
+# -----------------------------------------------------
+# Create users    
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-test-users
+
+    > Done
+   
+    
+
+# -----------------------------------------------------
+# Create our benchmark script.
+#[root@ansibler]
+
+cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print("{")
+print(
+"""
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }},
+\"output\":
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+print("---start---")
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+print("---end---")
+print("}")
+EOF
+
+    chmod 'a+x' /tmp/run-benchmark.py
+
+
+# -----------------------------------------------------
+# Run one test as a single user
+#[root@ansibler]
+
+    usercount=1
+
+    endpoint="http://localhost:8080"
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/test-users.json
+
+    delaystart=4
+    delaynotebook=5
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+   
+
+{
+
+"config": {
+    "endpoint":   "http://localhost:8080",
+    "testconfig": "/deployments/zeppelin/test/config/quick.json",
+    "userlist":   "/tmp/test-users.json",
+    "usercount":  "1",
+    "delaystart":  "4",
+    "delaynotebook":  "5"
+    },
+"output":
+
+---start---
+Test started [Multi User]
+Test completed! (192.24 seconds)
+[
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "48.06",
+			"expected": "45.00",
+			"percent": "6.80",
+			"start": "2022-11-01T18:21:08.036656",
+			"finish": "2022-11-01T18:21:56.096012"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "80.32",
+			"expected": "55.00",
+			"percent": "46.04",
+			"start": "2022-11-01T18:22:01.101560",
+			"finish": "2022-11-01T18:23:21.426099"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "35.77",
+			"expected": "22.00",
+			"percent": "62.60",
+			"start": "2022-11-01T18:23:26.431261",
+			"finish": "2022-11-01T18:24:02.202208"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "8.05",
+			"expected": "60.00",
+			"percent": "-86.58",
+			"start": "2022-11-01T18:24:07.205990",
+			"finish": "2022-11-01T18:24:15.257127"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667326905145-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}]
+
+
+
+
+# -----------------------------------------------------
+# Run test with 5 concurrent users
+#[root@ansibler]
+
+    usercount=5
+
+    endpoint="http://localhost:8080"
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/test-users.json
+
+    delaystart=4
+    delaynotebook=5
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+  
+[
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "63.69",
+			"expected": "45.00",
+			"percent": "41.54",
+			"start": "2022-11-01T18:28:00.529930",
+			"finish": "2022-11-01T18:29:04.224694"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "93.05",
+			"expected": "55.00",
+			"percent": "69.19",
+			"start": "2022-11-01T18:29:09.229696",
+			"finish": "2022-11-01T18:30:42.284655"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "38.96",
+			"expected": "22.00",
+			"percent": "77.09",
+			"start": "2022-11-01T18:30:47.290043",
+			"finish": "2022-11-01T18:31:26.249046"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "8.23",
+			"expected": "60.00",
+			"percent": "-86.28",
+			"start": "2022-11-01T18:31:31.253665",
+			"finish": "2022-11-01T18:31:39.487230"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667327318262-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "228.44",
+			"expected": "45.00",
+			"percent": "407.65",
+			"start": "2022-11-01T18:28:04.533832",
+			"finish": "2022-11-01T18:31:52.974532"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "143.98",
+			"expected": "55.00",
+			"percent": "161.78",
+			"start": "2022-11-01T18:31:57.977815",
+			"finish": "2022-11-01T18:34:21.957900"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "61.79",
+			"expected": "22.00",
+			"percent": "180.87",
+			"start": "2022-11-01T18:34:26.961662",
+			"finish": "2022-11-01T18:35:28.752018"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "7.80",
+			"expected": "60.00",
+			"percent": "-87.00",
+			"start": "2022-11-01T18:35:33.757678",
+			"finish": "2022-11-01T18:35:41.556334"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667327334144-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "251.94",
+			"expected": "45.00",
+			"percent": "459.87",
+			"start": "2022-11-01T18:28:08.537715",
+			"finish": "2022-11-01T18:32:20.479048"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "113.79",
+			"expected": "55.00",
+			"percent": "106.90",
+			"start": "2022-11-01T18:32:25.482044",
+			"finish": "2022-11-01T18:34:19.276934"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "63.76",
+			"expected": "22.00",
+			"percent": "189.82",
+			"start": "2022-11-01T18:34:24.281741",
+			"finish": "2022-11-01T18:35:28.042659"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "6.63",
+			"expected": "60.00",
+			"percent": "-88.95",
+			"start": "2022-11-01T18:35:33.048151",
+			"finish": "2022-11-01T18:35:39.677718"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667327531331-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "462.11",
+			"expected": "45.00",
+			"percent": "926.91",
+			"start": "2022-11-01T18:28:12.541863",
+			"finish": "2022-11-01T18:35:54.652537"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "84.41",
+			"expected": "55.00",
+			"percent": "53.46",
+			"start": "2022-11-01T18:35:59.657813",
+			"finish": "2022-11-01T18:37:24.062998"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "40.95",
+			"expected": "22.00",
+			"percent": "86.14",
+			"start": "2022-11-01T18:37:29.068640",
+			"finish": "2022-11-01T18:38:10.020057"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "7.36",
+			"expected": "60.00",
+			"percent": "-87.73",
+			"start": "2022-11-01T18:38:15.025664",
+			"finish": "2022-11-01T18:38:22.385986"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667327532600-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "461.18",
+			"expected": "45.00",
+			"percent": "924.85",
+			"start": "2022-11-01T18:28:16.546406",
+			"finish": "2022-11-01T18:35:57.729594"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "197.17",
+			"expected": "55.00",
+			"percent": "258.49",
+			"start": "2022-11-01T18:36:02.734203",
+			"finish": "2022-11-01T18:39:19.902467"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "37.31",
+			"expected": "22.00",
+			"percent": "69.60",
+			"start": "2022-11-01T18:39:24.906534",
+			"finish": "2022-11-01T18:40:02.218732"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "8.09",
+			"expected": "60.00",
+			"percent": "-86.52",
+			"start": "2022-11-01T18:40:07.224634",
+			"finish": "2022-11-01T18:40:15.312818"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667327534659-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}]
+]
+
+
+
+
+# -----------------------------------------------------
+# Run basic test with 1 user
+#[root@ansibler]
+
+    usercount=1
+
+    endpoint="http://localhost:8080"
+    testconfig=/deployments/zeppelin/test/config/basic.json
+    testusers=/tmp/test-users.json
+
+    delaystart=2
+    delaynotebook=2
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+  
+[
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "46.40",
+			"expected": "45.00",
+			"percent": "3.12",
+			"start": "2022-11-02T11:07:01.379394",
+			"finish": "2022-11-02T11:07:47.782803"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "79.98",
+			"expected": "55.00",
+			"percent": "45.42",
+			"start": "2022-11-02T11:07:49.783895",
+			"finish": "2022-11-02T11:09:09.762171"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "40.66",
+			"expected": "22.00",
+			"percent": "84.82",
+			"start": "2022-11-02T11:09:11.763918",
+			"finish": "2022-11-02T11:09:52.423682"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "545.75",
+			"expected": "500.00",
+			"percent": "9.15",
+			"start": "2022-11-02T11:09:54.426254",
+			"finish": "2022-11-02T11:19:00.179994"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_cross_matched_surveys",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "122.94",
+			"expected": "130.00",
+			"percent": "-5.43",
+			"start": "2022-11-02T11:19:02.182587",
+			"finish": "2022-11-02T11:21:05.122676"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_Gaia_XP_spectra.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "14.04",
+			"expected": "1800.00",
+			"percent": "-99.22",
+			"start": "2022-11-02T11:21:07.125283",
+			"finish": "2022-11-02T11:21:21.163502"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "8.59",
+			"expected": "60.00",
+			"percent": "-85.68",
+			"start": "2022-11-02T11:21:23.165875",
+			"finish": "2022-11-02T11:21:31.758606"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667387256805-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}]
+] 	
+
+
+
+
+
+
+# -----------------------------------------------------
+# Run full test with 1 user
+#[root@ansibler]
+
+# Note: Had to remove Dennis's notebooks, as they are out of date and no longer work
+# Need to get newer versions if we want to include them in testing	
+
+    usercount=1
+
+    endpoint="http://localhost:8080"
+    testconfig=/deployments/zeppelin/test/config/full.json
+    testusers=/tmp/test-users.json
+
+    delaystart=2
+    delaynotebook=2
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+  
+[
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "46.46",
+			"expected": "45.00",
+			"percent": "3.25",
+			"start": "2022-11-02T12:03:11.333799",
+			"finish": "2022-11-02T12:03:57.795856"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "77.94",
+			"expected": "55.00",
+			"percent": "41.71",
+			"start": "2022-11-02T12:03:59.798084",
+			"finish": "2022-11-02T12:05:17.737740"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "37.07",
+			"expected": "22.00",
+			"percent": "68.48",
+			"start": "2022-11-02T12:05:19.740029",
+			"finish": "2022-11-02T12:05:56.806559"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "541.29",
+			"expected": "500.00",
+			"percent": "8.26",
+			"start": "2022-11-02T12:05:58.809358",
+			"finish": "2022-11-02T12:15:00.096960"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_cross_matched_surveys",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "117.85",
+			"expected": "130.00",
+			"percent": "-9.35",
+			"start": "2022-11-02T12:15:02.099272",
+			"finish": "2022-11-02T12:16:59.948127"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_Gaia_XP_spectra.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "12.87",
+			"expected": "1800.00",
+			"percent": "-99.28",
+			"start": "2022-11-02T12:17:01.950483",
+			"finish": "2022-11-02T12:17:14.825005"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},[
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "46.40",
+			"expected": "45.00",
+			"percent": "3.12",
+			"start": "2022-11-02T11:07:01.379394",
+			"finish": "2022-11-02T11:07:47.782803"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "79.98",
+			"expected": "55.00",
+			"percent": "45.42",
+			"start": "2022-11-02T11:07:49.783895",
+			"finish": "2022-11-02T11:09:09.762171"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "40.66",
+			"expected": "22.00",
+			"percent": "84.82",
+			"start": "2022-11-02T11:09:11.763918",
+			"finish": "2022-11-02T11:09:52.423682"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "545.75",
+			"expected": "500.00",
+			"percent": "9.15",
+			"start": "2022-11-02T11:09:54.426254",
+			"finish": "2022-11-02T11:19:00.179994"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_cross_matched_surveys",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "122.94",
+			"expected": "130.00",
+			"percent": "-5.43",
+			"start": "2022-11-02T11:19:02.182587",
+			"finish": "2022-11-02T11:21:05.122676"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_Gaia_XP_spectra.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "14.04",
+			"expected": "1800.00",
+			"percent": "-99.22",
+			"start": "2022-11-02T11:21:07.125283",
+			"finish": "2022-11-02T11:21:21.163502"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "8.59",
+			"expected": "60.00",
+			"percent": "-85.68",
+			"start": "2022-11-02T11:21:23.165875",
+			"finish": "2022-11-02T11:21:31.758606"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667387256805-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}]
+]
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "8.54",
+			"expected": "60.00",
+			"percent": "-85.77",
+			"start": "2022-11-02T12:17:16.827357",
+			"finish": "2022-11-02T12:17:25.364756"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667390626947-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}]
+]
+
+
+
+# -----------------------------------------------------
+# Run multi-user test with 10 users
+#[root@ansibler]
+
+    usercount=8
+
+    endpoint="http://localhost:8080"
+    testconfig=/deployments/zeppelin/test/config/multiuser.json
+    testusers=/tmp/test-users.json
+
+    delaystart=5
+    delaynotebook=5
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+  
+[
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "48.93",
+			"expected": "45.00",
+			"percent": "8.74",
+			"start": "2022-11-02T12:45:59.510339",
+			"finish": "2022-11-02T12:46:48.444879"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "77.04",
+			"expected": "65.00",
+			"percent": "18.53",
+			"start": "2022-11-02T12:46:53.447918",
+			"finish": "2022-11-02T12:48:10.489293"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "36.00",
+			"expected": "23.00",
+			"percent": "56.50",
+			"start": "2022-11-02T12:48:15.494559",
+			"finish": "2022-11-02T12:48:51.490671"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "537.47",
+			"expected": "800.00",
+			"percent": "-32.82",
+			"start": "2022-11-02T12:48:56.496526",
+			"finish": "2022-11-02T12:57:53.969920"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "8.82",
+			"expected": "60.00",
+			"percent": "-85.30",
+			"start": "2022-11-02T12:57:58.971905",
+			"finish": "2022-11-02T12:58:07.792020"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667393196691-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "737.70",
+			"expected": "45.00",
+			"percent": "1539.33",
+			"start": "2022-11-02T12:46:04.512017",
+			"finish": "2022-11-02T12:58:22.212202"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "472.91",
+			"expected": "65.00",
+			"percent": "627.55",
+			"start": "2022-11-02T12:58:27.216300",
+			"finish": "2022-11-02T13:06:20.121364"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "259.90",
+			"expected": "23.00",
+			"percent": "1030.01",
+			"start": "2022-11-02T13:06:25.124045",
+			"finish": "2022-11-02T13:10:45.026173"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "596.14",
+			"expected": "800.00",
+			"percent": "-25.48",
+			"start": "2022-11-02T13:10:50.031921",
+			"finish": "2022-11-02T13:20:46.175208"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "11.62",
+			"expected": "60.00",
+			"percent": "-80.63",
+			"start": "2022-11-02T13:20:51.180005",
+			"finish": "2022-11-02T13:21:02.800705"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667393213817-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "1490.55",
+			"expected": "45.00",
+			"percent": "3212.34",
+			"start": "2022-11-02T12:46:09.520063",
+			"finish": "2022-11-02T13:11:00.071054"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "457.30",
+			"expected": "65.00",
+			"percent": "603.54",
+			"start": "2022-11-02T13:11:05.075993",
+			"finish": "2022-11-02T13:18:42.376903"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "175.03",
+			"expected": "23.00",
+			"percent": "660.98",
+			"start": "2022-11-02T13:18:47.379940",
+			"finish": "2022-11-02T13:21:42.406050"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "577.54",
+			"expected": "800.00",
+			"percent": "-27.81",
+			"start": "2022-11-02T13:21:47.408384",
+			"finish": "2022-11-02T13:31:24.944971"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "10.36",
+			"expected": "60.00",
+			"percent": "-82.74",
+			"start": "2022-11-02T13:31:29.947940",
+			"finish": "2022-11-02T13:31:40.303986"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667393916674-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "746.29",
+			"expected": "45.00",
+			"percent": "1558.42",
+			"start": "2022-11-02T12:46:14.525606",
+			"finish": "2022-11-02T12:58:40.815571"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "82.38",
+			"expected": "65.00",
+			"percent": "26.75",
+			"start": "2022-11-02T12:58:45.820980",
+			"finish": "2022-11-02T13:00:08.205575"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "40.57",
+			"expected": "23.00",
+			"percent": "76.38",
+			"start": "2022-11-02T13:00:13.207976",
+			"finish": "2022-11-02T13:00:53.776432"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "571.48",
+			"expected": "800.00",
+			"percent": "-28.57",
+			"start": "2022-11-02T13:00:58.779894",
+			"finish": "2022-11-02T13:10:30.258144"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "10.12",
+			"expected": "60.00",
+			"percent": "-83.14",
+			"start": "2022-11-02T13:10:35.260820",
+			"finish": "2022-11-02T13:10:45.377260"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667393910471-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "2099.18",
+			"expected": "45.00",
+			"percent": "4564.85",
+			"start": "2022-11-02T12:46:19.528029",
+			"finish": "2022-11-02T13:21:18.709598"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "479.25",
+			"expected": "65.00",
+			"percent": "637.31",
+			"start": "2022-11-02T13:21:23.711907",
+			"finish": "2022-11-02T13:29:22.961546"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "173.96",
+			"expected": "23.00",
+			"percent": "656.36",
+			"start": "2022-11-02T13:29:27.966920",
+			"finish": "2022-11-02T13:32:21.929587"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "542.86",
+			"expected": "800.00",
+			"percent": "-32.14",
+			"start": "2022-11-02T13:32:26.931958",
+			"finish": "2022-11-02T13:41:29.790612"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "9.81",
+			"expected": "60.00",
+			"percent": "-83.65",
+			"start": "2022-11-02T13:41:34.791943",
+			"finish": "2022-11-02T13:41:44.603137"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667394663994-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "3333.53",
+			"expected": "45.00",
+			"percent": "7307.85",
+			"start": "2022-11-02T12:46:24.531970",
+			"finish": "2022-11-02T13:41:58.066142"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "485.97",
+			"expected": "65.00",
+			"percent": "647.65",
+			"start": "2022-11-02T13:42:03.067904",
+			"finish": "2022-11-02T13:50:09.039067"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "238.93",
+			"expected": "23.00",
+			"percent": "938.83",
+			"start": "2022-11-02T13:50:14.043960",
+			"finish": "2022-11-02T13:54:12.973983"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "607.62",
+			"expected": "800.00",
+			"percent": "-24.05",
+			"start": "2022-11-02T13:54:17.977805",
+			"finish": "2022-11-02T14:04:25.597693"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "10.13",
+			"expected": "60.00",
+			"percent": "-83.12",
+			"start": "2022-11-02T14:04:30.599943",
+			"finish": "2022-11-02T14:04:40.725025"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667395919854-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "3333.49",
+			"expected": "45.00",
+			"percent": "7307.77",
+			"start": "2022-11-02T12:46:29.539992",
+			"finish": "2022-11-02T13:42:03.034234"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "480.26",
+			"expected": "65.00",
+			"percent": "638.85",
+			"start": "2022-11-02T13:42:08.035927",
+			"finish": "2022-11-02T13:50:08.291676"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "268.01",
+			"expected": "23.00",
+			"percent": "1065.25",
+			"start": "2022-11-02T13:50:13.296036",
+			"finish": "2022-11-02T13:54:41.304121"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "1090.64",
+			"expected": "800.00",
+			"percent": "36.33",
+			"start": "2022-11-02T13:54:46.307995",
+			"finish": "2022-11-02T14:12:56.946671"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "10.29",
+			"expected": "60.00",
+			"percent": "-82.85",
+			"start": "2022-11-02T14:13:01.951974",
+			"finish": "2022-11-02T14:13:12.243016"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667395919468-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}],
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "3337.90",
+			"expected": "45.00",
+			"percent": "7317.55",
+			"start": "2022-11-02T12:46:34.544054",
+			"finish": "2022-11-02T13:42:12.443312"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "84.48",
+			"expected": "65.00",
+			"percent": "29.97",
+			"start": "2022-11-02T13:42:17.447933",
+			"finish": "2022-11-02T13:43:41.930037"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "44.38",
+			"expected": "23.00",
+			"percent": "92.97",
+			"start": "2022-11-02T13:43:46.935297",
+			"finish": "2022-11-02T13:44:31.318828"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "579.80",
+			"expected": "800.00",
+			"percent": "-27.52",
+			"start": "2022-11-02T13:44:36.323964",
+			"finish": "2022-11-02T13:54:16.126731"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "ERROR",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "10.05",
+			"expected": "60.00",
+			"percent": "-83.25",
+			"start": "2022-11-02T13:54:21.131906",
+			"finish": "2022-11-02T13:54:31.180937"
+		},
+		"logs": "Fail to execute line 6: import hdbscan\nTraceback (most recent call last):\n  File \"/tmp/1667396522522-0/zeppelin_python.py\", line 158, in <module>\n    exec(code, _zcUserQueryNameSpace)\n  File \"<stdin>\", line 6, in <module>\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/__init__.py\", line 1, in <module>\n    from .hdbscan_ import HDBSCAN, hdbscan\n  File \"/usr/local/lib64/python3.7/site-packages/hdbscan/hdbscan_.py\", line 334, in <module>\n    algorithm='best', memory=Memory(cachedir=None, verbose=0),\nTypeError: __init__() got an unexpected keyword argument 'cachedir'"
+	}]
+
+]

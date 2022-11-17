@@ -1,0 +1,463 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Transfer Gaia DR3 data from Nigel's space to shared space.
+        https://github.com/wfau/gaia-dmp/issues/1018
+
+        Easiest is to just create a new deployment and tweak the CephFS mounts.
+        Rather than editing network, router and machines by hand.
+        TODO Update infra-ops deploy to be more adaptable.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Collect the information needed to access the CephFS share.
+#[root@ansibler]
+
+    # Set the Manila API version.
+    # https://stackoverflow.com/a/58806536
+    source /deployments/openstack/bin/settings.sh
+
+    sharecloud=iris-gaia-data
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share list
+
+    >   +--------------------------------------+---------------------------------+-------+-------------+----------------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                            |  Size | Share Proto | Status         | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+---------------------------------+-------+-------------+----------------+-----------+-----------------+------+-------------------+
+    >   | c3c83cf6-5897-4194-b150-a29e83022a13 | aglais-data-gaia-dr3-2048       |  4196 | CEPHFS      | available      | False     | ceph01_cephfs   |      | nova              |
+    >   | 89467d18-212e-4207-ba67-b3597892186d | aglais-data-gaia-dr3-2048-new   |  8192 | CEPHFS      | available      | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+    >   ....
+    >   +--------------------------------------+---------------------------------+-------+-------------+----------------+-----------+-----------------+------+-------------------+
+
+
+    sharename=aglais-data-gaia-dr3-2048-new
+    sharejson=/tmp/${sharename:?}.json
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share show \
+            --format json \
+            "${sharename:?}" \
+    | tee "${sharejson:?}" \
+    | jq '.'
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2022-11-07T17:20:28.000000",
+    >     "description": null,
+    >     "export_locations": "\nid = 58e913c8-bde1-4a00-a0f1-71ef73c8e500\npath = 10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/5875b16a-3fd1-489e-a342-d50548e4e522\npreferred = False",
+    >     "has_replicas": false,
+    >     "id": "89467d18-212e-4207-ba67-b3597892186d",
+    >     "is_public": false,
+    >     "mount_snapshot_support": false,
+    >     "name": "aglais-data-gaia-dr3-2048-new",
+    >     "project_id": "e216e6b502134b6185380be6ccd0bf09",
+    >     "properties": {},
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "12668f5c-44e4-4b63-abf1-c56002ccc424",
+    >     "share_type_name": "ceph01_cephfs",
+    >     "size": 8192,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "available",
+    >     "task_state": null,
+    >     "user_id": "5fa0c97a6dd14e01a3c7d91dad5c6b17",
+    >     "volume_type": "ceph01_cephfs"
+    >   }
+
+    shareuuid=$(
+        jq -r '.id' "${sharejson:?}"
+        )
+    sharestatus=$(
+        jq -r '.status' "${sharejson:?}"
+        )
+
+    locations=$(
+        jq '.export_locations' "${sharejson:?}"
+        )
+
+    cephpath=$(
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\2/
+            ' <<< ${locations}
+            )
+
+    cephnodes=$(
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\1/
+            ' <<< ${locations}
+            )
+
+cat << EOF
+Share UUID   [${shareuuid}]
+Share status [${sharestatus}]
+Ceph path    [${cephpath}]
+Ceph nodes   [${cephnodes}]
+EOF
+
+    >   Share UUID   [89467d18-212e-4207-ba67-b3597892186d]
+    >   Share status [available]
+    >   Ceph path    [/volumes/_nogroup/5875b16a-3fd1-489e-a342-d50548e4e522]
+    >   Ceph nodes   [10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789]
+
+
+    openstack \
+        --os-cloud "${sharecloud}" \
+        share access list \
+            --format json \
+            "${shareuuid}" \
+    | tee "/tmp/${sharename:?}-access-list.json" \
+    | jq '.'
+
+    >   [
+    >     {
+    >       "ID": "2cf86846-02a9-48b1-bcb6-ba058761c3f1",
+    >       "Access Type": "cephx",
+    >       "Access To": "aglais-data-gaia-dr3-2048-new-ro",
+    >       "Access Level": "ro",
+    >       "State": "active",
+    >       "Access Key": "##################################",
+    >       "Created At": "2022-11-07T17:32:28.000000",
+    >       "Updated At": "2022-11-07T17:32:29.000000"
+    >     },
+    >     {
+    >       "ID": "e4f1057a-c381-4d35-aefe-8b516edd26e4",
+    >       "Access Type": "cephx",
+    >       "Access To": "aglais-data-gaia-dr3-2048-new-rw",
+    >       "Access Level": "rw",
+    >       "State": "active",
+    >       "Access Key": "##################################",
+    >       "Created At": "2022-11-07T17:33:38.000000",
+    >       "Updated At": "2022-11-07T17:33:39.000000"
+    >     }
+    >   ]
+
+    mountmode=rw
+
+    accessrule=$(
+        jq -r '.[] | select(."Access Level" == "'${mountmode:?}'") | .ID' "/tmp/${sharename:?}-access-list.json"
+        )
+
+    openstack \
+        --os-cloud "${sharecloud}" \
+        share access show \
+            --format json \
+            "${accessrule:?}" \
+    | tee "/tmp/${sharename:?}-access-rule.json" \
+    | jq '.'
+
+    >   {
+    >     "id": "e4f1057a-c381-4d35-aefe-8b516edd26e4",
+    >     "share_id": "89467d18-212e-4207-ba67-b3597892186d",
+    >     "access_level": "rw",
+    >     "access_to": "aglais-data-gaia-dr3-2048-new-rw",
+    >     "access_type": "cephx",
+    >     "state": "active",
+    >     "access_key": "##################################",
+    >     "created_at": "2022-11-07T17:33:38.000000",
+    >     "updated_at": "2022-11-07T17:33:39.000000",
+    >     "properties": ""
+    >   }
+
+    cephname=$(
+        jq -r '.access_to' "/tmp/${sharename:?}-access-rule.json"
+        )
+
+    cephkey=$(
+        jq -r '.access_key' "/tmp/${sharename:?}-access-rule.json"
+        )
+
+cat << EOF
+Share UUID   [${shareuuid}]
+Share status [${sharestatus}]
+Ceph path    [${cephpath}]
+Ceph nodes   [${cephnodes}]
+Access name  [${cephname}]
+Access key   [${cephkey}]
+EOF
+
+    >   Share UUID   [89467d18-212e-4207-ba67-b3597892186d]
+    >   Share status [available]
+    >   Ceph path    [/volumes/_nogroup/5875b16a-3fd1-489e-a342-d50548e4e522]
+    >   Ceph nodes   [10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789]
+    >   Access name  [aglais-data-gaia-dr3-2048-new-rw]
+    >   Access key   [##################################]
+
+
+# -----------------------------------------------------
+# Mount the new CephFS share.
+#[root@ansibler]
+
+    keyfile=/etc/ceph/ceph.client.${cephname}.keyring
+    cfgfile=/etc/ceph/ceph.conf
+    mountopts=async,auto,nodev,noexec,nosuid,_netdev,${mountmode}
+
+    mountpath=/data/gaia/GDR3_2048_NEW
+
+    ssh root@zeppelin \
+        "
+        cat > ${keyfile} << EOF
+[client.${cephname}]
+    key = ${cephkey}
+EOF
+
+        cat >> /etc/fstab << EOF
+${cephnodes}:${cephpath} ${mountpath} ceph name=${cephname},${mountopts} 0 0
+EOF
+
+        mkdir ${mountpath}
+        touch ${mountpath}/mount-failed
+
+        mount ${mountpath}
+
+        df -h ${mountpath} | jc --df | jq '.'
+        "
+
+    >   [
+    >     {
+    >       "filesystem": "10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/5875b16a-3fd1-489e-a342-d50548e4e522",
+    >       "size": "3.2P",
+    >       "used": null,
+    >       "mounted_on": "/data/gaia/GDR3_2048_NEW",
+    >       "available": null,
+    >       "use_percent": 51
+    >     }
+    >   ]
+
+    #
+    # The size, used and available are calculated for the whole CephFS array, not this share.
+    #
+
+    ssh root@zeppelin \
+        "
+        df -h ${mountpath}
+        "
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/5875b16a-3fd1-489e-a342-d50548e4e522  3.2P  1.6P  1.6P  51% /data/gaia/GDR3_2048_NEW
+
+
+# -----------------------------------------------------
+# Transfer all the data from Nigel's space.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        ls /user/NHambly/PARQUET/GDR3/
+        "
+
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   GDR3_ASTROPHYSICAL_PARAMETERS
+    >   GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   GDR3_EPOCH_PHOTOMETRY
+    >   GDR3_GAIA_SOURCE
+    >   GDR3_GALAXY_CANDIDATES
+    >   GDR3_GALAXY_CATALOGUE_NAME
+    >   GDR3_MCMC_SAMPLES_GSP_PHOT
+    >   GDR3_MCMC_SAMPLES_MSC
+    >   GDR3_NSS_ACCELERATION_ASTRO
+    >   GDR3_NSS_NON_LINEAR_SPECTRO
+    >   GDR3_NSS_TWO_BODY_ORBIT
+    >   GDR3_NSS_VIM_FL
+    >   GDR3_OA_NEURON_INFORMATION
+    >   GDR3_OA_NEURON_XP_SPECTRA
+    >   GDR3_QSO_CANDIDATES
+    >   GDR3_QSO_CATALOGUE_NAME
+    >   GDR3_RVS_MEAN_SPECTRUM
+    >   GDR3_SCIENCE_ALERTS
+    >   GDR3_SSO_OBSERVATION
+    >   GDR3_SSO_REFLECTANCE_SPECTRUM
+    >   GDR3_SSO_SOURCE
+    >   GDR3_TOTAL_GALACTIC_EXTINCTION_MAP
+    >   GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT
+    >   GDR3_VARI_AGN
+    >   GDR3_VARI_CEPHEID
+    >   GDR3_VARI_CLASSIFIER_CLASS_DEFINITION
+    >   GDR3_VARI_CLASSIFIER_DEFINITION
+    >   GDR3_VARI_CLASSIFIER_RESULT
+    >   GDR3_VARI_COMPACT_COMPANION
+    >   GDR3_VARI_ECLIPSING_BINARY
+    >   GDR3_VARI_EPOCH_RADIAL_VELOCITY
+    >   GDR3_VARI_LONG_PERIOD_VARIABLE
+    >   GDR3_VARI_MICROLENSING
+    >   GDR3_VARI_MS_OSCILLATOR
+    >   GDR3_VARI_PLANETARY_TRANSIT
+    >   GDR3_VARI_RAD_VEL_STATISTICS
+    >   GDR3_VARI_ROTATION_MODULATION
+    >   GDR3_VARI_RRLYRAE
+    >   GDR3_VARI_SHORT_TIMESCALE
+    >   GDR3_VARI_SUMMARY
+    >   GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   GDR3_XP_SUMMARY
+
+
+    #
+    # Using --human-readable *once* displays sizes in multiples of 1000.
+    # https://linux.die.net/man/1/rsync
+    #
+
+    ssh root@zeppelin \
+        "
+        rsync \
+            --dry-run \
+            --stats \
+            --progress \
+            --human-readable \
+            --recursive \
+            '/user/NHambly/PARQUET/GDR3/' \
+            '/data/gaia/GDR3_2048_NEW'
+        "
+
+    >   ....
+    >   Total file size: 8.37T bytes
+    >   Total transferred file size: 8.37T bytes
+    >   ....
+
+
+    #
+    # Using --human-readable *twice* displays sizes in multiples of 1024.
+    # https://linux.die.net/man/1/rsync
+    #
+
+    ssh root@zeppelin \
+        "
+        rsync \
+            --dry-run \
+            --stats \
+            --progress \
+            --human-readable \
+            --human-readable \
+            --recursive \
+            '/user/NHambly/PARQUET/GDR3/' \
+            '/data/gaia/GDR3_2048_NEW'
+        "
+
+
+    >   ....
+    >   Total file size: 7.61T bytes
+    >   Total transferred file size: 7.61T bytes
+    >   ....
+
+    #
+    # Run the transfer ...
+    #
+
+    ssh root@zeppelin \
+        "
+        rsync \
+            --stats \
+            --progress \
+            --human-readable \
+            --human-readable \
+            --recursive \
+            '/user/NHambly/PARQUET/GDR3/' \
+            '/data/gaia/GDR3_2048_NEW'
+        "
+
+    >   sending incremental file list
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/._SUCCESS.crc
+    >                 8 100%    0.00kB/s    0:00:00 (xfr#1, ir-chk=4269/4315)
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00033-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00033.c000.snappy.parquet.crc
+    >                20 100%    1.03kB/s    0:00:00 (xfr#2, ir-chk=4268/4315)
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00045-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00045.c000.snappy.parquet.crc
+    >                20 100%    0.45kB/s    0:00:00 (xfr#3, ir-chk=4267/4315)
+    >   ....
+    >   ....
+
+Started Thu 17 Nov 10:20:02 GMT 2022
+
+
+
+# -----------------------------------------------------
+# Login via a second terminal to check the progress.
+#[user@desktop]
+
+    podman ps
+
+    >   CONTAINER ID  IMAGE                                           COMMAND     CREATED      STATUS          PORTS                   NAMES
+    >   78b9ffe1e85f  ghcr.io/wfau/atolmis/ansible-client:2022.07.25  bash        4 hours ago  Up 4 hours ago  0.0.0.0:3000->3000/tcp  ansibler-green
+
+
+    podman exec -it ansibler-green bash
+
+        ssh zeppelin
+
+            date
+            hostname
+
+    >   Thu Nov 17 10:27:07 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+
+            ps -ef | grep rsync
+
+    >   ....
+    >   root       83478   83321  0 10:17 ?        00:00:00 bash -c rsync --stats --progress --human-readable --human-readable --recursive '/user/NHambly/PARQUET/GDR3/' '/data/gaia/GDR3_2048_NEW'
+    >   root       83488   83478 17 10:17 ?        00:01:18 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   root       83489   83488  0 10:17 ?        00:00:00 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   root       83490   83489 18 10:17 ?        00:01:24 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   fedora     83528   83504  0 10:25 pts/0    00:00:00 grep --color=auto rsync
+    >   ....
+
+
+            du -h /data/gaia/GDR3_2048_NEW
+
+    >   0       /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   45G     /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS
+    >   171K    /data/gaia/GDR3_2048_NEW/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   45G     /data/gaia/GDR3_2048_NEW
+
+            #
+            # Store information about the system and process activity in binary compressed form to a file with an interval of one minute for ten minutes.
+            # (from atop man page)
+
+            atop -w /tmp/atop.raw 60 10
+
+
+
+

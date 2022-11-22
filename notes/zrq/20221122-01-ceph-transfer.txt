@@ -1,0 +1,1149 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Continue testing the new DR3 data data.
+        https://github.com/wfau/gaia-dmp/issues/1018
+
+        TODO
+        Check to see if we get the same results using Nigel's data ?
+        Check to see if adding the 'gaiadr3' schema namespace to the query fixes the notebook ?
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Edit local version of gaiadmpsetup to use Nigel's data.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        vi "${HOME}/gaiadmpsetup/gaiadmpsetup/gaiadmpstore.py"
+
+        -   data_store = "file:////data/gaia/"
+        +   data_store = "file:////user/NHambly/PARQUET/"
+
+
+        vi "${HOME}/gaiadmpsetup/gaiadmpsetup/gaiadr3_pyspark_schema_structures.py"
+
+        -   release_folder = 'GDR3_2048_NEW'
+        +   release_folder = 'GDR3'
+
+
+        rm -r 'gaiadmpsetup/gaiadmpsetup/__pycache__'
+
+        zeppelin-daemon.sh restart
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+# -----------------------------------------------------
+# Run our simple test set.
+#[root@ansibler]
+
+    usercount=2
+
+    endpoint="http://zeppelin:8080"
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/test-creds.json
+
+    testname="multi-user-$(printf "%02d" ${usercount})-00"
+
+    delaystart=4
+    delaynotebook=5
+
+    mkdir -p /tmp/results
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" \
+    | tee "/tmp/results/${testname:?}.txt" \
+    | sed '
+        /^Test started/ d
+        /^Test completed/ d
+        ' \
+    | jq '.'
+
+
+    #
+    # Long time no results .....
+    #
+
+
+# -----------------------------------------------------
+# Check the Spark logs.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd zeppelin/logs
+
+            tail -f zeppelin-interpreter-spark-Surbron-Surbron-fedora-iris-gaia-green-20221116-zeppelin.log
+
+    >    ....
+    >    INFO [2022-11-22 05:15:31,825] ({FIFOScheduler-interpreter_1330949629-Worker-1} Client.java[handleConnectionFailure]:948) - Retrying connect to server: master01/10.10.0.136:8032. Already tried 7 time(s); retry policy is RetryUpToMaximumCountWithFixedSleep(maxRetries=10, sleepTime=1000 MILLISECONDS)
+    >    INFO [2022-11-22 05:15:32,827] ({FIFOScheduler-interpreter_1330949629-Worker-1} Client.java[handleConnectionFailure]:948) - Retrying connect to server: master01/10.10.0.136:8032. Already tried 8 time(s); retry policy is RetryUpToMaximumCountWithFixedSleep(maxRetries=10, sleepTime=1000 MILLISECONDS)
+    >    INFO [2022-11-22 05:15:33,828] ({FIFOScheduler-interpreter_1330949629-Worker-1} Client.java[handleConnectionFailure]:948) - Retrying connect to server: master01/10.10.0.136:8032. Already tried 9 time(s); retry policy is RetryUpToMaximumCountWithFixedSleep(maxRetries=10, sleepTime=1000 MILLISECONDS)
+    >    INFO [2022-11-22 05:15:33,830] ({FIFOScheduler-interpreter_1330949629-Worker-1} RetryInvocationHandler.java[log]:411) - java.net.ConnectException: Call From iris-gaia-green-20221116-zeppelin/10.10.2.37 to master01:8032 failed on connection exception: java.net.ConnectException: Connection refused; For more details see:  http://wiki.apache.org/hadoop/ConnectionRefused, while invoking ApplicationClientProtocolPBClientImpl.getClusterMetrics over null after 3 failover attempts. Trying to failover after sleeping for 28352ms.
+    >    ....
+
+    #
+    # System fails with connection errors :-(
+    # Looks like it will continue to do this forever ..
+    #
+
+
+# -----------------------------------------------------
+# Check the Hadoop services.
+#[root@ansibler]
+
+    ssh master01
+
+        ps -ef | grep java
+
+    >   fedora       730     708  0 05:30 pts/0    00:00:00 grep --color=auto java
+
+        #
+        # Missing all the Hadoop/Yarn services !
+        #
+
+
+# -----------------------------------------------------
+# Restart all our services ...
+#[root@ansibler]
+
+    ssh master01 \
+        '
+        /opt/hadoop/sbin/stop-all.sh
+        '
+
+    >   WARNING: Stopping all Apache Hadoop daemons as fedora in 10 seconds.
+    >   WARNING: Use CTRL-C to abort.
+    >   Stopping namenodes on [master01]
+    >   Stopping datanodes
+    >   Stopping secondary namenodes [iris-gaia-green-20221116-master01]
+    >   Stopping nodemanagers
+    >   Stopping resourcemanager
+
+
+    ssh zeppelin \
+        '
+        zeppelin-daemon.sh restart
+        '
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+    ssh master01 \
+        '
+        /opt/hadoop/sbin/start-all.sh
+        '
+
+    >   WARNING: Attempting to start all Apache Hadoop daemons as fedora in 10 seconds.
+    >   WARNING: This is not a recommended production deployment configuration.
+    >   WARNING: Use CTRL-C to abort.
+    >   Starting namenodes on [master01]
+    >   Starting datanodes
+    >   Starting secondary namenodes [iris-gaia-green-20221116-master01]
+    >   Starting resourcemanager
+    >   Starting nodemanagers
+
+
+    ssh master01 \
+        '
+        ps -ef | grep java
+        '
+
+    >           '
+    >   fedora      1381       1 11 05:45 ?        00:00:05 /etc/alternatives/jre/bin/java -Dproc_namenode -Djava.net.preferIPv4Stack=true -Dhdfs.audit.logger=INFO,NullAppender -Dhadoop.security.logger=INFO,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-namenode-iris-gaia-green-20221116-master01.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-namenode-iris-gaia-green-20221116-master01.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.namenode.NameNode
+    >   fedora      1621       1  7 05:46 ?        00:00:02 /etc/alternatives/jre/bin/java -Dproc_secondarynamenode -Djava.net.preferIPv4Stack=true -Dhdfs.audit.logger=INFO,NullAppender -Dhadoop.security.logger=INFO,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-secondarynamenode-iris-gaia-green-20221116-master01.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-secondarynamenode-iris-gaia-green-20221116-master01.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.namenode.SecondaryNameNode
+    >   fedora      1804       1 20 05:46 ?        00:00:07 /etc/alternatives/jre/bin/java -Dproc_resourcemanager -Djava.net.preferIPv4Stack=true -Dservice.libdir=/opt/hadoop/share/hadoop/yarn,/opt/hadoop/share/hadoop/yarn/lib,/opt/hadoop/share/hadoop/hdfs,/opt/hadoop/share/hadoop/hdfs/lib,/opt/hadoop/share/hadoop/common,/opt/hadoop/share/hadoop/common/lib -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-resourcemanager-iris-gaia-green-20221116-master01.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-resourcemanager-iris-gaia-green-20221116-master01.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.resourcemanager.ResourceManager
+    >   fedora      2099    1241  0 05:46 ?        00:00:00 bash -c          ps -ef | grep java
+    >   fedora      2112    2099  0 05:46 ?        00:00:00 grep java
+
+
+    for workernum in {1..6}
+    do
+        workername="worker0${workernum}"
+
+        echo ""
+        echo "Woker [${workername}]"
+
+        ssh "${workername}" \
+            '
+            ps -ef | grep java
+            '
+    done
+
+    >   Woker [worker01]
+    >   fedora     81944       1  1 05:45 ?        00:00:06 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker01.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker01.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora     82084       1  4 05:46 ?        00:00:19 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker01.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker01.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora     82432   82429  0 05:46 ?        00:00:00 /bin/bash -c /etc/alternatives/jre/bin/java -server -Xmx7168m -Djava.io.tmpdir=/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_01_000015/tmp '-Dspark.driver.port=39883' -Dspark.yarn.app.container.log.dir=/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_01_000015 -XX:OnOutOfMemoryError='kill %p' org.apache.spark.executor.YarnCoarseGrainedExecutorBackend --driver-url spark://CoarseGrainedScheduler@zeppelin:39883 --executor-id 14 --hostname worker01 --cores 5 --app-id application_1669095968727_0002 --resourceProfileId 0 --user-class-path file:/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_01_000015/__app__.jar 1>/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_01_000015/stdout 2>/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_01_000015/stderr
+    >   fedora     82444   82432  1 05:46 ?        00:00:06 /etc/alternatives/jre/bin/java -server -Xmx7168m -Djava.io.tmpdir=/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_01_000015/tmp -Dspark.driver.port=39883 -Dspark.yarn.app.container.log.dir=/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_01_000015 -XX:OnOutOfMemoryError=kill %p org.apache.spark.executor.YarnCoarseGrainedExecutorBackend --driver-url spark://CoarseGrainedScheduler@zeppelin:39883 --executor-id 14 --hostname worker01 --cores 5 --app-id application_1669095968727_0002 --resourceProfileId 0 --user-class-path file:/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_01_000015/__app__.jar
+    >   fedora     82769   82567  0 05:54 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora     82782   82769  0 05:54 ?        00:00:00 grep java
+
+    >   Woker [worker02]
+    >   fedora     82504       1  1 05:45 ?        00:00:06 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker02.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker02.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora     82643       1  3 05:46 ?        00:00:15 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker02.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker02.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora     83210   83195  0 05:54 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora     83223   83210  0 05:54 ?        00:00:00 grep java
+
+    >   Woker [worker03]
+    >   fedora      1286       1  1 05:45 ?        00:00:07 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker03.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker03.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora      1426       1  3 05:46 ?        00:00:17 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker03.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker03.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora      1661    1659  0 05:46 ?        00:00:00 /bin/bash -c /etc/alternatives/jre/bin/java -server -Xmx2048m -Djava.io.tmpdir=/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_01_000001/tmp -Dspark.yarn.app.container.log.dir=/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_01_000001 org.apache.spark.deploy.yarn.ExecutorLauncher --arg 'zeppelin:39883' --properties-file /var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_01_000001/__spark_conf__/__spark_conf__.properties --dist-cache-conf /var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_01_000001/__spark_conf__/__spark_dist_cache__.properties 1> /var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_01_000001/stdout 2> /var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_01_000001/stderr
+    >   fedora      1673    1661  1 05:46 ?        00:00:06 /etc/alternatives/jre/bin/java -server -Xmx2048m -Djava.io.tmpdir=/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_01_000001/tmp -Dspark.yarn.app.container.log.dir=/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_01_000001 org.apache.spark.deploy.yarn.ExecutorLauncher --arg zeppelin:39883 --properties-file /var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_01_000001/__spark_conf__/__spark_conf__.properties --dist-cache-conf /var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_01_000001/__spark_conf__/__spark_dist_cache__.properties
+    >   fedora      2311    2224  0 05:54 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora      2324    2311  0 05:54 ?        00:00:00 grep java
+
+    >   Woker [worker04]
+    >   fedora     81364       1  1 05:45 ?        00:00:08 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker04.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker04.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora     81505       1  3 05:46 ?        00:00:16 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker04.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker04.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora     82251   82206  0 05:54 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora     82264   82251  0 05:54 ?        00:00:00 grep java
+
+    >   Woker [worker05]
+    >   fedora     82957       1  1 05:45 ?        00:00:05 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker05.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker05.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora     83098       1  3 05:46 ?        00:00:14 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker05.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker05.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora     83649   83632  0 05:54 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora     83662   83649  0 05:54 ?        00:00:00 grep java
+
+    >   Woker [worker06]
+    >   fedora     82281       1  1 05:45 ?        00:00:06 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker06.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker06.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora     82420       1  3 05:46 ?        00:00:14 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker06.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker06.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora     83006   82975  0 05:54 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora     83019   83006  0 05:54 ?        00:00:00 grep java
+
+    #
+    # Still some old processes left running.
+    #
+
+    ssh worker01 \
+        '
+        kill -9 82432
+        kill -9 82444
+        '
+
+    ssh worker03 \
+        '
+        kill -9 1661
+        kill -9 1673
+        '
+
+
+    for workernum in {1..6}
+    do
+        workername="worker0${workernum}"
+
+        echo ""
+        echo "Woker [${workername}]"
+
+        ssh "${workername}" \
+            '
+            ps -ef | grep java
+            '
+    done
+
+
+    >   Woker [worker01]
+    >   fedora     81944       1  0 05:45 ?        00:00:07 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker01.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker01.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora     82084       1  1 05:46 ?        00:00:24 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker01.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker01.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora     82912   82909  0 06:09 ?        00:00:00 /bin/bash -c /etc/alternatives/jre/bin/java -server -Xmx7168m -Djava.io.tmpdir=/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_02_000002/tmp '-Dspark.driver.port=39883' -Dspark.yarn.app.container.log.dir=/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_02_000002 -XX:OnOutOfMemoryError='kill %p' org.apache.spark.executor.YarnCoarseGrainedExecutorBackend --driver-url spark://CoarseGrainedScheduler@zeppelin:39883 --executor-id 17 --hostname worker01 --cores 5 --app-id application_1669095968727_0002 --resourceProfileId 0 --user-class-path file:/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_02_000002/__app__.jar 1>/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_02_000002/stdout 2>/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_02_000002/stderr
+    >   fedora     82924   82912 83 06:09 ?        00:00:05 /etc/alternatives/jre/bin/java -server -Xmx7168m -Djava.io.tmpdir=/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_02_000002/tmp -Dspark.driver.port=39883 -Dspark.yarn.app.container.log.dir=/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_02_000002 -XX:OnOutOfMemoryError=kill %p org.apache.spark.executor.YarnCoarseGrainedExecutorBackend --driver-url spark://CoarseGrainedScheduler@zeppelin:39883 --executor-id 17 --hostname worker01 --cores 5 --app-id application_1669095968727_0002 --resourceProfileId 0 --user-class-path file:/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_02_000002/__app__.jar
+    >   fedora     82990   82796  0 06:09 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora     83003   82990  0 06:09 ?        00:00:00 grep java
+
+    >   Woker [worker02]
+    >   fedora     82504       1  0 05:45 ?        00:00:07 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker02.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker02.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora     82643       1  1 05:46 ?        00:00:17 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker02.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker02.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora     83274   83271  0 06:09 ?        00:00:00 /bin/bash -c /etc/alternatives/jre/bin/java -server -Xmx2048m -Djava.io.tmpdir=/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_02_000001/tmp -Dspark.yarn.app.container.log.dir=/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_02_000001 org.apache.spark.deploy.yarn.ExecutorLauncher --arg 'zeppelin:39883' --properties-file /var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_02_000001/__spark_conf__/__spark_conf__.properties --dist-cache-conf /var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_02_000001/__spark_conf__/__spark_dist_cache__.properties 1> /var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_02_000001/stdout 2> /var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_02_000001/stderr
+    >   fedora     83286   83274 62 06:09 ?        00:00:06 /etc/alternatives/jre/bin/java -server -Xmx2048m -Djava.io.tmpdir=/var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_02_000001/tmp -Dspark.yarn.app.container.log.dir=/var/hadoop/logs/application_1669095968727_0002/container_1669095968727_0002_02_000001 org.apache.spark.deploy.yarn.ExecutorLauncher --arg zeppelin:39883 --properties-file /var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_02_000001/__spark_conf__/__spark_conf__.properties --dist-cache-conf /var/hadoop/data/usercache/Surbron/appcache/application_1669095968727_0002/container_1669095968727_0002_02_000001/__spark_conf__/__spark_dist_cache__.properties
+    >   fedora     83341   83237  0 06:09 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora     83354   83341  0 06:09 ?        00:00:00 grep java
+
+    >   Woker [worker03]
+    >   fedora      1286       1  0 05:45 ?        00:00:08 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker03.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker03.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora      1426       1  1 05:46 ?        00:00:24 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker03.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker03.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora      2571    2344  0 06:09 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora      2584    2571  0 06:09 ?        00:00:00 grep java
+
+    >   Woker [worker04]
+    >   fedora     81364       1  0 05:45 ?        00:00:09 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker04.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker04.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora     81505       1  1 05:46 ?        00:00:18 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker04.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker04.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora     82324   82282  0 06:09 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora     82337   82324  0 06:09 ?        00:00:00 grep java
+
+    >   Woker [worker05]
+    >   fedora     82957       1  0 05:45 ?        00:00:06 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker05.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker05.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora     83098       1  1 05:46 ?        00:00:16 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker05.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker05.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora     83709   83678  0 06:09 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora     83722   83709  0 06:09 ?        00:00:00 grep java
+
+    >   Woker [worker06]
+    >   fedora     82281       1  0 05:45 ?        00:00:08 /etc/alternatives/jre/bin/java -Dproc_datanode -Djava.net.preferIPv4Stack=true -Dhadoop.security.logger=ERROR,RFAS -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker06.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-datanode-iris-gaia-green-20221116-worker06.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml org.apache.hadoop.hdfs.server.datanode.DataNode
+    >   fedora     82420       1  1 05:46 ?        00:00:17 /etc/alternatives/jre/bin/java -Dproc_nodemanager -Djava.net.preferIPv4Stack=true -Dyarn.log.dir=/var/hadoop/logs -Dyarn.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker06.log -Dyarn.home.dir=/opt/hadoop -Dyarn.root.logger=INFO,console -Djava.library.path=/opt/hadoop/lib/native -Dhadoop.log.dir=/var/hadoop/logs -Dhadoop.log.file=hadoop-fedora-nodemanager-iris-gaia-green-20221116-worker06.log -Dhadoop.home.dir=/opt/hadoop -Dhadoop.id.str=fedora -Dhadoop.root.logger=INFO,RFA -Dhadoop.policy.file=hadoop-policy.xml -Dhadoop.security.logger=INFO,NullAppender org.apache.hadoop.yarn.server.nodemanager.NodeManager
+    >   fedora     83065   83031  0 06:09 ?        00:00:00 bash -c              ps -ef | grep java
+    >   fedora     83078   83065  0 06:09 ?        00:00:00 grep java
+
+
+    #
+    # Hadoop is re-spawning the processes as fast as I am killing them off.
+    # Must be something that thinks the Spark job is still valid.
+    #
+    # Wasting time chasing my tail here.
+    # Each time we check a log file we find another unrelated issue.
+    #
+    # Skip to re-running the test to see what happens.
+    #
+
+
+# -----------------------------------------------------
+# Edit local version of gaiadmpsetup to use Nigel's data.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        vi "${HOME}/gaiadmpsetup/gaiadmpsetup/gaiadmpstore.py"
+
+        -   data_store = "file:////data/gaia/"
+        +   data_store = "file:////user/NHambly/PARQUET/"
+
+
+        vi "${HOME}/gaiadmpsetup/gaiadmpsetup/gaiadr3_pyspark_schema_structures.py"
+
+        -   release_folder = 'GDR3_2048_NEW'
+        +   release_folder = 'GDR3'
+
+
+        rm -r 'gaiadmpsetup/gaiadmpsetup/__pycache__'
+
+        zeppelin-daemon.sh restart
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+# -----------------------------------------------------
+# Run our simple test set.
+#[root@ansibler]
+
+    usercount=2
+
+    endpoint="http://zeppelin:8080"
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/test-creds.json
+
+    testname="multi-user-$(printf "%02d" ${usercount})-00"
+
+    delaystart=4
+    delaynotebook=5
+
+    mkdir -p /tmp/results
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" \
+    | tee "/tmp/results/${testname:?}.txt" \
+    | sed '
+        /^Test started/ d
+        /^Test completed/ d
+        ' \
+    | jq '.'
+
+    >   {
+    >     "config": {
+    >       "endpoint": "http://zeppelin:8080",
+    >       "testconfig": "/deployments/zeppelin/test/config/quick.json",
+    >       "userlist": "/tmp/test-creds.json",
+    >       "usercount": "2",
+    >       "delaystart": "4",
+    >       "delaynotebook": "5"
+    >     },
+    >     "output": [
+    >       [
+    >         {
+    >           "name": "GaiaDMPSetup",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "36.33",
+    >             "expected": "45.00",
+    >             "percent": "-19.28",
+    >             "start": "2022-11-22T06:17:55.297241",
+    >             "finish": "2022-11-22T06:18:31.623180"
+    >           },
+    >           "logs": ""
+    >         },
+    >         {
+    >           "name": "Mean_proper_motions_over_the_sky",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "14.50",
+    >             "expected": "55.00",
+    >             "percent": "-73.63",
+    >             "start": "2022-11-22T06:18:36.628669",
+    >             "finish": "2022-11-22T06:18:51.130208"
+    >           },
+    >           "logs": ""
+    >         },
+    >         {
+    >           "name": "Source_counts_over_the_sky.json",
+    >           "result": "ERROR",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "4.22",
+    >             "expected": "22.00",
+    >             "percent": "-80.80",
+    >             "start": "2022-11-22T06:18:56.133386",
+    >             "finish": "2022-11-22T06:19:00.356842"
+    >           },
+    >           "logs": "
+    >   /usr/local/lib64/python3.7/site-packages/healpy/pixelfunc.py:339: RuntimeWarning: invalid value encountered in subtract
+    >     return np.absolute(m - badval) <= atol + rtol * np.absolute(badval)
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:920: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. This has been deprecated since 3.3 and in 3.6, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = mpl.cm.get_cmap(\"viridis\").copy()
+    >     newcm.set_over(newcm(1.0))
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:921: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. This has been deprecated since 3.3 and in 3.6, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = mpl.cm.get_cmap(\"viridis\").copy()
+    >     newcm.set_under(bgcolor)
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:922: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. This has been deprecated since 3.3 and in 3.6, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = mpl.cm.get_cmap(\"viridis\").copy()
+    >     newcm.set_bad(badcolor)
+    >   /usr/local/lib64/python3.7/site-packages/numpy/core/numeric.py:2365: RuntimeWarning: invalid value encountered in multiply
+    >     x = x * ones_like(cond)
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:943: RuntimeWarning: invalid value encountered in log10
+    >     locs = np.log10(vmin) + np.arange(self.Nlocs) * (
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:945: RuntimeWarning: invalid value encountered in log10
+    >     ) / (self.Nlocs - 1.0)
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:446: RuntimeWarning: overflow encountered in double_scalars
+    >     newmin = vmid - dv * fact
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:451: RuntimeWarning: overflow encountered in double_scalars
+    >     newmax = vmid + dv * fact
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:479: RuntimeWarning: invalid value encountered in subtract
+    >     A_scaled -= a_min
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:487: RuntimeWarning: invalid value encountered in true_divide
+    >     A_scaled /= ((a_max - a_min) / frac)
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:503: RuntimeWarning: invalid value encountered in multiply
+    >     A_resampled *= ((a_max - a_min) / frac)
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:504: RuntimeWarning: invalid value encountered in multiply
+    >     vrange *= ((a_max - a_min) / frac)
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/ticker.py:2222: RuntimeWarning: overflow encountered in multiply
+    >     steps = self._extended_steps * scale
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/ticker.py:2246: RuntimeWarning: overflow encountered in double_scalars
+    >     best_vmin = (_vmin // step) * step
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/ticker.py:2061: RuntimeWarning: invalid value encountered in double_scalars
+    >     d, m = divmod(x, self.step)
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/ticker.py:2068: RuntimeWarning: invalid value encountered in double_scalars
+    >     d, m = divmod(x, self.step)"
+    >         },
+    >         {
+    >           "name": "Library_Validation.json",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "9.74",
+    >             "expected": "60.00",
+    >             "percent": "-83.76",
+    >             "start": "2022-11-22T06:19:05.363030",
+    >             "finish": "2022-11-22T06:19:15.106981"
+    >           },
+    >           "logs": ""
+    >         }
+    >       ],
+    >       [
+    >         {
+    >           "name": "GaiaDMPSetup",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "SLOW",
+    >             "elapsed": "52.40",
+    >             "expected": "45.00",
+    >             "percent": "16.45",
+    >             "start": "2022-11-22T06:17:59.300838",
+    >             "finish": "2022-11-22T06:18:51.704102"
+    >           },
+    >           "logs": ""
+    >         },
+    >         {
+    >           "name": "Mean_proper_motions_over_the_sky",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "14.16",
+    >             "expected": "55.00",
+    >             "percent": "-74.25",
+    >             "start": "2022-11-22T06:18:56.708552",
+    >             "finish": "2022-11-22T06:19:10.871514"
+    >           },
+    >           "logs": ""
+    >         },
+    >         {
+    >           "name": "Source_counts_over_the_sky.json",
+    >           "result": "ERROR",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "3.92",
+    >             "expected": "22.00",
+    >             "percent": "-82.19",
+    >             "start": "2022-11-22T06:19:15.876559",
+    >             "finish": "2022-11-22T06:19:19.793718"
+    >           },
+    >           "logs": "
+    >   /usr/local/lib64/python3.7/site-packages/healpy/pixelfunc.py:339: RuntimeWarning: invalid value encountered in subtract
+    >     return np.absolute(m - badval) <= atol + rtol * np.absolute(badval)
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:920: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. This has been deprecated since 3.3 and in 3.6, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = mpl.cm.get_cmap(\"viridis\").copy()
+    >     newcm.set_over(newcm(1.0))
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:921: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. This has been deprecated since 3.3 and in 3.6, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = mpl.cm.get_cmap(\"viridis\").copy()
+    >     newcm.set_under(bgcolor)
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:922: MatplotlibDeprecationWarning: You are modifying the state of a globally registered colormap. This has been deprecated since 3.3 and in 3.6, you will not be able to modify a registered colormap in-place. To remove this warning, you can make a copy of the colormap first. cmap = mpl.cm.get_cmap(\"viridis\").copy()
+    >     newcm.set_bad(badcolor)
+    >   /usr/local/lib64/python3.7/site-packages/numpy/core/numeric.py:2365: RuntimeWarning: invalid value encountered in multiply
+    >     x = x * ones_like(cond)
+    >   /usr/local/lib64/python3.7/site-packages/numpy/ma/core.py:1015: RuntimeWarning: overflow encountered in multiply
+    >     result = self.f(da, db, *args, **kwargs)
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:943: RuntimeWarning: invalid value encountered in log10
+    >     locs = np.log10(vmin) + np.arange(self.Nlocs) * (
+    >   /usr/local/lib64/python3.7/site-packages/healpy/projaxes.py:945: RuntimeWarning: invalid value encountered in log10
+    >     ) / (self.Nlocs - 1.0)
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:446: RuntimeWarning: overflow encountered in double_scalars
+    >     newmin = vmid - dv * fact
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:451: RuntimeWarning: overflow encountered in double_scalars
+    >     newmax = vmid + dv * fact
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:479: RuntimeWarning: invalid value encountered in subtract
+    >     A_scaled -= a_min
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:487: RuntimeWarning: invalid value encountered in true_divide
+    >     A_scaled /= ((a_max - a_min) / frac)
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:503: RuntimeWarning: invalid value encountered in multiply
+    >     A_resampled *= ((a_max - a_min) / frac)
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/image.py:504: RuntimeWarning: invalid value encountered in multiply
+    >     vrange *= ((a_max - a_min) / frac)
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/ticker.py:2222: RuntimeWarning: overflow encountered in multiply
+    >     steps = self._extended_steps * scale
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/ticker.py:2246: RuntimeWarning: overflow encountered in double_scalars
+    >     best_vmin = (_vmin // step) * step
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/ticker.py:2061: RuntimeWarning: invalid value encountered in double_scalars
+    >     d, m = divmod(x, self.step)
+    >   /usr/local/lib64/python3.7/site-packages/matplotlib/ticker.py:2068: RuntimeWarning: invalid value encountered in double_scalars
+    >     d, m = divmod(x, self.step)"
+    >         },
+    >         {
+    >           "name": "Library_Validation.json",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "9.41",
+    >             "expected": "60.00",
+    >             "percent": "-84.31",
+    >             "start": "2022-11-22T06:19:24.799471",
+    >             "finish": "2022-11-22T06:19:34.213036"
+    >           },
+    >           "logs": ""
+    >         }
+    >       ]
+    >     ]
+    >   }
+
+    #
+    # Same result as before.
+    # Source count example fails for both test users.
+    # Mean proper motion example passes for both test users.
+    #
+
+
+# -----------------------------------------------------
+# Check the logs to see which data location it was trying to use ...
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd zeppelin/logs
+
+            grep 'NHambly' *
+
+    >   ....
+    >   zeppelin-interpreter-spark-Evison-Evison-fedora-iris-gaia-green-20221116-zeppelin.log: WARN [2022-11-22 06:18:23,938] ({Thread-47} Logging.scala[logWarning]:69) - The directory file:/user/NHambly/PARQUET/GDR3/GDR3_GAIASOURCE was not found. Was it deleted very recently?
+    >   zeppelin-interpreter-spark-Evison-Evison-fedora-iris-gaia-green-20221116-zeppelin.log: WARN [2022-11-22 06:18:24,576] ({Thread-47} Logging.scala[logWarning]:69) - The directory file:/user/NHambly/PARQUET/GDR3/GDR3_2MASSPSC_BEST_NEIGHBOURS was not found. Was it deleted very recently?
+    >   zeppelin-interpreter-spark-Evison-Evison-fedora-iris-gaia-green-20221116-zeppelin.log: WARN [2022-11-22 06:18:24,593] ({Thread-47} Logging.scala[logWarning]:69) - The directory file:/user/NHambly/PARQUET/GDR3/GDR3_ALLWISE_BEST_NEIGHBOURS was not found. Was it deleted very recently?
+    >   zeppelin-interpreter-spark-Evison-Evison-fedora-iris-gaia-green-20221116-zeppelin.log: WARN [2022-11-22 06:18:24,606] ({Thread-47} Logging.scala[logWarning]:69) - The directory file:/user/NHambly/PARQUET/GDR3/GDR3_PS1_BEST_NEIGHBOURS was not found. Was it deleted very recently?
+    >   zeppelin-interpreter-spark-Evison-Evison-fedora-iris-gaia-green-20221116-zeppelin.log: WARN [2022-11-22 06:18:42,499] ({Thread-47} Logging.scala[logWarning]:69) - The directory file:/user/NHambly/PARQUET/GDR3/GDR3_GAIASOURCE was not found. Was it deleted very recently?
+    >   ....
+    >   zeppelin-interpreter-spark-Surbron-Surbron-fedora-iris-gaia-green-20221116-zeppelin.log: WARN [2022-11-22 06:18:44,378] ({Thread-47} Logging.scala[logWarning]:69) - The directory file:/user/NHambly/PARQUET/GDR3/GDR3_GAIASOURCE was not found. Was it deleted very recently?
+    >   zeppelin-interpreter-spark-Surbron-Surbron-fedora-iris-gaia-green-20221116-zeppelin.log: WARN [2022-11-22 06:18:44,988] ({Thread-47} Logging.scala[logWarning]:69) - The directory file:/user/NHambly/PARQUET/GDR3/GDR3_2MASSPSC_BEST_NEIGHBOURS was not found. Was it deleted very recently?
+    >   zeppelin-interpreter-spark-Surbron-Surbron-fedora-iris-gaia-green-20221116-zeppelin.log: WARN [2022-11-22 06:18:45,015] ({Thread-47} Logging.scala[logWarning]:69) - The directory file:/user/NHambly/PARQUET/GDR3/GDR3_ALLWISE_BEST_NEIGHBOURS was not found. Was it deleted very recently?
+    >   zeppelin-interpreter-spark-Surbron-Surbron-fedora-iris-gaia-green-20221116-zeppelin.log: WARN [2022-11-22 06:18:45,035] ({Thread-47} Logging.scala[logWarning]:69) - The directory file:/user/NHambly/PARQUET/GDR3/GDR3_PS1_BEST_NEIGHBOURS was not found. Was it deleted very recently?
+    >   zeppelin-interpreter-spark-Surbron-Surbron-fedora-iris-gaia-green-20221116-zeppelin.log: WARN [2022-11-22 06:19:02,276] ({Thread-47} Logging.scala[logWarning]:69) - The directory file:/user/NHambly/PARQUET/GDR3/GDR3_GAIASOURCE was not found. Was it deleted very recently?
+    >   ....
+
+    #
+    # The BEST_NEIGHBOUR tables makes sense, because Nigel's data set doesn't have them.
+    # .. but GDR3_GAIASOURCE should be there
+    #
+
+
+    ls -al /user/NHambly/PARQUET/GDR3/GDR3_GAIASOURCE
+
+    >   ls: cannot access '/user/NHambly/PARQUET/GDR3/GDR3_GAIASOURCE': No such file or directory
+
+    #
+    # Because the name has changed ...
+    #
+
+    ls -al /user/NHambly/PARQUET/GDR3/GDR3_GAIA_SOURCE
+
+    >   drwxr-xr-x.  2 fedora fedora      4099 Jul  7 18:37 .
+    >   drwxrwxr-x. 46 fedora fedora        44 Sep 27 15:08 ..
+    >   lrwxrwxrwx.  1 root   root          39 Jul  7 18:37 GDR3_GAIASOURCE -> /user/nch/PARQUET/GDR3/GDR3_GAIA_SOURCE
+    >   -rw-r--r--.  1 fedora fedora 306894276 Jun 27 22:14 part-00000-18ac60bc-42ce-42dd-ab5b-fc0027a56a2c_00000.c000.snappy.parquet
+    >   -rw-r--r--.  1 fedora fedora   2397620 Jun 27 22:14 .part-00000-18ac60bc-42ce-42dd-ab5b-fc0027a56a2c_00000.c000.snappy.parquet.crc
+    >   ....
+    >   ....
+    >   -rw-r--r--.  1 fedora fedora 307590374 Jun 27 23:18 part-02047-18ac60bc-42ce-42dd-ab5b-fc0027a56a2c_02047.c000.snappy.parquet
+    >   -rw-r--r--.  1 fedora fedora   2403060 Jun 27 23:18 .part-02047-18ac60bc-42ce-42dd-ab5b-fc0027a56a2c_02047.c000.snappy.parquet.crc
+    >   -rw-r--r--.  1 fedora fedora         0 Jun 27 23:20 _SUCCESS
+    >   -rw-r--r--.  1 fedora fedora         8 Jun 27 23:20 ._SUCCESS.crc
+
+    #
+    # The old symlink is broken - it is in the wrong place and it points to an old root '/user/nch/'.
+    #
+    # Short term fix is to add a new symlink in the right place.
+    # See if this fixes the issue, and see what the final copy of the schema files contain ..
+    #
+
+    pushd /user/NHambly/PARQUET/GDR3/
+
+        sudo ln -s GDR3_GAIA_SOURCE GDR3_GAIASOURCE
+
+        ls -al
+
+    popd
+
+
+    >   ....
+    >   drwxr-xr-x.  2 fedora fedora 4099 Jul  7 18:37 GDR3_GAIA_SOURCE
+    >   lrwxrwxrwx.  1 root   root     16 Nov 22 06:44 GDR3_GAIASOURCE -> GDR3_GAIA_SOURCE
+    >   ....
+
+
+# -----------------------------------------------------
+# Run our simple test set.
+#[root@ansibler]
+
+    usercount=2
+
+    endpoint="http://zeppelin:8080"
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/test-creds.json
+
+    testname="multi-user-$(printf "%02d" ${usercount})-00"
+
+    delaystart=4
+    delaynotebook=5
+
+    mkdir -p /tmp/results
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" \
+    | tee "/tmp/results/${testname:?}.txt" \
+    | sed '
+        /^Test started/ d
+        /^Test completed/ d
+        ' \
+    | jq '.'
+
+
+    >   {
+    >     "config": {
+    >       "endpoint": "http://zeppelin:8080",
+    >       "testconfig": "/deployments/zeppelin/test/config/quick.json",
+    >       "userlist": "/tmp/test-creds.json",
+    >       "usercount": "2",
+    >       "delaystart": "4",
+    >       "delaynotebook": "5"
+    >     },
+    >     "output": [
+    >       [
+    >         {
+    >           "name": "GaiaDMPSetup",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "34.95",
+    >             "expected": "45.00",
+    >             "percent": "-22.33",
+    >             "start": "2022-11-22T06:46:22.583952",
+    >             "finish": "2022-11-22T06:46:57.537482"
+    >           },
+    >           "logs": ""
+    >         },
+    >         {
+    >           "name": "Mean_proper_motions_over_the_sky",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "SLOW",
+    >             "elapsed": "213.21",
+    >             "expected": "55.00",
+    >             "percent": "287.65",
+    >             "start": "2022-11-22T06:47:02.542860",
+    >             "finish": "2022-11-22T06:50:35.750382"
+    >           },
+    >           "logs": ""
+    >         },
+    >         {
+    >           "name": "Source_counts_over_the_sky.json",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "SLOW",
+    >             "elapsed": "83.22",
+    >             "expected": "22.00",
+    >             "percent": "278.28",
+    >             "start": "2022-11-22T06:50:40.756614",
+    >             "finish": "2022-11-22T06:52:03.978224"
+    >           },
+    >           "logs": ""
+    >         },
+    >         {
+    >           "name": "Library_Validation.json",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "9.67",
+    >             "expected": "60.00",
+    >             "percent": "-83.89",
+    >             "start": "2022-11-22T06:52:08.984371",
+    >             "finish": "2022-11-22T06:52:18.653163"
+    >           },
+    >           "logs": ""
+    >         }
+    >       ],
+    >       [
+    >         {
+    >           "name": "GaiaDMPSetup",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "36.80",
+    >             "expected": "45.00",
+    >             "percent": "-18.22",
+    >             "start": "2022-11-22T06:46:26.587904",
+    >             "finish": "2022-11-22T06:47:03.389118"
+    >           },
+    >           "logs": ""
+    >         },
+    >         {
+    >           "name": "Mean_proper_motions_over_the_sky",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "SLOW",
+    >             "elapsed": "207.48",
+    >             "expected": "55.00",
+    >             "percent": "277.24",
+    >             "start": "2022-11-22T06:47:08.393477",
+    >             "finish": "2022-11-22T06:50:35.875514"
+    >           },
+    >           "logs": ""
+    >         },
+    >         {
+    >           "name": "Source_counts_over_the_sky.json",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "SLOW",
+    >             "elapsed": "83.09",
+    >             "expected": "22.00",
+    >             "percent": "277.70",
+    >             "start": "2022-11-22T06:50:40.880513",
+    >             "finish": "2022-11-22T06:52:03.974307"
+    >           },
+    >           "logs": ""
+    >         },
+    >         {
+    >           "name": "Library_Validation.json",
+    >           "result": "PASS",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "9.62",
+    >             "expected": "60.00",
+    >             "percent": "-83.97",
+    >             "start": "2022-11-22T06:52:08.982220",
+    >             "finish": "2022-11-22T06:52:18.600299"
+    >           },
+    >           "logs": ""
+    >         }
+    >       ]
+    >     ]
+    >   }
+
+    #
+    # All tests pass.
+    # Can we do the same for the new copy of the DR3 dataset ?
+    #
+
+
+# -----------------------------------------------------
+# Edit local version of gaiadmpsetup to use the new copy of the data.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        vi "${HOME}/gaiadmpsetup/gaiadmpsetup/gaiadmpstore.py"
+
+        -   data_store = "file:////user/NHambly/PARQUET/"
+        +   data_store = "file:////data/gaia/"
+
+
+        vi "${HOME}/gaiadmpsetup/gaiadmpsetup/gaiadr3_pyspark_schema_structures.py"
+
+        -   release_folder = 'GDR3'
+        +   release_folder = 'GDR3_2048_NEW'
+
+
+        rm -r 'gaiadmpsetup/gaiadmpsetup/__pycache__'
+
+        zeppelin-daemon.sh restart
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Add a symlink to fix the name change.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        pushd /data/gaia/GDR3_2048_NEW/
+
+            sudo ln -s GDR3_GAIA_SOURCE GDR3_GAIASOURCE
+
+            ls -al
+
+        popd
+
+
+    >   ....
+    >   drwxr-xr-x.  2 root root 4098 Nov 17 13:39 GDR3_GAIA_SOURCE
+    >   lrwxrwxrwx.  1 root root   16 Nov 22 07:00 GDR3_GAIASOURCE -> GDR3_GAIA_SOURCE
+    >   ....
+
+
+# -----------------------------------------------------
+# Run our simple test set.
+#[root@ansibler]
+
+    usercount=2
+
+    endpoint="http://zeppelin:8080"
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/test-creds.json
+
+    testname="multi-user-$(printf "%02d" ${usercount})-00"
+
+    delaystart=4
+    delaynotebook=5
+
+    mkdir -p /tmp/results
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" \
+    | tee "/tmp/results/${testname:?}.txt" \
+    | sed '
+        /^Test started/ d
+        /^Test completed/ d
+        ' \
+    | jq '.'
+
+
+
+    >   ....
+    >         {
+    >           "name": "Source_counts_over_the_sky.json",
+    >           "result": "ERROR",
+    >           "outputs": {
+    >             "valid": true
+    >           },
+    >           "messages": [],
+    >           "time": {
+    >             "result": "FAST",
+    >             "elapsed": "4.99",
+    >             "expected": "22.00",
+    >             "percent": "-77.30",
+    >             "start": "2022-11-22T07:03:26.427168",
+    >             "finish": "2022-11-22T07:03:31.420532"
+    >           },
+    >           "logs": "
+    >   Py4JJavaError: An error occurred while calling z:org.apache.spark.api.python.PythonRDD.collectAndServe.
+    >   : org.apache.spark.SparkException: Job aborted due to stage failure: Task 25 in stage 12.0 failed 4 times, most recent failure: Lost task 25.3 in stage 12.0 (TID 157) (worker06 executor 8): java.io.FileNotFoundException: File file:/data/gaia/GDR3_2048_NEW/GDR3_GAIASOURCE/part-01117-18ac60bc-42ce-42dd-ab5b-fc0027a56a2c_01117.c000.snappy.parquet does not exist
+    >   It is possible the underlying files have been updated. You can explicitly invalidate the cache in Spark by running 'REFRESH TABLE tableName' command in SQL or by recreating the Dataset/DataFrame involved.
+    >   \tat org.apache.spark.sql.execution.datasources.FileScanRDD$$anon$1.org$apache$spark$sql$execution$datasources$FileScanRDD$$anon$$readCurrentFile(FileScanRDD.scala:124)
+    >   \tat org.apache.spark.sql.execution.datasources.FileScanRDD$$anon$1.nextIterator(FileScanRDD.scala:169)
+    >   \tat org.apache.spark.sql.execution.datasources.FileScanRDD$$anon$1.hasNext(FileScanRDD.scala:93)
+    >   \tat org.apache.spark.sql.execution.FileSourceScanExec$$anon$1.hasNext(DataSourceScanExec.scala:503)
+    >   \tat org.apache.spark.sql.catalyst.expressions.GeneratedClass$GeneratedIteratorForCodegenStage1.columnartorow_nextBatch_0$(Unknown Source)
+    >   \tat org.apache.spark.sql.catalyst.expressions.GeneratedClass$GeneratedIteratorForCodegenStage1.agg_doAggregateWithKeys_0$(Unknown Source)
+    >   \tat org.apache.spark.sql.catalyst.expressions.GeneratedClass$GeneratedIteratorForCodegenStage1.processNext(Unknown Source)
+    >   \tat org.apache.spark.sql.execution.BufferedRowIterator.hasNext(BufferedRowIterator.java:43)
+    >   \tat org.apache.spark.sql.execution.WholeStageCodegenExec$$anon$1.hasNext(WholeStageCodegenExec.scala:755)
+    >   \tat scala.collection.Iterator$$anon$10.hasNext(Iterator.scala:458)
+    >   \tat org.apache.spark.shuffle.sort.BypassMergeSortShuffleWriter.write(BypassMergeSortShuffleWriter.java:132)
+    >   \tat org.apache.spark.shuffle.ShuffleWriteProcessor.write(ShuffleWriteProcessor.scala:59)
+    >   \tat org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:99)
+    >   \tat org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:52)
+    >   \tat org.apache.spark.scheduler.Task.run(Task.scala:131)
+    >   \tat org.apache.spark.executor.Executor$TaskRunner.$anonfun$run$3(Executor.scala:497)
+    >   \tat org.apache.spark.util.Utils$.tryWithSafeFinally(Utils.scala:1439)
+    >   \tat org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:500)
+    >   \tat java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    >   \tat java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    >   \tat java.lang.Thread.run(Thread.java:748)
+    >   
+    >   Driver stacktrace:
+    >   \tat org.apache.spark.scheduler.DAGScheduler.failJobAndIndependentStages(DAGScheduler.scala:2258)
+    >   \tat org.apache.spark.scheduler.DAGScheduler.$anonfun$abortStage$2(DAGScheduler.scala:2207)
+    >   \tat org.apache.spark.scheduler.DAGScheduler.$anonfun$abortStage$2$adapted(DAGScheduler.scala:2206)
+    >   \tat scala.collection.mutable.ResizableArray.foreach(ResizableArray.scala:62)
+    >   \tat scala.collection.mutable.ResizableArray.foreach$(ResizableArray.scala:55)
+    >   \tat scala.collection.mutable.ArrayBuffer.foreach(ArrayBuffer.scala:49)
+    >   \tat org.apache.spark.scheduler.DAGScheduler.abortStage(DAGScheduler.scala:2206)
+    >   \tat org.apache.spark.scheduler.DAGScheduler.$anonfun$handleTaskSetFailed$1(DAGScheduler.scala:1079)
+    >   \tat org.apache.spark.scheduler.DAGScheduler.$anonfun$handleTaskSetFailed$1$adapted(DAGScheduler.scala:1079)
+    >   \tat scala.Option.foreach(Option.scala:407)
+    >   \tat org.apache.spark.scheduler.DAGScheduler.handleTaskSetFailed(DAGScheduler.scala:1079)
+    >   \tat org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.doOnReceive(DAGScheduler.scala:2445)
+    >   \tat org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.onReceive(DAGScheduler.scala:2387)
+    >   \tat org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.onReceive(DAGScheduler.scala:2376)
+    >   \tat org.apache.spark.util.EventLoop$$anon$1.run(EventLoop.scala:49)
+    >   \tat org.apache.spark.scheduler.DAGScheduler.runJob(DAGScheduler.scala:868)
+    >   \tat org.apache.spark.SparkContext.runJob(SparkContext.scala:2196)
+    >   \tat org.apache.spark.SparkContext.runJob(SparkContext.scala:2217)
+    >   \tat org.apache.spark.SparkContext.runJob(SparkContext.scala:2236)
+    >   \tat org.apache.spark.SparkContext.runJob(SparkContext.scala:2261)
+    >   \tat org.apache.spark.rdd.RDD.$anonfun$collect$1(RDD.scala:1030)
+    >   \tat org.apache.spark.rdd.RDDOperationScope$.withScope(RDDOperationScope.scala:151)
+    >   \tat org.apache.spark.rdd.RDDOperationScope$.withScope(RDDOperationScope.scala:112)
+    >   \tat org.apache.spark.rdd.RDD.withScope(RDD.scala:414)
+    >   \tat org.apache.spark.rdd.RDD.collect(RDD.scala:1029)
+    >   \tat org.apache.spark.api.python.PythonRDD$.collectAndServe(PythonRDD.scala:180)
+    >   \tat org.apache.spark.api.python.PythonRDD.collectAndServe(PythonRDD.scala)
+    >   \tat sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+    >   \tat sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)
+    >   \tat sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+    >   \tat java.lang.reflect.Method.invoke(Method.java:498)
+    >   \tat py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)
+    >   \tat py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:357)
+    >   \tat py4j.Gateway.invoke(Gateway.java:282)
+    >   \tat py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)
+    >   \tat py4j.commands.CallCommand.execute(CallCommand.java:79)
+    >   \tat py4j.GatewayConnection.run(GatewayConnection.java:238)
+    >   \tat java.lang.Thread.run(Thread.java:748)
+    >   Caused by: java.io.FileNotFoundException: File file:/data/gaia/GDR3_2048_NEW/GDR3_GAIASOURCE/part-01117-18ac60bc-42ce-42dd-ab5b-fc0027a56a2c_01117.c000.snappy.parquet does not exist
+    >   It is possible the underlying files have been updated. You can explicitly invalidate the cache in Spark by running 'REFRESH TABLE tableName' command in SQL or by recreating the Dataset/DataFrame involved.
+    >   \tat org.apache.spark.sql.execution.datasources.FileScanRDD$$anon$1.org$apache$spark$sql$execution$datasources$FileScanRDD$$anon$$readCurrentFile(FileScanRDD.scala:124)
+    >   \tat org.apache.spark.sql.execution.datasources.FileScanRDD$$anon$1.nextIterator(FileScanRDD.scala:169)
+    >   \tat org.apache.spark.sql.execution.datasources.FileScanRDD$$anon$1.hasNext(FileScanRDD.scala:93)
+    >   \tat org.apache.spark.sql.execution.FileSourceScanExec$$anon$1.hasNext(DataSourceScanExec.scala:503)
+    >   \tat org.apache.spark.sql.catalyst.expressions.GeneratedClass$GeneratedIteratorForCodegenStage1.columnartorow_nextBatch_0$(Unknown Source)
+    >   \tat org.apache.spark.sql.catalyst.expressions.GeneratedClass$GeneratedIteratorForCodegenStage1.agg_doAggregateWithKeys_0$(Unknown Source)
+    >   \tat org.apache.spark.sql.catalyst.expressions.GeneratedClass$GeneratedIteratorForCodegenStage1.processNext(Unknown Source)
+    >   \tat org.apache.spark.sql.execution.BufferedRowIterator.hasNext(BufferedRowIterator.java:43)
+    >   \tat org.apache.spark.sql.execution.WholeStageCodegenExec$$anon$1.hasNext(WholeStageCodegenExec.scala:755)
+    >   \tat scala.collection.Iterator$$anon$10.hasNext(Iterator.scala:458)
+    >   \tat org.apache.spark.shuffle.sort.BypassMergeSortShuffleWriter.write(BypassMergeSortShuffleWriter.java:132)
+    >   \tat org.apache.spark.shuffle.ShuffleWriteProcessor.write(ShuffleWriteProcessor.scala:59)
+    >   \tat org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:99)
+    >   \tat org.apache.spark.scheduler.ShuffleMapTask.runTask(ShuffleMapTask.scala:52)
+    >   \tat org.apache.spark.scheduler.Task.run(Task.scala:131)
+    >   \tat org.apache.spark.executor.Executor$TaskRunner.$anonfun$run$3(Executor.scala:497)
+    >   \tat org.apache.spark.util.Utils$.tryWithSafeFinally(Utils.scala:1439)
+    >   \tat org.apache.spark.executor.Executor$TaskRunner.run(Executor.scala:500)
+    >   \tat java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1149)
+    >   \tat java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:624)
+    >   \t... 1 more
+    >   
+    >   (<class 'py4j.protocol.Py4JJavaError'>, Py4JJavaError('An error occurred while calling z:org.apache.spark.api.python.PythonRDD.collectAndServe.\
+    >   ', JavaObject id=o176), <traceback object at 0x7f82eeaccd70>)"
+    >         },
+    >   ....
+
+    #
+    # A new and exciting error :-D
+    #
+
+    #
+    # Guess - is this because I created the symlink on the zeppelin node, but the worker nodes haven't caught up yet ?
+    #
+
+    ssh zeppelin \
+        '
+        ls -al /data/gaia/GDR3_2048_NEW/GDR3_GAIASOURCE/part-01117-18ac60bc-42ce-42dd-ab5b-fc0027a56a2c_01117.c000.snappy.parquet
+        '
+
+    >   ....
+    >   -rw-r--r--. 1 root root 307175205 Nov 17 12:48 /data/gaia/GDR3_2048_NEW/GDR3_GAIASOURCE/part-01117-18ac60bc-42ce-42dd-ab5b-fc0027a56a2c_01117.c000.snappy.parquet
+    >   ....
+
+
+    ssh worker01 \
+        '
+        ls -al /data/gaia/GDR3_2048_NEW/GDR3_GAIASOURCE/part-01117-18ac60bc-42ce-42dd-ab5b-fc0027a56a2c_01117.c000.snappy.parquet
+        '
+
+    >   ....
+    >   ls: cannot access '/data/gaia/GDR3_2048_NEW/GDR3_GAIASOURCE/part-01117-18ac60bc-42ce-42dd-ab5b-fc0027a56a2c_01117.c000.snappy.parquet': No such file or directory
+    >   ....
+
+    #
+    # OMG is is even more dumb than that !!
+    # I created the new data set on the zeppelin node, but haven't mounted it on the worker nodes yet !!
+    #
+
+    ssh worker01 \
+        '
+        ls -al /data/gaia/
+        '
+
+    >   total 16
+    >   drwxr-xr-x.  6 root root 4096 Nov 16 18:48 .
+    >   drwxr-xr-x.  6 root root 4096 Nov 16 18:47 ..
+    >   drwxr-xr-x.  2 root root 4096 Nov 16 18:50 GDR3
+    >   dr-xr-xr-x. 12 root root   20 Jul 24 04:00 GDR3_2048
+    >   drwxr-xr-x.  2 root root 4096 Nov 16 18:48 GEDR3
+    >   dr-xr-xr-x.  6 root root    8 Jan  3  2022 GEDR3_2048
+
+    #
+    # Some tests worked, because they were getting old data ?
+    #
+
+
+# -----------------------------------------------------
+# Check the configuration ...
+#[root@ansibler]
+
+    ssh zeppelin
+
+        less "${HOME}/gaiadmpsetup/gaiadmpsetup/gaiaedr3_pyspark_schema_structures.py"
+
+    >   ....
+    >   # base folder for all products of this release
+    >   release_folder = 'GEDR3_FROG'
+    >   ....
+    >       'gaia_source' :
+    >           ([gaia_source_schema], release_folder + '/GEDR3_GAIASOURCE'),
+
+
+        less "${HOME}/gaiadmpsetup/gaiadmpsetup/gaiadr3_pyspark_schema_structures.py"
+
+    >   ....
+    >   # base folder for all release products
+    >   release_folder = 'GDR3_2048_NEW'
+    >   ....
+    >       'gaia_source' :
+    >           ([gaia_source_schema], release_folder + '/GDR3_GAIASOURCE'),
+
+

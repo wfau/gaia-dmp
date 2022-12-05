@@ -34,7 +34,6 @@
     /deployments/hadoop-yarn/bin/create-all.sh \
         "${cloudname:?}" \
         "${configname:?}" \
-        "${1:-zeppelin.gaia-dmp.uk}" \
     | tee /tmp/create-all.log
 
 

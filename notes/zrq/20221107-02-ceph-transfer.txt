@@ -1,0 +1,1157 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Transfer Gaia DR3 data from Nigel's space to shared space.
+        https://github.com/wfau/gaia-dmp/issues/1018
+
+        Checking the data sizes against the available space.
+
+    Result:
+
+        Success - cleared enough space to be able to create a new 8TiB share for the full set of DR3 data.
+
+# -----------------------------------------------------
+
+    DR3 ingests are now complete which means the following are now available from /user/NHambly/PARQUET/GDR3/ to be staged on the official filesystem:
+
+    GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    GDR3_EPOCH_PHOTOMETRY
+    GDR3_GALAXY_CANDIDATES
+    GDR3_GALAXY_CATALOGUE_NAME
+    GDR3_MCMC_SAMPLES_GSP_PHOT
+    GDR3_MCMC_SAMPLES_MSC
+    GDR3_NSS_ACCELERATION_ASTRO
+    GDR3_NSS_NON_LINEAR_SPECTRO
+    GDR3_NSS_TWO_BODY_ORBIT
+    GDR3_NSS_VIM_FL
+    GDR3_OA_NEURON_INFORMATION
+    GDR3_OA_NEURON_XP_SPECTRA
+    GDR3_QSO_CANDIDATES
+    GDR3_QSO_CATALOGUE_NAME
+    GDR3_SCIENCE_ALERTS
+    GDR3_SSO_OBSERVATION
+    GDR3_SSO_REFLECTANCE_SPECTRUM
+    GDR3_SSO_SOURCE
+    GDR3_TOTAL_GALACTIC_EXTINCTION_MAP
+    GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT
+    GDR3_VARI_AGN
+    GDR3_VARI_CEPHEID
+    GDR3_VARI_CLASSIFIER_CLASS_DEFINITION
+    GDR3_VARI_CLASSIFIER_DEFINITION
+    GDR3_VARI_CLASSIFIER_RESULT
+    GDR3_VARI_COMPACT_COMPANION
+    GDR3_VARI_ECLIPSING_BINARY
+    GDR3_VARI_EPOCH_RADIAL_VELOCITY
+    GDR3_VARI_LONG_PERIOD_VARIABLE
+    GDR3_VARI_MICROLENSING
+    GDR3_VARI_MS_OSCILLATOR
+    GDR3_VARI_PLANETARY_TRANSIT
+    GDR3_VARI_RAD_VEL_STATISTICS
+    GDR3_VARI_ROTATION_MODULATION
+    GDR3_VARI_RRLYRAE
+    GDR3_VARI_SHORT_TIMESCALE
+    GDR3_VARI_SUMMARY
+
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Mon  7 Nov 04:04:14 UTC 2022
+    >   iris-gaia-blue-20221013-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Connect to the live system to collect information about the data.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Download our deployment status.
+#[root@ansibler]
+
+    mkdir -p "${HOME}/.ssh"
+    ssh-keyscan "${cloudname:?}.gaia-dmp.uk" 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+
+    mkdir -p /opt/aglais
+    scp "${cloudname:?}.gaia-dmp.uk:/opt/aglais/aglais-status.yml" \
+        /opt/aglais/aglais-status.yml
+
+
+# -----------------------------------------------------
+# Extract the cloud and configuration name.
+#[root@ansibler]
+
+    configname=$(
+        yq '.aglais.status.deployment.conf' /opt/aglais/aglais-status.yml
+        )
+
+    cloudname=$(
+        yq '.aglais.spec.openstack.cloud.name' /opt/aglais/aglais-status.yml
+        )
+
+# -----------------------------------------------------
+# Configure our Ansible client.
+#[root@ansibler]
+
+    inventory="/deployments/hadoop-yarn/ansible/config/${configname:?}.yml"
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "${inventory:?}" \
+            '05-config-ssh.yml'
+
+    popd
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check we can login using ssh.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        '
+
+    >   ....
+    >   ....
+    >   Mon Nov  7 04:19:43 UTC 2022
+    >   iris-gaia-blue-20221013-zeppelin
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the current DR3 data.
+#[user@zeppelin]
+
+    ls -al /data/gaia
+
+    >   ls: cannot access '/data/gaia/GEDR3_2048': Permission denied
+    >   ls: cannot access '/data/gaia/GDR3_2048': Permission denied
+    >   total 16
+    >   drwxr-xr-x. 6 root root 4096 Oct 13 19:16 .
+    >   drwxr-xr-x. 6 root root 4096 Oct 13 19:15 ..
+    >   drwxr-xr-x. 2 root root 4096 Oct 13 19:17 GDR3
+    >   d?????????? ? ?    ?       ?            ? GDR3_2048
+    >   drwxr-xr-x. 2 root root 4096 Oct 13 19:15 GEDR3
+    >   d?????????? ? ?    ?       ?            ? GEDR3_2048
+
+
+    #
+    # Looks like Ceph shares are broken again :-(
+    #
+
+    ssh worker01 \
+        '
+        ls -al /data/gaia
+        '
+
+    >   ls: cannot access '/data/gaia/GEDR3_2048': Permission denied
+    >   ls: cannot access '/data/gaia/GDR3_2048': Permission denied
+    >   total 16
+    >   drwxr-xr-x. 6 root root 4096 Oct 13 19:16 .
+    >   drwxr-xr-x. 6 root root 4096 Oct 13 19:15 ..
+    >   drwxr-xr-x. 2 root root 4096 Oct 13 19:17 GDR3
+    >   d?????????? ? ?    ?       ?            ? GDR3_2048
+    >   drwxr-xr-x. 2 root root 4096 Oct 13 19:15 GEDR3
+    >   d?????????? ? ?    ?       ?            ? GEDR3_2048
+
+    #
+    # So we need to re-mount the shares before we can do anything else.
+    # TODO Add a cron job that tests for failures.
+    #
+
+
+# -----------------------------------------------------
+# CephFS remount steps copied from 20221005-01-cephfs-debug.txt.
+#[user@zeppelin]
+
+    # Restart Zeppelin to 'let go' of home directroeis.
+    zeppelin-daemon.sh restart
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+    machines=(
+        zeppelin
+        worker01
+        worker02
+        worker03
+        worker04
+        worker05
+        worker06
+        master01
+        )
+
+    for machine in "${machines[@]}"
+    do
+        echo
+        echo "Machine [${machine}]"
+        ssh "${machine}" \
+            '
+            date
+            hostname
+            echo
+            for mountpoint in $(
+                cat /etc/fstab | sed -n "/ceph/ p" | cut -d " " -f 2
+                )
+            do
+                echo "Mount [${mountpoint}]"
+                sudo umount "${mountpoint}"
+                sudo mount  "${mountpoint}"
+            done
+            '
+    done
+
+    >
+    >   Machine [zeppelin]
+    >   Mon Nov  7 04:33:54 UTC 2022
+    >   iris-gaia-blue-20221013-zeppelin
+    >
+    >   Mount [/data/gaia/GEDR3_2048]
+    >   Mount [/data/gaia/GDR3_2048]
+    >   Mount [/data/wise/ALLWISE]
+    >   Mount [/data/panstarrs/PS1]
+    >   Mount [/data/twomass/2MASSPSC]
+    >   ....
+    >   ....
+    >   ....
+    >   ....
+    >   Machine [master01]
+    >   Mon Nov  7 04:46:43 UTC 2022
+    >   iris-gaia-blue-20221013-master01
+    >
+    >   Mount [/data/gaia/GEDR3_2048]
+    >   Mount [/data/gaia/GDR3_2048]
+    >   Mount [/data/wise/ALLWISE]
+    >   Mount [/data/panstarrs/PS1]
+    >   Mount [/data/twomass/2MASSPSC]
+
+
+    zeppelin-daemon.sh restart
+
+    >   Zeppelin stop                                              [  OK  ]
+    >   Zeppelin start                                             [  OK  ]
+
+
+# -----------------------------------------------------
+# Check the current DR3 data.
+#[user@zeppelin]
+
+    ls -al /data/gaia
+
+    >   ....
+    >   ....
+    >   drwxr-xr-x.  2 root root 4096 Oct 13 19:17 GDR3
+    >   dr-xr-xr-x. 12 root root   20 Jul 24 04:00 GDR3_2048
+    >   drwxr-xr-x.  2 root root 4096 Oct 13 19:15 GEDR3
+    >   dr-xr-xr-x.  6 root root    8 Jan  3  2022 GEDR3_2048
+
+
+    ls -al /data/gaia/GDR3
+
+    >   ....
+    >   ....
+    >   lrwxrwxrwx. 1 root root   56 Oct 13 19:17 GDR3_2MASSPSC_BEST_NEIGHBOURS -> /data/gaia/GDR3_2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   lrwxrwxrwx. 1 root root   55 Oct 13 19:17 GDR3_ALLWISE_BEST_NEIGHBOURS -> /data/gaia/GDR3_2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   lrwxrwxrwx. 1 root root   55 Oct 13 19:16 GDR3_ASTROPHYSICAL_PARAMETERS -> /data/gaia/GDR3_2048/GDR3_2048_ASTROPHYSICAL_PARAMETERS
+    >   lrwxrwxrwx. 1 root root   60 Oct 13 19:16 GDR3_ASTROPHYSICAL_PARAMETERS_SUPP -> /data/gaia/GDR3_2048/GDR3_2048_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   lrwxrwxrwx. 1 root root   41 Oct 13 19:16 GDR3_GAIASOURCE -> /data/gaia/GDR3_2048/GDR3_2048_GAIASOURCE
+    >   lrwxrwxrwx. 1 root root   51 Oct 13 19:17 GDR3_PS1_BEST_NEIGHBOURS -> /data/gaia/GDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   lrwxrwxrwx. 1 root root   48 Oct 13 19:16 GDR3_RVS_MEAN_SPECTRUM -> /data/gaia/GDR3_2048/GDR3_2048_RVS_MEAN_SPECTRUM
+    >   lrwxrwxrwx. 1 root root   58 Oct 13 19:16 GDR3_XP_CONTINUOUS_MEAN_SPECTRUM -> /data/gaia/GDR3_2048/GDR3_2048_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   lrwxrwxrwx. 1 root root   55 Oct 13 19:16 GDR3_XP_SAMPLED_MEAN_SPECTRUM -> /data/gaia/GDR3_2048/GDR3_2048_XP_SAMPLED_MEAN_SPECTRUM
+    >   lrwxrwxrwx. 1 root root   41 Oct 13 19:17 GDR3_XP_SUMMARY -> /data/gaia/GDR3_2048/GDR3_2048_XP_SUMMARY
+
+
+    ls -al /data/gaia/GDR3_2048
+
+    >   ....
+    >   ....
+    >   dr-xr-xr-x.  2 root root 4098 Jul 23 10:21 GDR3_2048_ASTROPHYSICAL_PARAMETERS
+    >   dr-xr-xr-x.  2 root root 4098 Jul 23 10:50 GDR3_2048_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   dr-xr-xr-x.  2 root root 4098 Jul 23 12:28 GDR3_2048_GAIASOURCE
+    >   dr-xr-xr-x.  2 root root 4098 Jul 23 12:35 GDR3_2048_RVS_MEAN_SPECTRUM
+    >   dr-xr-xr-x.  2 root root 4098 Jul 23 19:51 GDR3_2048_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   dr-xr-xr-x.  2 root root 4098 Jul 23 20:07 GDR3_2048_XP_SAMPLED_MEAN_SPECTRUM
+    >   dr-xr-xr-x.  2 root root 4098 Jul 23 20:11 GDR3_2048_XP_SUMMARY
+    >   lrwxrwxrwx.  1 root root   35 Jul 24 01:41 GDR3_2MASSPSC_BEST_NEIGHBOURS -> GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   lrwxrwxrwx.  1 root root   34 Jul 24 01:41 GDR3_ALLWISE_BEST_NEIGHBOURS -> GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   lrwxrwxrwx.  1 root root   34 Jul 23 23:01 GDR3_ASTROPHYSICAL_PARAMETERS -> GDR3_2048_ASTROPHYSICAL_PARAMETERS
+    >   lrwxrwxrwx.  1 root root   39 Jul 23 23:01 GDR3_ASTROPHYSICAL_PARAMETERS_SUPP -> GDR3_2048_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   lrwxrwxrwx.  1 root root   20 Jul 24 03:58 GDR3_GAIA_SOURCE -> GDR3_2048_GAIASOURCE
+    >   lrwxrwxrwx.  1 root root   30 Jul 24 01:41 GDR3_PS1_BEST_NEIGHBOURS -> GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   lrwxrwxrwx.  1 root root   27 Jul 23 23:01 GDR3_RVS_MEAN_SPECTRUM -> GDR3_2048_RVS_MEAN_SPECTRUM
+    >   lrwxrwxrwx.  1 root root   37 Jul 23 23:01 GDR3_XP_CONTINUOUS_MEAN_SPECTRUM -> GDR3_2048_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   lrwxrwxrwx.  1 root root   34 Jul 23 23:01 GDR3_XP_SAMPLED_MEAN_SPECTRUM -> GDR3_2048_XP_SAMPLED_MEAN_SPECTRUM
+    >   lrwxrwxrwx.  1 root root   20 Jul 23 23:01 GDR3_XP_SUMMARY -> GDR3_2048_XP_SUMMARY
+    >   dr-xr-xr-x.  2 root root 2049 Jul 23 23:55 GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   dr-xr-xr-x.  2 root root 2049 Jul 24 00:23 GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   dr-xr-xr-x.  2 root root 2049 Jul 24 00:49 GEDR3_2048_PS1_BEST_NEIGHBOURS
+
+
+# -----------------------------------------------------
+# Check the space used by the current data.
+#[user@zeppelin]
+
+    du -h /data/gaia/GDR3_2048
+
+    >   163G    /data/gaia/GDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   60G     /data/gaia/GDR3_2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   2.7T    /data/gaia/GDR3_2048/GDR3_2048_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   591G    /data/gaia/GDR3_2048/GDR3_2048_GAIASOURCE
+    >   90G     /data/gaia/GDR3_2048/GDR3_2048_XP_SAMPLED_MEAN_SPECTRUM
+    >   189G    /data/gaia/GDR3_2048/GDR3_2048_ASTROPHYSICAL_PARAMETERS
+    >   177G    /data/gaia/GDR3_2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   19G     /data/gaia/GDR3_2048/GDR3_2048_RVS_MEAN_SPECTRUM
+    >   8.1G    /data/gaia/GDR3_2048/GDR3_2048_XP_SUMMARY
+    >   165G    /data/gaia/GDR3_2048/GDR3_2048_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   4.1T    /data/gaia/GDR3_2048
+
+
+# -----------------------------------------------------
+# Check the space used by the additional data.
+#[user@zeppelin]
+
+    du -h /user/NHambly/PARQUET/GDR3/
+
+    >   88M     /user/NHambly/PARQUET/GDR3/GDR3_NSS_ACCELERATION_ASTRO
+    >   591G    /user/NHambly/PARQUET/GDR3/GDR3_GAIA_SOURCE
+    >   367M    /user/NHambly/PARQUET/GDR3/GDR3_GALAXY_CANDIDATES
+    >   62G     /user/NHambly/PARQUET/GDR3/GDR3_EPOCH_PHOTOMETRY
+    >   50M     /user/NHambly/PARQUET/GDR3/GDR3_VARI_CEPHEID
+    >   3.0M    /user/NHambly/PARQUET/GDR3/GDR3_SCIENCE_ALERTS
+    >   5.2M    /user/NHambly/PARQUET/GDR3/GDR3_NSS_VIM_FL
+    >   17M     /user/NHambly/PARQUET/GDR3/GDR3_QSO_CATALOGUE_NAME
+    >   303M    /user/NHambly/PARQUET/GDR3/GDR3_QSO_CANDIDATES
+    >   23M     /user/NHambly/PARQUET/GDR3/GDR3_VARI_SHORT_TIMESCALE
+    >   165G    /user/NHambly/PARQUET/GDR3/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   19G     /user/NHambly/PARQUET/GDR3/GDR3_RVS_MEAN_SPECTRUM
+    >   63M     /user/NHambly/PARQUET/GDR3/GDR3_TOTAL_GALACTIC_EXTINCTION_MAP
+    >   2.7T    /user/NHambly/PARQUET/GDR3/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   11M     /user/NHambly/PARQUET/GDR3/GDR3_GALAXY_CATALOGUE_NAME
+    >   2.6G    /user/NHambly/PARQUET/GDR3/GDR3_VARI_SUMMARY
+    >   324M    /user/NHambly/PARQUET/GDR3/GDR3_VARI_ECLIPSING_BINARY
+    >   125M    /user/NHambly/PARQUET/GDR3/GDR3_VARI_CLASSIFIER_RESULT
+    >   573M    /user/NHambly/PARQUET/GDR3/GDR3_VARI_ROTATION_MODULATION
+    >   8.7M    /user/NHambly/PARQUET/GDR3/GDR3_SSO_SOURCE
+    >   201M    /user/NHambly/PARQUET/GDR3/GDR3_NSS_TWO_BODY_ORBIT
+    >   4.0K    /user/NHambly/PARQUET/GDR3/GDR3_VARI_CLASSIFIER_DEFINITION
+    >   14M     /user/NHambly/PARQUET/GDR3/GDR3_NSS_NON_LINEAR_SPECTRO
+    >   17M     /user/NHambly/PARQUET/GDR3/GDR3_VARI_COMPACT_COMPANION
+    >   2.9M    /user/NHambly/PARQUET/GDR3/GDR3_OA_NEURON_XP_SPECTRA
+    >   1.2T    /user/NHambly/PARQUET/GDR3/GDR3_MCMC_SAMPLES_MSC
+    >   524K    /user/NHambly/PARQUET/GDR3/GDR3_VARI_PLANETARY_TRANSIT
+    >   136M    /user/NHambly/PARQUET/GDR3/GDR3_VARI_RRLYRAE
+    >   4.3G    /user/NHambly/PARQUET/GDR3/GDR3_SSO_OBSERVATION
+    >   8.1G    /user/NHambly/PARQUET/GDR3/GDR3_XP_SUMMARY
+    >   268K    /user/NHambly/PARQUET/GDR3/GDR3_OA_NEURON_INFORMATION
+    >   4.0K    /user/NHambly/PARQUET/GDR3/GDR3_VARI_CLASSIFIER_CLASS_DEFINITION
+    >   7.2M    /user/NHambly/PARQUET/GDR3/GDR3_VARI_EPOCH_RADIAL_VELOCITY
+    >   29M     /user/NHambly/PARQUET/GDR3/GDR3_VARI_AGN
+    >   5.5M    /user/NHambly/PARQUET/GDR3/GDR3_VARI_RAD_VEL_STATISTICS
+    >   17M     /user/NHambly/PARQUET/GDR3/GDR3_SSO_REFLECTANCE_SPECTRUM
+    >   2.7T    /user/NHambly/PARQUET/GDR3/GDR3_MCMC_SAMPLES_GSP_PHOT
+    >   189G    /user/NHambly/PARQUET/GDR3/GDR3_ASTROPHYSICAL_PARAMETERS
+    >   171K    /user/NHambly/PARQUET/GDR3/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   9.0M    /user/NHambly/PARQUET/GDR3/GDR3_VARI_MS_OSCILLATOR
+    >   31M     /user/NHambly/PARQUET/GDR3/GDR3_VARI_LONG_PERIOD_VARIABLE
+    >   3.0M    /user/NHambly/PARQUET/GDR3/GDR3_VARI_MICROLENSING
+    >   90G     /user/NHambly/PARQUET/GDR3/GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   45M     /user/NHambly/PARQUET/GDR3/GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT
+    >   7.7T    /user/NHambly/PARQUET/GDR3/
+
+    #
+    # We only want to copy a subset of these.
+    # Only adding the missing ones.
+    #
+
+    #
+    # Initial guess is the full DR3 dataset is 8T, plus 2T for the neighbour tables.
+    # Total 10T bytes.
+    #
+    # We don't have that much space at the moment.
+    # 65,287 of 71,680 GiB Used
+    #
+
+    #
+    # Options are :
+    #   Plan A - Create a new DR3 share and add everything from scratch.
+    #   Plan B - Extend the current DR3 share and add the extra tables.
+    #
+    # Creating a new share sounds 'clean' but in light of the fact that CephFS will
+    # distribute the blocks over multiple discs, not sure how 'clean' that would actually be.
+    #
+    # If we are extending the existing dataset, we would need to add a read/write mount of the share.
+    # Not a problem, we can add whatever share mounts we need.
+    #
+    # We need to make some more space to fit within our 70T quota.
+    #
+    # List all the shares and their sizes.
+    # Identify the ones to delete.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# List the shares on the data project.
+#[root@ansibler]
+
+    # Set the Manila API version.
+    # https://stackoverflow.com/a/58806536
+    source /deployments/openstack/bin/settings.sh
+
+    sharecloud=iris-gaia-data
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share list
+
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                                       |  Size | Share Proto | Status    | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+    >   | 1e1ed68a-e5fe-47a3-a663-7096231a9324 | aglais-data-gaia-dr2-6514                  |   512 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | c3c83cf6-5897-4194-b150-a29e83022a13 | aglais-data-gaia-dr3-2048                  |  4196 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 46bf20e9-b109-4427-bca8-df210c640cf5 | aglais-data-gaia-dr3-mcmc-samples-gsp-phot |  3072 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 5b1ff330-22f6-4bc7-bc03-529a55726c72 | aglais-data-gaia-edr3-11932                |   540 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 298ad303-9d81-4540-b4f0-d099ade46be2 | aglais-data-gaia-edr3-2048                 |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 8ff99245-70fe-4c44-9c61-4979c10e7d06 | aglais-data-gaia-edr3-4096                 |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 2ec7b3d6-8d70-44a0-9424-9d869f18c0f0 | aglais-data-gaia-edr3-8192                 |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | d07a403d-12aa-4b72-9a2e-9136d29721fb | aglais-data-panstarrs-ps1                  |   300 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 9faa8e39-ba47-474f-8abd-d6303fb9436e | aglais-data-twomass-allsky                 |    40 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 417fb77f-5659-46e3-a074-7c1d7c18a0fe | aglais-data-wise-allwise                   |   350 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 79574044-f43f-4992-b953-365fabd4b142 | aglais-tools-not-used                      |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | cab5e611-ec2f-44e3-9596-fce205d2dcfb | aglais-user-dcr-not-used                   |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 11e49a4e-29c4-4783-8e76-dd0dadd9883e | aglais-user-nch-not-used                   |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | e9870093-7d41-4de5-af4e-8389b0cc1651 | iris-gaia-data-home-AKrause                |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | a164112f-9266-455d-9e69-e15122fddff1 | iris-gaia-data-home-AZijlstra              |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 22dff9b5-2d91-44c1-a8e5-e3521692862c | iris-gaia-data-home-DCrake                 |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 55b28681-5efe-4c40-90a0-d3e408632fb7 | iris-gaia-data-home-DMorris                |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | d07c3a2a-2746-439b-a6e8-2319171267f7 | iris-gaia-data-home-FLykou                 |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 328f044e-8337-4e24-baf1-92bc68dfefd0 | iris-gaia-data-home-GHughes                |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 6f5d4977-283a-4fc7-8cc0-9ab748e5a8a9 | iris-gaia-data-home-JSwinbank              |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | fd4269af-ddeb-4083-ba4e-a0d779a98ec2 | iris-gaia-data-home-MSemczuk               |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 38cc5c54-7bd5-4322-9fdd-95ae3a9212af | iris-gaia-data-home-NHambly                |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 095c3fec-c59e-4b31-a8ed-7a2e49f0a5ae | iris-gaia-data-home-SBertocco              |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 48032a45-81ac-419e-b210-9cf8cf779098 | iris-gaia-data-home-SGoughKelly            |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 2db941da-31f8-4a49-abbf-07ad95901d03 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | e0d7b487-3df8-4e4f-bd6d-053a85e0e2fb | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 53b504d9-0813-42d8-ad23-38dcbecd32ca | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | cf945e5d-379b-4f7e-84a3-aaa6ef34c1e0 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 2a555b4e-fcf5-4f0f-bfd2-6f48adf50bcb | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ac628fc3-e6ac-49c5-a0f0-bb54dedf3fd9 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 40205d01-b578-4cce-b362-1956260788f3 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 65cbdada-e124-47c3-9cf3-f85caa44b097 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 300e8348-a1bb-4cce-8037-7a086923ec14 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 4e83129b-14b3-4cc0-8041-597e92f02539 | iris-gaia-data-home-dcr-not-used           |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | de71385d-9f5f-49c4-ba52-6936b3fafb5b | iris-gaia-data-home-nch-not-used           |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | a8afe3c4-7b6b-41c9-a422-d2a8df5804bd | iris-gaia-data-user-AKrause                |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | c9d0f4b0-cebc-49bf-8db5-29873e7fe1e9 | iris-gaia-data-user-AZijlstra              |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | e3ad95b3-6d7e-484b-8cbc-2e3e521683bf | iris-gaia-data-user-DCrake                 |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 493b34ad-cbec-42ca-9308-36bc09b79528 | iris-gaia-data-user-DMorris                |  1025 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 06c470da-de88-471b-b80f-b51a4adf6abc | iris-gaia-data-user-FLykou                 |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 345f1351-ac26-420b-ba77-52bf7a637221 | iris-gaia-data-user-GHughes                |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | a3b14320-9aed-4022-8db6-b041b203ad8f | iris-gaia-data-user-JSwinbank              |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 3e797f3f-ef02-468a-b28b-a1a38f8dedc8 | iris-gaia-data-user-MSemczuk               |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 2f6ef970-27d1-47a1-b7a5-3ac7a9027f21 | iris-gaia-data-user-NHambly                | 50000 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | a87ea475-1fb6-464f-b7d1-422b60bda579 | iris-gaia-data-user-SBertocco              |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | c029a675-80b7-4866-9cbb-8d39595b98c2 | iris-gaia-data-user-SGoughKelly            |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 0f29dce0-14bf-4319-8412-c394c74cad62 | iris-gaia-data-user-SVoutsinas             |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   +--------------------------------------+--------------------------------------------+-------+-------------+-----------+-----------+-----------------+------+-------------------+
+
+    #
+    # Lots to tidy up here ...
+    #
+
+# -----------------------------------------------------
+# 3Tbytes of space allocated to the 'mcmc-samples-gsp-phot' table.
+#[root@ansibler]
+
+    >   ....
+    >   | 46bf20e9-b109-4427-bca8-df210c640cf5 | aglais-data-gaia-dr3-mcmc-samples-gsp-phot |  3072 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+
+    #
+    # Which is not mentioned in anyone's notes.
+    # So no idea who created it or why ..
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check for references to the 'mcmc-samples-gsp-phot' table.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        grep -r -l; 'mcmc-samples-gsp-phot' .
+
+    popd
+
+    >   ./notes/zrq/20220820-01-public-share-fix.txt
+    >   ./notes/zrq/20220820-02-public-share-fix.txt
+    >   ./notes/zrq/20221107-02-ceph-transfer.txt
+
+    #
+    # Only three references in my notes listing the data shares.
+    # No notes describing how or why it was allocated.
+    # No notes or configuration files mounting the share.
+    #
+
+
+# -----------------------------------------------------
+# Several shares marked as not-used.
+# These are not mounted by the deployment scripts.
+#[root@ansibler]
+
+    >   ....
+    >   | 79574044-f43f-4992-b953-365fabd4b142 | aglais-tools-not-used                      |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | cab5e611-ec2f-44e3-9596-fce205d2dcfb | aglais-user-dcr-not-used                   |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 11e49a4e-29c4-4783-8e76-dd0dadd9883e | aglais-user-nch-not-used                   |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+    >   | 4e83129b-14b3-4cc0-8041-597e92f02539 | iris-gaia-data-home-dcr-not-used           |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | de71385d-9f5f-49c4-ba52-6936b3fafb5b | iris-gaia-data-home-nch-not-used           |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+
+
+# -----------------------------------------------------
+# Four shares allocated to different partitioning of eDR3.
+# These are not mounted by the deployment scripts.
+#[root@ansibler]
+
+    >   ....
+    >   | 1e1ed68a-e5fe-47a3-a663-7096231a9324 | aglais-data-gaia-dr2-6514                  |   512 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+    >   | 5b1ff330-22f6-4bc7-bc03-529a55726c72 | aglais-data-gaia-edr3-11932                |   540 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+    >   | 8ff99245-70fe-4c44-9c61-4979c10e7d06 | aglais-data-gaia-edr3-4096                 |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 2ec7b3d6-8d70-44a0-9424-9d869f18c0f0 | aglais-data-gaia-edr3-8192                 |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+
+
+# -----------------------------------------------------
+# Three shares allocated separate copies of the external catalogs.
+# These are mounted, but they are not referenced by the pyspark schemas.
+# Leave these in place, in case we need them to re-generate the best neigbour tables.
+#[root@ansibler]
+
+    >   ....
+    >   | d07a403d-12aa-4b72-9a2e-9136d29721fb | aglais-data-panstarrs-ps1                  |   300 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 9faa8e39-ba47-474f-8abd-d6303fb9436e | aglais-data-twomass-allsky                 |    40 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 417fb77f-5659-46e3-a074-7c1d7c18a0fe | aglais-data-wise-allwise                   |   350 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+
+
+# -----------------------------------------------------
+# Putting them all together ....
+#[root@ansibler]
+
+    >   ....
+    >   | 46bf20e9-b109-4427-bca8-df210c640cf5 | aglais-data-gaia-dr3-mcmc-samples-gsp-phot |  3072 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+    >   | 79574044-f43f-4992-b953-365fabd4b142 | aglais-tools-not-used                      |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | cab5e611-ec2f-44e3-9596-fce205d2dcfb | aglais-user-dcr-not-used                   |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 11e49a4e-29c4-4783-8e76-dd0dadd9883e | aglais-user-nch-not-used                   |    10 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+    >   | 4e83129b-14b3-4cc0-8041-597e92f02539 | iris-gaia-data-home-dcr-not-used           |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | de71385d-9f5f-49c4-ba52-6936b3fafb5b | iris-gaia-data-home-nch-not-used           |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+    >   | 1e1ed68a-e5fe-47a3-a663-7096231a9324 | aglais-data-gaia-dr2-6514                  |   512 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+    >   | 5b1ff330-22f6-4bc7-bc03-529a55726c72 | aglais-data-gaia-edr3-11932                |   540 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+    >   | 8ff99245-70fe-4c44-9c61-4979c10e7d06 | aglais-data-gaia-edr3-4096                 |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 2ec7b3d6-8d70-44a0-9424-9d869f18c0f0 | aglais-data-gaia-edr3-8192                 |  1024 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+
+    3072+1024+10+10+1+1+512+540+1024+1024=7218
+
+    #
+    # Saves us around 7Tbytes of space.
+    #
+
+
+# -----------------------------------------------------
+# Delete the unused shares.
+#[root@ansibler]
+
+    # Set the Manila API version.
+    # https://stackoverflow.com/a/58806536
+    source /deployments/openstack/bin/settings.sh
+
+    sharecloud=iris-gaia-data
+
+    sharenames=(
+        aglais-data-gaia-dr3-mcmc-samples-gsp-phot
+        aglais-tools-not-used
+        aglais-user-dcr-not-used
+        aglais-user-nch-not-used
+        iris-gaia-data-home-dcr-not-used
+        iris-gaia-data-home-nch-not-used
+        aglais-data-gaia-dr2-6514
+        aglais-data-gaia-edr3-11932
+        aglais-data-gaia-edr3-4096
+        aglais-data-gaia-edr3-8192
+        )
+
+    for sharename in "${sharenames[@]}"
+    do
+        echo "Delete share [${sharename}]"
+        openstack \
+            --os-cloud "${sharecloud:?}" \
+            share delete \
+                "${sharename}"
+    done
+
+    >   Delete share [aglais-data-gaia-dr3-mcmc-samples-gsp-phot]
+    >   Delete share [aglais-tools-not-used]
+    >   Delete share [aglais-user-dcr-not-used]
+    >   Delete share [aglais-user-nch-not-used]
+    >   Delete share [iris-gaia-data-home-dcr-not-used]
+    >   Delete share [iris-gaia-data-home-nch-not-used]
+    >   Delete share [aglais-data-gaia-dr2-6514]
+    >   Delete share [aglais-data-gaia-edr3-11932]
+    >   Delete share [aglais-data-gaia-edr3-4096]
+    >   Delete share [aglais-data-gaia-edr3-8192]
+
+    #
+    # Check the Horizon interface to see how much space we have.
+    # ... still deleting
+    # ... 06:50 still deleting
+    #
+
+
+# -----------------------------------------------------
+# We also apper to have multiple copies of Stelios's home data for some reason ?
+#[root@ansibler]
+
+    >   ....
+    >   | 2db941da-31f8-4a49-abbf-07ad95901d03 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | e0d7b487-3df8-4e4f-bd6d-053a85e0e2fb | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 53b504d9-0813-42d8-ad23-38dcbecd32ca | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | cf945e5d-379b-4f7e-84a3-aaa6ef34c1e0 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 2a555b4e-fcf5-4f0f-bfd2-6f48adf50bcb | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | ac628fc3-e6ac-49c5-a0f0-bb54dedf3fd9 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 40205d01-b578-4cce-b362-1956260788f3 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 65cbdada-e124-47c3-9cf3-f85caa44b097 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   | 300e8348-a1bb-4cce-8037-7a086923ec14 | iris-gaia-data-home-SVoutsinas             |     1 | CEPHFS      | available | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+
+    #
+    # We could go through the list, mount each one and list the contents ...
+    # but if there isn't anything stored on them, it would be easier just to
+    # keep one and delete the rest.
+    # Need to check with Stelios about them.
+    # https://github.com/wfau/gaia-dmp/issues/1049
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Next steps ..
+
+        Extend the DR3 share to 8Tbytes
+
+        Mount the DR3 share read/write on one node.
+
+        Use rsync to copy the data from Nigel's space.
+
+        Use rsync to check for differences ?
+
+        Create checksums of all the files.
+        Useful for checking future transfers (e.g. S3 to Echo).
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# 5 shares still deleting after 4hrs (11:17).
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share list \
+    | grep 'deleting'
+
+    >   ....
+    >   | 1e1ed68a-e5fe-47a3-a663-7096231a9324 | aglais-data-gaia-dr2-6514       |   512 | CEPHFS      | deleting  | False     | ceph01_cephfs   |      | nova              |
+    >   | 5b1ff330-22f6-4bc7-bc03-529a55726c72 | aglais-data-gaia-edr3-11932     |   540 | CEPHFS      | deleting  | False     | ceph01_cephfs   |      | nova              |
+    >   | 8ff99245-70fe-4c44-9c61-4979c10e7d06 | aglais-data-gaia-edr3-4096      |  1024 | CEPHFS      | deleting  | False     | ceph01_cephfs   |      | nova              |
+    >   | 2ec7b3d6-8d70-44a0-9424-9d869f18c0f0 | aglais-data-gaia-edr3-8192      |  1024 | CEPHFS      | deleting  | False     | ceph01_cephfs   |      | nova              |
+    >   | 79574044-f43f-4992-b953-365fabd4b142 | aglais-tools-not-used           |  1024 | CEPHFS      | deleting  | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+
+    #
+    # They were not the largest of the ones we deleted, but they are possibly some of the oldest ..
+    #
+
+    The Horizon GUI says we have 62,193 of 71,680 GiB Used
+
+    71,680 - 62,193 = 9487
+
+    Which gives us just under 9.5T bytes (SI units).
+    The target we were aiming for was 10T bytes of space for the new data.
+    So this wouldn't enable us to create a complete new set (plan A),
+    but it is enough space to extend the current share and transfer
+    the new files from Nigel's space (plan B).
+
+
+# -----------------------------------------------------
+# Figure out how much space we need for the additional data.
+#[user@zeppelin]
+
+    rsync \
+        --dry-run \
+        --stats \
+        --progress \
+        --human-readable \
+        --recursive \
+        '/user/NHambly/PARQUET/GDR3/' \
+        '/data/gaia/GDR3_2048'
+
+    >   sending incremental file list
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/._SUCCESS.crc
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00033-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00033.c000.snappy.parquet.crc
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00045-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00045.c000.snappy.parquet.crc
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00051-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00051.c000.snappy.parquet.crc
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00070-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00070.c000.snappy.parquet.crc
+    >   ....
+    >   ....
+    >   GDR3_XP_SUMMARY/part-02044-65f50b56-7357-4156-8a0e-90a439681a3e_02044.c000.snappy.parquet
+    >   GDR3_XP_SUMMARY/part-02045-65f50b56-7357-4156-8a0e-90a439681a3e_02045.c000.snappy.parquet
+    >   GDR3_XP_SUMMARY/part-02046-65f50b56-7357-4156-8a0e-90a439681a3e_02046.c000.snappy.parquet
+    >   GDR3_XP_SUMMARY/part-02047-65f50b56-7357-4156-8a0e-90a439681a3e_02047.c000.snappy.parquet
+    >
+    >   Number of files: 148,724 (reg: 148,678, dir: 45, link: 1)
+    >   Number of created files: 148,722 (reg: 148,678, dir: 44)
+    >   Number of deleted files: 0
+    >   Number of regular files transferred: 148,678
+    >   Total file size: 8.37T bytes
+    >   Total transferred file size: 8.37T bytes
+    >   Literal data: 0 bytes
+    >   Matched data: 0 bytes
+    >   File list size: 11.73M
+    >   File list generation time: 0.001 seconds
+    >   File list transfer time: 0.000 seconds
+    >   Total bytes sent: 13.46M
+    >   Total bytes received: 446.45K
+
+
+    #
+    # This isn't telling us how big the difference is between the two directories.
+    # This is the total size of the source directory.
+    #
+
+    >   ....
+    >   Total file size: 8.37T bytes
+    >   Total transferred file size: 8.37T bytes
+    >   ....
+
+
+    du -h /user/NHambly/PARQUET/GDR3/
+
+    >   ....
+    >   ....
+    >   7.7T    /user/NHambly/PARQUET/GDR3/
+
+
+    #
+    # If we add 'ignore-existing', rsync will skip files that already exist.
+
+    rsync \
+        --dry-run \
+        --ignore-existing \
+        --stats \
+        --progress \
+        --human-readable \
+        --recursive \
+        '/user/NHambly/PARQUET/GDR3/' \
+        '/data/gaia/GDR3_2048'
+
+    >   ....
+    >   ....
+    >   Number of files: 148,724 (reg: 148,678, dir: 45, link: 1)
+    >   Number of created files: 120,029 (reg: 119,992, dir: 37)
+    >   Number of deleted files: 0
+    >   Number of regular files transferred: 119,992
+    >   Total file size: 8.37T bytes
+    >   Total transferred file size: 4.30T bytes
+    >   Literal data: 0 bytes
+    >   Matched data: 0 bytes
+    >   File list size: 11.73M
+    >   File list generation time: 0.001 seconds
+    >   File list transfer time: 0.000 seconds
+    >   Total bytes sent: 13.37M
+    >   Total bytes received: 360.38K
+
+    #
+    # Which looks like the number we are after.
+
+    >   ....
+    >   Total file size: 8.37T bytes
+    >   Total transferred file size: 4.30T bytes
+    >   ....
+
+    #
+    # I think this means :
+    # The DR3 data is 8.37T, and we need to transfer 4.30T of new data to complete the sets.
+    #
+
+    #
+    # So we need to add 4.30T of space to the DR3 share.
+    # If we omit the 'human-readable' option we get the raw numbers.
+
+    rsync \
+        --dry-run \
+        --ignore-existing \
+        --stats \
+        --recursive \
+        '/user/NHambly/PARQUET/GDR3/' \
+        '/data/gaia/GDR3_2048'
+
+    >
+    >   Number of files: 148,724 (reg: 148,678, dir: 45, link: 1)
+    >   Number of created files: 120,029 (reg: 119,992, dir: 37)
+    >   Number of deleted files: 0
+    >   Number of regular files transferred: 119,992
+    >   Total file size: 8,368,097,638,701 bytes
+    >   Total transferred file size: 4,304,603,778,032 bytes
+    >   Literal data: 0 bytes
+    >   Matched data: 0 bytes
+    >   File list size: 11,725,294
+    >   File list generation time: 0.001 seconds
+    >   File list transfer time: 0.000 seconds
+    >   Total bytes sent: 13,374,028
+    >   Total bytes received: 360,382
+
+
+    #
+    # This gives us the size in bytes of the existing DR3 data
+    # and the size in bytes of the new DR3 data that will be added.
+    #
+
+    >   ....
+    >   Total file size: 8,368,097,638,701 bytes
+    >   Total transferred file size: 4,304,603,778,032 bytes
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Looking at the Openstack side of things.
+#[root@ansibler]
+
+    #
+    # Get the current share size ..
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share show \
+            'aglais-data-gaia-dr3-2048'
+
+
+    >   +---------------------------------------+-----------------------------------------------------------------------------------------------------------------+
+    >   | Field                                 | Value                                                                                                           |
+    >   +---------------------------------------+-----------------------------------------------------------------------------------------------------------------+
+    >   | access_rules_status                   | active                                                                                                          |
+    >   | availability_zone                     | nova                                                                                                            |
+    >   | create_share_from_snapshot_support    | False                                                                                                           |
+    >   | created_at                            | 2022-07-23T09:36:54.000000                                                                                      |
+    >   | description                           | None                                                                                                            |
+    >   | export_locations                      |                                                                                                                 |
+    >   |                                       | id = 91ef35b3-930d-4f64-a3ec-3994125fc65f                                                                       |
+    >   |                                       | path = 10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/8fb1b4af-3b70-4343-8e8c-fa6b802047c2 |
+    >   |                                       | preferred = False                                                                                               |
+    >   | has_replicas                          | False                                                                                                           |
+    >   | id                                    | c3c83cf6-5897-4194-b150-a29e83022a13                                                                            |
+    >   | is_public                             | False                                                                                                           |
+    >   | mount_snapshot_support                | False                                                                                                           |
+    >   | name                                  | aglais-data-gaia-dr3-2048                                                                                       |
+    >   | project_id                            | e216e6b502134b6185380be6ccd0bf09                                                                                |
+    >   | properties                            |                                                                                                                 |
+    >   | replication_type                      | None                                                                                                            |
+    >   | revert_to_snapshot_support            | False                                                                                                           |
+    >   | share_group_id                        | None                                                                                                            |
+    >   | share_network_id                      | None                                                                                                            |
+    >   | share_proto                           | CEPHFS                                                                                                          |
+    >   | share_type                            | 12668f5c-44e4-4b63-abf1-c56002ccc424                                                                            |
+    >   | share_type_name                       | ceph01_cephfs                                                                                                   |
+    >   | size                                  | 4196                                                                                                            |
+    >   | snapshot_id                           | None                                                                                                            |
+    >   | snapshot_support                      | False                                                                                                           |
+    >   | source_share_group_snapshot_member_id | None                                                                                                            |
+    >   | status                                | available                                                                                                       |
+    >   | task_state                            | None                                                                                                            |
+    >   | user_id                               | 5fa0c97a6dd14e01a3c7d91dad5c6b17                                                                                |
+    >   | volume_type                           | ceph01_cephfs                                                                                                   |
+    >   +---------------------------------------+-----------------------------------------------------------------------------------------------------------------+
+
+    #
+    # Not 100% sure if share sizes reported by Openstack Manila are in Gigabytes (GB) or Gibibytes (GiB).
+    # The online documentation refers to GB in some places, but the Horizon GUI has GiB.
+    #
+
+    share size = 4196 GB
+               = 4,196,000,000,000
+
+    share size = 4196 GiB
+               = 4196 * pow(1024, 3)
+               = 4,505,420,693,504
+
+# -----------------------------------------------------
+# Check the current space used ..
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        du --max-depth 1 --bytes '/data/gaia/GDR3_2048'
+        "
+
+    >   174243392010    /data/gaia/GDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   63760867781     /data/gaia/GDR3_2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   2926382189096   /data/gaia/GDR3_2048/GDR3_2048_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   634489380062    /data/gaia/GDR3_2048/GDR3_2048_GAIASOURCE
+    >   96190247704     /data/gaia/GDR3_2048/GDR3_2048_XP_SAMPLED_MEAN_SPECTRUM
+    >   202270065921    /data/gaia/GDR3_2048/GDR3_2048_ASTROPHYSICAL_PARAMETERS
+    >   189525113879    /data/gaia/GDR3_2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   19387310491     /data/gaia/GDR3_2048/GDR3_2048_RVS_MEAN_SPECTRUM
+    >   8637481537      /data/gaia/GDR3_2048/GDR3_2048_XP_SUMMARY
+    >   176137214505    /data/gaia/GDR3_2048/GDR3_2048_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   4491023263316   /data/gaia/GDR3_2048
+
+    disc used  = 4491023263316
+                 4,491,023,263,316
+
+    space left = (4196 * pow(1024, 3)) - 4491023263316
+               = 14397430188
+               = 14,397,430,188
+
+    #
+    # The new data that would be transferred ..
+
+    >   ....
+    >   Total file size: 8,368,097,638,701 bytes
+    >   Total transferred file size: 4,304,603,778,032 bytes
+    >   ....
+
+    new data = 4,304,603,778,032
+
+    #
+    # The size we need to extend the share to ..
+
+    disc used + new data = 4491023263316 + 4304603778032
+                         = 8795627041348
+
+                         = 8795627041348 / pow(1024, 3)
+                         ~ 8192 GiB
+
+                         = 8795627041348 / pow(1024, 4)
+                         ~ 8 TiB
+
+    #
+    # We have enough space to resize/extend the data share (plan B)
+    # BUT last time we experimented with extending a share it didn't go well,
+    # and we ended up deleting it and starting again ...
+
+
+    # The stalled deletions might mean we probably don't have enough space to create a new clean copy (plan A).
+    # which would take longer but be safer ...
+
+    #
+    # Horizon GUI says 62,193 GiB used of 71,680 GiB quota
+
+    (71680 * pow(1024, 3)) - (62193  * pow(1024, 3))
+    = 10186588684288
+    = 10,186,588,684,288
+
+    10186588684288 / pow(1024, 3)
+    = 9487.0 GiB available
+
+    # We might *just* have enough space for plan A ..
+
+# -----------------------------------------------------
+# Try creating a new 8 TiB share.
+#[root@ansibler]
+
+    sharecloud=iris-gaia-data
+
+    sharename=aglais-data-gaia-dr3-2048-new
+    sharesize=8192
+
+    sharetype=ceph01_cephfs
+    sharezone=nova
+    shareprotocol=CEPHFS
+    accesstype=cephx
+
+    openstack \
+        --os-cloud "${sharecloud}" \
+        share create \
+            --format json \
+            --name "${sharename}" \
+            --share-type "${sharetype}" \
+            --availability-zone "${sharezone}" \
+            "${shareprotocol}" \
+            "${sharesize:?}" \
+    | tee "/tmp/${sharename}.json" \
+    | jq '.'
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2022-11-07T17:20:28.000000",
+    >     "description": null,
+    >     "has_replicas": false,
+    >     "id": "89467d18-212e-4207-ba67-b3597892186d",
+    >     "is_public": false,
+    >     "metadata": {},
+    >     "mount_snapshot_support": false,
+    >     "name": "aglais-data-gaia-dr3-2048-new",
+    >     "project_id": "e216e6b502134b6185380be6ccd0bf09",
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "12668f5c-44e4-4b63-abf1-c56002ccc424",
+    >     "share_type_name": "ceph01_cephfs",
+    >     "size": 8192,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "creating",
+    >     "task_state": null,
+    >     "user_id": "5fa0c97a6dd14e01a3c7d91dad5c6b17",
+    >     "volume_type": "ceph01_cephfs"
+    >   }
+
+    shareid=$(
+        jq -r '.id' "/tmp/${sharename}.json"
+        )
+
+# -----------------------------------------------------
+# Create read-write and read-only access controls for the share.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${sharecloud}" \
+        share access create \
+            --format json \
+            --access-level 'ro' \
+            "${shareid}" \
+            "${accesstype}" \
+            "${sharename}-ro" \
+    | tee "/tmp/${sharename}-ro-access.json" \
+    | jq '.'
+
+    >   {
+    >     "id": "2cf86846-02a9-48b1-bcb6-ba058761c3f1",
+    >     "share_id": "89467d18-212e-4207-ba67-b3597892186d",
+    >     "access_level": "ro",
+    >     "access_to": "aglais-data-gaia-dr3-2048-new-ro",
+    >     "access_type": "cephx",
+    >     "state": "queued_to_apply",
+    >     "access_key": null,
+    >     "created_at": "2022-11-07T17:32:28.000000",
+    >     "updated_at": null,
+    >     "properties": ""
+    >   }
+
+
+    openstack \
+        --os-cloud "${sharecloud}" \
+        share access create \
+            --format json \
+            --access-level 'rw' \
+            "${shareid}" \
+            "${accesstype}" \
+            "${sharename}-rw" \
+    | tee "/tmp/${sharename}-rw-access.json" \
+    | jq '.'
+
+    >   {
+    >     "id": "e4f1057a-c381-4d35-aefe-8b516edd26e4",
+    >     "share_id": "89467d18-212e-4207-ba67-b3597892186d",
+    >     "access_level": "rw",
+    >     "access_to": "aglais-data-gaia-dr3-2048-new-rw",
+    >     "access_type": "cephx",
+    >     "state": "queued_to_apply",
+    >     "access_key": null,
+    >     "created_at": "2022-11-07T17:33:38.000000",
+    >     "updated_at": null,
+    >     "properties": ""
+    >   }
+
+
+

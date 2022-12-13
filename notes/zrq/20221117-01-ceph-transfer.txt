@@ -1,0 +1,1135 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Transfer Gaia DR3 data from Nigel's space to shared space.
+        https://github.com/wfau/gaia-dmp/issues/1018
+
+        Easiest is to just create a new deployment and tweak the CephFS mounts.
+        Rather than editing network, router and machines by hand.
+        TODO Update infra-ops deploy to be more adaptable.
+
+    Result:
+
+        Success.
+        Data transferred to the new share.
+        Needs testing.
+
+
+# -----------------------------------------------------
+# Collect the information needed to access the CephFS share.
+#[root@ansibler]
+
+    # Set the Manila API version.
+    # https://stackoverflow.com/a/58806536
+    source /deployments/openstack/bin/settings.sh
+
+    sharecloud=iris-gaia-data
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share list
+
+    >   +--------------------------------------+---------------------------------+-------+-------------+----------------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                            |  Size | Share Proto | Status         | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+---------------------------------+-------+-------------+----------------+-----------+-----------------+------+-------------------+
+    >   | c3c83cf6-5897-4194-b150-a29e83022a13 | aglais-data-gaia-dr3-2048       |  4196 | CEPHFS      | available      | False     | ceph01_cephfs   |      | nova              |
+    >   | 89467d18-212e-4207-ba67-b3597892186d | aglais-data-gaia-dr3-2048-new   |  8192 | CEPHFS      | available      | False     | ceph01_cephfs   |      | nova              |
+    >   ....
+    >   ....
+    >   +--------------------------------------+---------------------------------+-------+-------------+----------------+-----------+-----------------+------+-------------------+
+
+
+    sharename=aglais-data-gaia-dr3-2048-new
+    sharejson=/tmp/${sharename:?}.json
+
+    openstack \
+        --os-cloud "${sharecloud:?}" \
+        share show \
+            --format json \
+            "${sharename:?}" \
+    | tee "${sharejson:?}" \
+    | jq '.'
+
+    >   {
+    >     "access_rules_status": "active",
+    >     "availability_zone": "nova",
+    >     "create_share_from_snapshot_support": false,
+    >     "created_at": "2022-11-07T17:20:28.000000",
+    >     "description": null,
+    >     "export_locations": "\nid = 58e913c8-bde1-4a00-a0f1-71ef73c8e500\npath = 10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/5875b16a-3fd1-489e-a342-d50548e4e522\npreferred = False",
+    >     "has_replicas": false,
+    >     "id": "89467d18-212e-4207-ba67-b3597892186d",
+    >     "is_public": false,
+    >     "mount_snapshot_support": false,
+    >     "name": "aglais-data-gaia-dr3-2048-new",
+    >     "project_id": "e216e6b502134b6185380be6ccd0bf09",
+    >     "properties": {},
+    >     "replication_type": null,
+    >     "revert_to_snapshot_support": false,
+    >     "share_group_id": null,
+    >     "share_network_id": null,
+    >     "share_proto": "CEPHFS",
+    >     "share_type": "12668f5c-44e4-4b63-abf1-c56002ccc424",
+    >     "share_type_name": "ceph01_cephfs",
+    >     "size": 8192,
+    >     "snapshot_id": null,
+    >     "snapshot_support": false,
+    >     "source_share_group_snapshot_member_id": null,
+    >     "status": "available",
+    >     "task_state": null,
+    >     "user_id": "5fa0c97a6dd14e01a3c7d91dad5c6b17",
+    >     "volume_type": "ceph01_cephfs"
+    >   }
+
+    shareuuid=$(
+        jq -r '.id' "${sharejson:?}"
+        )
+    sharestatus=$(
+        jq -r '.status' "${sharejson:?}"
+        )
+
+    locations=$(
+        jq '.export_locations' "${sharejson:?}"
+        )
+
+    cephpath=$(
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\2/
+            ' <<< ${locations}
+            )
+
+    cephnodes=$(
+        sed '
+            s/^.*path = \([^\\]*\).*$/\1/
+            s/^\(.*\):\(\/.*\)$/\1/
+            ' <<< ${locations}
+            )
+
+cat << EOF
+Share UUID   [${shareuuid}]
+Share status [${sharestatus}]
+Ceph path    [${cephpath}]
+Ceph nodes   [${cephnodes}]
+EOF
+
+    >   Share UUID   [89467d18-212e-4207-ba67-b3597892186d]
+    >   Share status [available]
+    >   Ceph path    [/volumes/_nogroup/5875b16a-3fd1-489e-a342-d50548e4e522]
+    >   Ceph nodes   [10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789]
+
+
+    openstack \
+        --os-cloud "${sharecloud}" \
+        share access list \
+            --format json \
+            "${shareuuid}" \
+    | tee "/tmp/${sharename:?}-access-list.json" \
+    | jq '.'
+
+    >   [
+    >     {
+    >       "ID": "2cf86846-02a9-48b1-bcb6-ba058761c3f1",
+    >       "Access Type": "cephx",
+    >       "Access To": "aglais-data-gaia-dr3-2048-new-ro",
+    >       "Access Level": "ro",
+    >       "State": "active",
+    >       "Access Key": "##################################",
+    >       "Created At": "2022-11-07T17:32:28.000000",
+    >       "Updated At": "2022-11-07T17:32:29.000000"
+    >     },
+    >     {
+    >       "ID": "e4f1057a-c381-4d35-aefe-8b516edd26e4",
+    >       "Access Type": "cephx",
+    >       "Access To": "aglais-data-gaia-dr3-2048-new-rw",
+    >       "Access Level": "rw",
+    >       "State": "active",
+    >       "Access Key": "##################################",
+    >       "Created At": "2022-11-07T17:33:38.000000",
+    >       "Updated At": "2022-11-07T17:33:39.000000"
+    >     }
+    >   ]
+
+    mountmode=rw
+
+    accessrule=$(
+        jq -r '.[] | select(."Access Level" == "'${mountmode:?}'") | .ID' "/tmp/${sharename:?}-access-list.json"
+        )
+
+    openstack \
+        --os-cloud "${sharecloud}" \
+        share access show \
+            --format json \
+            "${accessrule:?}" \
+    | tee "/tmp/${sharename:?}-access-rule.json" \
+    | jq '.'
+
+    >   {
+    >     "id": "e4f1057a-c381-4d35-aefe-8b516edd26e4",
+    >     "share_id": "89467d18-212e-4207-ba67-b3597892186d",
+    >     "access_level": "rw",
+    >     "access_to": "aglais-data-gaia-dr3-2048-new-rw",
+    >     "access_type": "cephx",
+    >     "state": "active",
+    >     "access_key": "##################################",
+    >     "created_at": "2022-11-07T17:33:38.000000",
+    >     "updated_at": "2022-11-07T17:33:39.000000",
+    >     "properties": ""
+    >   }
+
+    cephname=$(
+        jq -r '.access_to' "/tmp/${sharename:?}-access-rule.json"
+        )
+
+    cephkey=$(
+        jq -r '.access_key' "/tmp/${sharename:?}-access-rule.json"
+        )
+
+cat << EOF
+Share UUID   [${shareuuid}]
+Share status [${sharestatus}]
+Ceph path    [${cephpath}]
+Ceph nodes   [${cephnodes}]
+Access name  [${cephname}]
+Access key   [${cephkey}]
+EOF
+
+    >   Share UUID   [89467d18-212e-4207-ba67-b3597892186d]
+    >   Share status [available]
+    >   Ceph path    [/volumes/_nogroup/5875b16a-3fd1-489e-a342-d50548e4e522]
+    >   Ceph nodes   [10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789]
+    >   Access name  [aglais-data-gaia-dr3-2048-new-rw]
+    >   Access key   [##################################]
+
+
+# -----------------------------------------------------
+# Mount the new CephFS share.
+#[root@ansibler]
+
+    keyfile=/etc/ceph/ceph.client.${cephname}.keyring
+    cfgfile=/etc/ceph/ceph.conf
+    mountopts=async,auto,nodev,noexec,nosuid,_netdev,${mountmode}
+
+    mountpath=/data/gaia/GDR3_2048_NEW
+
+    ssh root@zeppelin \
+        "
+        cat > ${keyfile} << EOF
+[client.${cephname}]
+    key = ${cephkey}
+EOF
+
+        cat >> /etc/fstab << EOF
+${cephnodes}:${cephpath} ${mountpath} ceph name=${cephname},${mountopts} 0 0
+EOF
+
+        mkdir ${mountpath}
+        touch ${mountpath}/mount-failed
+
+        mount ${mountpath}
+
+        df -h ${mountpath} | jc --df | jq '.'
+        "
+
+    >   [
+    >     {
+    >       "filesystem": "10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/5875b16a-3fd1-489e-a342-d50548e4e522",
+    >       "size": "3.2P",
+    >       "used": null,
+    >       "mounted_on": "/data/gaia/GDR3_2048_NEW",
+    >       "available": null,
+    >       "use_percent": 51
+    >     }
+    >   ]
+
+    #
+    # The size, used and available are calculated for the whole CephFS array, not this share.
+    #
+
+    ssh root@zeppelin \
+        "
+        df -h ${mountpath}
+        "
+
+    >   Filesystem                                                                                                Size  Used Avail Use% Mounted on
+    >   10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789:/volumes/_nogroup/5875b16a-3fd1-489e-a342-d50548e4e522  3.2P  1.6P  1.6P  51% /data/gaia/GDR3_2048_NEW
+
+
+# -----------------------------------------------------
+# Transfer all the data from Nigel's space.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        ls /user/NHambly/PARQUET/GDR3/
+        "
+
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   GDR3_ASTROPHYSICAL_PARAMETERS
+    >   GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   GDR3_EPOCH_PHOTOMETRY
+    >   GDR3_GAIA_SOURCE
+    >   GDR3_GALAXY_CANDIDATES
+    >   GDR3_GALAXY_CATALOGUE_NAME
+    >   GDR3_MCMC_SAMPLES_GSP_PHOT
+    >   GDR3_MCMC_SAMPLES_MSC
+    >   GDR3_NSS_ACCELERATION_ASTRO
+    >   GDR3_NSS_NON_LINEAR_SPECTRO
+    >   GDR3_NSS_TWO_BODY_ORBIT
+    >   GDR3_NSS_VIM_FL
+    >   GDR3_OA_NEURON_INFORMATION
+    >   GDR3_OA_NEURON_XP_SPECTRA
+    >   GDR3_QSO_CANDIDATES
+    >   GDR3_QSO_CATALOGUE_NAME
+    >   GDR3_RVS_MEAN_SPECTRUM
+    >   GDR3_SCIENCE_ALERTS
+    >   GDR3_SSO_OBSERVATION
+    >   GDR3_SSO_REFLECTANCE_SPECTRUM
+    >   GDR3_SSO_SOURCE
+    >   GDR3_TOTAL_GALACTIC_EXTINCTION_MAP
+    >   GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT
+    >   GDR3_VARI_AGN
+    >   GDR3_VARI_CEPHEID
+    >   GDR3_VARI_CLASSIFIER_CLASS_DEFINITION
+    >   GDR3_VARI_CLASSIFIER_DEFINITION
+    >   GDR3_VARI_CLASSIFIER_RESULT
+    >   GDR3_VARI_COMPACT_COMPANION
+    >   GDR3_VARI_ECLIPSING_BINARY
+    >   GDR3_VARI_EPOCH_RADIAL_VELOCITY
+    >   GDR3_VARI_LONG_PERIOD_VARIABLE
+    >   GDR3_VARI_MICROLENSING
+    >   GDR3_VARI_MS_OSCILLATOR
+    >   GDR3_VARI_PLANETARY_TRANSIT
+    >   GDR3_VARI_RAD_VEL_STATISTICS
+    >   GDR3_VARI_ROTATION_MODULATION
+    >   GDR3_VARI_RRLYRAE
+    >   GDR3_VARI_SHORT_TIMESCALE
+    >   GDR3_VARI_SUMMARY
+    >   GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   GDR3_XP_SUMMARY
+
+
+    #
+    # Using --human-readable *once* displays sizes in multiples of 1000.
+    # https://linux.die.net/man/1/rsync
+    #
+
+    ssh root@zeppelin \
+        "
+        rsync \
+            --dry-run \
+            --stats \
+            --progress \
+            --human-readable \
+            --recursive \
+            '/user/NHambly/PARQUET/GDR3/' \
+            '/data/gaia/GDR3_2048_NEW'
+        "
+
+    >   ....
+    >   Total file size: 8.37T bytes
+    >   Total transferred file size: 8.37T bytes
+    >   ....
+
+
+    #
+    # Using --human-readable *twice* displays sizes in multiples of 1024.
+    # https://linux.die.net/man/1/rsync
+    #
+
+    ssh root@zeppelin \
+        "
+        rsync \
+            --dry-run \
+            --stats \
+            --progress \
+            --human-readable \
+            --human-readable \
+            --recursive \
+            '/user/NHambly/PARQUET/GDR3/' \
+            '/data/gaia/GDR3_2048_NEW'
+        "
+
+
+    >   ....
+    >   Total file size: 7.61T bytes
+    >   Total transferred file size: 7.61T bytes
+    >   ....
+
+    #
+    # Run the transfer ...
+    #
+
+    ssh root@zeppelin \
+        "
+        rsync \
+            --stats \
+            --progress \
+            --human-readable \
+            --human-readable \
+            --recursive \
+            '/user/NHambly/PARQUET/GDR3/' \
+            '/data/gaia/GDR3_2048_NEW'
+        "
+
+    >   sending incremental file list
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/._SUCCESS.crc
+    >                 8 100%    0.00kB/s    0:00:00 (xfr#1, ir-chk=4269/4315)
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00033-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00033.c000.snappy.parquet.crc
+    >                20 100%    1.03kB/s    0:00:00 (xfr#2, ir-chk=4268/4315)
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00045-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00045.c000.snappy.parquet.crc
+    >                20 100%    0.45kB/s    0:00:00 (xfr#3, ir-chk=4267/4315)
+    >   ....
+    >   ....
+
+Started Thu 17 Nov 10:20:02 GMT 2022
+
+
+
+# -----------------------------------------------------
+# Login via a second terminal to check the progress.
+#[user@desktop]
+
+    podman ps
+
+    >   CONTAINER ID  IMAGE                                           COMMAND     CREATED      STATUS          PORTS                   NAMES
+    >   78b9ffe1e85f  ghcr.io/wfau/atolmis/ansible-client:2022.07.25  bash        4 hours ago  Up 4 hours ago  0.0.0.0:3000->3000/tcp  ansibler-green
+
+
+    podman exec -it ansibler-green bash
+
+        ssh zeppelin
+
+            ps -ef | grep rsync
+
+    >   ....
+    >   root       83478   83321  0 10:17 ?        00:00:00 bash -c rsync --stats --progress --human-readable --human-readable --recursive '/user/NHambly/PARQUET/GDR3/' '/data/gaia/GDR3_2048_NEW'
+    >   root       83488   83478 17 10:17 ?        00:01:18 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   root       83489   83488  0 10:17 ?        00:00:00 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   root       83490   83489 18 10:17 ?        00:01:24 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   fedora     83528   83504  0 10:25 pts/0    00:00:00 grep --color=auto rsync
+    >   ....
+
+
+            date ; hostname ; du -h /data/gaia/GDR3_2048_NEW
+
+    >   Thu Nov 17 10:27:07 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   0       /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   45G     /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS
+    >   171K    /data/gaia/GDR3_2048_NEW/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   45G     /data/gaia/GDR3_2048_NEW
+
+
+    >   Thu Nov 17 11:07:02 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   0       /data/gaia/GDR3_2048_NEW/GDR3_EPOCH_PHOTOMETRY
+    >   51G     /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   189G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS
+    >   171K    /data/gaia/GDR3_2048_NEW/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   239G    /data/gaia/GDR3_2048_NEW
+
+
+    >   Thu Nov 17 12:10:41 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   123G    /data/gaia/GDR3_2048_NEW/GDR3_GAIA_SOURCE
+    >   0       /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CANDIDATES
+    >   62G     /data/gaia/GDR3_2048_NEW/GDR3_EPOCH_PHOTOMETRY
+    >   165G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   189G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS
+    >   171K    /data/gaia/GDR3_2048_NEW/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   537G    /data/gaia/GDR3_2048_NEW
+
+
+    >   Thu Nov 17 12:41:31 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   287G    /data/gaia/GDR3_2048_NEW/GDR3_GAIA_SOURCE
+    >   0       /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CANDIDATES
+    >   62G     /data/gaia/GDR3_2048_NEW/GDR3_EPOCH_PHOTOMETRY
+    >   165G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   189G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS
+    >   171K    /data/gaia/GDR3_2048_NEW/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   700G    /data/gaia/GDR3_2048_NEW
+
+
+    >   Thu Nov 17 16:04:28 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   591G    /data/gaia/GDR3_2048_NEW/GDR3_GAIA_SOURCE
+    >   367M    /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CANDIDATES
+    >   62G     /data/gaia/GDR3_2048_NEW/GDR3_EPOCH_PHOTOMETRY
+    >   165G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   11M     /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CATALOGUE_NAME
+    >   0       /data/gaia/GDR3_2048_NEW/GDR3_MCMC_SAMPLES_MSC
+    >   762G    /data/gaia/GDR3_2048_NEW/GDR3_MCMC_SAMPLES_GSP_PHOT
+    >   189G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS
+    >   171K    /data/gaia/GDR3_2048_NEW/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   1.8T    /data/gaia/GDR3_2048_NEW
+
+    16:00 - 11:00 = 5hrs
+
+    1.8 Tbytes in 5hrs
+    = 1.8/5
+    = 0.36 Tbyte/hr
+
+    8 Tbytes @ 0.36 Tbyte/hr
+    = 8 / 0.36
+    = 22hrs
+
+    >   Thu Nov 17 18:53:38 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   591G    /data/gaia/GDR3_2048_NEW/GDR3_GAIA_SOURCE
+    >   367M    /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CANDIDATES
+    >   62G     /data/gaia/GDR3_2048_NEW/GDR3_EPOCH_PHOTOMETRY
+    >   165G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   11M     /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CATALOGUE_NAME
+    >   0       /data/gaia/GDR3_2048_NEW/GDR3_MCMC_SAMPLES_MSC
+    >   1.7T    /data/gaia/GDR3_2048_NEW/GDR3_MCMC_SAMPLES_GSP_PHOT
+    >   189G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS
+    >   171K    /data/gaia/GDR3_2048_NEW/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   2.7T    /data/gaia/GDR3_2048_NEW
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Left it for a few hours .. connection lost.
+    # re-connected the client ..
+    # 20221102-02-reconnect-client
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    ssh zeppelin
+
+        date ; hostname ; du -h /data/gaia/GDR3_2048_NEW
+
+    >   Fri Nov 18 02:49:08 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   88M     /data/gaia/GDR3_2048_NEW/GDR3_NSS_ACCELERATION_ASTRO
+    >   591G    /data/gaia/GDR3_2048_NEW/GDR3_GAIA_SOURCE
+    >   367M    /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CANDIDATES
+    >   62G     /data/gaia/GDR3_2048_NEW/GDR3_EPOCH_PHOTOMETRY
+    >   50M     /data/gaia/GDR3_2048_NEW/GDR3_VARI_CEPHEID
+    >   3.0M    /data/gaia/GDR3_2048_NEW/GDR3_SCIENCE_ALERTS
+    >   5.2M    /data/gaia/GDR3_2048_NEW/GDR3_NSS_VIM_FL
+    >   17M     /data/gaia/GDR3_2048_NEW/GDR3_QSO_CATALOGUE_NAME
+    >   303M    /data/gaia/GDR3_2048_NEW/GDR3_QSO_CANDIDATES
+    >   23M     /data/gaia/GDR3_2048_NEW/GDR3_VARI_SHORT_TIMESCALE
+    >   165G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   19G     /data/gaia/GDR3_2048_NEW/GDR3_RVS_MEAN_SPECTRUM
+    >   63M     /data/gaia/GDR3_2048_NEW/GDR3_TOTAL_GALACTIC_EXTINCTION_MAP
+    >   181G    /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   11M     /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CATALOGUE_NAME
+    >   2.6G    /data/gaia/GDR3_2048_NEW/GDR3_VARI_SUMMARY
+    >   324M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_ECLIPSING_BINARY
+    >   125M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_CLASSIFIER_RESULT
+    >   573M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_ROTATION_MODULATION
+    >   8.7M    /data/gaia/GDR3_2048_NEW/GDR3_SSO_SOURCE
+    >   201M    /data/gaia/GDR3_2048_NEW/GDR3_NSS_TWO_BODY_ORBIT
+    >   4.0K    /data/gaia/GDR3_2048_NEW/GDR3_VARI_CLASSIFIER_DEFINITION
+    >   14M     /data/gaia/GDR3_2048_NEW/GDR3_NSS_NON_LINEAR_SPECTRO
+    >   17M     /data/gaia/GDR3_2048_NEW/GDR3_VARI_COMPACT_COMPANION
+    >   2.9M    /data/gaia/GDR3_2048_NEW/GDR3_OA_NEURON_XP_SPECTRA
+    >   1.2T    /data/gaia/GDR3_2048_NEW/GDR3_MCMC_SAMPLES_MSC
+    >   524K    /data/gaia/GDR3_2048_NEW/GDR3_VARI_PLANETARY_TRANSIT
+    >   136M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_RRLYRAE
+    >   4.3G    /data/gaia/GDR3_2048_NEW/GDR3_SSO_OBSERVATION
+    >   268K    /data/gaia/GDR3_2048_NEW/GDR3_OA_NEURON_INFORMATION
+    >   4.0K    /data/gaia/GDR3_2048_NEW/GDR3_VARI_CLASSIFIER_CLASS_DEFINITION
+    >   7.2M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_EPOCH_RADIAL_VELOCITY
+    >   29M     /data/gaia/GDR3_2048_NEW/GDR3_VARI_AGN
+    >   5.5M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_RAD_VEL_STATISTICS
+    >   17M     /data/gaia/GDR3_2048_NEW/GDR3_SSO_REFLECTANCE_SPECTRUM
+    >   2.7T    /data/gaia/GDR3_2048_NEW/GDR3_MCMC_SAMPLES_GSP_PHOT
+    >   189G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS
+    >   171K    /data/gaia/GDR3_2048_NEW/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   9.0M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_MS_OSCILLATOR
+    >   31M     /data/gaia/GDR3_2048_NEW/GDR3_VARI_LONG_PERIOD_VARIABLE
+    >   3.0M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_MICROLENSING
+    >   0       /data/gaia/GDR3_2048_NEW/GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   45M     /data/gaia/GDR3_2048_NEW/GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT
+    >   5.1T    /data/gaia/GDR3_2048_NEW
+
+
+        ps -ef | grep rsync
+
+    >   root       83478       1  0 Nov17 ?        00:00:00 bash -c rsync --stats --progress --human-readable --human-readable --recursive '/user/NHambly/PARQUET/GDR3/' '/data/gaia/GDR3_2048_NEW'
+    >   root       83488   83478 17 Nov17 ?        02:58:10 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   root       83489   83488  0 Nov17 ?        00:00:05 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   root       83490   83489 19 Nov17 ?        03:10:46 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   fedora     85591   85556  0 02:53 pts/0    00:00:00 grep --color=auto rsync
+
+
+        date ; hostname ; du -h /data/gaia/GDR3_2048_NEW
+
+    >   Fri Nov 18 02:54:55 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   ....
+    >   214G    /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   ....
+
+
+    >   Fri Nov 18 02:59:27 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   ....
+    >   239G    /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   ....
+
+    #
+    # Looks like the transfer is still running even though the ssh terminal has been discinnected.
+    # Leave it running for now and see ..
+    # In theory only a few hours left to go.
+    #
+
+    >   Fri Nov 18 04:31:37 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   ....
+    >   762G    /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   ....
+    >   5.6T    /data/gaia/GDR3_2048_NEW
+
+
+    >   Fri Nov 18 04:46:42 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+    >   ....
+    >   847G    /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   ....
+    >   5.7T    /data/gaia/GDR3_2048_NEW
+
+        checksize()
+            {
+            prevtime=${nexttime}
+            nexttime=$(date +%Y%m%dT%H%M%S)
+
+            date
+            hostname
+            echo
+
+            du -h "/data/gaia/GDR3_2048_NEW" > "/tmp/du-${nexttime}.txt"
+            diff \
+                "/tmp/du-${prevtime}.txt" \
+                "/tmp/du-${nexttime}.txt"
+            }
+
+        checksize
+
+    >   Fri Nov 18 05:02:05 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+    >
+    >   14c14
+    >   < 933G /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   ---
+    >   > 934G /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+
+
+    >   Fri Nov 18 05:03:08 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+    >
+    >   14c14
+    >   < 934G /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   ---
+    >   > 940G /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+
+
+    >   Fri Nov 18 05:29:15 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+    >
+    >   14c14
+    >   < 940G /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   ---
+    >   > 1.1T /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   44c44
+    >   < 5.8T /data/gaia/GDR3_2048_NEW
+    >   ---
+    >   > 6.0T /data/gaia/GDR3_2048_NEW
+
+
+        #
+        # No changes to the data .. are we done ?
+        #
+
+    >   Fri Nov 18 05:33:40 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+
+    >   Fri Nov 18 05:35:22 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+
+        #
+        # The rsync process is still running ..
+        #
+
+        ps -ef | grep rsync
+
+    >   root       83478       1  0 Nov17 ?        00:00:00 bash -c rsync --stats --progress --human-readable --human-readable --recursive '/user/NHambly/PARQUET/GDR3/' '/data/gaia/GDR3_2048_NEW'
+    >   root       83488   83478 18 Nov17 ?        03:29:35 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   root       83489   83488  0 Nov17 ?        00:00:05 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   root       83490   83489 19 Nov17 ?        03:44:25 rsync --stats --progress --human-readable --human-readable --recursive /user/NHambly/PARQUET/GDR3/ /data/gaia/GDR3_2048_NEW
+    >   fedora     86100   85556  0 05:34 pts/0    00:00:00 grep --color=auto rsync
+
+    #
+    # Back on again ..
+    #
+
+    >   Fri Nov 18 05:52:13 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+    >   
+    >   14c14
+    >   < 1.1T /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   ---
+    >   > 1.2T /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   44c44
+    >   < 6.0T /data/gaia/GDR3_2048_NEW
+    >   ---
+    >   > 6.1T /data/gaia/GDR3_2048_NEW
+
+
+    >   Fri Nov 18 12:34:14 UTC 2022
+    >   iris-gaia-green-20221116-zeppelin
+    >   
+    >   14c14
+    >   < 1.2T /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   ---
+    >   > 2.7T /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   29a30
+    >   > 8.1G /data/gaia/GDR3_2048_NEW/GDR3_XP_SUMMARY
+    >   42c43
+    >   < 0    /data/gaia/GDR3_2048_NEW/GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   ---
+    >   > 90G /data/gaia/GDR3_2048_NEW/GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   44c45
+    >   < 6.1T /data/gaia/GDR3_2048_NEW
+    >   ---
+    >   > 7.7T /data/gaia/GDR3_2048_NEW
+
+
+        ps -ef | grep rsync
+
+    >   fedora     86676   85556  0 12:34 pts/0    00:00:00 grep --color=auto rsync
+
+    #
+    # Looks like we are all done ..
+    #
+
+
+# -----------------------------------------------------
+# Compare what we have with the public DR3 catalog.
+#[root@ansibler]
+
+        ls -al /data/gaia/GDR3_2048
+
+    >   GDR3_2048_ASTROPHYSICAL_PARAMETERS
+    >   GDR3_2048_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   GDR3_2048_GAIASOURCE
+    >   GDR3_2048_RVS_MEAN_SPECTRUM
+    >   GDR3_2048_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   GDR3_2048_XP_SAMPLED_MEAN_SPECTRUM
+    >   GDR3_2048_XP_SUMMARY
+    >   GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   
+    >   GDR3_2MASSPSC_BEST_NEIGHBOURS       -> GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   GDR3_ALLWISE_BEST_NEIGHBOURS        -> GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+    >   GDR3_ASTROPHYSICAL_PARAMETERS       -> GDR3_2048_ASTROPHYSICAL_PARAMETERS
+    >   GDR3_ASTROPHYSICAL_PARAMETERS_SUPP  -> GDR3_2048_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   GDR3_GAIA_SOURCE                    -> GDR3_2048_GAIASOURCE
+    >   GDR3_PS1_BEST_NEIGHBOURS            -> GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   GDR3_RVS_MEAN_SPECTRUM              -> GDR3_2048_RVS_MEAN_SPECTRUM
+    >   GDR3_XP_CONTINUOUS_MEAN_SPECTRUM    -> GDR3_2048_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   GDR3_XP_SAMPLED_MEAN_SPECTRUM       -> GDR3_2048_XP_SAMPLED_MEAN_SPECTRUM
+    >   GDR3_XP_SUMMARY                     -> GDR3_2048_XP_SUMMARY
+
+
+
+    ls -1 /data/gaia/GDR3_2048_NEW
+
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   GDR3_ASTROPHYSICAL_PARAMETERS
+    >   GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   GDR3_EPOCH_PHOTOMETRY
+    >   GDR3_GAIA_SOURCE
+    >   GDR3_GALAXY_CANDIDATES
+    >   GDR3_GALAXY_CATALOGUE_NAME
+    >   GDR3_MCMC_SAMPLES_GSP_PHOT
+    >   GDR3_MCMC_SAMPLES_MSC
+    >   GDR3_NSS_ACCELERATION_ASTRO
+    >   GDR3_NSS_NON_LINEAR_SPECTRO
+    >   GDR3_NSS_TWO_BODY_ORBIT
+    >   GDR3_NSS_VIM_FL
+    >   GDR3_OA_NEURON_INFORMATION
+    >   GDR3_OA_NEURON_XP_SPECTRA
+    >   GDR3_QSO_CANDIDATES
+    >   GDR3_QSO_CATALOGUE_NAME
+    >   GDR3_RVS_MEAN_SPECTRUM
+    >   GDR3_SCIENCE_ALERTS
+    >   GDR3_SSO_OBSERVATION
+    >   GDR3_SSO_REFLECTANCE_SPECTRUM
+    >   GDR3_SSO_SOURCE
+    >   GDR3_TOTAL_GALACTIC_EXTINCTION_MAP
+    >   GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT
+    >   GDR3_VARI_AGN
+    >   GDR3_VARI_CEPHEID
+    >   GDR3_VARI_CLASSIFIER_CLASS_DEFINITION
+    >   GDR3_VARI_CLASSIFIER_DEFINITION
+    >   GDR3_VARI_CLASSIFIER_RESULT
+    >   GDR3_VARI_COMPACT_COMPANION
+    >   GDR3_VARI_ECLIPSING_BINARY
+    >   GDR3_VARI_EPOCH_RADIAL_VELOCITY
+    >   GDR3_VARI_LONG_PERIOD_VARIABLE
+    >   GDR3_VARI_MICROLENSING
+    >   GDR3_VARI_MS_OSCILLATOR
+    >   GDR3_VARI_PLANETARY_TRANSIT
+    >   GDR3_VARI_RAD_VEL_STATISTICS
+    >   GDR3_VARI_ROTATION_MODULATION
+    >   GDR3_VARI_RRLYRAE
+    >   GDR3_VARI_SHORT_TIMESCALE
+    >   GDR3_VARI_SUMMARY
+    >   GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   GDR3_XP_SUMMARY
+
+    #
+    # OK, symlinks and stuff mean the names don't match :-(
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # Left it for most of the weekend .. connection lost.
+    # re-connected the client ..
+    # 20221102-02-reconnect-client
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Identify the best_neighbour tables in the public DR3.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        find /data/gaia/GDR3_2048 -name 'GEDR3_2048_*_BEST_NEIGHBOURS'
+
+    >   /data/gaia/GDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS
+    >   /data/gaia/GDR3_2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS
+    >   /data/gaia/GDR3_2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS
+
+
+        ls -1 /data/gaia/GDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS
+
+    >   part-00000-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_00000.c000.snappy.parquet
+    >   part-00001-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_00001.c000.snappy.parquet
+    >   ....
+    >   ....
+    >   part-02046-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_02046.c000.snappy.parquet
+    >   part-02047-3f6c31d2-590b-4c0a-95d5-7e6588cb24dd_02047.c000.snappy.parquet
+
+
+# -----------------------------------------------------
+# Transfer the best_neighbour tables from the public DR3.
+#[root@ansibler]
+
+    ssh root@zeppelin \
+        "
+        rsync \
+            --stats \
+            --progress \
+            --human-readable \
+            --human-readable \
+            --recursive \
+            '/data/gaia/GDR3_2048/GEDR3_2048_PS1_BEST_NEIGHBOURS/' \
+            '/data/gaia/GDR3_2048_NEW/GDR3_PS1_BEST_NEIGHBOURS'
+        "
+
+    >   Number of files: 2,050 (reg: 2,049, dir: 1)
+    >   Number of created files: 2,050 (reg: 2,049, dir: 1)
+    >   Number of deleted files: 0
+    >   Number of regular files transferred: 2,049
+    >   Total file size: 162.28G bytes
+    >   Total transferred file size: 162.28G bytes
+    >   Literal data: 162.28G bytes
+    >   Matched data: 0 bytes
+    >   File list size: 127.95K
+    >   File list generation time: 0.004 seconds
+    >   File list transfer time: 0.000 seconds
+    >   Total bytes sent: 162.32G
+    >   Total bytes received: 38.11K
+
+
+    ssh root@zeppelin \
+        "
+        rsync \
+            --stats \
+            --progress \
+            --human-readable \
+            --human-readable \
+            --recursive \
+            '/data/gaia/GDR3_2048/GEDR3_2048_ALLWISE_BEST_NEIGHBOURS/' \
+            '/data/gaia/GDR3_2048_NEW/GDR3_ALLWISE_BEST_NEIGHBOURS'
+        "
+
+    >   Number of files: 2,050 (reg: 2,049, dir: 1)
+    >   Number of created files: 2,050 (reg: 2,049, dir: 1)
+    >   Number of deleted files: 0
+    >   Number of regular files transferred: 2,049
+    >   Total file size: 176.51G bytes
+    >   Total transferred file size: 176.51G bytes
+    >   Literal data: 176.51G bytes
+    >   Matched data: 0 bytes
+    >   File list size: 127.98K
+    >   File list generation time: 0.046 seconds
+    >   File list transfer time: 0.000 seconds
+    >   Total bytes sent: 176.55G
+    >   Total bytes received: 38.11K
+    >   
+    >   sent 176.55G bytes  received 38.11K bytes  89.66M bytes/sec
+    >   total size is 176.51G  speedup is 1.00
+
+
+    ssh root@zeppelin \
+        "
+        rsync \
+            --stats \
+            --progress \
+            --human-readable \
+            --human-readable \
+            --recursive \
+            '/data/gaia/GDR3_2048/GEDR3_2048_2MASSPSC_BEST_NEIGHBOURS/' \
+            '/data/gaia/GDR3_2048_NEW/GDR3_2MASSPSC_BEST_NEIGHBOURS'
+        "
+
+    >   Number of files: 2,050 (reg: 2,049, dir: 1)
+    >   Number of created files: 2,050 (reg: 2,049, dir: 1)
+    >   Number of deleted files: 0
+    >   Number of regular files transferred: 2,049
+    >   Total file size: 59.38G bytes
+    >   Total transferred file size: 59.38G bytes
+    >   Literal data: 59.38G bytes
+    >   Matched data: 0 bytes
+    >   File list size: 127.93K
+    >   File list generation time: 0.044 seconds
+    >   File list transfer time: 0.000 seconds
+    >   Total bytes sent: 59.40G
+    >   Total bytes received: 38.11K
+    >   
+    >   sent 59.40G bytes  received 38.11K bytes  78.53M bytes/sec
+    >   total size is 59.38G  speedup is 1.00
+
+
+
+# -----------------------------------------------------
+# List the tables in the new dataset.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        ls -1 /data/gaia/GDR3_2048_NEW/
+
+    >   GDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   GDR3_ALLWISE_BEST_NEIGHBOURS
+    >   GDR3_ASTROPHYSICAL_PARAMETERS
+    >   GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   GDR3_EPOCH_PHOTOMETRY
+    >   GDR3_GAIA_SOURCE
+    >   GDR3_GALAXY_CANDIDATES
+    >   GDR3_GALAXY_CATALOGUE_NAME
+    >   GDR3_MCMC_SAMPLES_GSP_PHOT
+    >   GDR3_MCMC_SAMPLES_MSC
+    >   GDR3_NSS_ACCELERATION_ASTRO
+    >   GDR3_NSS_NON_LINEAR_SPECTRO
+    >   GDR3_NSS_TWO_BODY_ORBIT
+    >   GDR3_NSS_VIM_FL
+    >   GDR3_OA_NEURON_INFORMATION
+    >   GDR3_OA_NEURON_XP_SPECTRA
+    >   GDR3_PS1_BEST_NEIGHBOURS
+    >   GDR3_QSO_CANDIDATES
+    >   GDR3_QSO_CATALOGUE_NAME
+    >   GDR3_RVS_MEAN_SPECTRUM
+    >   GDR3_SCIENCE_ALERTS
+    >   GDR3_SSO_OBSERVATION
+    >   GDR3_SSO_REFLECTANCE_SPECTRUM
+    >   GDR3_SSO_SOURCE
+    >   GDR3_TOTAL_GALACTIC_EXTINCTION_MAP
+    >   GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT
+    >   GDR3_VARI_AGN
+    >   GDR3_VARI_CEPHEID
+    >   GDR3_VARI_CLASSIFIER_CLASS_DEFINITION
+    >   GDR3_VARI_CLASSIFIER_DEFINITION
+    >   GDR3_VARI_CLASSIFIER_RESULT
+    >   GDR3_VARI_COMPACT_COMPANION
+    >   GDR3_VARI_ECLIPSING_BINARY
+    >   GDR3_VARI_EPOCH_RADIAL_VELOCITY
+    >   GDR3_VARI_LONG_PERIOD_VARIABLE
+    >   GDR3_VARI_MICROLENSING
+    >   GDR3_VARI_MS_OSCILLATOR
+    >   GDR3_VARI_PLANETARY_TRANSIT
+    >   GDR3_VARI_RAD_VEL_STATISTICS
+    >   GDR3_VARI_ROTATION_MODULATION
+    >   GDR3_VARI_RRLYRAE
+    >   GDR3_VARI_SHORT_TIMESCALE
+    >   GDR3_VARI_SUMMARY
+    >   GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   GDR3_XP_SUMMARY
+
+
+        du -h -h /data/gaia/GDR3_2048_NEW/
+
+    >   88M     /data/gaia/GDR3_2048_NEW/GDR3_NSS_ACCELERATION_ASTRO
+    >   591G    /data/gaia/GDR3_2048_NEW/GDR3_GAIA_SOURCE
+    >   367M    /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CANDIDATES
+    >   60G     /data/gaia/GDR3_2048_NEW/GDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   62G     /data/gaia/GDR3_2048_NEW/GDR3_EPOCH_PHOTOMETRY
+    >   50M     /data/gaia/GDR3_2048_NEW/GDR3_VARI_CEPHEID
+    >   3.0M    /data/gaia/GDR3_2048_NEW/GDR3_SCIENCE_ALERTS
+    >   5.2M    /data/gaia/GDR3_2048_NEW/GDR3_NSS_VIM_FL
+    >   17M     /data/gaia/GDR3_2048_NEW/GDR3_QSO_CATALOGUE_NAME
+    >   303M    /data/gaia/GDR3_2048_NEW/GDR3_QSO_CANDIDATES
+    >   23M     /data/gaia/GDR3_2048_NEW/GDR3_VARI_SHORT_TIMESCALE
+    >   165G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >   19G     /data/gaia/GDR3_2048_NEW/GDR3_RVS_MEAN_SPECTRUM
+    >   63M     /data/gaia/GDR3_2048_NEW/GDR3_TOTAL_GALACTIC_EXTINCTION_MAP
+    >   163G    /data/gaia/GDR3_2048_NEW/GDR3_PS1_BEST_NEIGHBOURS
+    >   2.7T    /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >   11M     /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CATALOGUE_NAME
+    >   2.6G    /data/gaia/GDR3_2048_NEW/GDR3_VARI_SUMMARY
+    >   324M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_ECLIPSING_BINARY
+    >   125M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_CLASSIFIER_RESULT
+    >   573M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_ROTATION_MODULATION
+    >   177G    /data/gaia/GDR3_2048_NEW/GDR3_ALLWISE_BEST_NEIGHBOURS
+    >   8.7M    /data/gaia/GDR3_2048_NEW/GDR3_SSO_SOURCE
+    >   201M    /data/gaia/GDR3_2048_NEW/GDR3_NSS_TWO_BODY_ORBIT
+    >   4.0K    /data/gaia/GDR3_2048_NEW/GDR3_VARI_CLASSIFIER_DEFINITION
+    >   14M     /data/gaia/GDR3_2048_NEW/GDR3_NSS_NON_LINEAR_SPECTRO
+    >   17M     /data/gaia/GDR3_2048_NEW/GDR3_VARI_COMPACT_COMPANION
+    >   2.9M    /data/gaia/GDR3_2048_NEW/GDR3_OA_NEURON_XP_SPECTRA
+    >   1.2T    /data/gaia/GDR3_2048_NEW/GDR3_MCMC_SAMPLES_MSC
+    >   524K    /data/gaia/GDR3_2048_NEW/GDR3_VARI_PLANETARY_TRANSIT
+    >   136M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_RRLYRAE
+    >   4.3G    /data/gaia/GDR3_2048_NEW/GDR3_SSO_OBSERVATION
+    >   8.1G    /data/gaia/GDR3_2048_NEW/GDR3_XP_SUMMARY
+    >   268K    /data/gaia/GDR3_2048_NEW/GDR3_OA_NEURON_INFORMATION
+    >   4.0K    /data/gaia/GDR3_2048_NEW/GDR3_VARI_CLASSIFIER_CLASS_DEFINITION
+    >   7.2M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_EPOCH_RADIAL_VELOCITY
+    >   29M     /data/gaia/GDR3_2048_NEW/GDR3_VARI_AGN
+    >   5.5M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_RAD_VEL_STATISTICS
+    >   17M     /data/gaia/GDR3_2048_NEW/GDR3_SSO_REFLECTANCE_SPECTRUM
+    >   2.7T    /data/gaia/GDR3_2048_NEW/GDR3_MCMC_SAMPLES_GSP_PHOT
+    >   189G    /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS
+    >   171K    /data/gaia/GDR3_2048_NEW/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   9.0M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_MS_OSCILLATOR
+    >   31M     /data/gaia/GDR3_2048_NEW/GDR3_VARI_LONG_PERIOD_VARIABLE
+    >   3.0M    /data/gaia/GDR3_2048_NEW/GDR3_VARI_MICROLENSING
+    >   90G     /data/gaia/GDR3_2048_NEW/GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   45M     /data/gaia/GDR3_2048_NEW/GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT
+    >   8.0T    /data/gaia/GDR3_2048_NEW/
+
+
+        du --bytes /data/gaia/GDR3_2048_NEW/
+
+    >        90657856   /data/gaia/GDR3_2048_NEW/GDR3_NSS_ACCELERATION_ASTRO
+    >    634489380062   /data/gaia/GDR3_2048_NEW/GDR3_GAIA_SOURCE
+    >       383977849   /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CANDIDATES
+    >     63760867781   /data/gaia/GDR3_2048_NEW/GDR3_2MASSPSC_BEST_NEIGHBOURS
+    >     65802188411   /data/gaia/GDR3_2048_NEW/GDR3_EPOCH_PHOTOMETRY
+    >        50437152   /data/gaia/GDR3_2048_NEW/GDR3_VARI_CEPHEID
+    >         1899538   /data/gaia/GDR3_2048_NEW/GDR3_SCIENCE_ALERTS
+    >         4857435   /data/gaia/GDR3_2048_NEW/GDR3_NSS_VIM_FL
+    >        15389619   /data/gaia/GDR3_2048_NEW/GDR3_QSO_CATALOGUE_NAME
+    >       315646155   /data/gaia/GDR3_2048_NEW/GDR3_QSO_CANDIDATES
+    >        22430953   /data/gaia/GDR3_2048_NEW/GDR3_VARI_SHORT_TIMESCALE
+    >    176137214505   /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP
+    >     19387310491   /data/gaia/GDR3_2048_NEW/GDR3_RVS_MEAN_SPECTRUM
+    >        64656470   /data/gaia/GDR3_2048_NEW/GDR3_TOTAL_GALACTIC_EXTINCTION_MAP
+    >    174243392010   /data/gaia/GDR3_2048_NEW/GDR3_PS1_BEST_NEIGHBOURS
+    >   2926382189096   /data/gaia/GDR3_2048_NEW/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+    >         9522199   /data/gaia/GDR3_2048_NEW/GDR3_GALAXY_CATALOGUE_NAME
+    >      2728715243   /data/gaia/GDR3_2048_NEW/GDR3_VARI_SUMMARY
+    >       337802195   /data/gaia/GDR3_2048_NEW/GDR3_VARI_ECLIPSING_BINARY
+    >       130166308   /data/gaia/GDR3_2048_NEW/GDR3_VARI_CLASSIFIER_RESULT
+    >       598853650   /data/gaia/GDR3_2048_NEW/GDR3_VARI_ROTATION_MODULATION
+    >    189525113879   /data/gaia/GDR3_2048_NEW/GDR3_ALLWISE_BEST_NEIGHBOURS
+    >         7597544   /data/gaia/GDR3_2048_NEW/GDR3_SSO_SOURCE
+    >       208866387   /data/gaia/GDR3_2048_NEW/GDR3_NSS_TWO_BODY_ORBIT
+    >            2757   /data/gaia/GDR3_2048_NEW/GDR3_VARI_CLASSIFIER_DEFINITION
+    >        13069969   /data/gaia/GDR3_2048_NEW/GDR3_NSS_NON_LINEAR_SPECTRO
+    >        15580335   /data/gaia/GDR3_2048_NEW/GDR3_VARI_COMPACT_COMPANION
+    >         2418262   /data/gaia/GDR3_2048_NEW/GDR3_OA_NEURON_XP_SPECTRA
+    >   1268897171232   /data/gaia/GDR3_2048_NEW/GDR3_MCMC_SAMPLES_MSC
+    >          421594   /data/gaia/GDR3_2048_NEW/GDR3_VARI_PLANETARY_TRANSIT
+    >       140339354   /data/gaia/GDR3_2048_NEW/GDR3_VARI_RRLYRAE
+    >      4599206930   /data/gaia/GDR3_2048_NEW/GDR3_SSO_OBSERVATION
+    >      8637481537   /data/gaia/GDR3_2048_NEW/GDR3_XP_SUMMARY
+    >          272543   /data/gaia/GDR3_2048_NEW/GDR3_OA_NEURON_INFORMATION
+    >            2752   /data/gaia/GDR3_2048_NEW/GDR3_VARI_CLASSIFIER_CLASS_DEFINITION
+    >         6016357   /data/gaia/GDR3_2048_NEW/GDR3_VARI_EPOCH_RADIAL_VELOCITY
+    >        28951256   /data/gaia/GDR3_2048_NEW/GDR3_VARI_AGN
+    >         4853066   /data/gaia/GDR3_2048_NEW/GDR3_VARI_RAD_VEL_STATISTICS
+    >        15883668   /data/gaia/GDR3_2048_NEW/GDR3_SSO_REFLECTANCE_SPECTRUM
+    >   2960018396939   /data/gaia/GDR3_2048_NEW/GDR3_MCMC_SAMPLES_GSP_PHOT
+    >    202270065921   /data/gaia/GDR3_2048_NEW/GDR3_ASTROPHYSICAL_PARAMETERS
+    >           90448   /data/gaia/GDR3_2048_NEW/GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >         7837626   /data/gaia/GDR3_2048_NEW/GDR3_VARI_MS_OSCILLATOR
+    >        30996071   /data/gaia/GDR3_2048_NEW/GDR3_VARI_LONG_PERIOD_VARIABLE
+    >         2945954   /data/gaia/GDR3_2048_NEW/GDR3_VARI_MICROLENSING
+    >     96190247704   /data/gaia/GDR3_2048_NEW/GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >        45775947   /data/gaia/GDR3_2048_NEW/GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT
+    >   8795627161057   /data/gaia/GDR3_2048_NEW/
+
+
+
+    8795627161057 / (1024^4) = 7.999576302 TiB
+
+    (8 * (1024^4)) - 8795627161057 = 465861151 B
+
+    ((8 * (1024^4)) - 8795627161057) / (1024^2) = 444 MiB
+
+
+    400 MiB bytes space left
+
+
+
+

@@ -1,0 +1,508 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Success
+
+    Result:
+
+        Work in progress ...
+
+        Python Boto3 library.
+        https://github.com/boto/boto3
+        https://boto3.amazonaws.com/v1/documentation/api/latest/index.html
+
+        https://github.com/ronald-d-dilley-jr/ceph-s3-examples
+        https://docs.ceph.com/en/quincy/radosgw/s3/python/#
+
+        We could try using the low level API to see what is going on ..
+        https://czak.pl/2015/09/15/s3-rest-api-with-curl.html
+        https://docs.aws.amazon.com/general/latest/gr/create-signed-request.html#create-canonical-request
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@laptop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "s3-client" \
+        --hostname "s3-client" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install the secrets function.
+#[root@s3-client]
+
+    mkdir "${HOME}/bin"
+    cat > "${HOME}/bin/getsecret" << 'EOF'
+#!/bin/bash
+datahostname='data.gaia-dmp.uk'
+datahostuser='fedora'
+
+key=${1:?'key required'}
+ssh -n "${datahostuser:?}@${datahostname:?}" \
+    "
+    getsecret '${key:?}'
+    "
+EOF
+
+    chmod 'a+x' "${HOME}/bin/getsecret"
+
+    getsecret 'examples.frog'
+    getsecret 'examples.toad'
+
+    >   Green Frog
+    >   Brown Toad
+
+
+# -----------------------------------------------------
+# Configure our S3 client.
+# https://linux.die.net/man/1/s3cmd
+# https://s3tools.org/kb/item14.htm
+# https://www.digitalocean.com/docs/spaces/resources/s3cmd/
+# https://support.arcticcloud.com/portal/kb/articles/managing-object-storage-using-the-s3cmd-interface
+# https://docs.ceph.com/en/latest/radosgw/s3/commons/#bucket-and-host-name
+#[root@s3-client]
+
+    s3cmd \
+        --configure \
+        --host $(getsecret devops.stfc.echo.endpoint) \
+        --host-bucket $(getsecret devops.stfc.echo.template) \
+        --access_key $(getsecret  devops.stfc.echo.access_key) \
+        --secret_key $(getsecret  devops.stfc.echo.secret_key)
+
+    >   ....
+    >   ....
+    >   Test access with supplied credentials? [Y/n]
+    >   Please wait, attempting to list all buckets...
+    >   Success. Your access key and secret key worked fine :-)
+    >   ....
+    >   ....
+    >   Save settings? [y/N] y
+    >   Configuration saved to '/root/.s3cfg'
+
+
+# -----------------------------------------------------
+# List our buckets.
+#[root@s3-client]
+
+    s3cmd ls
+
+    >   2022-11-28 11:35  s3://GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   2022-11-28 00:21  s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   ....
+    >   ....
+    >   2022-11-28 11:16  s3://GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   2022-11-28 11:17  s3://GaiaDMp-GDR3_XP_SUMMARY
+
+
+# -----------------------------------------------------
+# Install our Python client.
+#[root@s3-client]
+
+    pip install boto3
+
+    >   Collecting boto3
+    >     Downloading boto3-1.26.45-py3-none-any.whl (132 kB)
+    >     ....
+    >     ....
+
+
+# -----------------------------------------------------
+# Check we can access our secrets from Python.
+# https://stackoverflow.com/a/8659333
+# https://stackoverflow.com/a/55273665
+#[root@s3-client]
+
+    python3
+
+import subprocess
+secret = subprocess.getoutput('getsecret "examples.frog"')
+print(secret)
+
+    >   Green Frog
+
+
+# -----------------------------------------------------
+# Try using the Boto library to access our own buckets.
+# https://boto3.amazonaws.com/v1/documentation/api/latest/guide/quickstart.html
+# https://boto3.amazonaws.com/v1/documentation/api/latest/guide/configuration.html#using-the-config-object
+# https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html#passing-credentials-as-parameters
+#[root@s3-client]
+
+    python3
+
+import subprocess
+
+import boto3
+from botocore.config import Config
+
+s3_endpoint   = 'https://s3.echo.stfc.ac.uk'
+s3_access_key = subprocess.getoutput('getsecret "devops.stfc.echo.access_key"')
+s3_secret_key = subprocess.getoutput('getsecret "devops.stfc.echo.secret_key"')
+
+resource = boto3.resource(
+    's3',
+    endpoint_url = s3_endpoint,
+    aws_access_key_id     = s3_access_key,
+    aws_secret_access_key = s3_secret_key
+    )
+
+for bucket in resource.buckets.all():
+   print(bucket.name)
+
+    >   GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   ....
+    >   ....
+    >   GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   GaiaDMp-GDR3_XP_SUMMARY
+
+
+# -----------------------------------------------------
+# Try using the Boto library to access our public buckets.
+# https://stackoverflow.com/questions/34865927/can-i-use-boto3-anonymously
+#[root@s3-client]
+
+    python3
+
+import subprocess
+
+import boto3
+from botocore import UNSIGNED
+from botocore.client import Config
+
+s3_endpoint   = 'https://s3.echo.stfc.ac.uk'
+s3_access_key = subprocess.getoutput('getsecret "devops.stfc.echo.access_key"')
+s3_secret_key = subprocess.getoutput('getsecret "devops.stfc.echo.secret_key"')
+
+resource = boto3.resource(
+    's3',
+    endpoint_url = s3_endpoint,
+    aws_access_key_id = s3_access_key,
+    aws_secret_access_key = s3_secret_key,
+    )
+
+for bucket in resource.buckets.all():
+   print(bucket.name)
+
+    >   GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   ....
+    >   ....
+    >   GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   GaiaDMp-GDR3_XP_SUMMARY
+
+# Try setting the signature version to unsigned.
+# https://stackoverflow.com/a/34866092
+resource = boto3.resource(
+    's3',
+    endpoint_url = s3_endpoint,
+    aws_access_key_id = s3_access_key,
+    aws_secret_access_key = s3_secret_key,
+    config= Config(
+        signature_version = UNSIGNED
+        )
+    )
+
+for bucket in resource.buckets.all():
+   print(bucket.name)
+
+    >   -
+
+
+from botocore.handlers import disable_signing
+
+resource = boto3.resource(
+    's3',
+    endpoint_url = s3_endpoint,
+    aws_access_key_id = s3_access_key,
+    aws_secret_access_key = s3_secret_key,
+    )
+
+# Try disabling the request signing.
+# https://gist.github.com/amatthies/280621dac95c6222ba3a
+resource.meta.client.meta.events.register(
+    'choose-signer.s3.*', disable_signing
+    )
+
+for bucket in resource.buckets.all():
+   print(bucket.name)
+
+    >   -
+
+
+# -----------------------------------------------------
+# Try listing the contents of a bucket using the Boto library.
+#[root@s3-client]
+
+    python3
+
+import subprocess
+
+import boto3
+from botocore.config import Config
+
+s3_endpoint   = 'https://s3.echo.stfc.ac.uk'
+s3_access_key = subprocess.getoutput('getsecret "devops.stfc.echo.access_key"')
+s3_secret_key = subprocess.getoutput('getsecret "devops.stfc.echo.secret_key"')
+
+resource = boto3.resource(
+    's3',
+    endpoint_url = s3_endpoint,
+    aws_access_key_id     = s3_access_key,
+    aws_secret_access_key = s3_secret_key
+    )
+
+for bucket in resource.buckets.all():
+   print(bucket.name)
+
+    >   GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   ....
+    >   ....
+    >   GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   GaiaDMp-GDR3_XP_SUMMARY
+
+bucket = resource.Bucket(
+    'GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS'
+    )
+
+# List the first 5 objects in the bucket.
+# https://boto3.amazonaws.com/v1/documentation/api/latest/reference/core/collections.html#boto3.resources.collection.ResourceCollection.limit
+for object in bucket.objects.limit(5):
+    print(object)
+
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00000-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00000.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00001-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00001.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00002-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00002.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00003-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00003.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00004-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00004.c000.snappy.parquet')
+
+
+# Try the same with no credentials.
+resource = boto3.resource(
+    's3',
+    endpoint_url = s3_endpoint,
+    aws_access_key_id     = '',
+    aws_secret_access_key = ''
+    )
+
+bucket = resource.Bucket(
+    'GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS'
+    )
+
+for object in bucket.objects.limit(5):
+    print(object)
+
+    >   Traceback (most recent call last):
+    >     File "<stdin>", line 1, in <module>
+    >     File "/usr/local/lib/python3.10/site-packages/boto3/resources/collection.py", line 81, in __iter__
+    >       for page in self.pages():
+    >     File "/usr/local/lib/python3.10/site-packages/boto3/resources/collection.py", line 171, in pages
+    >       for page in pages:
+    >     File "/usr/local/lib/python3.10/site-packages/botocore/paginate.py", line 269, in __iter__
+    >       response = self._make_request(current_kwargs)
+    >     File "/usr/local/lib/python3.10/site-packages/botocore/paginate.py", line 357, in _make_request
+    >       return self._method(**current_kwargs)
+    >     File "/usr/local/lib/python3.10/site-packages/botocore/client.py", line 530, in _api_call
+    >       return self._make_api_call(operation_name, kwargs)
+    >     File "/usr/local/lib/python3.10/site-packages/botocore/client.py", line 960, in _make_api_call
+    >       raise error_class(parsed_response, operation_name)
+    >   botocore.exceptions.ClientError: An error occurred (InvalidArgument) when calling the ListObjects operation: Unknown
+
+
+# Try setting the signature version to unsigned.
+# https://stackoverflow.com/a/34866092
+from botocore import UNSIGNED
+resource = boto3.resource(
+    's3',
+    endpoint_url = s3_endpoint,
+    aws_access_key_id = '',
+    aws_secret_access_key = '',
+    config= Config(
+        signature_version = UNSIGNED
+        )
+    )
+
+bucket = resource.Bucket(
+    'GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS'
+    )
+
+for object in bucket.objects.limit(5):
+    print(object)
+
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00000-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00000.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00001-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00001.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00002-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00002.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00003-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00003.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00004-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00004.c000.snappy.parquet')
+
+    #
+    # So we can access the contents of public buckets ..
+    # Without any user identification ?
+    #
+
+# -----------------------------------------------------
+# Try that again without loading any secrets.
+#[root@s3-client]
+
+    python3
+
+import subprocess
+
+import boto3
+from botocore import UNSIGNED
+from botocore.config import Config
+
+s3_endpoint   = 'https://s3.echo.stfc.ac.uk'
+
+resource = boto3.resource(
+    's3',
+    endpoint_url = s3_endpoint,
+    aws_access_key_id = '',
+    aws_secret_access_key = '',
+    config= Config(
+        signature_version = UNSIGNED
+        )
+    )
+
+bucket = resource.Bucket(
+    'GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS'
+    )
+
+for object in bucket.objects.limit(5):
+    print(object)
+
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00000-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00000.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00001-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00001.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00002-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00002.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00003-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00003.c000.snappy.parquet')
+    >   s3.ObjectSummary(bucket_name='GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS', key='part-00004-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00004.c000.snappy.parquet')
+
+    #
+    # So we can list the contents of a bucket given just the service endpoint and the bucket name.
+    # No user account identifier.
+    # .... what happens of two users create buckets with the same name ?
+    #
+    # Answer - they can't
+    # https://repost.aws/knowledge-center/s3-error-bucket-already-exists
+    # https://docs.aws.amazon.com/AmazonS3/latest/userguide/BucketRestrictions.html#bucketnamingrules
+    #
+
+    #
+    # I think we should rename our buckets to include our DNS name, catalog name and partiton count.
+    # gaia-dmp.uk-GDR3-2048-2MASSPSC_BEST_NEIGHBOURS
+    #
+
+for bucket in resource.buckets.all():
+   print(bucket.name)
+
+    >   -
+
+
+
+
+    #
+    # Do we need to set public policy on the bucket ?
+
+    # https://repost.aws/knowledge-center/s3-public-access-acl
+    # https://hystax.com/the-quickest-way-to-get-a-list-of-public-buckets-in-aws-to-enhance-your-security/
+    # https://docs.aws.amazon.com/AmazonS3/latest/API/API_PolicyStatus.html
+    # https://boto3.amazonaws.com/v1/documentation/api/latest/guide/s3-example-bucket-policies.html
+    # https://docs.aws.amazon.com/AmazonS3/latest/API/API_PolicyStatus.html
+
+
+    #
+    # https://stackoverflow.com/a/52352852
+    # https://github.com/totoleon/AwsPolicy
+    #
+
+    python3
+
+import subprocess
+import boto3
+
+s3_endpoint   = 'https://s3.echo.stfc.ac.uk'
+s3_access_key = subprocess.getoutput('getsecret "devops.stfc.echo.access_key"')
+s3_secret_key = subprocess.getoutput('getsecret "devops.stfc.echo.secret_key"')
+
+resource = boto3.resource(
+    's3',
+    endpoint_url = s3_endpoint,
+    aws_access_key_id     = s3_access_key,
+    aws_secret_access_key = s3_secret_key
+    )
+
+bucket = resource.Bucket(
+    'GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS'
+    )
+
+# Load the bucket policy as an object
+from awspolicy import BucketPolicy
+
+.........................................
+.........................................
+scribbles ..
+
+policy = BucketPolicy(
+    serviceModule=s3_client,
+    resourceIdentifer = bucket.name
+    )
+
+# Select the statement that will be modified
+statement_to_modify = bucket_policy.select_statement(
+    'AutomatedRestrictiveAccess'
+    )
+
+# Insert new_user_arn into the list of Principal['AWS']
+new_user_arn = 'arn:aws:iam::888888888888:user/daniel'
+statement_to_modify.Principal['AWS'].append(new_user_arn)
+
+# Save change of the statement
+statement_to_modify.save()
+
+# Save change of the policy. This will update the bucket policy
+bucket_policy.save()
+
+

@@ -1,0 +1,942 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Following upgrade of our Echo S3 quota from 5TiB to 15TiB.
+        Try uploading the rest of our data.
+
+        From 20221125-01-cloud-data.txt :
+            Failed to upload GDR3_XP_CONTINUOUS_MEAN_SPECTRUM.
+            Failed to upload GDR3_MCMC_SAMPLES_GSP_PHOT.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Login to the test deployment.
+#[user@laptop]
+
+    ssh fedora@iris-gaia-green.gaia-dmp.uk
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install the S3 client.
+#[user@zeppelin]
+
+    sudo dnf install s3cmd
+
+    >   Installed:
+    >       s3cmd-2.0.2-3.fc30.noarch
+
+
+# -----------------------------------------------------
+# Install the secrets function.
+#[user@zeppelin]
+
+    datahostname='data.gaia-dmp.uk'
+    datahostuser='fedora'
+
+    getsecret()
+        {
+        local key=${1:?'key required'}
+        ssh -n "${datahostuser:?}@${datahostname:?}" \
+            "
+            getsecret '${key:?}'
+            "
+        }
+
+    getsecret 'examples.frog'
+    getsecret 'examples.toad'
+
+    >   Green Frog
+    >   Brown Toad
+
+
+# -----------------------------------------------------
+# Configure our S3 client.
+# https://linux.die.net/man/1/s3cmd
+# https://s3tools.org/kb/item14.htm
+# https://www.digitalocean.com/docs/spaces/resources/s3cmd/
+# https://support.arcticcloud.com/portal/kb/articles/managing-object-storage-using-the-s3cmd-interface
+# https://docs.ceph.com/en/latest/radosgw/s3/commons/#bucket-and-host-name
+#[user@zeppelin]
+
+    s3cmd \
+        --configure \
+        --host $(getsecret devops.stfc.echo.endpoint) \
+        --host-bucket $(getsecret devops.stfc.echo.template) \
+        --access_key $(getsecret  devops.stfc.echo.access_key) \
+        --secret_key $(getsecret  devops.stfc.echo.secret_key)
+
+    >   New settings:
+    >     Access Key: ##########
+    >     Secret Key: ##########
+    >     Default Region: US
+    >     S3 Endpoint: s3.echo.stfc.ac.uk
+    >     DNS-style bucket+hostname:port template for accessing a bucket: s3.echo.stfc.ac.uk/%(bucket)
+    >     Encryption password:
+    >     Path to GPG program: /usr/bin/gpg
+    >     Use HTTPS protocol: True
+    >     HTTP Proxy server name:
+    >     HTTP Proxy server port: 0
+
+    >   Test access with supplied credentials? [Y/n]
+    >   Please wait, attempting to list all buckets...
+    >   Success. Your access key and secret key worked fine :-)
+    >
+    >   Now verifying that encryption works...
+    >   Not configured. Never mind.
+    >
+    >   Save settings? [y/N] y
+    >   Configuration saved to '/home/fedora/.s3cfg'
+
+
+# -----------------------------------------------------
+# List our buckets.
+#[user@zeppelin]
+
+    s3cmd \
+        ls
+
+    >   2022-11-28 11:35  s3://GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS
+    >   2022-11-28 00:21  s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS
+    >   ....
+    >   ....
+    >   2022-11-28 11:16  s3://GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM
+    >   2022-11-28 11:17  s3://GaiaDMp-GDR3_XP_SUMMARY
+
+
+# -----------------------------------------------------
+# Create our table upload function.
+#[user@zeppelin]
+
+    mkdir -p ~/bin
+    cat > ~/bin/uploadtable << 'EOF'
+#!/bin/bash
+bucketprefix=GaiaDMp
+dstpath=/data/gaia/GDR3/
+
+tablename=${1:?'tablename required'}
+bucketname=${bucketprefix}-${tablename}
+s3cmd mb \
+    --acl-public \
+    "s3://${bucketname}"
+
+pushd "${dstpath}/${tablename}"
+    s3cmd sync \
+        --debug \
+        --stats \
+        --verbose \
+        --progress \
+        --recursive \
+        --acl-public \
+        --no-check-md5 \
+        --exclude '_SUCCESS' \
+        --exclude '._SUCCESS.crc' \
+        --include '*.parquet' \
+        --include '*.parquet.crc' \
+        "." \
+        "s3://${bucketname}"
+popd
+EOF
+
+    chmod a+x ~/bin/uploadtable
+
+
+# -----------------------------------------------------
+# Install the screen terminal multiplexer.
+# https://linuxize.com/post/how-to-use-linux-screen/
+# https://www.gnu.org/software/screen/manual/screen.html
+#[user@zeppelin]
+
+    sudo dnf install screen
+
+    >   ....
+    >   ....
+    >   Installed:
+    >     screen-4.6.2-9.fc31.x86_64
+
+# -----------------------------------------------------
+# Try completing GDR3_XP_CONTINUOUS_MEAN_SPECTRUM.
+#[user@zeppelin]
+
+    screen -S GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+
+    uploadtable GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+
+    >   Bucket 's3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/' created
+    >   /data/gaia/GDR3/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM ~
+    >   INFO: No cache file found, creating it.
+    >   INFO: Compiling list of local files...
+    >   INFO: Running stat() and reading/calculating MD5 values on 4096 files, this may take some time...
+    >   INFO: [1000/4096]
+    >   INFO: [2000/4096]
+    >   INFO: [3000/4096]
+    >   INFO: [4000/4096]
+    >   INFO: Retrieving list of remote files for s3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/ ...
+    >   ....
+    >   ....
+    >   upload: './part-00598-5823b912-106c-4bf2-80b0-e95ac98e8bcf_00598.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-00598-5823b912-106c-4bf2-80b0-e95ac98e8bcf_00598.c000.snappy.parquet'  [part 51 of 91, 15MB] [3 of 1452]
+    >    15728640 of 15728640   100% in    0s    20.42 MB/s  done
+    >   upload: './part-00598-5823b912-106c-4bf2-80b0-e95ac98e8bcf_00598.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-00598-5823b912-106c-4bf2-80b0-e95ac98e8bcf_00598.c000.snappy.parquet'  [part 52 of 91, 15MB] [3 of 1452]
+    >    15728640 of 15728640   100% in    0s    17.00 MB/s  done
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM]
+
+
+    screen -ls
+
+    >   There is a screen on:
+    >   	187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM	(Detached)
+    >   1 Socket in /run/screen/S-fedora.
+
+
+# -----------------------------------------------------
+# Try completing GDR3_MCMC_SAMPLES_GSP_PHOT.
+#[user@zeppelin]
+
+    screen -S GDR3_MCMC_SAMPLES_GSP_PHOT
+
+    uploadtable GDR3_MCMC_SAMPLES_GSP_PHOT
+
+    >   Bucket 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/' created
+    >   /data/gaia/GDR3/GDR3_MCMC_SAMPLES_GSP_PHOT ~
+    >   INFO: No cache file found, creating it.
+    >   INFO: Compiling list of local files...
+    >   INFO: Running stat() and reading/calculating MD5 values on 4096 files, this may take some time...
+    >   INFO: [1000/4096]
+    >   INFO: [2000/4096]
+    >   INFO: [3000/4096]
+    >   INFO: [4000/4096]
+    >   INFO: Retrieving list of remote files for s3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/ ...
+    >   ....
+    >   ....
+    >   upload: './part-00928-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00928.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/part-00928-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00928.c000.snappy.parquet'  [part 45 of 91, 15MB] [1 of 1120]
+    >    15728640 of 15728640   100% in    0s    24.88 MB/s  done
+    >   upload: './part-00928-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00928.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/part-00928-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00928.c000.snappy.parquet'  [part 46 of 91, 15MB] [1 of 1120]
+    >    15728640 of 15728640   100% in    0s    27.06 MB/s  done
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187721.GDR3_MCMC_SAMPLES_GSP_PHOT]
+
+
+    screen -ls
+
+    >   There are screens on:
+    >   	187721.GDR3_MCMC_SAMPLES_GSP_PHOT	(Detached)
+    >   	187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM	(Detached)
+    >   2 Sockets in /run/screen/S-fedora.
+
+
+    screen -r 187721.GDR3_MCMC_SAMPLES_GSP_PHOT
+
+
+    >   ....
+    >   ....
+    >   upload: './part-00931-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00931.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/part-00931-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00931.c000.snappy.parquet'  [part 3 of 92, 15MB] [4 of 1120]
+    >    15728640 of 15728640   100% in    0s    17.98 MB/s  done
+    >   upload: './part-00931-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00931.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/part-00931-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00931.c000.snappy.parquet'  [part 4 of 92, 15MB] [4 of 1120]
+    >    15728640 of 15728640   100% in    0s    15.79 MB/s  done
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187721.GDR3_MCMC_SAMPLES_GSP_PHOT]
+
+
+# -----------------------------------------------------
+# Try creating our uber bucket.
+#[user@zeppelin]
+
+    screen -S GDR3_EVERYTHING
+
+    bucketname=GaiaDMp-GDR3_EVERYTHING
+    dstpath=/data/gaia/GDR3
+
+    s3cmd mb \
+        --acl-public \
+        "s3://${bucketname}"
+
+    >   Bucket 's3://GaiaDMp-GDR3_EVERYTHING/' created
+
+
+    pushd "${dstpath}"
+        s3cmd sync \
+            --debug \
+            --stats \
+            --verbose \
+            --progress \
+            --recursive \
+            --acl-public \
+            --no-check-md5 \
+            --exclude '_SUCCESS' \
+            --exclude '._SUCCESS.crc' \
+            --include '*.parquet' \
+            --include '*.parquet.crc' \
+            "." \
+            "s3://${bucketname}"
+    popd
+
+    >   ....
+    >   ....
+    >   INFO: [151000/154734]
+    >   INFO: [152000/154734]
+    >   INFO: [153000/154734]
+    >   INFO: [154000/154734]
+    >   INFO: Retrieving list of remote files for s3://GaiaDMp-GDR3_EVERYTHING/ ...
+    >   INFO: Found 154734 local files, 0 remote files
+    >   INFO: Verifying attributes...
+    >   INFO: Summary: 154734 local files to upload, 0 files to remote copy, 0 remote files to delete
+    >   ....
+    >   ....
+    >   upload: './GDR3_2MASSPSC_BEST_NEIGHBOURS/part-00000-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00000.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_2MASSPSC_BEST_NEIGHBOURS/part-00000-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00000.c000.snappy.parquet'  [part 1 of 2, 15MB] [1 of 154734]
+    >    15728640 of 15728640   100% in    0s    22.83 MB/s  done
+    >   upload: './GDR3_2MASSPSC_BEST_NEIGHBOURS/part-00000-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00000.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_2MASSPSC_BEST_NEIGHBOURS/part-00000-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00000.c000.snappy.parquet'  [part 2 of 2, 14MB] [1 of 154734]
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187778.GDR3_EVERYTHING]
+
+
+    screen -ls
+
+    >   There are screens on:
+    >   	187778.GDR3_EVERYTHING	(Detached)
+    >   	187721.GDR3_MCMC_SAMPLES_GSP_PHOT	(Detached)
+    >   	187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM	(Detached)
+    >   3 Sockets in /run/screen/S-fedora.
+
+
+    screen -r 187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+
+    >   ....
+    >   upload: './part-00616-5823b912-106c-4bf2-80b0-e95ac98e8bcf_00616.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-00616-5823b912-106c-4bf2-80b0-e95ac98e8bcf_00616.c000.snappy.parquet'  [part 48 of 91, 15MB] [21 of 1452]
+    >    15728640 of 15728640   100% in    0s    24.45 MB/s  done
+    >   upload: './part-00616-5823b912-106c-4bf2-80b0-e95ac98e8bcf_00616.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-00616-5823b912-106c-4bf2-80b0-e95ac98e8bcf_00616.c000.snappy.parquet'  [part 49 of 91, 15MB] [21 of 1452]
+    >    15728640 of 15728640   100% in    1s    12.47 MB/s  done
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM]
+
+
+	screen -r 187721.GDR3_MCMC_SAMPLES_GSP_PHOT
+
+    >   ....
+    >   upload: './part-00948-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00948.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/part-00948-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00948.c000.snappy.parquet'  [part 22 of 92, 15MB] [21 of 1120]
+    >    15728640 of 15728640   100% in    1s     9.05 MB/s  done
+    >   upload: './part-00948-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00948.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/part-00948-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00948.c000.snappy.parquet'  [part 23 of 92, 15MB] [21 of 1120]
+    >    15728640 of 15728640   100% in    0s    29.00 MB/s  done
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187721.GDR3_MCMC_SAMPLES_GSP_PHOT]
+
+
+	screen -r 187778.GDR3_EVERYTHING
+
+    >   ....
+    >   upload: './GDR3_2MASSPSC_BEST_NEIGHBOURS/part-00176-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00176.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_2MASSPSC_BEST_NEIGHBOURS/part-00176-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00176.c000.snappy.parquet'  [part 2 of 2, 14MB] [177 of 154734]
+    >    15437814 of 15437814   100% in    1s    12.70 MB/s  done
+    >   upload: './GDR3_2MASSPSC_BEST_NEIGHBOURS/part-00177-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00177.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_2MASSPSC_BEST_NEIGHBOURS/part-00177-b8885964-7d1f-4f8f-88b3-e9a02469bf12_00177.c000.snappy.parquet'  [part 1 of 2, 15MB] [178 of 154734]
+    >    15728640 of 15728640   100% in    1s    13.10 MB/s  done
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187778.GDR3_EVERYTHING]
+
+    #
+    # Looks like the uber bucket will contain 154,734 files.
+    # What are the chances of survival ?
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Disconnect to save data (using mobile phone for this).
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the test deployment.
+#[user@laptop]
+
+    ssh fedora@iris-gaia-green.gaia-dmp.uk
+
+    >   ....
+    >   ....
+
+    date
+
+    >   Wed 14 Dec 10:08:52 UTC 2022
+
+    screen -ls
+
+    >   There are screens on:
+    >   	187778.GDR3_EVERYTHING	(Detached)
+    >   	187721.GDR3_MCMC_SAMPLES_GSP_PHOT	(Detached)
+    >   	187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM	(Detached)
+    >   3 Sockets in /run/screen/S-fedora.
+
+
+    screen -r 187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+
+    >   ....
+    >   ....
+    >   upload: './part-01139-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01139.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-01139-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01139.c000.snappy.parquet'  [part 27 of 91, 15MB] [544 of 1452]
+    >    15728640 of 15728640   100% in    1s    11.26 MB/s  done
+    >   upload: './part-01139-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01139.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-01139-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01139.c000.snappy.parquet'  [part 28 of 91, 15MB] [544 of 1452]
+    >    15728640 of 15728640   100% in    1s    13.43 MB/s  done
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM]
+
+
+    screen -r 187721.GDR3_MCMC_SAMPLES_GSP_PHOT
+
+    >   ....
+    >   ....
+    >   upload: './part-01478-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_01478.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/part-01478-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_01478.c000.snappy.parquet'  [part 85 of 92, 15MB] [551 of 1120]
+    >    15728640 of 15728640   100% in    0s    19.33 MB/s  done
+    >   upload: './part-01478-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_01478.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/part-01478-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_01478.c000.snappy.parquet'  [part 86 of 92, 15MB] [551 of 1120]
+    >    15728640 of 15728640   100% in    0s    16.99 MB/s  done
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187721.GDR3_MCMC_SAMPLES_GSP_PHOT]
+
+
+    screen -r 187778.GDR3_EVERYTHING
+
+    >   ....
+    >   ....
+    >   upload: './GDR3_ASTROPHYSICAL_PARAMETERS_SUPP/part-01866-d31cd84a-3bd6-4b8e-8b88-8956ea2cd155_01866.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP/part-01866-d31cd84a-3bd6-4b8e-8b88-8956ea2cd155_01866.c000.snappy.parquet'  [part 3 of 6, 15MB] [12277 of 154734]
+    >    15728640 of 15728640   100% in    0s    23.07 MB/s  done
+    >   upload: './GDR3_ASTROPHYSICAL_PARAMETERS_SUPP/part-01866-d31cd84a-3bd6-4b8e-8b88-8956ea2cd155_01866.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_ASTROPHYSICAL_PARAMETERS_SUPP/part-01866-d31cd84a-3bd6-4b8e-8b88-8956ea2cd155_01866.c000.snappy.parquet'  [part 4 of 6, 15MB] [12277 of 154734]
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187778.GDR3_EVERYTHING]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Disconnect to save data (using mobile phone for this).
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+
+# Login to the test deployment.
+#[user@laptop]
+
+    ssh fedora@iris-gaia-green.gaia-dmp.uk
+
+    >   ....
+    >   ....
+
+    date
+
+    >   Wed 14 Dec 19:06:32 UTC 2022
+
+    screen -ls
+
+    >   There are screens on:
+    >   	187778.GDR3_EVERYTHING	(Detached)
+    >   	187721.GDR3_MCMC_SAMPLES_GSP_PHOT	(Detached)
+    >   	187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM	(Detached)
+    >   3 Sockets in /run/screen/S-fedora.
+
+
+    screen -r 187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+
+    >   ....
+    >   ....
+    >   upload: './part-01687-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01687.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-01687-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01687.c000.snappy.parquet'  [part 4 of 91, 15MB] [1092 of 1452]
+    >    15728640 of 15728640   100% in    0s    19.02 MB/s  done
+    >   upload: './part-01687-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01687.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-01687-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01687.c000.snappy.parquet'  [part 5 of 91, 15MB] [1092 of 1452]
+    >    15728640 of 15728640   100% in    0s    26.15 MB/s  done
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM]
+
+
+    screen -r 187721.GDR3_MCMC_SAMPLES_GSP_PHOT
+
+    >   ....
+    >   ....
+    >   upload: './part-02047-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_02047.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/part-02047-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_02047.c000.snappy.parquet'  [part 91 of 92, 15MB] [1120 of 1120]
+    >    15728640 of 15728640   100% in    0s    29.48 MB/s  done
+    >   upload: './part-02047-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_02047.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/part-02047-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_02047.c000.snappy.parquet'  [part 92 of 92, 5MB] [1120 of 1120]
+    >    5528365 of 5528365   100% in    0s    20.02 MB/s  done
+    >   Done. Uploaded 1605979770876 bytes in 65359.4 seconds, 23.43 MB/s.
+    >   Stats: Number of files: 4096 (2960018392833 bytes)
+    >   Stats: Number of files transferred: 1120 (1605979770876 bytes)
+
+    Ctrl-d
+
+    >   [screen is terminating]
+
+    screen -ls
+
+    >   There are screens on:
+    >   	187778.GDR3_EVERYTHING	(Detached)
+    >   	187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM	(Detached)
+    >   2 Sockets in /run/screen/S-fedora.
+
+
+    screen -r 187778.GDR3_EVERYTHING
+
+    >   ....
+    >   ....
+    >   upload: './GDR3_MCMC_SAMPLES_GSP_PHOT/.part-00355-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00355.c000.snappy.parquet.crc' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_MCMC_SAMPLES_GSP_PHOT/.part-00355-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00355.c000.snappy.parquet.crc'  [29198 of 154734]
+    >    11197092 of 11197092   100% in    0s    15.81 MB/s  done
+    >   upload: './GDR3_MCMC_SAMPLES_GSP_PHOT/.part-00356-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00356.c000.snappy.parquet.crc' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_MCMC_SAMPLES_GSP_PHOT/.part-00356-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00356.c000.snappy.parquet.crc'  [29199 of 154734]
+    >    11205796 of 11205796   100% in    0s    17.82 MB/s  done
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187778.GDR3_EVERYTHING]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Disconnect to save data (using mobile phone for this).
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    ssh fedora@iris-gaia-green.gaia-dmp.uk
+
+    >   ....
+    >   ....
+
+    #
+    # GDR3_XP_CONTINUOUS_MEAN_SPECTRUM is done
+    #
+
+    screen -r 187668.GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+
+    #
+    # The upload had finished, but I didn't capture the end of the output.
+    # Running the upload again to make sure ..
+    #
+
+    uploadtable GDR3_XP_CONTINUOUS_MEAN_SPECTRUM
+
+    >   Bucket 's3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/' created
+    >   /data/gaia/GDR3/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM ~
+    >   INFO: No cache file found, creating it.
+    >   INFO: Compiling list of local files...
+    >   INFO: Running stat() and reading/calculating MD5 values on 4096 files, this may take some time...
+    >   INFO: [1000/4096]
+    >   INFO: [2000/4096]
+    >   INFO: [3000/4096]
+    >   INFO: [4000/4096]
+    >   INFO: Retrieving list of remote files for s3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/ ...
+    >   INFO: Found 4096 local files, 4096 remote files
+    >   INFO: Verifying attributes...
+    >   INFO: Summary: 0 local files to upload, 0 files to remote copy, 0 remote files to delete
+    >   Done. Uploaded 0 bytes in 1.0 seconds, 0.00 B/s.
+    >   Stats: Number of files: 4096 (2926382184990 bytes)
+
+    Ctrl-d
+
+    >   [screen is terminating]
+
+
+    screen -ls
+
+    >   There is a screen on:
+    >   	187778.GDR3_EVERYTHING	(Detached)
+    >   1 Socket in /run/screen/S-fedora.
+
+
+    screen -r 187778.GDR3_EVERYTHING
+
+    >   ....
+    >   ....
+    >   upload: './GDR3_MCMC_SAMPLES_GSP_PHOT/part-00347-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00347.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_MCMC_SAMPLES_GSP_PHOT/part-00347-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00347.c000.snappy.parquet'  [part 77 of 92, 15MB] [31238 of 154734]
+    >    15728640 of 15728640   100% in    0s    33.50 MB/s  done
+    >   upload: './GDR3_MCMC_SAMPLES_GSP_PHOT/part-00347-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00347.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_MCMC_SAMPLES_GSP_PHOT/part-00347-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_00347.c000.snappy.parquet'  [part 78 of 92, 15MB] [31238 of 154734]
+    >    15728640 of 15728640   100% in    0s    29.01 MB/s  done
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187778.GDR3_EVERYTHING]
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Disconnect to save data (using mobile phone for this).
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    ssh fedora@iris-gaia-green.gaia-dmp.uk
+
+    >   ....
+    >   ....
+
+    date
+
+    >   Fri 16 Dec 01:24:08 UTC 2022
+
+    screen -ls
+
+    >   There is a screen on:
+    >   	187778.GDR3_EVERYTHING	(Detached)
+    >   1 Socket in /run/screen/S-fedora.
+
+
+    screen -r 187778.GDR3_EVERYTHING
+
+    >   ....
+    >   ....
+    >   upload: './GDR3_MCMC_SAMPLES_GSP_PHOT/part-01777-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_01777.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_MCMC_SAMPLES_GSP_PHOT/part-01777-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_01777.c000.snappy.parquet'  [part 13 of 92, 15MB] [32668 of 154734]
+    >    15728640 of 15728640   100% in    0s    20.39 MB/s  done
+    >   upload: './GDR3_MCMC_SAMPLES_GSP_PHOT/part-01777-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_01777.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_MCMC_SAMPLES_GSP_PHOT/part-01777-2de01f18-0d24-48f5-ad92-5a4a8562e2c8_01777.c000.snappy.parquet'  [part 14 of 92, 15MB] [32668 of 154734]
+    >    15728640 of 15728640   100% in    0s    23.72 MB/s  done
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187778.GDR3_EVERYTHING]
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Disconnect to save data (using mobile phone for this).
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    ssh fedora@iris-gaia-green.gaia-dmp.uk
+
+    >   ....
+    >   ....
+
+    date
+
+    >   Sat 17 Dec 00:50:58 UTC 2022
+
+
+    screen -ls
+
+    >   There is a screen on:
+    >   	187778.GDR3_EVERYTHING	(Detached)
+    >   1 Socket in /run/screen/S-fedora.
+
+
+    screen -r 187778.GDR3_EVERYTHING
+
+    >   ....
+    >   ....
+    >     File "/usr/lib64/python3.7/http/client.py", line 1439, in connect
+    >       super().connect()
+    >     File "/usr/lib64/python3.7/http/client.py", line 944, in connect
+    >       (self.host,self.port), self.timeout, self.source_address)
+    >     File "/usr/lib64/python3.7/socket.py", line 728, in create_connection
+    >       raise err
+    >     File "/usr/lib64/python3.7/socket.py", line 716, in create_connection
+    >       sock.connect(sa)
+    >   OSError: [Errno 101] Network is unreachable
+    >   
+    >   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    >       An unexpected error has occurred.
+    >     Please try reproducing the error using
+    >     the latest s3cmd code from the git master
+    >     branch found at:
+    >       https://github.com/s3tools/s3cmd
+    >     and have a look at the known issues list:
+    >       https://github.com/s3tools/s3cmd/wiki/Common-known-issues-and-their-solutions
+    >     If the error persists, please report the
+    >     above lines (removing any private
+    >     info as necessary) to:
+    >      s3tools-bugs@lists.sourceforge.net
+    >   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    #
+    # Try running the transfer again.
+    #
+
+    pushd "${dstpath}"
+        s3cmd sync \
+            --debug \
+            --stats \
+            --verbose \
+            --progress \
+            --recursive \
+            --acl-public \
+            --no-check-md5 \
+            --exclude '_SUCCESS' \
+            --exclude '._SUCCESS.crc' \
+            --include '*.parquet' \
+            --include '*.parquet.crc' \
+            "." \
+            "s3://${bucketname}"
+    popd
+
+    >   INFO: No cache file found, creating it.
+    >   INFO: Compiling list of local files...
+    >   ....
+    >   ....
+    >   INFO: [134000/154734]
+    >   INFO: [135000/154734]
+    >   INFO: [136000/154734]
+    >   INFO: [137000/154734]
+    >   INFO: [138000/154734]
+    >   INFO: [139000/154734]
+    >   INFO: [140000/154734]
+    >   INFO: [141000/154734]
+    >   INFO: [142000/154734]
+    >   INFO: [143000/154734]
+    >   INFO: [144000/154734]
+    >   INFO: [145000/154734]
+    >   INFO: [146000/154734]
+    >   INFO: [147000/154734]
+    >   INFO: [148000/154734]
+    >   INFO: [149000/154734]
+    >   INFO: [150000/154734]
+    >   INFO: [151000/154734]
+    >   INFO: [152000/154734]
+    >   INFO: [153000/154734]
+    >   INFO: [154000/154734]
+    >   INFO: Retrieving list of remote files for s3://GaiaDMp-GDR3_EVERYTHING/ ...
+    >   INFO: Found 154734 local files, 35933 remote files
+    >   INFO: Verifying attributes...
+    >   INFO: Summary: 118801 local files to upload, 0 files to remote copy, 0 remote files to delete
+    >   WARNING: Retrying failed request: /GDR3_MCMC_SAMPLES_MSC/part-00947-34d6fdae-44a1-4db1-bbf9-d2689e2b3bbd_00947.c000.snappy.parquet?uploads (Remote end closed connection without response)
+    >   WARNING: Waiting 3 sec...
+    >   upload: './GDR3_MCMC_SAMPLES_MSC/part-00947-34d6fdae-44a1-4db1-bbf9-d2689e2b3bbd_00947.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_MCMC_SAMPLES_MSC/part-00947-34d6fdae-44a1-4db1-bbf9-d2689e2b3bbd_00947.c000.snappy.parquet'  [part 1 of 40, 15MB] [1 of 118801]
+    >    15728640 of 15728640   100% in    0s    26.68 MB/s  done
+    >   upload: './GDR3_MCMC_SAMPLES_MSC/part-00947-34d6fdae-44a1-4db1-bbf9-d2689e2b3bbd_00947.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_MCMC_SAMPLES_MSC/part-00947-34d6fdae-44a1-4db1-bbf9-d2689e2b3bbd_00947.c000.snappy.parquet'  [part 2 of 40, 15MB] [1 of 118801]
+    >    15728640 of 15728640   100% in    0s    24.60 MB/s  done
+    >   ....
+    >   ....
+
+    Ctrl-a d
+
+    >   [detached from 187778.GDR3_EVERYTHING]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    Disconnect to save data (using AirBnB wifi for this).
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    ssh fedora@iris-gaia-green.gaia-dmp.uk
+
+    >   ....
+    >   ....
+
+    date
+
+    >   Mon 19 Dec 00:22:53 UTC 2022
+
+
+    screen -ls
+
+    >   There is a screen on:
+    >   	187778.GDR3_EVERYTHING	(Detached)
+    >   1 Socket in /run/screen/S-fedora.
+
+
+    screen -r 187778.GDR3_EVERYTHING
+
+    >   ....
+    >   ....
+    >   upload: './GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-01344-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01344.c000.snappy.parquet' -> 's3://GaiaDMp-GDR3_EVERYTHING/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-01344-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01344.c000.snappy.parquet'  [part 17 of 91, 15MB] [109906 of 118801]
+    >    15728640 of 15728640   100% in    0s    38.68 MB/s  done
+    >   ERROR:
+    >   Upload of './GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-01344-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01344.c000.snappy.parquet' part 17 failed. Use
+    >     /usr/bin/s3cmd abortmp s3://GaiaDMp-GDR3_EVERYTHING/GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/part-01344-5823b912-106c-4bf2-80b0-e95ac98e8bcf_01344.c000.snappy.parquet 2~FH6DBMEU76EUjNcBhN1Q2sTjlY-hfSj
+    >   to abort the upload, or
+    >     /usr/bin/s3cmd --upload-id 2~FH6DBMEU76EUjNcBhN1Q2sTjlY-hfSj put ...
+    >   to continue the upload.
+    >   ERROR: S3 error: 403 (QuotaExceeded)
+
+    #
+    # How do we check the size of all our buckets ?
+    # https://wasabi-support.zendesk.com/hc/en-us/articles/115001435972-How-can-I-determine-the-bucket-size-using-the-s3cmd-tool-
+
+    s3cmd du | tee /tmp/s3-du.txt
+
+    >      63760865732    2048 objects s3://GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS/
+    >            90268     170 objects s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/
+    >     189525111830    2048 objects s3://GaiaDMp-GDR3_ALLWISE_BEST_NEIGHBOURS/
+    >     202270061815    4096 objects s3://GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS/
+    >     176137210399    4096 objects s3://GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS_SUPP/
+    >      65802184305    4096 objects s3://GaiaDMp-GDR3_EPOCH_PHOTOMETRY/
+    >    7692801571902  145838 objects s3://GaiaDMp-GDR3_EVERYTHING/
+    >     634489375956    4096 objects s3://GaiaDMp-GDR3_GAIA_SOURCE/
+    >        383973743    4096 objects s3://GaiaDMp-GDR3_GALAXY_CANDIDATES/
+    >          9518093    4096 objects s3://GaiaDMp-GDR3_GALAXY_CATALOGUE_NAME/
+    >    2960018392833    4096 objects s3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/
+    >    1268897167126    4096 objects s3://GaiaDMp-GDR3_MCMC_SAMPLES_MSC/
+    >         90653750    4096 objects s3://GaiaDMp-GDR3_NSS_ACCELERATION_ASTRO/
+    >         13065863    4096 objects s3://GaiaDMp-GDR3_NSS_NON_LINEAR_SPECTRO/
+    >        208862281    4096 objects s3://GaiaDMp-GDR3_NSS_TWO_BODY_ORBIT/
+    >          4856017    1408 objects s3://GaiaDMp-GDR3_NSS_VIM_FL/
+    >           272531       2 objects s3://GaiaDMp-GDR3_OA_NEURON_INFORMATION/
+    >          2416838    1414 objects s3://GaiaDMp-GDR3_OA_NEURON_XP_SPECTRA/
+    >     174243389961    2048 objects s3://GaiaDMp-GDR3_PS1_BEST_NEIGHBOURS/
+    >        315642049    4096 objects s3://GaiaDMp-GDR3_QSO_CANDIDATES/
+    >         15385513    4096 objects s3://GaiaDMp-GDR3_QSO_CATALOGUE_NAME/
+    >      19387306385    4096 objects s3://GaiaDMp-GDR3_RVS_MEAN_SPECTRUM/
+    >          1896556    2972 objects s3://GaiaDMp-GDR3_SCIENCE_ALERTS/
+    >       4599202824    4096 objects s3://GaiaDMp-GDR3_SSO_OBSERVATION/
+    >         15879562    4096 objects s3://GaiaDMp-GDR3_SSO_REFLECTANCE_SPECTRUM/
+    >          7593438    4096 objects s3://GaiaDMp-GDR3_SSO_SOURCE/
+    >         64652364    4096 objects s3://GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP/
+    >         45771841    4096 objects s3://GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT/
+    >         28947150    4096 objects s3://GaiaDMp-GDR3_VARI_AGN/
+    >         50433048    4094 objects s3://GaiaDMp-GDR3_VARI_CEPHEID/
+    >             2740       2 objects s3://GaiaDMp-GDR3_VARI_CLASSIFIER_CLASS_DEFINITION/
+    >             2745       2 objects s3://GaiaDMp-GDR3_VARI_CLASSIFIER_DEFINITION/
+    >        130162202    4096 objects s3://GaiaDMp-GDR3_VARI_CLASSIFIER_RESULT/
+    >         15576427    3898 objects s3://GaiaDMp-GDR3_VARI_COMPACT_COMPANION/
+    >        337798089    4096 objects s3://GaiaDMp-GDR3_VARI_ECLIPSING_BINARY/
+    >          6012251    4096 objects s3://GaiaDMp-GDR3_VARI_EPOCH_RADIAL_VELOCITY/
+    >         30991965    4096 objects s3://GaiaDMp-GDR3_VARI_LONG_PERIOD_VARIABLE/
+    >          2945286     658 objects s3://GaiaDMp-GDR3_VARI_MICROLENSING/
+    >          7833520    4096 objects s3://GaiaDMp-GDR3_VARI_MS_OSCILLATOR/
+    >           421168     416 objects s3://GaiaDMp-GDR3_VARI_PLANETARY_TRANSIT/
+    >          4850574    2482 objects s3://GaiaDMp-GDR3_VARI_RAD_VEL_STATISTICS/
+    >        598849544    4096 objects s3://GaiaDMp-GDR3_VARI_ROTATION_MODULATION/
+    >        140335248    4096 objects s3://GaiaDMp-GDR3_VARI_RRLYRAE/
+    >         22426847    4096 objects s3://GaiaDMp-GDR3_VARI_SHORT_TIMESCALE/
+    >       2728711137    4096 objects s3://GaiaDMp-GDR3_VARI_SUMMARY/
+    >    2926382184990    4096 objects s3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/
+    >      96190243598    4096 objects s3://GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM/
+    >       8637477431    4096 objects s3://GaiaDMp-GDR3_XP_SUMMARY/
+    >   ------------
+    >   16488428577735 Total
+
+
+    #
+    # Filter out the values we don't want.
+    #
+
+    sed '
+        /GDR3_EVERYTHING/ d
+        /----/,$ d
+        ' /tmp/s3-du.txt
+
+    >    63760865732    2048 objects s3://GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS/
+    >          90268     170 objects s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/
+    >   ....
+    >   ....
+    >    96190243598    4096 objects s3://GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM/
+    >     8637477431    4096 objects s3://GaiaDMp-GDR3_XP_SUMMARY/
+
+
+    #
+    # Add them up.
+    # https://www.gnu.org/software/datamash/manual/html_node/index.html
+    #
+
+    bytecount=$(
+        sed '
+            /GDR3_EVERYTHING/ d
+            /----/,$ d
+            ' /tmp/s3-du.txt \
+        | datamash --whitespace sum 1
+        )
+
+    echo ${bytecount}
+
+    >   8795627005833
+
+    >   8589479497 KiB
+    >      8388163 MiB
+    >         8191 GiB
+    >            8 TiB
+
+    #
+    # We asked for a total of 15GiB of space .. so we are 1 TiB short.
+    # 2 copies will need at least 16TiB of space ..
+    #
+
+    >    7692801571902  145838 objects s3://GaiaDMp-GDR3_EVERYTHING/
+
+7512501535 KiB
+   7336427 MiB
+      7164 GiB
+         8 TiB
+
+    #
+    # Probably best to ask for another 5TiB to allow space for additional work.
+    # Our project has 72TiB of space in the Cambridge Ceph system.
+    #
+
+    #
+    # If we do another copy of the data with different partitioning, that will be another 8TiB.
+    # Enough space for 3 copies ?
+    #
+
+
+

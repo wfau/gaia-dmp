@@ -1,0 +1,1355 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Try accessing the echo data as a public service.
+
+        https://s3tools.org/usage
+        https://s3tools.org/s3cmd-howto
+        https://gcore.com/support/articles/4405490613649/
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "public-s3-client" \
+        --hostname "public-s3-client" \
+        --env "agcolour=${agcolour:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+
+# -----------------------------------------------------
+# Install the secrets function.
+#[root@public-s3-client]
+
+    datahostname='data.gaia-dmp.uk'
+    datahostuser='fedora'
+
+    getsecret()
+        {
+        local key=${1:?'key required'}
+        ssh -n "${datahostuser:?}@${datahostname:?}" \
+            "
+            getsecret '${key:?}'
+            "
+        }
+
+    getsecret 'examples.frog'
+    getsecret 'examples.toad'
+
+    >   Green Frog
+    >   Brown Toad
+
+
+# -----------------------------------------------------
+# Configure our S3 client.
+# https://linux.die.net/man/1/s3cmd
+# https://s3tools.org/kb/item14.htm
+# https://www.digitalocean.com/docs/spaces/resources/s3cmd/
+# https://support.arcticcloud.com/portal/kb/articles/managing-object-storage-using-the-s3cmd-interface
+# https://docs.ceph.com/en/latest/radosgw/s3/commons/#bucket-and-host-name
+#[root@public-s3-client]
+
+    s3cmd \
+        --configure \
+        --host $(getsecret devops.stfc.echo.endpoint) \
+        --host-bucket $(getsecret devops.stfc.echo.template)
+
+    >   New settings:
+    >     Access Key:
+    >     Secret Key:
+    >     Default Region: US
+    >     S3 Endpoint: s3.echo.stfc.ac.uk
+    >     DNS-style bucket+hostname:port template for accessing a bucket: s3.echo.stfc.ac.uk/%(bucket)
+    >     Encryption password:
+    >     Path to GPG program: /usr/bin/gpg
+    >     Use HTTPS protocol: True
+    >     HTTP Proxy server name:
+    >     HTTP Proxy server port: 0
+
+    >   Test access with supplied credentials? [Y/n] y
+    >   Please wait, attempting to list all buckets...
+    >   ERROR: Test failed: 400 (InvalidArgument)
+
+
+# -----------------------------------------------------
+# Set the bucket ACL.
+#[user@zeppelin]
+
+    s3cmd info "s3://${bucketname}"
+
+    >   s3://GaiaDMp-GDR3_QSO_CATALOGUE_NAME/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+
+
+    s3cmd setacl "s3://${bucketname}" --acl-public
+
+    >   s3://GaiaDMp-GDR3_QSO_CATALOGUE_NAME/: ACL set to Public
+
+
+    s3cmd info "s3://${bucketname}"
+
+    >   s3://GaiaDMp-GDR3_QSO_CATALOGUE_NAME/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_QSO_CATALOGUE_NAME/
+
+
+# -----------------------------------------------------
+# Try list our buckets.
+#[root@public-s3-client]
+
+    s3cmd ls
+
+    >   ERROR: /root/.s3cfg: None
+    >   ERROR: Configuration file not available.
+    >   ERROR: Consider using --configure parameter to create one.
+
+    #
+    # Config file is there, but try again anyway.
+    #
+
+    s3cmd \
+         --config "/root/.s3cfg" \
+         ls
+
+    >   ERROR: /root/.s3cfg: None
+    >   ERROR: Configuration file not available.
+    >   ERROR: Consider using --configure parameter to create one.
+
+    #
+    # What it means is a mandatory setting is not set ..
+    #
+
+
+# -----------------------------------------------------
+# Set the ACL everything in the bucket.
+# https://www.linode.com/community/questions/20759/how-can-i-change-all-existing-objects-in-my-bucket-to-public-or-private-using-s3#answer-74787
+#[user@zeppelin]
+
+    s3cmd setacl "s3://${bucketname}" --acl-public --recursive
+
+    >   s3://GaiaDMp-GDR3_QSO_CATALOGUE_NAME/.part-00000-293f3f77-ebc6-4f98-86df-5c976028b804_00000.c000.snappy.parquet.crc: ACL set to Public  [1 of 4096]
+    >   s3://GaiaDMp-GDR3_QSO_CATALOGUE_NAME/.part-00001-293f3f77-ebc6-4f98-86df-5c976028b804_00001.c000.snappy.parquet.crc: ACL set to Public  [2 of 4096]
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Use curl to list everything in the bucket.
+#[user@desktop]
+
+    curl https://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_QSO_CATALOGUE_NAME/ | xmlstarlet fo
+
+    >   <?xml version="1.0" encoding="UTF-8"?>
+    >   <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+    >     <Name>GaiaDMp-GDR3_QSO_CATALOGUE_NAME</Name>
+    >     <Prefix/>
+    >     <MaxKeys>1000</MaxKeys>
+    >     <IsTruncated>true</IsTruncated>
+    >     <Contents>
+    >       <Key>.part-00000-293f3f77-ebc6-4f98-86df-5c976028b804_00000.c000.snappy.parquet.crc</Key>
+    >       <LastModified>2022-11-28T04:03:14.177Z</LastModified>
+    >       <ETag>"84c66b8d52b854f7254742766a573e2f"</ETag>
+    >       <Size>64</Size>
+    >       <StorageClass>STANDARD</StorageClass>
+    >       <Owner>
+    >         <ID>aglais-dev</ID>
+    >         <DisplayName>aglais-dev</DisplayName>
+    >       </Owner>
+    >       <Type>Normal</Type>
+    >     </Contents>
+    >     <Contents>
+    >       <Key>.part-00001-293f3f77-ebc6-4f98-86df-5c976028b804_00001.c000.snappy.parquet.crc</Key>
+    >       <LastModified>2022-11-28T04:03:14.252Z</LastModified>
+    >       <ETag>"38a0680505caa027895ea3d0afe39bbf"</ETag>
+    >       <Size>72</Size>
+    >       <StorageClass>STANDARD</StorageClass>
+    >       <Owner>
+    >         <ID>aglais-dev</ID>
+    >         <DisplayName>aglais-dev</DisplayName>
+    >       </Owner>
+    >       <Type>Normal</Type>
+    >     </Contents>
+    >     ....
+    >     ....
+    >     <Contents>
+    >       <Key>.part-00999-293f3f77-ebc6-4f98-86df-5c976028b804_00999.c000.snappy.parquet.crc</Key>
+    >       <LastModified>2022-11-28T04:05:06.895Z</LastModified>
+    >       <ETag>"0605b87c1faa54fca983f394cc35d439"</ETag>
+    >       <Size>60</Size>
+    >       <StorageClass>STANDARD</StorageClass>
+    >       <Owner>
+    >         <ID>aglais-dev</ID>
+    >         <DisplayName>aglais-dev</DisplayName>
+    >       </Owner>
+    >       <Type>Normal</Type>
+    >     </Contents>
+    >     <Marker/>
+    >     <NextMarker>.part-00999-293f3f77-ebc6-4f98-86df-5c976028b804_00999.c000.snappy.parquet.crc</NextMarker>
+    >   </ListBucketResult>
+
+# -----------------------------------------------------
+# Try list our buckets.
+#[root@public-s3-client]
+
+    #
+    # It looks like the AWS command line client has a no-sign option.
+    # https://dev.to/aws-builders/access-s3-public-data-without-credentials-4f06
+    #
+
+    s3cmd ls --no-sign-request
+
+    #
+    # s3cmd doesn't have a 'no-sign' option :-(
+    #
+
+
+    Boto3 Python library might
+    https://github.com/boto/boto3/
+    https://github.com/boto/boto3/issues/1200
+
+    Cloudpathlib has a no-sign option :-)
+    https://github.com/drivendataorg/cloudpathlib
+    https://github.com/drivendataorg/cloudpathlib/pull/164
+
+
+# -----------------------------------------------------
+# Add a public access ACL to all our buckets.
+# https://www.linode.com/community/questions/20759/how-can-i-change-all-existing-objects-in-my-bucket-to-public-or-private-using-s3#answer-74787
+#[user@zeppelin]
+
+    bucketprefix=GaiaDMp
+    dstpath=/data/gaia/GDR3/
+
+    for tablename in $(ls -1 "${dstpath}")
+    do
+        bucketname=${bucketprefix}-${tablename}
+
+        echo ""
+        echo "Table  [${tablename}]"
+        echo "Bucket [${bucketname}]"
+
+        s3cmd setacl "s3://${bucketname}" --acl-public --recursive
+
+    done
+
+
+    >   Table  [GDR3_2MASSPSC_BEST_NEIGHBOURS]
+    >   Bucket [GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS]
+
+    >   Table  [GDR3_ALERTS_MIXEDIN_SOURCEIDS]
+    >   Bucket [GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS]
+    >   s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00033-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00033.c000.snappy.parquet.crc: ACL set to Public  [1 of 170]
+    >   s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00045-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00045.c000.snappy.parquet.crc: ACL set to Public  [2 of 170]
+    >   s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/.part-00051-e7254a6e-4d23-4a6c-99da-80da32dd2ee6_00051.c000.snappy.parquet.crc: ACL set to Public  [3 of 170]
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the settings on each of our buckets.
+#[user@zeppelin]
+
+
+    for bucketurl in $(s3cmd ls | cut -d ' ' -f 4)
+    do
+        echo ""
+        echo "Bucket [${bucketurl}]"
+
+        s3cmd info "${bucketurl}"
+
+    done
+
+    >   Bucket [s3://GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS]
+    >   s3://GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS]
+    >   s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_ALLWISE_BEST_NEIGHBOURS]
+    >   s3://GaiaDMp-GDR3_ALLWISE_BEST_NEIGHBOURS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_ALLWISE_BEST_NEIGHBOURS/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS]
+    >   s3://GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS_SUPP]
+    >   s3://GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS_SUPP/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_EPOCH_PHOTOMETRY]
+    >   s3://GaiaDMp-GDR3_EPOCH_PHOTOMETRY/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_GAIA_SOURCE]
+    >   s3://GaiaDMp-GDR3_GAIA_SOURCE/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_GALAXY_CANDIDATES]
+    >   s3://GaiaDMp-GDR3_GALAXY_CANDIDATES/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_GALAXY_CATALOGUE_NAME]
+    >   s3://GaiaDMp-GDR3_GALAXY_CATALOGUE_NAME/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT]
+    >   s3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_MCMC_SAMPLES_MSC]
+    >   s3://GaiaDMp-GDR3_MCMC_SAMPLES_MSC/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_NSS_ACCELERATION_ASTRO]
+    >   s3://GaiaDMp-GDR3_NSS_ACCELERATION_ASTRO/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_NSS_NON_LINEAR_SPECTRO]
+    >   s3://GaiaDMp-GDR3_NSS_NON_LINEAR_SPECTRO/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_NSS_TWO_BODY_ORBIT]
+    >   s3://GaiaDMp-GDR3_NSS_TWO_BODY_ORBIT/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_NSS_VIM_FL]
+    >   s3://GaiaDMp-GDR3_NSS_VIM_FL/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_OA_NEURON_INFORMATION]
+    >   s3://GaiaDMp-GDR3_OA_NEURON_INFORMATION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_OA_NEURON_XP_SPECTRA]
+    >   s3://GaiaDMp-GDR3_OA_NEURON_XP_SPECTRA/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_PS1_BEST_NEIGHBOURS]
+    >   s3://GaiaDMp-GDR3_PS1_BEST_NEIGHBOURS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_PS1_BEST_NEIGHBOURS/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_QSO_CANDIDATES]
+    >   s3://GaiaDMp-GDR3_QSO_CANDIDATES/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_QSO_CATALOGUE_NAME]
+    >   s3://GaiaDMp-GDR3_QSO_CATALOGUE_NAME/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_QSO_CATALOGUE_NAME/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_RVS_MEAN_SPECTRUM]
+    >   s3://GaiaDMp-GDR3_RVS_MEAN_SPECTRUM/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_SCIENCE_ALERTS]
+    >   s3://GaiaDMp-GDR3_SCIENCE_ALERTS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_SCIENCE_ALERTS/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_SSO_OBSERVATION]
+    >   s3://GaiaDMp-GDR3_SSO_OBSERVATION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_SSO_OBSERVATION/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_SSO_REFLECTANCE_SPECTRUM]
+    >   s3://GaiaDMp-GDR3_SSO_REFLECTANCE_SPECTRUM/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_SSO_REFLECTANCE_SPECTRUM/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_SSO_SOURCE]
+    >   s3://GaiaDMp-GDR3_SSO_SOURCE/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_SSO_SOURCE/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP]
+    >   s3://GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT]
+    >   s3://GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_AGN]
+    >   s3://GaiaDMp-GDR3_VARI_AGN/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_AGN/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_CEPHEID]
+    >   s3://GaiaDMp-GDR3_VARI_CEPHEID/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_CEPHEID/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_CLASSIFIER_CLASS_DEFINITION]
+    >   s3://GaiaDMp-GDR3_VARI_CLASSIFIER_CLASS_DEFINITION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_CLASSIFIER_CLASS_DEFINITION/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_CLASSIFIER_DEFINITION]
+    >   s3://GaiaDMp-GDR3_VARI_CLASSIFIER_DEFINITION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_CLASSIFIER_DEFINITION/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_CLASSIFIER_RESULT]
+    >   s3://GaiaDMp-GDR3_VARI_CLASSIFIER_RESULT/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_CLASSIFIER_RESULT/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_COMPACT_COMPANION]
+    >   s3://GaiaDMp-GDR3_VARI_COMPACT_COMPANION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_COMPACT_COMPANION/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_ECLIPSING_BINARY]
+    >   s3://GaiaDMp-GDR3_VARI_ECLIPSING_BINARY/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_ECLIPSING_BINARY/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_EPOCH_RADIAL_VELOCITY]
+    >   s3://GaiaDMp-GDR3_VARI_EPOCH_RADIAL_VELOCITY/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_EPOCH_RADIAL_VELOCITY/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_LONG_PERIOD_VARIABLE]
+    >   s3://GaiaDMp-GDR3_VARI_LONG_PERIOD_VARIABLE/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_LONG_PERIOD_VARIABLE/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_MICROLENSING]
+    >   s3://GaiaDMp-GDR3_VARI_MICROLENSING/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_MICROLENSING/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_MS_OSCILLATOR]
+    >   s3://GaiaDMp-GDR3_VARI_MS_OSCILLATOR/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_MS_OSCILLATOR/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_PLANETARY_TRANSIT]
+    >   s3://GaiaDMp-GDR3_VARI_PLANETARY_TRANSIT/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_PLANETARY_TRANSIT/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_RAD_VEL_STATISTICS]
+    >   s3://GaiaDMp-GDR3_VARI_RAD_VEL_STATISTICS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_RAD_VEL_STATISTICS/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_ROTATION_MODULATION]
+    >   s3://GaiaDMp-GDR3_VARI_ROTATION_MODULATION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_ROTATION_MODULATION/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_RRLYRAE]
+    >   s3://GaiaDMp-GDR3_VARI_RRLYRAE/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_RRLYRAE/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_SHORT_TIMESCALE]
+    >   s3://GaiaDMp-GDR3_VARI_SHORT_TIMESCALE/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_SHORT_TIMESCALE/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_VARI_SUMMARY]
+    >   s3://GaiaDMp-GDR3_VARI_SUMMARY/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_SUMMARY/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM]
+    >   s3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM]
+    >   s3://GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM/
+    >   
+    >   Bucket [s3://GaiaDMp-GDR3_XP_SUMMARY]
+    >   s3://GaiaDMp-GDR3_XP_SUMMARY/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_XP_SUMMARY/
+
+    #
+    # Still lots that aren't public yet.
+    #
+
+
+# -----------------------------------------------------
+# Try just setting one of them.
+#[user@zeppelin]
+
+    bucketurl=s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/
+
+    s3cmd setacl "${bucketurl}" --acl-public --recursive
+
+    s3cmd info "${bucketurl}"
+
+    >   s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       aglais-dev: FULL_CONTROL
+
+
+    s3cmd setacl "${bucketurl}" --acl-public
+
+    s3cmd info "${bucketurl}"
+
+    >   s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/: ACL set to Public
+
+    >   s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/
+
+    #
+    # OK, so we need to use the --recursive option to set the ACLs on the bucket *contents*,
+    # and then do it again without the --recursive option to set the ACL on the bucket itself.
+    # (sigh)
+    #
+
+# -----------------------------------------------------
+# Set the ACL on all of our buckets.
+#[user@zeppelin]
+
+    for bucketurl in $(s3cmd ls | cut -d ' ' -f 4)
+    do
+        echo ""
+        s3cmd setacl "${bucketurl}" --acl-public
+        s3cmd info   "${bucketurl}"
+
+    done
+
+    >   s3://GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_2MASSPSC_BEST_NEIGHBOURS/
+    >   
+    >   s3://GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_ALERTS_MIXEDIN_SOURCEIDS/
+    >   
+    >   s3://GaiaDMp-GDR3_ALLWISE_BEST_NEIGHBOURS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_ALLWISE_BEST_NEIGHBOURS/
+    >   
+    >   s3://GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS/
+    >   
+    >   s3://GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS_SUPP/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS_SUPP/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_ASTROPHYSICAL_PARAMETERS_SUPP/
+    >   
+    >   s3://GaiaDMp-GDR3_EPOCH_PHOTOMETRY/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_EPOCH_PHOTOMETRY/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_EPOCH_PHOTOMETRY/
+    >   
+    >   s3://GaiaDMp-GDR3_GAIA_SOURCE/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_GAIA_SOURCE/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_GAIA_SOURCE/
+    >   
+    >   s3://GaiaDMp-GDR3_GALAXY_CANDIDATES/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_GALAXY_CANDIDATES/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_GALAXY_CANDIDATES/
+    >   
+    >   s3://GaiaDMp-GDR3_GALAXY_CATALOGUE_NAME/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_GALAXY_CATALOGUE_NAME/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_GALAXY_CATALOGUE_NAME/
+    >   
+    >   s3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_MCMC_SAMPLES_GSP_PHOT/
+    >   
+    >   s3://GaiaDMp-GDR3_MCMC_SAMPLES_MSC/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_MCMC_SAMPLES_MSC/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_MCMC_SAMPLES_MSC/
+    >   
+    >   s3://GaiaDMp-GDR3_NSS_ACCELERATION_ASTRO/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_NSS_ACCELERATION_ASTRO/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_NSS_ACCELERATION_ASTRO/
+    >   
+    >   s3://GaiaDMp-GDR3_NSS_NON_LINEAR_SPECTRO/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_NSS_NON_LINEAR_SPECTRO/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_NSS_NON_LINEAR_SPECTRO/
+    >   
+    >   s3://GaiaDMp-GDR3_NSS_TWO_BODY_ORBIT/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_NSS_TWO_BODY_ORBIT/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_NSS_TWO_BODY_ORBIT/
+    >   
+    >   s3://GaiaDMp-GDR3_NSS_VIM_FL/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_NSS_VIM_FL/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_NSS_VIM_FL/
+    >   
+    >   s3://GaiaDMp-GDR3_OA_NEURON_INFORMATION/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_OA_NEURON_INFORMATION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_OA_NEURON_INFORMATION/
+    >   
+    >   s3://GaiaDMp-GDR3_OA_NEURON_XP_SPECTRA/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_OA_NEURON_XP_SPECTRA/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_OA_NEURON_XP_SPECTRA/
+    >   
+    >   s3://GaiaDMp-GDR3_PS1_BEST_NEIGHBOURS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_PS1_BEST_NEIGHBOURS/
+    >   
+    >   s3://GaiaDMp-GDR3_QSO_CANDIDATES/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_QSO_CANDIDATES/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_QSO_CANDIDATES/
+    >   
+    >   s3://GaiaDMp-GDR3_QSO_CATALOGUE_NAME/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_QSO_CATALOGUE_NAME/
+    >   
+    >   s3://GaiaDMp-GDR3_RVS_MEAN_SPECTRUM/: ACL set to Public
+    >   s3://GaiaDMp-GDR3_RVS_MEAN_SPECTRUM/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_RVS_MEAN_SPECTRUM/
+    >   
+    >   s3://GaiaDMp-GDR3_SCIENCE_ALERTS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_SCIENCE_ALERTS/
+    >   
+    >   s3://GaiaDMp-GDR3_SSO_OBSERVATION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_SSO_OBSERVATION/
+    >   
+    >   s3://GaiaDMp-GDR3_SSO_REFLECTANCE_SPECTRUM/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_SSO_REFLECTANCE_SPECTRUM/
+    >   
+    >   s3://GaiaDMp-GDR3_SSO_SOURCE/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_SSO_SOURCE/
+    >   
+    >   s3://GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP/
+    >   
+    >   s3://GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_TOTAL_GALACTIC_EXTINCTION_MAP_OPT/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_AGN/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_AGN/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_CEPHEID/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_CEPHEID/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_CLASSIFIER_CLASS_DEFINITION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_CLASSIFIER_CLASS_DEFINITION/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_CLASSIFIER_DEFINITION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_CLASSIFIER_DEFINITION/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_CLASSIFIER_RESULT/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_CLASSIFIER_RESULT/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_COMPACT_COMPANION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_COMPACT_COMPANION/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_ECLIPSING_BINARY/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_ECLIPSING_BINARY/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_EPOCH_RADIAL_VELOCITY/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_EPOCH_RADIAL_VELOCITY/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_LONG_PERIOD_VARIABLE/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_LONG_PERIOD_VARIABLE/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_MICROLENSING/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_MICROLENSING/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_MS_OSCILLATOR/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_MS_OSCILLATOR/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_PLANETARY_TRANSIT/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_PLANETARY_TRANSIT/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_RAD_VEL_STATISTICS/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_RAD_VEL_STATISTICS/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_ROTATION_MODULATION/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_ROTATION_MODULATION/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_RRLYRAE/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_RRLYRAE/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_SHORT_TIMESCALE/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_SHORT_TIMESCALE/
+    >   
+    >   s3://GaiaDMp-GDR3_VARI_SUMMARY/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_VARI_SUMMARY/
+    >   
+    >   s3://GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_XP_CONTINUOUS_MEAN_SPECTRUM/
+    >   
+    >   s3://GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_XP_SAMPLED_MEAN_SPECTRUM/
+    >   
+    >   s3://GaiaDMp-GDR3_XP_SUMMARY/ (bucket):
+    >      Location:  us-east-1
+    >      Payer:     BucketOwner
+    >      Expiration Rule: none
+    >      Policy:    none
+    >      CORS:      none
+    >      ACL:       *anon*: READ
+    >      ACL:       aglais-dev: FULL_CONTROL
+    >      URL:       http://s3.echo.stfc.ac.uk/GaiaDMp-GDR3_XP_SUMMARY/
+
+    #
+    # Yay - looks good.
+    #
+
+    # TODO
+    # Example Python code to access public buckets.
+    # Example PySpark code to compare min,max,avg with TAP/ADQL service.
+    #
+
+
+
+
+

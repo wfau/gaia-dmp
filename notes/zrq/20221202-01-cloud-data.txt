@@ -1,0 +1,312 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Document what we have and our ideas for the future.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+
+Current dataset
+
+
+    Full Gaia DR3 catalog in Parquest format.
+    8Tib of data
+    Uploaded to S3 service as one table per bucket.
+    All buckets have a public read access.
+
+    List of buckets:
+
+        Name
+        File count
+        File size (total)
+        File size (avg)
+        URL
+
+        Row count
+
+    # Use 's3cmd du' to get the size ?
+    # https://wasabi-support.zendesk.com/hc/en-us/articles/115001435972-How-can-I-determine-the-bucket-size-using-the-s3cmd-tool-
+
+    Indexing and partitioning
+
+        Data is indexed by Healpix level xxx.
+        Gaia source ID is based on Healpix level xxx, making it a logical step for the Gaia data.
+
+            math ..
+
+        Data is then distributed (partitioned) into 2048 separate files.
+        Generating a set of 2048 files with approximatley the same size.
+
+        Q Does this result in an even spread of Healpix ID accross the files ?
+        Q Is the partitioning based on Healpix ID or on cumulative data size ?
+        Q How do we get such an even distribution of file sizes ?
+
+        Examples
+
+            gaia_source
+                total size
+                2048 files
+                average file size
+
+            ...
+
+
+    Access using s3cmd
+
+        We used s3cmd to upload the data, but s3cmd doesn't handle anonymous access.
+        So can't use s3cmd to access the public data.
+
+
+    Access using Python
+
+        Amazon SDK for Python (Boto3)
+        https://aws.amazon.com/sdk-for-python/
+
+        Low level API example
+
+        Resource API example
+
+    Access using Spark
+
+        PySpark example
+
+        Python schema for GaiaDR3
+            Generated from Gaia data dictionary
+
+
+# -----------------------------------------------------
+
+S3 issues
+
+    Everything in one bucket
+
+        In theory we could upload the Gaia DR3 data set as opne bucket, with subdirectories for the individual tables.
+        Advantage is this whole catalog is one entity, and tables can be accessed within the catalog using just their table name.
+        This is analogous to an IVOA TAP resource, where all the tables are within the same schema.
+
+        The full catalog could be described using the same format as the TAP/tables endpoint.
+        Example :
+
+            ....
+
+        This could be included as a known filename in the bucket.
+
+            ivoa-catalog-schema.xml
+            ivoa-catalog-schema.json <-- can we do this ?
+
+        Disadvantage is that S3 doesn't have sub-directories.
+        Everything in a bucket is part of one flat namespace.
+        The names for individual tables may have '/' in them, but it is just another ASCII character.
+
+            bucket/path/tablename/filename
+
+        is the same as
+
+            bucket/path_tablename_filename
+
+        The Gaia DR3 dataset has a total of nnn files (including crc files).
+        Which means everything in a single bucket would contains nnn filenames.
+
+        Accessing files within a bucket is done by listing all the filenames and collecting a list of the ones that match our subdirectory name.
+        There is no method for selecting a subset of the filenames on the server side.
+        Which means a client would have to iterate through the full list of nnn files to file the subset it is interested in.
+
+        We plan to try to uploading a copy of the Gaia DR3 catalogs in a single bucket, just to see how easy/difficult it is to access.
+        We are waiting for space to be able to do it.
+
+    Separate bucket for each table
+
+        Advantage
+        Processing each table as a separate entity is much easier to upload and manage.
+        Client doesn't need to iterate the full catalog to find the files for a table.
+
+        Each table could be described using the same format as the VOTable header.
+        Example :
+
+            ....
+
+        This could be included as a known filename in the bucket.
+
+            ivoa-votable-schema.xml
+            ivoa-votable-schema.json <-- can we do this ?
+
+
+        Disadvantage
+        Client needs to know where all the tables are.
+        There is no format in S3 for listing a set of public tables in a catalog (service).
+
+        A single S3 service may contain data for several accounts.
+        Actions are performed based on the authenticated account.
+        Identifying which account to use is done in the login step, and is not part of the S3 URL for a bucket.
+
+        Login as <account>, list buckets will return all the buckets for _this account.
+        There isn't an API call to list the public buckets for another account.
+
+            ListBuckets
+            https://docs.aws.amazon.com/AmazonS3/latest/API/API_ListBuckets.html
+
+                Returns a list of all buckets owned by the authenticated sender of the request. To use this operation, you must have the s3:ListAllMyBuckets permission.
+
+        The full catalog could not be described using the same format as the TAP/tables endpoint.
+        We would need to add an extra field to point to the S3 endpoint for each table/bucket.
+        Example :
+
+            ....
+
+        However, there is nowhere within the S3 catalog to store the metadata.
+        So the metadata would have to be stored outside the main structure.
+        Possibly in a separate bucket, just for the metadata, or at a separate location with a HTTP URL.
+        Obvious place would be in the IVOA registry, but it would be useful to be able to describe and access a catalog without having to rely on the IVOA registry as well.
+
+    S3 URL problem
+
+        There are two ways to refer to a S3 bucket.
+
+        1) using a s3:// URL.
+
+            The original design of the S3 protocol limits s3:// urls to refer to objects and buckets within a given service.
+            The s3:// URL format is not able to identify or locate the S3 service that contains the object.
+
+            Example
+
+                S3 URL for an object in service A
+                s3://bucket/object_name
+
+                S3 URL for an object in service B
+                s3://bucket/object_name
+
+            Which object is accesed depends on which service the client is logged in to.
+            This dates back to the original assumption that there is only one global S3 service, run by Amazon.
+
+            Other cloud providers have adapted the protocol to provide access to data in other services,
+            but everything depends on the client logging in to and accessing one S3 service at a time.
+
+            Data is referred to as objects in THE S3 service for _this_ cloud.
+            Not as objects in _a_ S3 service on the internet.
+
+            The full access information for an object in service A
+
+                endpoint: http://s3.alpha.org:8080/
+                account:  albert
+                password: ######
+                s3://bucket/object_name
+
+            The full access information for an object in service B
+
+                endpoint: http://s3.beta.org:8080/
+                account:  beatrice
+                password: ########
+                s3://bucket/object_name
+
+            Public access information for an object in service A
+            (*) only works in some clients
+
+                endpoint: http://s3.alpha.org:8080/
+                account:  albert
+                s3://bucket/object_name
+
+            Note we still need the account name of the bucket owner.
+            This is because bucket names are unique within the bucket owner's account, but they are not unique within the S3 service as a whole.
+
+        2) using a http:// URL.
+
+            This gives direct access to a single public bucket.
+            It does provide a method for listing the buckets within a collection.
+
+            There is no way for a client to distinguish between a simple http download URL and a S3 bucket URL.
+
+                http://www.example.org/filename <-- simple file download
+
+                http://s3.example.org/bucketname <-- S3 bucket access URL
+
+            The only way to determine what is at the end of either of these endpoints is to download the contents and try to guess what it contains.
+            Yes, in theory we could use a HEAD request to check the content-type header, but there is no standard.
+
+        3) a VOSpace URL
+
+            This is the kind of problem that the VOSpace service was designed to handle
+            A single VOSpace URL can be used to refer to an object in a remote service.
+
+                vos://vospace.example.org!path/path/object
+
+            The VOSpace service can be used to resolve this into the set of properties needed to access this object via S3.
+
+                getfrom
+                    protocol: ivo://vospace.protocols/generic-s3
+
+                response
+                    protocol: ivo://vospace.protocols/generic-s3
+                    endpoint: http://s3.alpha.org:8080/
+                    account:  albert
+                    s3://bucket/object_name
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        ...
+
+        Future work
+
+            VOSpace interface to list the tables in a catalog and provide S3 access URLs.
+
+            TAP service connected to Spark JDBC driver
+            https://spark.apache.org/docs/latest/sql-distributed-sql-engine.html
+
+            TAP service connected direct to Spark
+
+
+
+

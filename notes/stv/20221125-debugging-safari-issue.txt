@@ -1,0 +1,143 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+# Issue:
+
+https://github.com/wfau/gaia-dmp/issues/1057
+
+
+"""
+I’ve had reports, and noticed occasionally, that the URL https://dmp.gaia.ac.uk/ presents a blank page on first navigating to it. Sometimes pressing refresh in the browser makes the Zeppelin UI home login page appear; sometimes several presses and a short wait are necessary. Is the UI all ok and healthy?
+
+I got Eckhard to check in Chromium/CentOS and it works first time for him, having never accessed the service before. (I use Safari on MacOS btw). Eckhard pointed out that the home page URL looks a bit funny in the navigation bar, e.g. something like
+"""
+
+
+
+# After some initial debugging this seems to be the cause:
+
+Zeppelin redirects to an http://../api/login address (not https). This causes security errors in all browser that I've seen, but Safari time's out the request. 
+
+For context this is the error in Chrome:
+
+> Mixed Content: The page at 'https://dmp.gaia.ac.uk/#/?ref=%2F' was loaded over HTTPS, but requested an insecure XMLHttpRequest endpoint 'http://dmp.gaia.ac.uk/api/login'. This request has been blocked; the content must be served over HTTPS.
+
+
+# Nigel has reported that the Zeppelin page be slow to load, and logout.
+# This seems to be related, as Zeppelin will try to fetch content from /api/login during both login & logout
+
+
+
+# First attempt, in conf/shiro.conf in Zeppelin change
+
+shiro.loginUrl = /api/login
+to
+shiro.loginUrl = https://iris-gaia-red.gaia-dmp.uk/api/login
+
+
+# Fails, causes redirect loop
+
+# ...
+
+# Lots of searching the web and attempts to try to understand and solve the issue with various config changes..
+
+# ...
+
+
+
+# Fix:
+# Based on a comment found here:
+
+https://community.cloudera.com/t5/Support-Questions/Knox-Zeppelin-websocket-problems/td-p/240055
+
+# Modify the Nginx proxy config and add:
+
+proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection "upgrade";
+proxy_read_timeout 86400;
+
+
+
+
+
+# The following proxy config works:
+
+upstream zeppelin {
+    server 127.0.0.1:8080;
+}
+
+
+# Zeppelin Website
+server {
+    listen 80;
+    listen 443 ssl;
+    server_name iris-gaia-red.gaia-dmp.uk;
+
+    ssl_certificate /etc/letsencrypt/live/iris-gaia-red.gaia-dmp.uk/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/iris-gaia-red.gaia-dmp.uk/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+    if ($ssl_protocol = "") {
+        rewrite ^ https://$host$request_uri? permanent;  # optional, to force use of HTTPS
+    }
+
+    location / {    # For regular websever support
+        proxy_pass http://zeppelin;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-NginX-Proxy true;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_redirect off;
+
+        client_max_body_size       10m;
+        client_body_buffer_size    128k;
+
+        proxy_connect_timeout      90;
+        proxy_send_timeout         90;
+        proxy_read_timeout 86400;
+
+        proxy_buffer_size          4k;
+        proxy_buffers              4 32k;
+        proxy_busy_buffers_size    64k;
+        proxy_temp_file_write_size 64k;
+
+    }
+
+    location /ws {  # For websocket support
+        proxy_pass http://zeppelin/ws;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade websocket;
+        proxy_set_header Connection upgrade;
+        proxy_read_timeout 86400;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+
+    }
+}
+

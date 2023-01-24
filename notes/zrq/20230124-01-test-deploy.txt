@@ -1,0 +1,1527 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        New deployment to test the Openstack cloud.
+
+    Result:
+
+        Everything seems to be working OK.
+        One old DNS name breaks the build (fixed, but might cause conflict if we merge it).
+
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Tue 24 Jan 04:38:24 UTC 2023
+    >   iris-gaia-blue-20221013-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is blue, selecting green for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=green
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   ....
+    >   ....
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-green-20230124
+    >         date: 20230124T044211
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+    >
+    >   real	46m10.407s
+    >   user	12m23.460s
+    >   sys	2m46.778s
+
+    #
+    # Failed step
+    #
+
+    >   ....
+    >   TASK [Accept SSH key for data node] ********************************************
+    >   fatal: [zeppelin]: FAILED! => {
+    >       "changed": true,
+    >       "cmd": "ssh-keyscan 'data.aglais.uk' >> \"${HOME}/.ssh/known_hosts\"\n",
+    >       "delta": "0:00:00.034511",
+    >       "end": "2023-01-24 05:24:53.705101",
+    >       "msg": "non-zero return code",
+    >       "rc": 1,
+    >       "start": "2023-01-24 05:24:53.670590",
+    >       "stderr": "....",
+    >       "stderr_lines": [
+    >           "getaddrinfo data.aglais.uk: Name or service not known",
+    >           "getaddrinfo data.aglais.uk: Name or service not known",
+    >           "getaddrinfo data.aglais.uk: Name or service not known"
+    >           ],
+    >       "stdout": "",
+    >       "stdout_lines": []
+    >       }
+    >   ....
+
+    #
+    # Fix the out of date DNS name.
+    #
+
+# -----------------------------------------------------
+# Try again.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-green-20230124
+    >         date: 20230124T060509
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+    >   
+    >   real	47m12.822s
+    >   user	15m45.646s
+    >   sys	4m10.025s
+
+
+# -----------------------------------------------------
+# Allow port 8080 (HTTP).
+# TODO Fix the HTTPS proxy to work on all deployments.
+# https://github.com/wfau/gaia-dmp/issues/838
+#[root@ansibler]
+
+    groupid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            security group list \
+                --format json \
+        | jq -r '.[] | select(.Name | match("zeppelin-security")) | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --protocol 'tcp' \
+            --dst-port '8080:8080' \
+            "${groupid}"
+
+    >   +-------------------------+--------------------------------------+
+    >   | Field                   | Value                                |
+    >   +-------------------------+--------------------------------------+
+    >   | created_at              | 2023-01-24T05:29:39Z                 |
+    >   | description             |                                      |
+    >   | direction               | ingress                              |
+    >   | ether_type              | IPv4                                 |
+    >   | id                      | 636a1482-5e81-4210-a2a9-923b643fa458 |
+    >   | name                    | None                                 |
+    >   | port_range_max          | 8080                                 |
+    >   | port_range_min          | 8080                                 |
+    >   | project_id              | de5ddc6b4d1e445bb73e45c7b8971673     |
+    >   | protocol                | tcp                                  |
+    >   | remote_address_group_id | None                                 |
+    >   | remote_group_id         | None                                 |
+    >   | remote_ip_prefix        | 0.0.0.0/0                            |
+    >   | revision_number         | 0                                    |
+    >   | security_group_id       | cdd68d0b-bfb8-47eb-beec-72b1bb80322a |
+    >   | tags                    | []                                   |
+    >   | tenant_id               | de5ddc6b4d1e445bb73e45c7b8971673     |
+    >   | updated_at              | 2023-01-24T05:29:39Z                 |
+    >   +-------------------------+--------------------------------------+
+
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    username=$(pwgen 16 1)
+
+    createusermain "${username}" \
+    | tee "/tmp/${username}.json" \
+    | jq '.shirouser | {"username": .name, "password": .password}'
+
+    >   {
+    >     "username": "ahjoqu9ue7maiTof",
+    >     "password": "unstuffed division salvation spendable"
+    >   }
+
+
+# -----------------------------------------------------
+# Login as the new user.
+#[root@ansibler]
+
+    password=$(
+        jq -r '.shirouser.password' "/tmp/${username}.json"
+        )
+
+    zeppelinurl=http://zeppelin:8080
+    zepcookies=/tmp/${username:?}.cookies
+
+    curl \
+        --silent \
+        --request 'POST' \
+        --cookie-jar "${zepcookies:?}" \
+        --data "userName=${username:?}" \
+        --data "password=${password:?}" \
+        "${zeppelinurl:?}/api/login" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "ahjoqu9ue7maiTof",
+    >       "ticket": "0862aeee-7b00-4931-80e7-ce2fa185d136",
+    >       "roles": "[]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# List notebooks the user can see.
+#[root@ansibler]
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": [
+    >       {
+    >         "id": "2HTH49YGX",
+    >         "path": "/Users/ahjoqu9ue7maiTof/examples/1. Start here"
+    >       },
+    >       {
+    >         "id": "2HREHJ8HX",
+    >         "path": "/Users/ahjoqu9ue7maiTof/examples/2. Data holdings"
+    >       },
+    >       {
+    >         "id": "2HS4JRW16",
+    >         "path": "/Users/ahjoqu9ue7maiTof/examples/3. Source counts over the sky"
+    >       },
+    >       {
+    >         "id": "2HQZDPBX5",
+    >         "path": "/Users/ahjoqu9ue7maiTof/examples/4. Mean proper motions over the sky"
+    >       },
+    >       {
+    >         "id": "2HS134NFB",
+    >         "path": "/Users/ahjoqu9ue7maiTof/examples/5. Working with Gaia XP spectra"
+    >       },
+    >       {
+    >         "id": "2HPQRQGFU",
+    >         "path": "/Users/ahjoqu9ue7maiTof/examples/6. Working with cross-matched surveys"
+    >       },
+    >       {
+    >         "id": "2HR59WPFJ",
+    >         "path": "/Users/ahjoqu9ue7maiTof/examples/7. Good astrometric solutions via ML Random Forest classifier"
+    >       },
+    >       {
+    >         "id": "2HQNVQBG6",
+    >         "path": "/Users/ahjoqu9ue7maiTof/examples/8. Tips and tricks"
+    >       }
+    >     ]
+
+
+# -----------------------------------------------------
+# Run all the notebooks the user can see.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/zeppelin-rest-tools.sh
+
+    testall \
+        "${username}" \
+        "${password}" \
+    | tee "/tmp/${username}-testall.json" \
+    | jq '.'
+
+    #
+    # Three failed notebook cells?
+    #
+
+    >   parse error: Invalid numeric literal at line 1, column 83
+    >   parse error: Invalid numeric literal at line 1, column 83
+    >   parse error: Invalid numeric literal at line 1, column 83
+
+    >   {
+    >     "login": {
+    >       "status": "OK",
+    >       "message": "",
+    >       "body": {
+    >         "principal": "ahjoqu9ue7maiTof",
+    >         "ticket": "0862aeee-7b00-4931-80e7-ce2fa185d136",
+    >         "roles": "[]"
+    >       }
+    >     },
+    >     "notebooks": [
+    >       {
+    >         "noteid": "2HTH49YGX",
+    >         "clear": {
+    >           "status": "OK",
+    >           "message": ""
+    >         },
+    >         "execute": {
+    >           "id": "2HTH49YGX",
+    >           "name": "1. Start here",
+    >           "path": "/Users/ahjoqu9ue7maiTof/examples/1. Start here",
+    >           "paragraphs": [
+    >             {
+    >               "id": "20210507-152557_21014937",
+    >               "title": "Introduction",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210507-152628_446700578",
+    >               "title": "Familiarisation",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210510-084215_1445060106",
+    >               "title": "Zeppelin notebooks",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "20210507-160139_1365676170",
+    >               "title": "PySpark SQL",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210510-105824_1166659944",
+    >               "title": "Example code from previous cell",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "20210507-152746_1171284722",
+    >               "title": "Spark aspects",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210510-090543_1039599855",
+    >               "title": "Further reading and resources",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             }
+    >           ],
+    >           "duration": "0:0:4"
+    >         }
+    >       },
+    >       {
+    >         "noteid": "2HREHJ8HX",
+    >         "clear": {
+    >           "status": "OK",
+    >           "message": ""
+    >         },
+    >         "execute": {
+    >           "id": "2HREHJ8HX",
+    >           "name": "2. Data holdings",
+    >           "path": "/Users/ahjoqu9ue7maiTof/examples/2. Data holdings",
+    >           "paragraphs": [
+    >             {
+    >               "id": "20210507-123801_497865463",
+    >               "title": "Introduction",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210507-124436_282498395",
+    >               "title": "Database and table details",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:2"
+    >             },
+    >             {
+    >               "id": "paragraph_1651056869670_357515407",
+    >               "title": "N.B.",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210507-124618_1845823957",
+    >               "title": "Description and links",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210507-133844_1243154051",
+    >               "title": "Column listing for a table",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210507-140821_1444471628",
+    >               "title": "Querying the main catalogue",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210507-144257_1004220319",
+    >               "title": "Querying with cross-matched data",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "20210507-144728_1143294166",
+    >               "title": "Things to note",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             }
+    >           ],
+    >           "duration": "0:0:7"
+    >         }
+    >       },
+    >       {
+    >         "noteid": "2HS4JRW16",
+    >         "clear": {
+    >           "status": "OK",
+    >           "message": ""
+    >         },
+    >         "execute": {
+    >           "id": "2HS4JRW16",
+    >           "name": "3. Source counts over the sky",
+    >           "path": "/Users/ahjoqu9ue7maiTof/examples/3. Source counts over the sky",
+    >           "paragraphs": [
+    >             {
+    >               "id": "20210507-084613_357121151",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20200826-105718_1698521515",
+    >               "title": "Set the resolution level and define the query",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20200826-110030_2095441495",
+    >               "title": "Plot up the results",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:54"
+    >             },
+    >             {
+    >               "id": "20210507-091244_670006530",
+    >               "title": "Further reading and resources",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1648610499944_1376690736",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             }
+    >           ],
+    >           "duration": "0:0:55"
+    >         }
+    >       },
+    >       {
+    >         "noteid": "2HQZDPBX5",
+    >         "clear": {
+    >           "status": "OK",
+    >           "message": ""
+    >         },
+    >         "execute": {
+    >           "id": "2HQZDPBX5",
+    >           "name": "4. Mean proper motions over the sky",
+    >           "path": "/Users/ahjoqu9ue7maiTof/examples/4. Mean proper motions over the sky",
+    >           "paragraphs": [
+    >             {
+    >               "id": "paragraph_1646395441893_1272795891",
+    >               "title": "Introduction",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210510-111756_391695716",
+    >               "title": "Set HEALPix resolution",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "20210510-111538_106023214",
+    >               "title": "Define a data frame by SQL query",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210510-111939_1386609632",
+    >               "title": "Mean RA proper motion plot",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:1:27"
+    >             },
+    >             {
+    >               "id": "20210510-111943_814907111",
+    >               "title": "Mean Dec proper motion plot",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "20210510-111956_1822284967",
+    >               "title": "Further reading and resources",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210510-132447_1514402898",
+    >               "title": "Tidy-up",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20211207-132335_689637194",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             }
+    >           ],
+    >           "duration": "0:1:31"
+    >         }
+    >       },
+    >       {
+    >         "noteid": "2HS134NFB",
+    >         "clear": {
+    >           "status": "OK",
+    >           "message": ""
+    >         },
+    >         "execute": {
+    >           "id": "2HS134NFB",
+    >           "name": "5. Working with Gaia XP spectra",
+    >           "path": "/Users/ahjoqu9ue7maiTof/examples/5. Working with Gaia XP spectra",
+    >           "paragraphs": [
+    >             {
+    >               "id": "paragraph_1650981001262_1093264483",
+    >               "title": "Introduction",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1650981269844_2057939329",
+    >               "title": "Sampling and plotting spectra (continuous representation)",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:6"
+    >             },
+    >             {
+    >               "id": "paragraph_1662044943200_953477984",
+    >               "title": "Creating a single, externally calibrated spectrum from BP and RP",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "paragraph_1662045004984_1851487345",
+    >               "title": "Searching for similar spectra",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1662045098333_1096300336",
+    >               "title": "Utility code",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "paragraph_1662045989203_497219070",
+    >               "title": "Set up the template and selection for the trawl",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:4"
+    >             },
+    >             {
+    >               "id": "paragraph_1662046085285_632981835",
+    >               "title": "Action the trawl and collect the top 3 (for example) matches",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "1:12:31"
+    >             },
+    >             {
+    >               "id": "paragraph_1662046203039_188861744",
+    >               "title": "Plot sampled spectra (internal calibration)",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "paragraph_1662046259646_282464556",
+    >               "title": "Plot externally calibrated spectra",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1651053931648_1906164321",
+    >               "title": "Further information",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             }
+    >           ],
+    >           "duration": "1:12:47"
+    >         }
+    >       },
+    >       {
+    >         "noteid": "2HPQRQGFU",
+    >         "clear": {
+    >           "status": "OK",
+    >           "message": ""
+    >         },
+    >         "execute": {
+    >           "id": "2HPQRQGFU",
+    >           "name": "6. Working with cross-matched surveys",
+    >           "path": "/Users/ahjoqu9ue7maiTof/examples/6. Working with cross-matched surveys",
+    >           "paragraphs": [
+    >             {
+    >               "id": "paragraph_1646992513304_653265144",
+    >               "title": "Introduction",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "paragraph_1647250636508_2082384671",
+    >               "title": "Standard platform set-up",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646992632242_1534494301",
+    >               "title": "Utility function definitions",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646996320283_812479873",
+    >               "title": "Define a data aggregation",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646996892901_1183551489",
+    >               "title": "Collect the results and process in preparation for visualisation",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:3:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646997023626_41851232",
+    >               "title": "Visualise via matplotlib",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1647276187713_571053798",
+    >               "title": "Further reading",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1661526172099_1605416017",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             }
+    >           ],
+    >           "duration": "0:3:3"
+    >         }
+    >       },
+    >       {
+    >         "noteid": "2HR59WPFJ",
+    >         "clear": {
+    >           "status": "OK",
+    >           "message": ""
+    >         },
+    >         "execute": {
+    >           "id": "2HR59WPFJ",
+    >           "name": "7. Good astrometric solutions via ML Random Forest classifier",
+    >           "path": "/Users/ahjoqu9ue7maiTof/examples/7. Good astrometric solutions via ML Random Forest classifier",
+    >           "paragraphs": [
+    >             {
+    >               "id": "20201013-131059_546082898",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20201013-131649_1734629667",
+    >               "title": "Basic catalogue query selections and predicates",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20201013-132418_278702125",
+    >               "title": "Raw catalogue with selected columns",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:6:39"
+    >             },
+    >             {
+    >               "id": "20201120-094650_221463065",
+    >               "title": "Visualisation (colour / absolute-magnitue diagram) of the raw catalogue",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:2"
+    >             },
+    >             {
+    >               "id": "20201120-110502_1704727157",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20201123-105445_95907042",
+    >               "title": "Define the training samples",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:2"
+    >             },
+    >             {
+    >               "id": "20201015-161110_18118893",
+    >               "title": "Assemble training and reserve test sets",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20201013-152110_1282917873",
+    >               "title": "Train up the Random Forest",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:2:51"
+    >             },
+    >             {
+    >               "id": "20210504-153521_1591875670",
+    >               "title": "Check feature set for nulls",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20201015-131823_1744793710",
+    >               "title": "Classify the reserved test sets",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20201016-154755_24366630",
+    >               "title": "Classification confusion matrix",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:15"
+    >             },
+    >             {
+    >               "id": "20201123-163421_1811049882",
+    >               "title": "Relative importance of the selected features",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20201123-162249_1468741293",
+    >               "title": "Apply the classification model and plot sample results",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:12"
+    >             },
+    >             {
+    >               "id": "20201124-100512_110153564",
+    >               "title": "Histogram of classification probability",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:24"
+    >             },
+    >             {
+    >               "id": "20201125-103046_1353183691",
+    >               "title": "Sky distribution of good source sample",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:4"
+    >             },
+    >             {
+    >               "id": "20201125-163312_728555601",
+    >               "title": "Sky distribution of bad source sample",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:3"
+    >             },
+    >             {
+    >               "id": "paragraph_1647354647989_1984770159",
+    >               "title": "Tidy up",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "20210428-140519_1288739408",
+    >               "title": "Further reading and resources",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1661761989954_2120199763",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             }
+    >           ],
+    >           "duration": "0:10:38"
+    >         }
+    >       },
+    >       {
+    >         "noteid": "2HQNVQBG6",
+    >         "clear": {
+    >           "status": "OK",
+    >           "message": ""
+    >         },
+    >         "execute": {
+    >           "id": "2HQNVQBG6",
+    >           "name": "8. Tips and tricks",
+    >           "path": "/Users/ahjoqu9ue7maiTof/examples/8. Tips and tricks",
+    >           "paragraphs": [
+    >             {
+    >               "id": "paragraph_1646302979387_1967819699",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1650969130797_24418076",
+    >               "title": "Resetting the Spark context",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1657184311088_165266130",
+    >               "title": "Exporting data from the platform using ssh",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646303142140_1348941331",
+    >               "title": "Interpreters",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646303435709_963866048",
+    >               "title": "Getting Python help (PySpark)",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646307170102_2048767015",
+    >               "title": "Getting Python help (IPython)",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:4"
+    >             },
+    >             {
+    >               "id": "paragraph_1646307543255_98686055",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:15"
+    >             },
+    >             {
+    >               "id": "paragraph_1646307566183_1091809645",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646307705484_968604156",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646307822435_755741075",
+    >               "title": "Dynamic input forms",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646307830074_1007432988",
+    >               "title": "Data frame formatted table display",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646307971292_1902566334",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646308177030_478507557",
+    >               "title": "Simple matplotlib example",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "paragraph_1646309158350_1307021892",
+    >               "title": "Plotting from multiple cells in matplotlib",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646318201620_778208712",
+    >               "title": "First cell - this has the plot with the first line",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646318348245_1365510701",
+    >               "title": "Second line",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:1"
+    >             },
+    >             {
+    >               "id": "paragraph_1646318526426_1207719830",
+    >               "title": "Label axes",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646318572568_292771953",
+    >               "title": "Add legend",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646318613401_1738257807",
+    >               "title": "Add title",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1661872212883_1225159328",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             },
+    >             {
+    >               "id": "paragraph_1646309445411_598337612",
+    >               "title": "null",
+    >               "execute": {
+    >                 "status": "OK",
+    >                 "body": {
+    >                   "code": "SUCCESS"
+    >                 }
+    >               },
+    >               "duration": "0:0:0"
+    >             }
+    >           ],
+    >           "duration": "0:0:26"
+    >         }
+    >       }
+    >     ],
+    >     "duration": "1:29:34"
+    >   }
+
+
+# -----------------------------------------------------
+# Import our live users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users
+
+    >   ....
+    >   ....
+
+
+    list-linux-info \
+        /tmp/live-users.json
+
+    >   [
+    >     ....
+    >     ....
+    >     {
+    >       "username": "AKrause",
+    >       "homedir": "/home/AKrause",
+    >       "linuxuid": "10012",
+    >       "pkeyhash": "68b329da9893e34099c7d8ad5cb9c940"
+    >     },
+    >     {
+    >       "username": "NWalton",
+    >       "homedir": "/home/NWalton",
+    >       "linuxuid": "10013",
+    >       "pkeyhash": "68b329da9893e34099c7d8ad5cb9c940"
+    >     }
+    >   ]
+
+
+    list-shiro-info \
+        /tmp/live-users.json
+
+    >   [
+    >     ....
+    >     ....
+    >     {
+    >       "username": "AKrause",
+    >       "password": "",
+    >       "hashhash": "10180a1d9e992984d01eaaeb705d7ee4"
+    >     },
+    >     {
+    >       "username": "NWalton",
+    >       "password": "",
+    >       "hashhash": "1c6e94bb26c1b1d476ed350ad324e15d"
+    >     }
+    >   ]
+
+
+    list-ceph-info \
+        /tmp/live-users.json
+
+    >   ....
+    >   ....
+    >   [
+    >     ....
+    >     ....
+    >     {
+    >       "username": "NWalton",
+    >       "usershare": {
+    >         "name": "iris-gaia-data-user-NWalton",
+    >         "size": 10,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       },
+    >       "homeshare": {
+    >         "name": "iris-gaia-data-home-NWalton",
+    >         "size": 1,
+    >         "cloud": "iris-gaia-data",
+    >         "status": "available"
+    >       }
+    >     }
+    >   ]
+
+
+# -----------------------------------------------------
+# Setup a SSH tunnel SOCKS proxy.
+# https://unix.stackexchange.com/questions/34004/how-does-tcp-keepalive-work-in-ssh
+# https://unix.stackexchange.com/a/34201
+#[root@ansibler]
+
+    ssh \
+        -n \
+        -f \
+        -N \
+        -D '*:3000' \
+        -o ServerAliveInterval=10 \
+        -o ServerAliveCountMax=12 \
+        zeppelin
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login and check the notebooks.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        'http://zeppelin:8080/' &
+
+
+    >   ....
+    >   ....
+

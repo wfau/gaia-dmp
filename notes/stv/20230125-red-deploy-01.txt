@@ -1,0 +1,540 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+    Target:
+
+        New deployment
+       
+
+    Result:
+
+        Success.
+        New deployment passes tests.
+
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+	> Tue 24 Jan 11:02:43 UTC 2023
+	> iris-gaia-blue-20221013-zeppelin
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is blue, selecting red for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+        
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+        
+        > 
+        TASK [Linking data directories] ************************************************
+fatal: [zeppelin]: FAILED! => {"msg": "Invalid data passed to 'loop', it requires a list, got this instead: None. Hint: If you passed a list/dict of just one element, try adding wantlist=True to your lookup invocation or use q/query instead of lookup."}
+fatal: [worker01]: FAILED! => {"msg": "Invalid data passed to 'loop', it requires a list, got this instead: None. Hint: If you passed a list/dict of just one element, try adding wantlist=True to your lookup invocation or use q/query instead of lookup."}
+fatal: [worker02]: FAILED! => {"msg": "Invalid data passed to 'loop', it requires a list, got this instead: None. Hint: If you passed a list/dict of just one element, try adding wantlist=True to your lookup invocation or use q/query instead of lookup."}
+fatal: [worker03]: FAILED! => {"msg": "Invalid data passed to 'loop', it requires a list, got this instead: None. Hint: If you passed a list/dict of just one element, try adding wantlist=True to your lookup invocation or use q/query instead of lookup."}
+fatal: [worker04]: FAILED! => {"msg": "Invalid data passed to 'loop', it requires a list, got this instead: None. Hint: If you passed a list/dict of just one element, try adding wantlist=True to your lookup invocation or use q/query instead of lookup."}
+fatal: [worker05]: FAILED! => {"msg": "Invalid data passed to 'loop', it requires a list, got this instead: None. Hint: If you passed a list/dict of just one element, try adding wantlist=True to your lookup invocation or use q/query instead of lookup."}
+fatal: [worker06]: FAILED! => {"msg": "Invalid data passed to 'loop', it requires a list, got this instead: None. Hint: If you passed a list/dict of just one element, try adding wantlist=True to your lookup invocation or use q/query instead of lookup."}
+
+
+
+	aglais:
+	  status:
+	    deployment:
+	      type: hadoop-yarn
+	      conf: zeppelin-54.86-spark-6.26.43
+	      name: iris-gaia-red-20230125
+	      date: 20230125T123051
+	      hostname: zeppelin.gaia-dmp.uk
+	  spec:
+	    openstack:
+	      cloud:
+		base: arcus
+		name: iris-gaia-red
+
+	real	56m34.042s
+	user	10m18.838s
+	sys	2m44.551s
+
+
+	
+# -----------------------------------------------------
+# Allow port 8080 (HTTP).
+# TODO Fix the HTTPS proxy to work on all deployments.
+# https://github.com/wfau/gaia-dmp/issues/838
+#[root@ansibler]
+
+    groupid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            security group list \
+                --format json \
+        | jq -r '.[] | select(.Name | match("zeppelin-security")) | .ID'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        security group rule create \
+            --ingress \
+            --protocol 'tcp' \
+            --dst-port '8080:8080' \
+            "${groupid}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    username=$(pwgen 16 1)
+
+    createusermain "${username}" \
+    | tee "/tmp/${username}.json" \
+    | jq '.shirouser | {"username": .name, "password": .password}'
+
+        >
+
+	{
+	  "username": "chee2ooW5rieSohv",
+	  "password": "..."
+	}
+
+
+# -----------------------------------------------------
+# Login as the new user.
+#[root@ansibler]
+
+    password=$(
+        jq -r '.shirouser.password' "/tmp/${username}.json"
+        )
+
+    zeppelinurl=http://zeppelin:8080
+    zepcookies=/tmp/${username:?}.cookies
+       
+    curl \
+        --silent \
+        --request 'POST' \
+        --cookie-jar "${zepcookies:?}" \
+        --data "userName=${username:?}" \
+        --data "password=${password:?}" \
+        "${zeppelinurl:?}/api/login" \
+    | jq '.'       
+    
+    
+        >
+         
+	    
+	{
+	  "status": "OK",
+	  "message": "",
+	  "body": {
+	    "principal": "chee2ooW5rieSohv",
+	    "ticket": "3b6e00fe-49eb-4ce2-ba62-2e608ea0541f",
+	    "roles": "[]"
+	  }
+	}
+
+
+
+ 
+# -----------------------------------------------------
+# List notebooks the user can see.
+#[root@ansibler]
+   
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook" \
+    | jq '.'    
+    
+    
+    >
+	    
+		    
+	{
+	  "status": "OK",
+	  "message": "",
+	  "body": [
+	    {
+	      "id": "2HSGMAYY6",
+	      "path": "/Users/chee2ooW5rieSohv/examples/1. Start here"
+	    },
+	    {
+	      "id": "2HTNBF11Y",
+	      "path": "/Users/chee2ooW5rieSohv/examples/2. Data holdings"
+	    },
+	    {
+	      "id": "2HSQ518D7",
+	      "path": "/Users/chee2ooW5rieSohv/examples/3. Source counts over the sky"
+	    },
+	    {
+	      "id": "2HTNGAWSJ",
+	      "path": "/Users/chee2ooW5rieSohv/examples/4. Mean proper motions over the sky"
+	    },
+	    {
+	      "id": "2HTEYAYCS",
+	      "path": "/Users/chee2ooW5rieSohv/examples/5. Working with Gaia XP spectra"
+	    },
+	    {
+	      "id": "2HTG2R2KQ",
+	      "path": "/Users/chee2ooW5rieSohv/examples/6. Working with cross-matched surveys"
+	    },
+	    {
+	      "id": "2HQGZ3B2V",
+	      "path": "/Users/chee2ooW5rieSohv/examples/7. Good astrometric solutions via ML Random Forest classifier"
+	    },
+	    {
+	      "id": "2HQNGTM42",
+	      "path": "/Users/chee2ooW5rieSohv/examples/8. Tips and tricks"
+	    }
+	  ]
+	}
+
+
+
+
+
+# -----------------------------------------------------
+# Run the ML RandomForest classifier example.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/zeppelin-rest-tools.sh
+
+    testall \
+        "${username}" \
+        "${password}" \
+        "/Users/${username}/examples/7" \
+    | tee "/tmp/${username}-testone.json" \
+    | jq '
+       .notebooks[] | {
+            "id": .noteid,
+            "name": .execute.name,
+            "path": .execute.path,
+            "duration": .execute.duration,
+            "paragraphs": [
+                .execute.paragraphs[] | {
+                    "title": .title,
+                    "duration": .duration
+                    }
+                ]
+            }
+       '
+       
+       # Hangs..
+      
+       # Run test from UI
+       # Success
+        
+        > 
+             "title": "Raw catalogue with selected columns",
+             "duration": "0:4:4"
+             
+              "title": "Train up the Random Forest",
+             "duration": "0:2:39"
+             
+
+   
+# -----------------------------------------------------
+# Create our benchmark script.
+#[root@ansibler]
+
+cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print("{")
+print(
+"""
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }},
+\"output\":
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+print("---start---")
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+print("---end---")
+print("}")
+EOF
+
+chmod 'a+x' /tmp/run-benchmark.py            
+
+
+# -----------------------------------------------------
+# Create test users
+#[root@ansibler]
+             
+source /deployments/zeppelin/bin/create-user-tools.sh
+
+import-test-users
+
+
+# -----------------------------------------------------
+# Create aglais benchmarker user config 
+#[root@ansibler]
+
+
+cat <<EOF >> /tmp/user1.yml
+zeppelin_url: http://iris-gaia-red.gaia-dmp.uk:8080
+zeppelin_auth: true
+zeppelin_user: Reyesfan
+zeppelin_password: ..
+EOF
+
+	
+# -----------------------------------------------------
+# Run one quick test as a single user
+#[root@ansibler]
+
+    usercount=1
+
+    endpoint="http://iris-gaia-red.gaia-dmp.uk:8080"
+    testconfig=/deployments/zeppelin/test/config/basic.json
+    testusers=/tmp/test-users.json
+
+    delaystart=4
+    delaynotebook=5
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+                
+                
+​[
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "36.68",
+			"expected": "45.00",
+			"percent": "-18.49",
+			"start": "2023-01-25T14:07:20.778164",
+			"finish": "2023-01-25T14:07:57.458956"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "76.24",
+			"expected": "55.00",
+			"percent": "38.61",
+			"start": "2023-01-25T14:08:02.463502",
+			"finish": "2023-01-25T14:09:18.698561"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "39.09",
+			"expected": "22.00",
+			"percent": "77.67",
+			"start": "2023-01-25T14:09:23.703363",
+			"finish": "2023-01-25T14:10:02.790472"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "455.51",
+			"expected": "500.00",
+			"percent": "-8.90",
+			"start": "2023-01-25T14:10:07.795362",
+			"finish": "2023-01-25T14:17:43.305217"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_cross_matched_surveys",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "109.98",
+			"expected": "130.00",
+			"percent": "-15.40",
+			"start": "2023-01-25T14:17:48.309140",
+			"finish": "2023-01-25T14:19:38.289024"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_Gaia_XP_spectra.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "12.08",
+			"expected": "1800.00",
+			"percent": "-99.33",
+			"start": "2023-01-25T14:19:43.290663",
+			"finish": "2023-01-25T14:19:55.372197"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "8.03",
+			"expected": "60.00",
+			"percent": "-86.62",
+			"start": "2023-01-25T14:20:00.377370",
+			"finish": "2023-01-25T14:20:08.408107"
+		},
+		"logs": ""
+	}]
+]                
+                
+                
+# -----------------------------------------------------
+# Import our live users.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users   
+    
+    > Done 
+    
+    
+    # Check access as SVoutsinas 
+    # Success

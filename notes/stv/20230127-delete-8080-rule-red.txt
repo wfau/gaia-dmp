@@ -1,0 +1,192 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+    Target:
+
+        Delete port 8080 security rule on red
+
+
+    Result:
+
+        Success.
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Manually create aglais
+#[root@ansibler]
+
+# This is manual this time, because due to other failures during this deploy, the aglais-status configuration file was not created on Zeppelin
+
+mkdir /opt/aglais
+touch /opt/aglais/aglais-status.yml
+
+cat > "/opt/aglais/aglais-status.yml" << EOF
+
+aglais:
+  status:
+    deployment:
+      type: hadoop-yarn
+      conf: zeppelin-54.86-spark-6.26.43
+      name: iris-gaia-red-20230125
+      date: 20230125T123051
+      hostname: zeppelin.gaia-dmp.uk
+  spec:
+    openstack:
+      cloud:
+	base: arcus
+	name: iris-gaia-red
+	
+EOF
+
+
+
+# -----------------------------------------------------
+# Extract the cloud and configuration name.
+#[root@ansibler]
+
+    configname=$(
+        yq '.aglais.status.deployment.conf' /opt/aglais/aglais-status.yml
+        )
+
+    cloudname=$(
+        yq '.aglais.spec.openstack.cloud.name' /opt/aglais/aglais-status.yml
+        )
+
+# -----------------------------------------------------
+# Configure our Ansible client.
+#[root@ansibler]
+
+    inventory="/deployments/hadoop-yarn/ansible/config/${configname:?}.yml"
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "${inventory:?}" \
+            '05-config-ssh.yml'
+
+    popd
+	
+# -----------------------------------------------------
+# Get groupid for zeppelin
+#[root@ansibler]	
+
+groupid=$(
+  openstack \
+  --os-cloud "${cloudname:?}" \
+  security group list \
+  --format json \
+  | jq -r '.[] | select(.Name | match("zeppelin-security")) | .ID'
+)
+
+	
+# -----------------------------------------------------
+# List rules
+#[root@ansibler]	
+
+openstack         --os-cloud "${cloudname:?}"         security group rule list $groupid
++--------------------------------------+-------------+-----------+-----------+------------+-----------+--------------------------------------+----------------------+
+| ID                                   | IP Protocol | Ethertype | IP Range  | Port Range | Direction | Remote Security Group                | Remote Address Group |
++--------------------------------------+-------------+-----------+-----------+------------+-----------+--------------------------------------+----------------------+
+| 034f8ff4-bb9c-4390-ab80-c42e2211950b | tcp         | IPv4      | 0.0.0.0/0 | 443:443    | ingress   | None                                 | None                 |
+| 06845f1a-d0c9-47d8-8679-b95da33cd1ad | tcp         | IPv4      | 0.0.0.0/0 | 443:443    | ingress   | 69c85890-17ac-4526-8bda-a007885a2951 | None                 |
+| 0dece4fe-7d0e-46fc-b04c-74e11611f128 | None        | IPv6      | ::/0      |            | egress    | None                                 | None                 |
+| 1805c4e7-0939-4002-8161-ff777860918d | tcp         | IPv4      | 0.0.0.0/0 | 80:80      | ingress   | 69c85890-17ac-4526-8bda-a007885a2951 | None                 |
+| 2b20ed4e-ad21-41b6-9c8d-2294bb0486f9 | None        | IPv4      | 0.0.0.0/0 |            | egress    | None                                 | None                 |
+| 30ce63bb-f505-4810-a992-83c9b78e16c4 | tcp         | IPv4      | 0.0.0.0/0 | 22:22      | ingress   | None                                 | None                 |
+| 3dcacf98-8e01-4473-a43f-ed5726a61a86 | tcp         | IPv6      | ::/0      | 22:22      | ingress   | None                                 | None                 |
+| 9a5eaa9f-975c-4a4d-8775-80e7f2e77ee1 | tcp         | IPv4      | 0.0.0.0/0 | 8080:8080  | ingress   | None                                 | None                 |
+| a62f651d-a2ac-4b52-8daf-86abb79a3e2a | tcp         | IPv4      | 0.0.0.0/0 | 80:80      | ingress   | None                                 | None                 |
+| aa8ef6d7-ac4f-4a79-b1e2-552ba9dafd67 | tcp         | IPv4      | 0.0.0.0/0 | 8080:8080  | ingress   | 69c85890-17ac-4526-8bda-a007885a2951 | None                 |
+| b6817327-13d4-4f46-9ecd-2c238b4e7b22 | tcp         | IPv4      | 0.0.0.0/0 |            | ingress   | 042d971d-b4a4-4ce3-b734-d6aa772e4a08 | None                 |
+| d104d903-034e-4286-aad6-9dca41b92c2e | tcp         | IPv6      | ::/0      | 443:443    | ingress   | None                                 | None                 |
+| e2826e1d-e16f-4d60-914b-9bbba6f759f2 | tcp         | IPv4      | 0.0.0.0/0 | 9100:9100  | ingress   | 0954cec2-9cc7-432b-a2ea-bcedeacf76fe | None                 |
+| f5e164c2-f681-4955-8e6f-bb258c411c3a | tcp         | IPv4      | 0.0.0.0/0 |            | ingress   | c98f8ee5-c5d3-49a8-8b0e-7397e9a02767 | None                 |
+| fe2cdee7-3adb-4b8c-9842-f8df316a34cd | tcp         | IPv6      | ::/0      | 80:80      | ingress   | None                                 | None                 |
++--------------------------------------+-------------+-----------+-----------+------------+-----------+--------------------------------------+----------------------+
+
+	
+# -----------------------------------------------------
+# Delete port 8080 rules using their ID
+#[root@ansibler]	
+        
+openstack         --os-cloud "${cloudname:?}"         security group rule delete 9a5eaa9f-975c-4a4d-8775-80e7f2e77ee1
+openstack         --os-cloud "${cloudname:?}"         security group rule delete aa8ef6d7-ac4f-4a79-b1e2-552ba9dafd67
+
+
+	
+# -----------------------------------------------------
+# List rules for zeppelin
+#[root@ansibler]	
+
+openstack         --os-cloud "${cloudname:?}"         security group rule list $groupid
++--------------------------------------+-------------+-----------+-----------+------------+-----------+--------------------------------------+----------------------+
+| ID                                   | IP Protocol | Ethertype | IP Range  | Port Range | Direction | Remote Security Group                | Remote Address Group |
++--------------------------------------+-------------+-----------+-----------+------------+-----------+--------------------------------------+----------------------+
+| 034f8ff4-bb9c-4390-ab80-c42e2211950b | tcp         | IPv4      | 0.0.0.0/0 | 443:443    | ingress   | None                                 | None                 |
+| 06845f1a-d0c9-47d8-8679-b95da33cd1ad | tcp         | IPv4      | 0.0.0.0/0 | 443:443    | ingress   | 69c85890-17ac-4526-8bda-a007885a2951 | None                 |
+| 0dece4fe-7d0e-46fc-b04c-74e11611f128 | None        | IPv6      | ::/0      |            | egress    | None                                 | None                 |
+| 1805c4e7-0939-4002-8161-ff777860918d | tcp         | IPv4      | 0.0.0.0/0 | 80:80      | ingress   | 69c85890-17ac-4526-8bda-a007885a2951 | None                 |
+| 2b20ed4e-ad21-41b6-9c8d-2294bb0486f9 | None        | IPv4      | 0.0.0.0/0 |            | egress    | None                                 | None                 |
+| 30ce63bb-f505-4810-a992-83c9b78e16c4 | tcp         | IPv4      | 0.0.0.0/0 | 22:22      | ingress   | None                                 | None                 |
+| 3dcacf98-8e01-4473-a43f-ed5726a61a86 | tcp         | IPv6      | ::/0      | 22:22      | ingress   | None                                 | None                 |
+| a62f651d-a2ac-4b52-8daf-86abb79a3e2a | tcp         | IPv4      | 0.0.0.0/0 | 80:80      | ingress   | None                                 | None                 |
+| b6817327-13d4-4f46-9ecd-2c238b4e7b22 | tcp         | IPv4      | 0.0.0.0/0 |            | ingress   | 042d971d-b4a4-4ce3-b734-d6aa772e4a08 | None                 |
+| d104d903-034e-4286-aad6-9dca41b92c2e | tcp         | IPv6      | ::/0      | 443:443    | ingress   | None                                 | None                 |
+| e2826e1d-e16f-4d60-914b-9bbba6f759f2 | tcp         | IPv4      | 0.0.0.0/0 | 9100:9100  | ingress   | 0954cec2-9cc7-432b-a2ea-bcedeacf76fe | None                 |
+| f5e164c2-f681-4955-8e6f-bb258c411c3a | tcp         | IPv4      | 0.0.0.0/0 |            | ingress   | c98f8ee5-c5d3-49a8-8b0e-7397e9a02767 | None                 |
+| fe2cdee7-3adb-4b8c-9842-f8df316a34cd | tcp         | IPv6      | ::/0      | 80:80      | ingress   | None                                 | None                 |
++--------------------------------------+-------------+-----------+-----------+------------+-----------+--------------------------------------+----------------------+
+
+
+
+# Port 8080 rules gone
+# Manually check that dmp.gaia.ac.uk works - OK

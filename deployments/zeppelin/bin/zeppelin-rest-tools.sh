@@ -41,11 +41,12 @@
 # -----------------------------------------------------
 # Basic REST API functions.
 
+    zepcookies=/tmp/${username:?}.cookies
+
     zeplogin()
         {
         local username=${1:?}
         local password=${2:?}
-        zepcookies=/tmp/${username:?}.cookies
         curl \
             --silent \
             --request 'POST' \

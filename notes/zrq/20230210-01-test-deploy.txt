@@ -1,0 +1,1314 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Set up a test deployment so that we can check that changes to the table
+        schema in the gaiadmpsetup library work with the new mount of DR3.
+
+        Yesterday's notes installed a clone of Nigel's GitHub fork as an editable Python module.
+
+        Today's goal is to test that the tables work as expected.
+
+    Result:
+
+        Success
+        Proof of conceopt.
+        We can create a notebook, add, and execute pyspark code on the fly.
+
+        TODO
+        Realistic iterative test to check all the catalogs, tables and columns.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is red, selecting blue for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Download our deployment status.
+#[root@ansibler]
+
+    mkdir -p "${HOME}/.ssh"
+    ssh-keyscan "${cloudname}.gaia-dmp.uk" 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+
+    mkdir -p /opt/aglais
+    scp "${cloudname}.gaia-dmp.uk:/opt/aglais/aglais-status.yml" \
+        /opt/aglais/aglais-status.yml
+
+    #
+    # WARN - scp may swallow the rest of stdin.
+    #
+
+    cat /opt/aglais/aglais-status.yml
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-blue-20230209
+    >         date: 20230209T120757
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-blue
+
+
+# -----------------------------------------------------
+# Extract the cloud and configuration name.
+#[root@ansibler]
+
+    configname=$(
+        yq '.aglais.status.deployment.conf' /opt/aglais/aglais-status.yml
+        )
+
+    cloudname=$(
+        yq '.aglais.spec.openstack.cloud.name' /opt/aglais/aglais-status.yml
+        )
+
+# -----------------------------------------------------
+# Configure our Ansible client.
+#[root@ansibler]
+
+    inventory="/deployments/hadoop-yarn/ansible/config/${configname:?}.yml"
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "${inventory:?}" \
+            '05-config-ssh.yml'
+
+    popd
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check we can login using ssh.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        '
+
+    >   Fri Feb 10 15:29:12 UTC 2023
+    >   iris-gaia-blue-20230209-zeppelin
+
+
+# -----------------------------------------------------
+# Create a test user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    username=$(pwgen 16 1)
+
+    createusermain "${username}" \
+    | tee "/tmp/${username}.json" \
+    | jq '.shirouser | {"username": .name, "password": .password}'
+
+    password=$(
+        jq -r '.shirouser.password' "/tmp/${username}.json"
+        )
+
+    >   {
+    >     "username": "ivuCoopoemah9ki8",
+    >     "password": "...."
+    >   }
+
+
+# -----------------------------------------------------
+# Setup a SSH tunnel.
+# https://linux.die.net/man/1/ssh
+#[root@ansibler]
+
+    ssh \
+        -n \
+        -f \
+        -N \
+        -L 8080:zeppelin:8080 \
+        zeppelin
+
+    zeppelinurl='http://localhost:8080'
+
+
+# -----------------------------------------------------
+# Login as the new user.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/zeppelin-rest-tools.sh
+
+    zeplogin "${username:?}" "${password:?}"
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "principal": "ivuCoopoemah9ki8",
+    >       "ticket": "854e8bb5-2d14-484e-b828-127010870310",
+    >       "roles": "[]"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Run a simple notebook to check.
+#[root@ansibler]
+
+    testall \
+        "${username}" \
+        "${password}" \
+        "/Users/${username}/examples/3" \
+    | tee "/tmp/${username}-example-3.json" \
+    | jq '
+       .notebooks[] | {
+            "id": .noteid,
+            "name": .execute.name,
+            "path": .execute.path,
+            "duration": .execute.duration,
+            "paragraphs": [
+                .execute.paragraphs[] | {
+                    "title": .title,
+                    "duration": .duration,
+                    "status": .execute.status,
+                    "result": .execute.body.code
+                    }
+                ]
+            }
+       '
+
+    >   {
+    >     "id": "2HTRB6ZJE",
+    >     "name": "3. Source counts over the sky",
+    >     "path": "/Users/ivuCoopoemah9ki8/examples/3. Source counts over the sky",
+    >     "duration": "0:1:6",
+    >     "paragraphs": [
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:2",
+    >         "status": "OK",
+    >         "result": "SUCCESS"
+    >       },
+    >       {
+    >         "title": "Set the resolution level and define the query",
+    >         "duration": "0:0:28",
+    >         "status": "OK",
+    >         "result": "SUCCESS"
+    >       },
+    >       {
+    >         "title": "Plot up the results",
+    >         "duration": "0:0:34",
+    >         "status": "OK",
+    >         "result": "SUCCESS"
+    >       },
+    >       {
+    >         "title": "Further reading and resources",
+    >         "duration": "0:0:1",
+    >         "status": "OK",
+    >         "result": "SUCCESS"
+    >       },
+    >       {
+    >         "title": "null",
+    >         "duration": "0:0:0",
+    >         "status": "OK",
+    >         "result": "SUCCESS"
+    >       }
+    >     ]
+    >   }
+
+
+# -----------------------------------------------------
+# See if we can create a Zeppelin notebook from the command line.
+#[root@ansibler]
+
+    nbname=test-notebook-000
+    nbjson=${nbname}.json
+    nbtemp=/tmp/${nbname}.json
+
+cat > "/tmp/${nbname}.in" << EOF
+{
+"name": "/Users/${username:?}/${nbname:?}"
+}
+EOF
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${zepcookies:?}" \
+        --data "@/tmp/${nbname}.in" \
+        "${zeppelinurl:?}/api/notebook" \
+    | tee "/tmp/${nbname}.out" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": "2HUH5SPAB"
+    >   }
+
+    noteid=$(
+        jq -r '.body' "/tmp/${nbname}.out"
+        )
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook/export/${noteid:?}" \
+    | tee "/tmp/${noteid:?}.out" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": "{\n  \"paragraphs\": [],\n  \"name\": \"test-notebook-000\" ...."
+    >   }
+
+
+    jq '.body | fromjson' "/tmp/${noteid:?}.out"
+
+    >   {
+    >     "paragraphs": [],
+    >     "name": "test-notebook-000",
+    >     "id": "2HUH5SPAB",
+    >     "defaultInterpreterGroup": "spark",
+    >     "version": "0.10.0",
+    >     "noteParams": {},
+    >     "noteForms": {},
+    >     "angularObjects": {},
+    >     "config": {
+    >       "isZeppelinNotebookCronEnable": false
+    >     },
+    >     "info": {}
+    >   }
+
+
+# -----------------------------------------------------
+# See if we can create Zeppelin JSON from a YAML input file.
+#[root@ansibler]
+
+cat > "/tmp/albert.yml" << EOF
+title: "List the catalog tables"
+text:  |
+  %pyspark
+  import gaiadmpsetup
+
+  for line in spark.catalog.listTables():
+    print (line)
+EOF
+
+    yq -o json '.' "/tmp/albert.yml" | tee "/tmp/albert.json"
+
+    >   {
+    >     "title": "List the catalog tables",
+    >     "text": "%pyspark\nimport gaiadmpsetup\n\nfor line in spark.catalog.listTables():\n  print (line)\n"
+    >   }
+
+
+# -----------------------------------------------------
+# See if we can create paragraph from the JSON file.
+#[root@ansibler]
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${zepcookies:?}" \
+        --data "@/tmp/albert.json" \
+        "${zeppelinurl:?}/api/notebook/${noteid:?}/paragraph" \
+    | tee "/tmp/albert.out" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": "paragraph_1676051588627_470020677"
+    >   }
+
+    paraid=$(
+        jq -r '.body' "/tmp/albert.out"
+        )
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook/${noteid:?}/paragraph/${paraid:?}" \
+    | tee "/tmp/${paraid:?}.json" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "title": "List the catalog tables",
+    >       "text": "%pyspark\nimport gaiadmpsetup\n\nfor line in spark.catalog.listTables():\n  print (line)\n",
+    >       "user": "ivuCoopoemah9ki8",
+    >       "dateUpdated": "Feb 10, 2023 5:53:08 PM",
+    >       "progress": 0,
+    >       "config": {},
+    >       "settings": {
+    >         "params": {},
+    >         "forms": {}
+    >       },
+    >       "apps": [],
+    >       "runtimeInfos": {},
+    >       "progressUpdateIntervalMs": 500,
+    >       "jobName": "paragraph_1676051588627_470020677",
+    >       "id": "paragraph_1676051588627_470020677",
+    >       "dateCreated": "Feb 10, 2023 5:53:08 PM",
+    >       "status": "READY"
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# See if we can execute the paragraph.
+#[root@ansibler]
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook/run/${noteid:?}/${paraid:?}" \
+    | tee "/tmp/${paraid:?}.out" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS",
+    >       "msg": [
+    >         {
+    >           "type": "TEXT",   1         2          3         4
+    >                    12345678901234567890123456789801234567890
+    >           "data": "Table(name='alerts_mixedin_sourceids', ...."
+    >         }
+    >       ]
+    >     }
+    >   }
+
+
+    jq -r '.body.msg[0].data' "/tmp/${paraid:?}.out"
+
+    >   Table(name='alerts_mixedin_sourceids', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='astrophysical_parameters', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='astrophysical_parameters_supp', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='epoch_photometry', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='gaia_source', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='gaia_source_allwise_best_neighbours', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='gaia_source_ps1_best_neighbours', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='gaia_source_tmasspsc_best_neighbours', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='galaxy_candidates', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='galaxy_catalogue_name', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='mcmc_samples_gsp_phot', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='mcmc_samples_msc', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='nss_acceleration_astro', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='nss_non_linear_spectro', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='nss_two_body_orbit', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='nss_vim_fl', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='oa_neuron_information', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='oa_neuron_xp_spectra', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='qso_candidates', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='qso_catalogue_name', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='rvs_mean_spectrum', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='science_alerts', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='sso_observation', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='sso_reflectance_spectrum', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='sso_source', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='total_galactic_extinction_map', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='total_galactic_extinction_map_opt', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_agn', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_cepheid', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_classifier_class_definition', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_classifier_definition', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_classifier_result', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_compact_companion', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_eclipsing_binary', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_epoch_radial_velocity', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_long_period_variable', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_microlensing', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_ms_oscillator', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_planetary_transit', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_rad_vel_statistics', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_rotation_modulation', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_rrlyrae', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_short_timescale', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='vari_summary', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='xp_continuous_mean_spectrum', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='xp_sampled_mean_spectrum', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+    >   Table(name='xp_summary', database='gaiadr3', description=None, tableType='EXTERNAL', isTemporary=False)
+
+
+# -----------------------------------------------------
+# Putting it all together ...
+#[root@ansibler]
+
+cat > "/tmp/albert.yml" << EOF
+title: "List the 'epoch_photometry' table columns"
+text:  |
+  %pyspark
+  import gaiadmpsetup
+
+  # define a data frame object on a table:
+  df = spark.sql(
+      "select * from gaiadr3.epoch_photometry"
+      )
+
+  # display the schema with a touch of friendly formatting:
+  for field in df.schema:
+      print(
+          "%32s : %-10s"%(
+              field.name, field.dataType.simpleString()
+              )
+          )
+EOF
+
+    yq -o json '.' "/tmp/albert.yml" | tee "/tmp/albert.json"
+
+    >   {
+    >     "title": "List the 'epoch_photometry' table columns",
+    >     "text": "%pyspark\nimport gaiadmpsetup\n\n# define a data frame object on a table: ...."
+    >   }
+
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${zepcookies:?}" \
+        --data "@/tmp/albert.json" \
+        "${zeppelinurl:?}/api/notebook/${noteid:?}/paragraph" \
+    | tee "/tmp/albert.out" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": "paragraph_1676074630889_1700143571"
+    >   }
+
+
+    paraid=$(
+        jq -r '.body' "/tmp/albert.out"
+        )
+
+    curl \
+        --silent \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook/${noteid:?}/paragraph/${paraid:?}" \
+    | tee "/tmp/${paraid:?}.json" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": {
+    >       "title": "List the 'epoch_photometry' table columns",
+    >       "text": "%pyspark\nimport gaiadmpsetup\n\n# define a data frame object on a table: ....",
+    >       "user": "ivuCoopoemah9ki8",
+    >       "dateUpdated": "Feb 11, 2023 12:17:10 AM",
+    >       "progress": 0,
+    >       "config": {},
+    >       "settings": {
+    >         "params": {},
+    >         "forms": {}
+    >       },
+    >       "apps": [],
+    >       "runtimeInfos": {},
+    >       "progressUpdateIntervalMs": 500,
+    >       "jobName": "paragraph_1676074630889_1700143571",
+    >       "id": "paragraph_1676074630889_1700143571",
+    >       "dateCreated": "Feb 11, 2023 12:17:10 AM",
+    >       "status": "READY"
+    >     }
+    >   }
+
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook/run/${noteid:?}/${paraid:?}" \
+    | tee "/tmp/${paraid:?}.out" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS",
+    >       "msg": [
+    >         {
+    >           "type": "TEXT",
+    >           "data": "                     solution_id : bigint ...."
+    >         }
+    >       ]
+    >     }
+    >   }
+
+
+    jq -r '.body.msg[0].data' "/tmp/${paraid:?}.out"
+
+    >                        solution_id : bigint
+    >                          source_id : bigint
+    >                         n_transits : smallint
+    >                         transit_id : array<bigint>
+    >                     g_transit_time : array<double>
+    >                     g_transit_flux : array<double>
+    >               g_transit_flux_error : array<double>
+    >          g_transit_flux_over_error : array<float>
+    >                      g_transit_mag : array<double>
+    >                    g_transit_n_obs : array<tinyint>
+    >                        bp_obs_time : array<double>
+    >                            bp_flux : array<double>
+    >                      bp_flux_error : array<double>
+    >                 bp_flux_over_error : array<float>
+    >                             bp_mag : array<double>
+    >                        rp_obs_time : array<double>
+    >                            rp_flux : array<double>
+    >                      rp_flux_error : array<double>
+    >                 rp_flux_over_error : array<float>
+    >                             rp_mag : array<double>
+    >         photometry_flag_noisy_data : array<boolean>
+    >     photometry_flag_sm_unavailable : array<boolean>
+    >    photometry_flag_af1_unavailable : array<boolean>
+    >    photometry_flag_af2_unavailable : array<boolean>
+    >    photometry_flag_af3_unavailable : array<boolean>
+    >    photometry_flag_af4_unavailable : array<boolean>
+    >    photometry_flag_af5_unavailable : array<boolean>
+    >    photometry_flag_af6_unavailable : array<boolean>
+    >    photometry_flag_af7_unavailable : array<boolean>
+    >    photometry_flag_af8_unavailable : array<boolean>
+    >    photometry_flag_af9_unavailable : array<boolean>
+    >     photometry_flag_bp_unavailable : array<boolean>
+    >     photometry_flag_rp_unavailable : array<boolean>
+    >          photometry_flag_sm_reject : array<boolean>
+    >         photometry_flag_af1_reject : array<boolean>
+    >         photometry_flag_af2_reject : array<boolean>
+    >         photometry_flag_af3_reject : array<boolean>
+    >         photometry_flag_af4_reject : array<boolean>
+    >         photometry_flag_af5_reject : array<boolean>
+    >         photometry_flag_af6_reject : array<boolean>
+    >         photometry_flag_af7_reject : array<boolean>
+    >         photometry_flag_af8_reject : array<boolean>
+    >         photometry_flag_af9_reject : array<boolean>
+    >          photometry_flag_bp_reject : array<boolean>
+    >          photometry_flag_rp_reject : array<boolean>
+    >          variability_flag_g_reject : array<boolean>
+    >         variability_flag_bp_reject : array<boolean>
+    >         variability_flag_rp_reject : array<boolean>
+
+
+# -----------------------------------------------------
+# Putting it all together ...
+#[root@ansibler]
+
+cat << 'EOF' | yq -o json '.' | tee "/tmp/albert.json"
+title: "List the first n rows of 'epoch_photometry'"
+text:  |
+  %pyspark
+  import gaiadmpsetup
+
+  df = spark.sql(
+      "select * from gaiadr3.epoch_photometry"
+      )
+
+  df.show()
+EOF
+
+    >   {
+    >     "title": "List the first n rows of 'epoch_photometry'",
+    >     "text": "%pyspark\nimport gaiadmpsetup\n\ndf = spark.sql(\n    \"select * from gaiadr3.epoch_photometry\"\n    )\n\ndf.show()\n"
+    >   }
+
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${zepcookies:?}" \
+        --data "@/tmp/albert.json" \
+        "${zeppelinurl:?}/api/notebook/${noteid:?}/paragraph" \
+    | tee "/tmp/albert.out" \
+    | jq '.'
+
+{
+  "status": "OK",
+  "message": "",
+  "body": "paragraph_1676075366247_157905313"
+}
+
+
+    paraid=$(
+        jq -r '.body' "/tmp/albert.out"
+        )
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook/run/${noteid:?}/${paraid:?}" \
+    | tee "/tmp/${paraid:?}.out" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS",
+    >       "msg": [
+    >         {
+    >           "type": "TEXT",
+    >           "data": "...."
+    >         }
+    >       ]
+    >     }
+    >   }
+
+
+    jq -r '.body.msg[0].data' "/tmp/${paraid:?}.out"
+
+    >   +------------------+------------------+----------+--------------------+--------------------+--------------------+--------------------+-------------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------------+------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+------------------------------+------------------------------+-------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+-------------------------+-------------------------+-------------------------+--------------------------+--------------------------+
+    >   |       solution_id|         source_id|n_transits|          transit_id|      g_transit_time|      g_transit_flux|g_transit_flux_error|g_transit_flux_over_error|       g_transit_mag|     g_transit_n_obs|         bp_obs_time|             bp_flux|       bp_flux_error|  bp_flux_over_error|              bp_mag|         rp_obs_time|             rp_flux|       rp_flux_error|  rp_flux_over_error|              rp_mag|photometry_flag_noisy_data|photometry_flag_sm_unavailable|photometry_flag_af1_unavailable|photometry_flag_af2_unavailable|photometry_flag_af3_unavailable|photometry_flag_af4_unavailable|photometry_flag_af5_unavailable|photometry_flag_af6_unavailable|photometry_flag_af7_unavailable|photometry_flag_af8_unavailable|photometry_flag_af9_unavailable|photometry_flag_bp_unavailable|photometry_flag_rp_unavailable|photometry_flag_sm_reject|photometry_flag_af1_reject|photometry_flag_af2_reject|photometry_flag_af3_reject|photometry_flag_af4_reject|photometry_flag_af5_reject|photometry_flag_af6_reject|photometry_flag_af7_reject|photometry_flag_af8_reject|photometry_flag_af9_reject|photometry_flag_bp_reject|photometry_flag_rp_reject|variability_flag_g_reject|variability_flag_bp_reject|variability_flag_rp_reject|
+    >   +------------------+------------------+----------+--------------------+--------------------+--------------------+--------------------+-------------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------------+------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+------------------------------+------------------------------+-------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+-------------------------+-------------------------+-------------------------+--------------------------+--------------------------+
+    >   |375316653866487564|  3929315256010368|        25|[2355277661721525...|[1822.78727035054...|[7933.34419890842...|[13.5376886573460...|     [586.0191, 644.54...|[15.9387261241789...|[8, 9, 9, 0, 9, 8...|[1822.78761310785...|[3112.19161691588...|[32.0910618485069...|[96.98001, 100.11...|[16.6058763944190...|[1822.78770058101...|[6972.71304594877...|[42.6396475524298...|[163.52652, 162.2...|[15.1393910194578...|      [false, false, fa...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [true, false, fal...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, false, fa...|     [false, false, fa...|     [false, false, fa...|      [false, false, fa...|      [false, false, fa...|
+    >   |375316653866487564| 29202341639591296|        24|[1718816057673475...|[1707.68537381240...|[190.923052837082...|[4.33033360985282...|     [44.089687, 25.76...|[19.9852209418874...|[8, 9, 9, 9, 8, 9...|[1707.68571664553...|[1577.50042806976...|[35.1029420008661...|[44.939266, 9.651...|[17.3436185013821...|[1707.68580406671...|[182.845087314699...|[17.4553875427149...|[10.474995, 6.388...|[19.0926872606586...|      [false, false, fa...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [true, false, fal...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [true, false, fal...|     [false, false, fa...|     [false, false, fa...|      [true, false, fal...|      [false, false, fa...|
+    >   |375316653866487564| 38256068276473984|        35|[1733603856707242...|[1710.35893614492...|[1247.44384312855...|[13.2968899459259...|     [93.814705, 159.4...|[17.9473143574058...|[9, 9, 9, 9, 9, 9...|[1710.35925068184...|[634.942587343646...|[30.1669023398894...|[21.047657, 31.52...|[18.3317060723592...|[1710.35933901407...|[937.801016695465...|[28.2049322320971...|[33.24954, 41.155...|[17.3176187530709...|      [false, false, fa...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, true, tru...|      [false, true, tru...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, false, fa...|     [false, false, tr...|     [false, true, tru...|      [false, false, fa...|      [false, false, tr...|
+    >   |375316653866487564| 47970592808967296|        39|[1918157467525660...|[1743.73654446763...|[108.927554732635...|[5.11062861986756...|     [21.313925, 21.72...|[20.5945224809211...|[9, 8, 8, 9, 9, 9...|[1743.73683794605...|[254.026941467007...|[26.4918701732969...|[9.588864, 3.6218...|[19.3263427676534...|[1743.73692608745...|[60.5017940313270...|[23.7320675281244...|[2.5493689, 4.363...|[20.2934748692195...|      [false, false, fa...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, tr...|           [false, false, fa...|           [false, true, fal...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [true, false, fal...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, tr...|      [false, false, fa...|      [false, false, fa...|     [false, false, fa...|     [false, false, fa...|     [false, false, fa...|      [false, false, fa...|      [false, false, fa...|
+    >   |375316653866487564| 62135571047166336|        35|[1720163072335897...|[1707.92835179691...|[26006.1049695466...|[23.6287028054322...|     [1100.615, 369.75...|[14.6496785891134...|[8, 9, 9, 9, 8, 9...|[1707.92869454122...|[10332.0093099729...|[60.3531282140491...|[171.19261, 206.5...|[15.3030802437080...|[1707.92878240055...|[22388.1491969107...|[76.6149553950875...|[292.21643, 309.2...|[13.8728500200869...|      [false, true, tru...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [true, false, fal...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|     [false, false, fa...|     [false, false, fa...|     [false, true, tru...|      [false, false, fa...|      [false, false, fa...|
+    >   |375316653866487564| 63358331055255424|        31|[1728051410897421...|[1709.35466172400...|[2786.92514370383...|[20.0718090549148...|     [138.84773, 25.98...|[17.0745536075552...|[9, 8, 8, 9, 9, 9...|[1709.35497616612...|[1308.09274703444...|[28.9909318514335...|[45.120754, 56.72...|[17.5469458716959...|[1709.35506492121...|[2279.35697794273...|[31.6447824926569...|[72.02947, 84.783...|[16.3533646340024...|      [false, true, tru...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, true, tru...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, true, tru...|      [false, false, fa...|     [false, false, fa...|     [false, false, fa...|     [false, true, tru...|      [false, false, fa...|      [false, false, fa...|
+    >   |375316653866487564| 68717896188306432|        28|[1835558513965479...|[1728.79864139253...|[163.589190955891...|[8.15650327924250...|     [20.05629, 28.780...|[20.1529803556258...|[8, 9, 8, 9, 9, 9...|[1728.79898413303...|[53.152379117735,...|[16.6013167198594...|[3.2016966, 5.861...|[21.0247354446566...|[1728.79907200493...|[117.054258624694...|[16.9738765112795...|[6.8961415, 7.377...|[19.5769274545018...|      [false, true, fal...|          [true, false, fal...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [true, false, tru...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [true, false, fal...|      [true, false, fal...|      [true, false, fal...|      [true, false, fal...|      [true, false, fal...|      [true, false, fal...|      [true, false, fal...|      [true, false, fal...|      [false, false, fa...|     [false, false, fa...|     [false, false, fa...|     [true, false, fal...|      [false, false, fa...|      [false, false, fa...|
+    >   |375316653866487564| 73203220730178432|        24|[1699476213889611...|[1704.18873786900...|[51494.6296586307...|[73.0708256678242...|     [704.72217, 246.6...|[13.9079620192698...|[8, 5, 9, 9, 9, 8...|[1704.18908071216...|[14696.8108206244...|[69.8801648322037...|[210.31448, NaN, ...|[14.9204844560136...|[1704.18916805794...|[55617.0183755324...|[120.583534108073...|[461.23227, NaN, ...|[12.8848762445161...|      [false, true, fal...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, true, fal...|           [false, true, fal...|           [false, true, fal...|           [true, true, fals...|          [false, true, fal...|          [false, true, fal...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, true, fal...|      [false, true, fal...|      [false, true, fal...|      [false, true, fal...|     [false, true, fal...|     [false, true, fal...|     [false, false, fa...|      [false, true, fal...|      [false, true, fal...|
+    >   |375316653866487564| 74355130959081728|        23|[1707356620483533...|[1705.61357830175...|[280.103161243421...|[4.60757458888548...|     [60.79189, 38.377...|[19.5690718413120...|[9, 9, 9, 8, 9, 8...|[1705.61389313589...|[304.003732945389...|[29.5420616954813...|[10.290539, 813.5...|[19.1313449246404...|[1705.61397985172...|[130291.098166645...|[300.278439931095...|[433.90094, 11.08...|[11.9606086397160...|      [false, false, tr...|          [false, false, tr...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, tr...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, true, fal...|     [true, false, fal...|     [false, false, fa...|      [false, true, fal...|      [true, false, fal...|
+    >   |375316653866487564| 77158400278391680|        25|[1699056763523981...|[1704.11278737726...|[306.750923711309...|[8.40506700227755...|     [36.495953, 56.22...|[19.4704021691030...|[8, 9, 9, 8, 9, 8...|[1704.11313016731...|[92.5132926305424...|[27.4729476208200...|[3.3674324, 10.36...|[20.4230318704001...|[1704.11321780877...|[73.5434836729273...|[27.3368091968743...|[2.690273, 16.238...|[20.0815350059893...|      [false, false, fa...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [true, false, fal...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [true, false, fal...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, false, fa...|     [false, false, fa...|     [false, false, fa...|      [false, false, fa...|      [false, false, fa...|
+    >   |375316653866487564| 78345842771704448|        26|[1694902962632305...|[1703.36166852486...|[259.441071545197...|[3.98644298460959...|     [65.08084, 43.934...|[19.6522700435693...|[9, 9, 8, 9, 9, 9...|[1703.36198339675...|[179.243663097417...|[28.6616766847191...|[6.2537746, 1.406...|[19.7049326889153...|[1703.36206989022...|[187.662945127823...|[27.8830579267326...|[6.730357, 10.339...|[19.0644491818175...|      [false, false, fa...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, tr...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, false, fa...|     [false, false, fa...|     [false, false, fa...|      [false, true, fal...|      [false, false, fa...|
+    >   |375316653866487564| 80556440963848832|        23|[1700424668783187...|[1704.35999132273...|[296.879409046746...|[8.73331337685382...|     [33.993904, 37.38...|[19.5059166749136...|[9, 9, 7, 9, 9, 9...|[1704.36028482815...|[178.528716216762...|[39.5735557583123...|[4.5113134, 6.601...|[19.7092720107353...|[1704.36037280656...|[280.371012667630...|[27.7923605443999...|[10.08806, 12.085...|[18.6285627255041...|      [false, false, fa...|          [false, false, fa...|           [false, false, fa...|           [false, false, tr...|           [false, false, tr...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [true, false, tru...|      [false, false, tr...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, false, fa...|     [false, false, fa...|     [false, false, fa...|      [false, false, fa...|      [false, false, tr...|
+    >   |375316653866487564| 81663924050698752|        15|[3398188547667744...|[2011.38586954283...|[89.6172927594920...|[4.42559479109650...|     [20.249773, 11.46...|[20.8063873165222...|[9, 9, 9, 8, 8, 9...|[2011.38618454504...|[74.1128725014198...|[17.1857644703011...|[4.312457, 6.0876...|[20.6638081003427...|[2011.38627032566...|[86.7060134886959...|[27.5059449798311...|[3.1522646, 5.990...|[19.9027724537042...|      [false, false, fa...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, false, fa...|     [false, false, fa...|     [false, false, fa...|      [false, false, fa...|      [false, false, fa...|
+    >   |375316653866487564| 94536422073390720|        24|[1693495524158271...|[1703.10688986559...|[192.091356705468...|[5.16961127618404...|     [37.157795, 19.45...|[19.9785973073163...|[9, 9, 8, 9, 9, 9...|[1703.10720461068...|[149.461103476196...|[37.8390070086468...|[3.9499214, 753.1...|[19.9022217549417...|[1703.10729183619...|[310.389464422741...|[30.2892890879058...|[10.247499, 4.586...|[18.5181280723046...|      [false, false, fa...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, tr...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, tr...|          [false, false, tr...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, tr...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, true, tru...|     [false, false, tr...|     [false, false, fa...|      [false, true, tru...|      [false, false, tr...|
+    >   |375316653866487564| 97148075722340864|        23|[1689350189744963...|[1702.35739022534...|[163698.043946263...|[113.422604491534...|     [1443.2577, 1494....|[12.6522581420813...|[9, 9, 9, 9, 9, 9...|[1702.35770510091...|[89778.6378103010...|[168.494609478091...|[532.82794, 538.3...|[12.9556096866229...|[1702.35779157484...|[105396.192141884...|[165.738795162660...|[635.9175, 660.78...|[12.1908331998086...|      [false, false, tr...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, false, fa...|     [false, false, fa...|     [false, false, fa...|      [false, false, fa...|      [false, false, fa...|
+    >   |375316653866487564|103213183724679680|        19|[1702182082122192...|[1704.67722020165...|[1980.83344075344...|[9.66887526139775...|     [204.867, 100.284...|[17.4452469689749...|[9, 9, 9, 9, 9, 9...|[1704.67753497633...|[757.218678340697...|[24.4753625347042...|[30.937996, 45.70...|[18.1404889203432...|[1704.67762204950...|[1640.00411129604...|[25.9719039869177...|[63.145317, 76.41...|[16.7107831592199...|      [false, true, tru...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, false, fa...|     [false, true, fal...|     [false, false, fa...|      [false, false, fa...|      [false, false, fa...|
+    >   |375316653866487564|103425458188339328|        21|[1699416696400752...|[1704.17721994974...|[326.230593910596...|[7.68030595431413...|     [42.47625, 32.853...|[19.4035551501607...|[9, 9, 9, 8, 9, 9...|[NaN, 1825.553597...|[NaN, 236.1502144...|[NaN, 16.78666811...|[NaN, 14.067724, ...|[NaN, 19.40557135...|[NaN, 1825.553686...|[NaN, 223.8753351...|[NaN, 16.18122414...|[NaN, 13.835501, ...|[NaN, 18.87287987...|      [false, true, fal...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [true, false, fal...|     [true, false, tru...|     [false, false, fa...|      [true, false, fal...|      [true, false, fal...|
+    >   |375316653866487564|103518263841726848|        17|[2483928685543853...|[1846.05083797939...|[128.325833412367...|[5.19230890745755...|     [24.7146, 31.4040...|[20.4165816333848...|[9, 9, 9, 9, 9, 9...|[1846.05115292273...|[31.8039140259567...|[21.0839094778998...|[1.5084448, 5.388...|[21.5823407888494...|[1846.05123856818...|[17.1583338341031...|[25.7574468337438...|[0.6661504, 8.945...|[21.6617077180411...|      [false, false, fa...|          [false, true, tru...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, false, fa...|     [false, false, tr...|     [false, false, fa...|      [false, false, fa...|      [false, false, tr...|
+    >   |375316653866487564|107986167995817600|        23|[1696231061062509...|[1703.60107126301...|[47452.9956484485...|[48.8242205075082...|     [971.91504, 655.0...|[13.9967077818108...|[9, 9, 9, 9, 9, 9...|[1703.60138616564...|[18010.8066122510...|[75.5589462642206...|[238.36763, 243.1...|[14.6997093080676...|[1703.60147248297...|[42059.9182456152...|[106.396755695245...|[395.31204, 417.0...|[13.1882244406873...|      [false, true, fal...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, true, fal...|     [false, false, fa...|     [false, false, fa...|      [false, true, fal...|      [false, false, fa...|
+    >   |375316653866487564|113459498223697536|        20|[2376495957901038...|[1826.62441830971...|[148.814076193611...|[5.97240293854263...|     [24.916952, 79.58...|[20.2557568353333...|[9, 9, 9, 9, 8, 9...|[1826.62473257627...|[41.0301788301640...|[15.4469057666939...|[2.656207, 2.4190...|[21.3057836911851...|[1826.62482177186...|[75.2274737977469...|[15.7500209100052...|[4.7763414, 3.644...|[20.0569543059353...|      [false, false, fa...|          [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|           [false, false, fa...|          [false, false, fa...|          [false, false, fa...|     [true, true, true...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|      [false, false, fa...|     [false, false, tr...|     [false, false, fa...|     [false, false, fa...|      [false, false, tr...|      [false, false, fa...|
+    >   +------------------+------------------+----------+--------------------+--------------------+--------------------+--------------------+-------------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------+--------------------------+------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+-------------------------------+------------------------------+------------------------------+-------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+--------------------------+-------------------------+-------------------------+-------------------------+--------------------------+--------------------------+
+    >   only showing top 20 rows
+
+
+
+# -----------------------------------------------------
+# Putting it all together ...
+#[root@ansibler]
+
+cat << 'EOF' | yq -o json '.' | tee "/tmp/albert.json"
+title: "List the first n rows of 'epoch_photometry'"
+text:  |
+  %pyspark
+  import gaiadmpsetup
+
+  df = spark.sql(
+      "select * from gaiadr3.epoch_photometry"
+      )
+
+  df.limit(2).toJSON().collect()
+EOF
+
+    >   {
+    >     "title": "List the first n rows of 'epoch_photometry'",
+    >     "text": "%pyspark\nimport gaiadmpsetup\n\ndf = spark.sql(\n    \"select * from gaiadr3.epoch_photometry\"\n    )\n\ndf.limit(10).toJSON().collect()\n"
+    >   }
+
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${zepcookies:?}" \
+        --data "@/tmp/albert.json" \
+        "${zeppelinurl:?}/api/notebook/${noteid:?}/paragraph" \
+    | tee "/tmp/albert.out" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "message": "",
+    >     "body": "paragraph_1676077018783_1724014022"
+    >   }
+
+
+    paraid=$(
+        jq -r '.body' "/tmp/albert.out"
+        )
+
+    curl \
+        --silent \
+        --request POST \
+        --cookie "${zepcookies:?}" \
+        "${zeppelinurl:?}/api/notebook/run/${noteid:?}/${paraid:?}" \
+    | tee "/tmp/${paraid:?}.out" \
+    | jq '.'
+
+    >   {
+    >     "status": "OK",
+    >     "body": {
+    >       "code": "SUCCESS",
+    >       "msg": [
+    >         {
+    >           "type": "TEXT",
+    >           "data": "['{ .... }']\n"
+    >         }
+    >       ]
+    >     }
+    >   }
+
+
+    jq -r '.body.msg[0].data' "/tmp/${paraid:?}.out"
+
+    #
+    # Manually tuncated to 2 rows in each array.
+    #
+
+    >   [
+    >       '{
+    >       "solution_id":375316653866487564,
+    >       "source_id":1487261275375488,
+    >       "n_transits":26,
+    >       "transit_id":[
+    >           17230111572932344,
+    >           67686521680041900
+    >           ],
+    >       "g_transit_time":[
+    >           1708.4445801673573,
+    >           2620.9168177350125
+    >           ],
+    >       "g_transit_flux":[
+    >           558.0536905528812,
+    >           585.8683614420412
+    >           ],
+    >       "g_transit_flux_error":[
+    >           5.913588114594945,
+    >           5.542510024913727
+    >           ],
+    >       "g_transit_flux_over_error":[
+    >           94.368034,
+    >           105.70452
+    >           ],
+    >       "g_transit_mag":[
+    >           18.82067690560269,
+    >           18.767866753297],
+    >       "g_transit_n_obs":[
+    >           9,
+    >           4
+    >           ]
+    >       }',
+    >       '{
+    >       "solution_id":375316653866487564,
+    >       "source_id":17731484719298304,
+    >       "n_transits":26,
+    >       "transit_id":[
+    >           17271070957154875,
+    >           67912017643741746
+    >           ],
+    >       "g_transit_time":[
+    >           1709.1843948623493,
+    >           2624.9954973656513
+    >           ],
+    >       "g_transit_flux":[
+    >           3005.666033863127,
+    >           2984.353286472621
+    >           ],
+    >       "g_transit_flux_error":[
+    >           17.360579513439934,
+    >           10.90104424584476
+    >           ],
+    >       "g_transit_flux_over_error":[
+    >           173.13167,
+    >           273.76764
+    >           ],
+    >       "g_transit_mag":[
+    >           16.992515058254646,
+    >           17.000241283455715
+    >           ],
+    >       "g_transit_n_obs":[
+    >           9,
+    >           9
+    >           ]
+    >       }'
+    >   ]
+
+
+cat > /tmp/finchley.json << 'EOF'
+[
+    '{"xxx":1234,"yyy":1.23,"zzz":true}',
+    '{"xxx":1234,"yyy":1.23,"zzz":true}'
+]
+EOF
+
+    cat /tmp/finchley.json \
+    | sed -r '
+        s/"/\\"/g
+        ' \
+    | sed "
+        s/'/\"/g
+        " \
+    | jq -r '[.[] | fromjson]'
+
+    >   [
+    >     {
+    >       "xxx": 1234,
+    >       "yyy": 1.23,
+    >       "zzz": true
+    >     },
+    >     {
+    >       "xxx": 1234,
+    >       "yyy": 1.23,
+    >       "zzz": true
+    >     }
+    >   ]
+
+
+    jq -r '.body.msg[0].data' "/tmp/${paraid:?}.out" \
+    | sed -r '
+        s/"/\\"/g
+        ' \
+    | sed "
+        s/'/\"/g
+        " \
+    | jq -r '[.[] | fromjson]'
+
+    #
+    # Manually tuncated to 2 rows in each array.
+    #
+
+    >   [
+    >     {
+    >       "solution_id": 375316653866487564,
+    >       "source_id": 1487261275375488,
+    >       "n_transits": 26,
+    >       "transit_id": [
+    >         17230111572932344,
+    >         67686521680041900
+    >       ],
+    >       "g_transit_time": [
+    >         1708.4445801673573,
+    >         2620.9168177350125
+    >       ],
+    >       "g_transit_flux": [
+    >         558.0536905528812,
+    >         585.8683614420412
+    >       ],
+    >       "g_transit_flux_error": [
+    >         5.913588114594945,
+    >         5.542510024913727
+    >       ],
+    >       "g_transit_flux_over_error": [
+    >         94.368034,
+    >         105.70452
+    >       ],
+    >       "g_transit_mag": [
+    >         18.82067690560269,
+    >         18.767866753297
+    >       ],
+    >       "g_transit_n_obs": [
+    >         9,
+    >         4
+    >       ],
+    >       "bp_obs_time": [
+    >         1708.4448950226779,
+    >         "NaN"
+    >       ],
+    >       "bp_flux": [
+    >         235.38690533244554,
+    >         "NaN"
+    >       ],
+    >       "bp_flux_error": [
+    >         23.5922436854532,
+    >         "NaN"
+    >       ],
+    >       "bp_flux_over_error": [
+    >         9.977301,
+    >         "NaN"
+    >       ],
+    >       "bp_mag": [
+    >         19.409086467787635,
+    >         "NaN"
+    >       ],
+    >       "rp_obs_time": [
+    >         1708.444981635656,
+    >         "NaN"
+    >       ],
+    >       "rp_flux": [
+    >         392.5704467619335,
+    >         "NaN"
+    >       ],
+    >       "rp_flux_error": [
+    >         18.17408338747999,
+    >         "NaN"
+    >       ],
+    >       "rp_flux_over_error": [
+    >         21.600563,
+    >         "NaN"
+    >       ],
+    >       "rp_mag": [
+    >         18.263101495618926,
+    >         "NaN"
+    >       ],
+    >       "photometry_flag_noisy_data": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_sm_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af1_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af2_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af3_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af4_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af5_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af6_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af7_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af8_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af9_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_bp_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_rp_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_sm_reject": [
+    >         true,
+    >         null
+    >       ],
+    >       "photometry_flag_af1_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af2_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af3_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af4_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af5_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af6_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af7_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af8_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af9_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_bp_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_rp_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "variability_flag_g_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "variability_flag_bp_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "variability_flag_rp_reject": [
+    >         false,
+    >         null
+    >       ]
+    >     },
+    >     {
+    >       "solution_id": 375316653866487564,
+    >       "source_id": 17731484719298304,
+    >       "n_transits": 26,
+    >       "transit_id": [
+    >         17271070957154875,
+    >         67912017643741746
+    >       ],
+    >       "g_transit_time": [
+    >         1709.1843948623493,
+    >         2624.9954973656513
+    >       ],
+    >       "g_transit_flux": [
+    >         3005.666033863127,
+    >         2984.353286472621
+    >       ],
+    >       "g_transit_flux_error": [
+    >         17.360579513439934,
+    >         10.90104424584476
+    >       ],
+    >       "g_transit_flux_over_error": [
+    >         173.13167,
+    >         273.76764
+    >       ],
+    >       "g_transit_mag": [
+    >         16.992515058254646,
+    >         17.000241283455715
+    >       ],
+    >       "g_transit_n_obs": [
+    >         9,
+    >         9
+    >       ],
+    >       "bp_obs_time": [
+    >         1709.1847096394329,
+    >         2624.9958122716
+    >       ],
+    >       "bp_flux": [
+    >         1094.8231389567234,
+    >         1288.5603995512072
+    >       ],
+    >       "bp_flux_error": [
+    >         27.535414527888452,
+    >         24.380700962328767
+    >       ],
+    >       "bp_flux_over_error": [
+    >         39.760548,
+    >         52.851654
+    >       ],
+    >       "bp_mag": [
+    >         17.740182296804285,
+    >         17.563280264949924
+    >       ],
+    >       "rp_obs_time": [
+    >         1709.1847967047563,
+    >         2624.9958985300264
+    >       ],
+    >       "rp_flux": [
+    >         2593.0633702652513,
+    >         2562.913549944501
+    >       ],
+    >       "rp_flux_error": [
+    >         30.29752635901747,
+    >         30.33943036836236
+    >       ],
+    >       "rp_flux_over_error": [
+    >         85.58664,
+    >         84.47468
+    >       ],
+    >       "rp_mag": [
+    >         16.213362675274237,
+    >         16.2260606082216
+    >       ],
+    >       "photometry_flag_noisy_data": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_sm_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af1_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af2_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af3_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af4_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af5_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af6_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af7_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af8_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af9_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_bp_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_rp_unavailable": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_sm_reject": [
+    >         true,
+    >         null
+    >       ],
+    >       "photometry_flag_af1_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af2_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af3_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af4_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af5_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af6_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af7_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af8_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_af9_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_bp_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "photometry_flag_rp_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "variability_flag_g_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "variability_flag_bp_reject": [
+    >         false,
+    >         null
+    >       ],
+    >       "variability_flag_rp_reject": [
+    >         false,
+    >         null
+    >       ]
+    >     }
+    >   ]
+
+    #
+    # Proof of conceopt.
+    # We can create a notebook, add, and execute pyspark code on the fly.
+    #
+
+

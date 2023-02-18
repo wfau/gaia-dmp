@@ -1,0 +1,381 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Run a test deploy with the customized Zeppelin build & benchmark / validate it
+
+    Result:
+  
+        Success
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    # Use Red for deploy
+    
+    source "${HOME:?}/aglais.env"
+
+    agcolour=green
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+        > 
+        
+	aglais:
+	  status:
+	    deployment:
+	      type: hadoop-yarn
+	      conf: zeppelin-54.86-spark-6.26.43
+	      name: iris-gaia-green-20230217
+	      date: 20230217T190558
+	      hostname: zeppelin.gaia-dmp.uk
+	  spec:
+	    openstack:
+	      cloud:
+		base: arcus
+		name: iris-gaia-green
+
+	real	55m3.112s
+	user	11m14.932s
+	sys	3m16.101s
+
+
+# -----------------------------------------------------
+# Start NGINX    
+#[root@ansibler]
+
+    source /deployments/hadoop-yarn/bin/start-nginx.sh 
+
+    > Done	
+
+	
+# -----------------------------------------------------
+# Create users    
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-test-users
+    
+    # Note: I modified the configuration for the test users, altering their names, incase we still had the Ceph mount issues
+    # Todo: check if issue still exists
+
+    > Done
+   
+    
+    
+
+# -----------------------------------------------------
+# Create our benchmark script.
+#[root@ansibler]
+
+cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print("{")
+print(
+"""
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }},
+\"output\":
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+print("---start---")
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint,
+    False
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+print("---end---")
+print("}")
+EOF
+
+    chmod 'a+x' /tmp/run-benchmark.py
+
+	
+	
+	
+# -----------------------------------------------------
+# Run one full test as a single user
+#[root@ansibler]
+
+    usercount=1
+
+    endpoint="http://iris-gaia-green.gaia-dmp.uk"
+    testconfig=/deployments/zeppelin/test/config/basic.json
+    testusers=/tmp/test-users.json
+
+    delaystart=2
+    delaynotebook=3
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+   
+ [
+ 	[{
+ 		"name": "GaiaDMPSetup",
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"messages": [],
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "4.28",
+ 			"expected": "45.00",
+ 			"percent": "-90.50",
+ 			"start": "2023-02-18T10:47:17.777989",
+ 			"finish": "2023-02-18T10:47:22.053123"
+ 		},
+ 		"logs": ""
+ 	}, {
+ 		"name": "Mean_proper_motions_over_the_sky",
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"messages": [],
+ 		"time": {
+ 			"result": "SLOW",
+ 			"elapsed": "71.99",
+ 			"expected": "55.00",
+ 			"percent": "30.89",
+ 			"start": "2023-02-18T10:47:25.054852",
+ 			"finish": "2023-02-18T10:48:37.042100"
+ 		},
+ 		"logs": ""
+ 	}, {
+ 		"name": "Source_counts_over_the_sky.json",
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"messages": [],
+ 		"time": {
+ 			"result": "SLOW",
+ 			"elapsed": "31.16",
+ 			"expected": "22.00",
+ 			"percent": "41.62",
+ 			"start": "2023-02-18T10:48:40.045695",
+ 			"finish": "2023-02-18T10:49:11.201628"
+ 		},
+ 		"logs": ""
+ 	}, {
+ 		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"messages": [],
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "451.60",
+ 			"expected": "500.00",
+ 			"percent": "-9.68",
+ 			"start": "2023-02-18T10:49:14.206358",
+ 			"finish": "2023-02-18T10:56:45.802241"
+ 		},
+ 		"logs": ""
+ 	}, {
+ 		"name": "Working_with_cross_matched_surveys",
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"messages": [],
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "102.60",
+ 			"expected": "130.00",
+ 			"percent": "-21.08",
+ 			"start": "2023-02-18T10:56:48.805709",
+ 			"finish": "2023-02-18T10:58:31.405614"
+ 		},
+ 		"logs": ""
+ 	}, {
+ 		"name": "Working_with_Gaia_XP_spectra.json",
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"messages": [],
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "10.89",
+ 			"expected": "1800.00",
+ 			"percent": "-99.40",
+ 			"start": "2023-02-18T10:58:34.409364",
+ 			"finish": "2023-02-18T10:58:45.296729"
+ 		},
+ 		"logs": ""
+ 	}, {
+ 		"name": "Library_Validation.json",
+ 		"result": "PASS",
+ 		"outputs": {
+ 			"valid": true
+ 		},
+ 		"messages": [],
+ 		"time": {
+ 			"result": "FAST",
+ 			"elapsed": "7.22",
+ 			"expected": "60.00",
+ 			"percent": "-87.97",
+ 			"start": "2023-02-18T10:58:48.300523",
+ 			"finish": "2023-02-18T10:58:55.518448"
+ 		},
+ 		"logs": ""
+ 	}]
+ ]
+
+
+
+# -----------------------------------------------------
+# Some manual validation 
+# user@firefox
+
+# Login / Logout [Success]
+# Validate main page content [Success]
+# Check version (About Zeppelin) [Success]
+# Check Job Tab [Success]
+# Manually create / run notebook [Success]
+# Check Matplotlib Plots (from example notebooks) [Success]
+# Validate interpreter restart [Success]
+
+
+# -----------------------------------------------------
+# Run UI automated test with Selenium
+
+..
+
+# -----------------------------------------------------
+# Install virtualenv, if not available
+# user@dekstop
+
+pip install virtualenv
+
+
+
+# -----------------------------------------------------
+# Create and Activate virtualenv
+# user@dekstop
+
+virtualenv myenv
+
+> created virtual environment CPython3.8.10.final.0-64 in 203ms
+  creator CPython3Posix(dest=/home/stelios/projects/test/temp/gaiadmp-ui-testing/myenv, clear=False, no_vcs_ignore=False, global=False)
+  seeder FromAppData(download=False, pip=bundle, setuptools=bundle, wheel=bundle, via=copy, app_data_dir=/home/stelios/.local/share/virtualenv)
+    added seed packages: pip==22.3.1, setuptools==66.1.1, wheel==0.38.4
+  activators BashActivator,CShellActivator,FishActivator,NushellActivator,PowerShellActivator,PythonActivator
+
+
+source myenv/bin/activate
+
+
+
+# -----------------------------------------------------
+# Modify settings.py, set username, password and url
+# user@dekstop
+
+..
+
+
+# -----------------------------------------------------
+# Run test
+# user@dekstop
+
+pytest
+====================================================================================== 1 passed in 627.86s (0:10:27) ======================================================================================
+

@@ -52,7 +52,6 @@
 
 
     live_hostname=$(ssh  -o "StrictHostKeyChecking no" fedora@live.gaia-dmp.uk 'hostname')
-    live_hostname="iris-gaia-green-232032"
 
     if [[ "$live_hostname" == *"$cloudname"* ]]; then
         read -p "You are deleting the current live system!! Do you want to proceed? (y/N) " -n 1 -r

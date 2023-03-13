@@ -1,0 +1,250 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Figuring out how to solve issue #838
+        https://github.com/wfau/gaia-dmp/issues/838
+
+        Learning how DuckDNS works
+        https://www.duckdns.org/
+
+        Learning about the letsencrypt ACME challenge
+        https://letsencrypt.org/docs/challenge-types/#dns-01-challenge
+
+    Result:
+
+        Work in progress ....
+
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Mon 13 Mar 16:57:37 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+    #
+    # That uses an indirection via DuckDNS to get the IP address of the live service.
+    #
+
+    host live.gaia-dmp.uk
+
+    >   live.gaia-dmp.uk is an alias for aglais-live.duckdns.org.
+    >   aglais-live.duckdns.org has address 128.232.222.224
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting blue for testing.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+# --------------------------------------------
+# See if we can create a TXT record to our live entry.
+#
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    ducktoken=$(getsecret 'devops.duckdns.token')
+
+    duckname=aglais-live
+    ducktext=challenge-key
+
+    #
+    # Check the IP address before we change anything.
+
+    host -a "${duckname}.duckdns.org"
+
+    >   ;; ANSWER SECTION:
+    >   aglais-live.duckdns.org. 60	IN	A	128.232.222.224
+
+
+    #
+    # Add a txt record to the DuckDNS record.
+    # https://www.reddit.com/r/letsencrypt/comments/65ravi/comment/dgmxvgf/?utm_source=share&utm_medium=web2x&context=3
+
+    curl "https://www.duckdns.org/update?domains=${duckname:?}&token=${ducktoken:?}&txt=${ducktext:?}"
+
+    >   OK
+
+
+    #
+    # Check the IP address still works.
+
+    host -a "${duckname}.duckdns.org"
+
+    >   ;; ANSWER SECTION:
+    >   aglais-live.duckdns.org. 60	IN	A	128.232.222.224
+
+
+    #
+    # Check the TXT record is in place.
+
+    host -t txt "${duckname}.duckdns.org"
+
+    >   aglais-live.duckdns.org descriptive text "challenge-key"
+
+
+    #
+    # Check the _acme-challenege record works.
+
+    dig "_acme-challenege.${duckname}.duckdns.org" TXT
+
+    >   ;; ANSWER SECTION:
+    >   _acme-challenege.aglais-live.duckdns.org. 60 IN	TXT "challenge-key"
+
+
+    #
+    # Looks like DuckDNS are doing some extra steps to generate
+    # the '_acme-challenege' record on the fly.
+    #
+
+    #
+    # Typo in the name is from the original Reddit thread.
+    # https://www.reddit.com/r/letsencrypt/comments/65ravi/comment/dgmxvgf/?utm_source=share&utm_medium=web2x&context=3
+    #
+
+    #
+    # Is the name irrelevant ?
+
+    dig "${duckname}.duckdns.org" TXT
+
+    >   ;; ANSWER SECTION:
+    >   aglais-live.duckdns.org. 60	IN	TXT	"challenge-key"
+
+
+    dig "anything-you-like.${duckname}.duckdns.org" TXT
+
+    >   ;; ANSWER SECTION:
+    >   anything-you-like.aglais-live.duckdns.org. 60 IN TXT "challenge-key"
+
+
+    dig "${duckname}.duckdns.org"
+
+    >   ;; ANSWER SECTION:
+    >   aglais-live.duckdns.org. 60	IN	A	128.232.222.224
+
+
+    dig "anything-you-like.${duckname}.duckdns.org"
+
+    >   ;; ANSWER SECTION:
+    >   anything-you-like.aglais-live.duckdns.org. 4 IN	A 128.232.222.224
+
+
+    #
+    # Yep, DuckDNS is truncating and ignoring anything outside the simple name.
+    #
+
+    aglais-live.duckdns.org
+    frog.aglais-live.duckdns.org
+    supercalifragilisticexpialidocious.aglais-live.duckdns.org
+
+    #
+    # These are all the same DuckDNS 'element', which has an A record IP address and a TXT record associated with it.
+    #
+
+
+# --------------------------------------------
+# Putting it together.
+#
+
+    #
+    # We create a CNAME record in LCN that re-directs requests for the ACME challenge record in 'gaia-dmp.uk' to our 'aglais-live' DuckDNS record.
+    # (*) ideally we would use a separate DuckDNS entry for this, but we are only allowed 5 records in DuckDNS
+    # so we are using 'aglais-live' for both the live IP address and the ACME challenge.
+    #
+
+    dig "_acme-challenge.gaia-dmp.uk" TXT
+
+    >   ;; ANSWER SECTION:
+    >   _acme-challenge.gaia-dmp.uk. 600 IN	CNAME	aglais-live.duckdns.org.
+    >   aglais-live.duckdns.org. 60	IN	TXT	"challenge-key"
+
+    #
+    # We can use the DuckDNS web service API to update the challenge value.
+    # https://www.reddit.com/r/letsencrypt/comments/65ravi/comment/dgmxvgf/?utm_source=share&utm_medium=web2x&context=3
+    #
+
+    ducktoken=$(getsecret 'devops.duckdns.token')
+    duckname=aglais-live
+    ducktext=updated-key
+
+    curl "https://www.duckdns.org/update?domains=${duckname:?}&token=${ducktoken:?}&txt=${ducktext:?}"
+
+    >   OK
+
+
+    dig "_acme-challenge.gaia-dmp.uk" TXT
+
+    >   ;; ANSWER SECTION:
+    >   _acme-challenge.gaia-dmp.uk. 393 IN	CNAME	aglais-live.duckdns.org.
+    >   aglais-live.duckdns.org. 60	IN	TXT	"updated-key"
+
+
+
+
+
+
+
+
+

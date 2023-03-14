@@ -1,0 +1,408 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+    Target:
+
+        Test deployment on blue
+       
+
+    Result:
+
+        Success.
+        New test deployment passes tests.
+
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+  
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+        
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+        
+	> 
+		
+	aglais:
+	  status:
+	    deployment:
+	      type: hadoop-yarn
+	      conf: zeppelin-54.86-spark-6.26.43
+	      name: iris-gaia-blue-20230314
+	      date: 20230314T143825
+	      hostname: zeppelin.gaia-dmp.uk
+	  spec:
+	    openstack:
+	      cloud:
+		base: arcus
+		name: iris-gaia-blue
+
+	real	65m56.552s
+	user	7m57.821s
+	sys	2m10.439s
+
+
+			
+# -----------------------------------------------------
+# Copy certificates from data server.
+#[root@ansibler]        
+  scp -r fedora@data.gaia-dmp.uk:/home/fedora/certs/20230314/ /root/certs/
+   > certs.tar.gz                                                 100%   22KB 112.1KB/s   00:00    
+
+
+
+# -----------------------------------------------------
+# Enable HTTPS
+#[root@ansibler]
+	
+    /deployments/hadoop-yarn/bin/setup-ssl.sh \
+        "${cloudname:?}" \
+        "${configname:?}" \
+    | tee /tmp/setup-ssl.log
+
+
+	> 
+	
+	PLAY RECAP *********************************************************************
+	zeppelin                   : ok=7    changed=4    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+
+
+
+# -----------------------------------------------------
+# Test the HTTPS endpoint using firefox.
+#[user@desktop]
+
+
+    firefox \
+        --new-window \
+        'https://iris-gaia-blue.gaia-dmp.uk/'
+
+        # Success
+        
+# -----------------------------------------------------
+# Test the HTTP endpoint using firefox.
+#[user@desktop]
+ 
+ 
+     firefox \
+        --new-window \
+        'https://iris-gaia-blue.gaia-dmp.uk/'
+
+        # Success / Redirected to HTTPS page
+        
+
+# -----------------------------------------------------
+# Get the public IP address of our Zeppelin node.
+#[root@ansibler]
+
+
+    deployname=$(
+        yq eval \
+            '.aglais.status.deployment.name' \
+            '/opt/aglais/aglais-status.yml'
+        )
+
+    zeppelinid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | select(.Name == "'${deployname:?}'-zeppelin") | .ID'
+        )
+
+    zeppelinip=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server show \
+                --format json \
+                "${zeppelinid:?}" \
+        | jq -r ".addresses | .\"${deployname}-internal-network\" | .[1]"
+        )
+
+cat << EOF
+Zeppelin ID [${zeppelinid:?}]
+Zeppelin IP [${zeppelinip:?}]
+EOF
+
+
+
+# ------------------------------------------------------------------------
+# Test that we can access the page using any of the other domains as well
+# Update the dns entry for iris-gaia-red.gaia-dmp.uk
+# iris-gaia-red.gaia-dmp.uk -> 128.232.227.160
+
+    ducktoken=$(getsecret 'devops.duckdns.token')
+    duckname=iris-gaia-red
+
+    curl "https://www.duckdns.org/update/${duckname:?}/${ducktoken:?}/${zeppelinip:?}"     
+   
+    > OK
+
+
+# -----------------------------------------------------
+# Test the HTTP endpoint using firefox.
+#[user@desktop]
+ 
+ 
+     firefox \
+        --new-window \
+        'https://iris-gaia-red.gaia-dmp.uk/'
+
+        # Success 
+        
+        
+# ------------------------------------------------------------------------
+# Ok it works, now set it back to what it was
+
+    ducktoken=$(getsecret 'devops.duckdns.token')
+    duckname=iris-gaia-red
+    zeppelinip=128.232.222.163
+    curl "https://www.duckdns.org/update/${duckname:?}/${ducktoken:?}/${zeppelinip:?}"     
+   
+
+# -----------------------------------------------------
+# Create our benchmark script.
+#[root@ansibler]
+
+cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print("{")
+print(
+"""
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }},
+\"output\":
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+print("---start---")
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+print("---end---")
+print("}")
+EOF
+
+chmod 'a+x' /tmp/run-benchmark.py            
+
+
+
+# -----------------------------------------------------
+# Create test user config
+#[root@ansibler]
+
+# First, edit local ../common/users/test-users.yml  configuration to only create 1 user (Reyesfan1)
+    
+source /deployments/zeppelin/bin/create-user-tools.sh
+
+import-test-users
+
+	
+# -----------------------------------------------------
+# Run one quick test as a single user
+#[root@ansibler]
+
+    usercount=1
+
+    endpoint="https://iris-gaia-blue.gaia-dmp.uk"
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/test-users.json
+
+    delaystart=2
+    delaynotebook=2
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+
+
+[
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "40.32",
+			"expected": "45.00",
+			"percent": "-10.41",
+			"start": "2023-03-14T16:32:57.591124",
+			"finish": "2023-03-14T16:33:37.907845"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "123.36",
+			"expected": "55.00",
+			"percent": "124.29",
+			"start": "2023-03-14T16:33:39.910120",
+			"finish": "2023-03-14T16:35:43.266972"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "51.73",
+			"expected": "35.00",
+			"percent": "47.80",
+			"start": "2023-03-14T16:35:45.269285",
+			"finish": "2023-03-14T16:36:36.999958"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "11.30",
+			"expected": "10.00",
+			"percent": "12.99",
+			"start": "2023-03-14T16:36:39.002071",
+			"finish": "2023-03-14T16:36:50.301215"
+		},
+		"logs": ""
+	}]
+]
+
+# Success
+
+
+# -------------------------------
+# Try to renew the certificate
+# fedora@zeppelin
+
+sudo certbot renew --dry-run
+
+Challenge failed for domain dmp.gaia.ac.uk
+http-01 challenge for dmp.gaia.ac.uk
+Cleaning up challenges
+Attempting to renew cert (dmp.gaia.ac.uk) from /etc/letsencrypt/renewal/dmp.gaia.ac.uk.conf produced an unexpected error: Some challenges have failed.. Skipping.
+
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Processing /etc/letsencrypt/renewal/gaia-dmp.uk.conf
+- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+Cert not due for renewal, but simulating renewal for dry run
+Could not choose appropriate plugin: The manual plugin is not working; there may be problems with your existing configuration.
+The error was: PluginError('An authentication script must be provided with --manual-auth-hook when using the manual plugin non-interactively.')
+Attempting to renew cert (gaia-dmp.uk) from /etc/letsencrypt/renewal/gaia-dmp.uk.conf produced an unexpected error: The manual plugin is not working; there may be problems with your existing configuration.
+The error was: PluginError('An authentication script must be provided with --manual-auth-hook when using the manual plugin non-interactively.'). Skipping.
+All renewal attempts failed. The following certs could not be renewed:
+  /etc/letsencrypt/live/dmp.gaia.ac.uk/fullchain.pem (failure)
+  /etc/letsencrypt/live/gaia-dmp.uk/fullchain.pem (failure)
+
+
+
+

@@ -35,11 +35,11 @@ while read -r rule; do
   done
   if [[ "$ip_protocol" == "tcp" && "$allowed" == false && "$remote_group" == "null" ]]; then
     echo "ERROR: Security group rule $rule allows ports other than $allowed_ports"
-    exit 
+    return -1
   fi
 done <<< "$rules"
 
 echo "Security group for server $server_name is correctly configured"
 
-exit 0
+return 1
 

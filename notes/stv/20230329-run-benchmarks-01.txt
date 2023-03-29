@@ -1,0 +1,562 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Test deployment for running benchmarks, using tagged version
+
+    Result:
+
+        Success.
+        New deployment passes benchmarks. Updated benchmark timings based on latest version.
+
+
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+        
+	> iris-gaia-green-20230308-zeppelin
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting blue for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+        > Done
+        
+
+# -----------------------------------------------------
+# Start NGINX    
+#[root@ansibler]
+
+    source /deployments/hadoop-yarn/bin/start-nginx.sh 
+
+    > Done	
+
+	
+# -----------------------------------------------------
+# Create users    
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-test-users
+    
+    > Done        
+        
+        
+# -----------------------------------------------------
+# Create our benchmark script.
+#[root@ansibler]
+
+cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print("{")
+print(
+"""
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }},
+\"output\":
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+print("---start---")
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint,
+    False
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+print("---end---")
+print("}")
+EOF
+
+    chmod 'a+x' /tmp/run-benchmark.py
+
+	
+# -----------------------------------------------------
+# Run one quick test as a single user
+#[root@ansibler]
+
+    usercount=1
+
+    endpoint="http://iris-gaia-blue.gaia-dmp.uk"
+    testconfig=/deployments/zeppelin/test/config/quick.json
+    testusers=/tmp/test-users.json
+
+    delaystart=2
+    delaynotebook=3
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+   
+   [
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "45.45",
+			"expected": "45.00",
+			"percent": "1.01",
+			"start": "2023-03-28T12:29:57.998134",
+			"finish": "2023-03-28T12:30:43.452918"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "123.41",
+			"expected": "55.00",
+			"percent": "124.39",
+			"start": "2023-03-28T12:30:46.456346",
+			"finish": "2023-03-28T12:32:49.870154"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "51.14",
+			"expected": "35.00",
+			"percent": "46.11",
+			"start": "2023-03-28T12:32:52.870468",
+			"finish": "2023-03-28T12:33:44.008532"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "12.26",
+			"expected": "10.00",
+			"percent": "22.61",
+			"start": "2023-03-28T12:33:47.010499",
+			"finish": "2023-03-28T12:33:59.271963"
+		},
+		"logs": ""
+	}]
+]	
+	
+	
+# -----------------------------------------------------
+# Run one basic test as a single user
+#[root@ansibler]
+
+    usercount=1
+
+    endpoint="http://iris-gaia-blue.gaia-dmp.uk"
+    testconfig=/deployments/zeppelin/test/config/basic.json
+    testusers=/tmp/test-users.json
+
+    delaystart=1
+    delaynotebook=1
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+   
+   
+   [
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "39.59",
+			"expected": "45.00",
+			"percent": "-12.02",
+			"start": "2023-03-28T12:34:56.438779",
+			"finish": "2023-03-28T12:35:36.030898"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "116.58",
+			"expected": "55.00",
+			"percent": "111.97",
+			"start": "2023-03-28T12:35:37.032099",
+			"finish": "2023-03-28T12:37:33.617048"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "44.97",
+			"expected": "35.00",
+			"percent": "28.48",
+			"start": "2023-03-28T12:37:34.618549",
+			"finish": "2023-03-28T12:38:19.585164"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "638.31",
+			"expected": "500.00",
+			"percent": "27.66",
+			"start": "2023-03-28T12:38:20.586429",
+			"finish": "2023-03-28T12:48:58.892733"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_cross_matched_surveys",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "186.01",
+			"expected": "110.00",
+			"percent": "69.10",
+			"start": "2023-03-28T12:48:59.893973",
+			"finish": "2023-03-28T12:52:05.905333"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_Gaia_XP_spectra.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "178.88",
+			"expected": "15.00",
+			"percent": "1092.51",
+			"start": "2023-03-28T12:52:06.906532",
+			"finish": "2023-03-28T12:55:05.782546"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "11.83",
+			"expected": "10.00",
+			"percent": "18.33",
+			"start": "2023-03-28T12:55:06.783749",
+			"finish": "2023-03-28T12:55:18.616318"
+		},
+		"logs": ""
+	}]
+]
+
+
+# -----------------------------------------------------
+# Run one full test as a single user
+#[root@ansibler]
+
+    usercount=1
+
+    endpoint="http://iris-gaia-blue.gaia-dmp.uk"
+    testconfig=/deployments/zeppelin/test/config/full.json
+    testusers=/tmp/test-users.json
+
+    delaystart=1
+    delaynotebook=1
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+
+[
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "40.20",
+			"expected": "45.00",
+			"percent": "-10.66",
+			"start": "2023-03-29T11:13:16.169064",
+			"finish": "2023-03-29T11:13:56.372553"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "119.83",
+			"expected": "55.00",
+			"percent": "117.87",
+			"start": "2023-03-29T11:13:57.373772",
+			"finish": "2023-03-29T11:15:57.203737"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "51.67",
+			"expected": "35.00",
+			"percent": "47.62",
+			"start": "2023-03-29T11:15:58.204968",
+			"finish": "2023-03-29T11:16:49.872551"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "650.62",
+			"expected": "500.00",
+			"percent": "30.12",
+			"start": "2023-03-29T11:16:50.874389",
+			"finish": "2023-03-29T11:27:41.493725"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_cross_matched_surveys",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "184.30",
+			"expected": "110.00",
+			"percent": "67.55",
+			"start": "2023-03-29T11:27:42.495190",
+			"finish": "2023-03-29T11:30:46.795868"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_Gaia_XP_spectra.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "184.67",
+			"expected": "15.00",
+			"percent": "1131.16",
+			"start": "2023-03-29T11:30:47.796274",
+			"finish": "2023-03-29T11:33:52.470535"
+		},
+		"logs": ""
+	}, {
+		"name": "QC_cuts_dev.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "10093.74",
+			"expected": "6300.00",
+			"percent": "60.22",
+			"start": "2023-03-29T11:33:53.472000",
+			"finish": "2023-03-29T14:22:07.210992"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "11.43",
+			"expected": "10.00",
+			"percent": "14.31",
+			"start": "2023-03-29T14:22:08.212342",
+			"finish": "2023-03-29T14:22:19.643713"
+		},
+		"logs": ""
+	}]
+]

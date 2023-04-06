@@ -1,0 +1,224 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Adding a user account for Hendrik Heinl
+
+    Result:
+
+        Success, live server updated.
+
+
+# -----------------------------------------------------
+
+    New branch
+    20230207-01-git-branch.txt
+
+    Backup notebooks
+    20230123-01-backup-notebooks.txt
+
+# -----------------------------------------------------
+# Check which is the live service.
+#[user@desktop]
+
+    ssh-keyscan 'live.gaia-dmp.uk' 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Thu  6 Apr 03:55:14 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=live
+    agproxymap=3000:3000
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "ansibler-${agcolour:?}" \
+        --hostname "ansibler-${agcolour:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "agcolour=${agcolour:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Download our deployment status.
+#[root@ansibler]
+
+    mkdir -p "${HOME}/.ssh"
+    ssh-keyscan "${agcolour}.gaia-dmp.uk" 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+
+    mkdir -p /opt/aglais
+    scp "${agcolour}.gaia-dmp.uk:/opt/aglais/aglais-status.yml" \
+        /opt/aglais/aglais-status.yml
+
+    cat /opt/aglais/aglais-status.yml
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-green-20230308
+    >         date: 20230308T134230
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+
+
+# -----------------------------------------------------
+# Extract the cloud and configuration name.
+#[root@ansibler]
+
+    cloudname=$(
+        yq '.aglais.spec.openstack.cloud.name' /opt/aglais/aglais-status.yml
+        )
+
+    configname=$(
+        yq '.aglais.status.deployment.conf' /opt/aglais/aglais-status.yml
+        )
+
+cat << EOF
+Cloud  name [${cloudname}]
+Config name [${configname}]
+EOF
+
+    >   Cloud  name [iris-gaia-green]
+    >   Config name [zeppelin-54.86-spark-6.26.43]
+
+# -----------------------------------------------------
+# Configure our Ansible client.
+#[root@ansibler]
+
+    inventory="/deployments/hadoop-yarn/ansible/config/${configname:?}.yml"
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "${inventory:?}" \
+            '05-config-ssh.yml'
+
+    popd
+
+# -----------------------------------------------------
+# Check we can login using ssh.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        '
+
+    >   Thu Apr  6 03:59:33 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Add a new account for Hendrik Heinl (CDS)
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit deployments/common/users/live-users.yml &
+
+            users:
+                ....
+        +       - name: "HHeinl"
+        +         type: "live"
+        +         linuxuid: 10014
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Import the live users, adding the new account.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-live-users
+
+    >   ....
+    >   ....
+
+
+    list-shiro-full \
+        /tmp/live-users.json
+
+    >   [
+    >     ....
+    >     ....
+    >     {
+    >       "username": "HHeinl",
+    >       "password": "............",
+    >       "passhash": "............",
+    >       "hashhash": "............"
+    >     }
+    >     ....
+    >     ....
+
+
+# -----------------------------------------------------
+# Save the passhash on the data server.
+#[root@ansibler]
+
+    ssh fedora@data.gaia-dmp.uk
+
+        vi passhashes
+
+            users:
+              passhash:
+                ....
+                ....
+        +       "HHeinl":     "$shiro1$SHA-....="
+
+
+

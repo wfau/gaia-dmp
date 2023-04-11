@@ -1,0 +1,340 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+    Target:
+
+        Test deployment for latest version (wfau/gaia-dmp:master)
+
+    Result:
+
+        Success.
+        New deployment passes tests.
+
+
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+        
+	> iris-gaia-green-20230308-zeppelin
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting blue for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+        > Done
+
+
+
+
+# -----------------------------------------------------
+# Copy over certificates 
+#[root@ansibler]
+
+    scp -r fedora@data.gaia-dmp.uk:/home/fedora/certs/20230314/ /root/certs/
+
+
+
+# -----------------------------------------------------
+# Setup SSL
+#[root@ansibler]
+
+/deployments/hadoop-yarn/bin/setup-ssl.sh \
+        "${cloudname:?}" \
+        "${configname:?}" \
+    | tee /tmp/setup-ssl.log
+
+   > 
+	---- ---- ----
+	File [start-nginx.sh]
+	Path [/deployments/hadoop-yarn/bin]
+
+	---- ----
+	Starting NGINX
+
+
+
+
+# -----------------------------------------------------
+# Create users    
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-test-users
+    
+    > Done        
+        
+        
+# -----------------------------------------------------
+# Create our benchmark script.
+#[root@ansibler]
+
+cat > /tmp/run-benchmark.py << 'EOF'
+#!/bin/python3
+import sys
+from aglais_benchmark import AglaisBenchmarker
+
+try:
+
+    opts = [opt for opt in sys.argv[1:] if opt.startswith("-")]
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+
+    endpoint = args[0]
+    testconfig = args[1]
+    userlist = args[2]
+    usercount = int(args[3])
+    delaystart = int(args[4])
+    delaynotebook = int(args[5])
+
+except IndexError:
+
+    raise SystemExit(f"Usage: {sys.argv[0]} <Zepelin endpoint> <test config> <list of users> <number of users>")
+
+print("{")
+print(
+"""
+\"config\": {{
+    \"endpoint\":   \"{}\",
+    \"testconfig\": \"{}\",
+    \"userlist\":   \"{}\",
+    \"usercount\":  \"{}\",
+    \"delaystart\":  \"{}\",
+    \"delaynotebook\":  \"{}\"
+    }},
+\"output\":
+""".format(
+        endpoint,
+        testconfig,
+        userlist,
+        usercount,
+        delaystart,
+        delaynotebook
+        )
+    )
+
+print("---start---")
+AglaisBenchmarker(
+    testconfig,
+    userlist,
+    "/tmp/",
+    endpoint,
+    False
+    ).run(
+        concurrent=True,
+        users=usercount,
+        delay_start=delaystart,
+        delay_notebook=delaynotebook
+        )
+print("---end---")
+print("}")
+EOF
+
+    chmod 'a+x' /tmp/run-benchmark.py
+
+
+	
+# -----------------------------------------------------
+# Run one basic test as a single user
+#[root@ansibler]
+
+    usercount=1
+
+    endpoint="https://iris-gaia-blue.gaia-dmp.uk"
+    testconfig=/deployments/zeppelin/test/config/basic.json
+    testusers=/tmp/test-users.json
+
+    delaystart=1
+    delaynotebook=1
+
+    /tmp/run-benchmark.py \
+        "${endpoint:?}" \
+        "${testconfig:?}" \
+        "${testusers:?}" \
+        "${usercount:?}" \
+        "${delaystart:?}" \
+        "${delaynotebook:?}" 
+   
+   
+[
+	[{
+		"name": "GaiaDMPSetup",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "46.67",
+			"expected": "50.00",
+			"percent": "-6.66",
+			"start": "2023-04-03T16:25:41.009795",
+			"finish": "2023-04-03T16:26:27.679061"
+		},
+		"logs": ""
+	}, {
+		"name": "Mean_proper_motions_over_the_sky",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "117.95",
+			"expected": "120.00",
+			"percent": "-1.70",
+			"start": "2023-04-03T16:26:28.680314",
+			"finish": "2023-04-03T16:28:26.635056"
+		},
+		"logs": ""
+	}, {
+		"name": "Source_counts_over_the_sky.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "49.71",
+			"expected": "55.00",
+			"percent": "-9.61",
+			"start": "2023-04-03T16:28:27.636586",
+			"finish": "2023-04-03T16:29:17.349106"
+		},
+		"logs": ""
+	}, {
+		"name": "Good_astrometric_solutions_via_ML_Random_Forrest_classifier",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "695.24",
+			"expected": "650.00",
+			"percent": "6.96",
+			"start": "2023-04-03T16:29:18.350672",
+			"finish": "2023-04-03T16:40:53.593046"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_cross_matched_surveys",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "182.98",
+			"expected": "190.00",
+			"percent": "-3.70",
+			"start": "2023-04-03T16:40:54.594418",
+			"finish": "2023-04-03T16:43:57.573861"
+		},
+		"logs": ""
+	}, {
+		"name": "Working_with_Gaia_XP_spectra.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "SLOW",
+			"elapsed": "197.01",
+			"expected": "190.00",
+			"percent": "3.69",
+			"start": "2023-04-03T16:43:58.575139",
+			"finish": "2023-04-03T16:47:15.581881"
+		},
+		"logs": ""
+	}, {
+		"name": "Library_Validation.json",
+		"result": "PASS",
+		"outputs": {
+			"valid": true
+		},
+		"messages": [],
+		"time": {
+			"result": "FAST",
+			"elapsed": "10.57",
+			"expected": "15.00",
+			"percent": "-29.54",
+			"start": "2023-04-03T16:47:16.583112",
+			"finish": "2023-04-03T16:47:27.151904"
+		},
+		"logs": ""
+	}]
+]

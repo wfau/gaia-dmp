@@ -1,0 +1,2150 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Initial bootstrap K8s cluster from nothing.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Thu 13 Apr 04:39:20 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting red for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    2m5.460s
+    >   user    0m56.910s
+    >   sys     0m6.144s
+
+
+# -----------------------------------------------------
+# Add YAML editor role to our client container.
+#[root@ansibler]
+
+    ansible-galaxy install kwoodson.yedit
+
+    >   Starting galaxy role install process
+    >   - downloading role 'yedit', owned by kwoodson
+    >   - downloading role from https://github.com/kwoodson/ansible-role-yedit/archive/master.tar.gz
+    >   - extracting kwoodson.yedit to /root/.ansible/roles/kwoodson.yedit
+    >   - kwoodson.yedit (master) was installed successfully
+
+
+# -----------------------------------------------------
+# Create our deployment settings.
+#[root@ansibler]
+
+    deployname=${cloudname:?}-$(date '+%Y%m%d')
+    deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    rm -f "${statusyml}"
+    touch "${statusyml}"
+
+    yq eval \
+        --inplace \
+        "
+        .aglais.deployment.type = \"cluster-api\"   |
+        .aglais.deployment.name = \"${deployname}\" |
+        .aglais.deployment.date = \"${deploydate}\" |
+        .aglais.openstack.cloud.name = \"${cloudname}\"
+        " "${statusyml}"
+
+
+    cat /opt/aglais/aglais-status.yml
+
+    >   aglais:
+    >     deployment:
+    >       type: cluster-api
+    >       name: iris-gaia-red-20230413
+    >       date: 20230413T044239
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-red
+
+
+# -----------------------------------------------------
+# Create our bootstrap node.
+#[root@ansibler]
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/config/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/01-create-keypair.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/02-create-network.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/03-create-bootstrap.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/04-local-config.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP ********************************************************************************************************************************
+    >   localhost                  : ok=2    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   ....
+    >   ....
+    >   PLAY RECAP ********************************************************************************************************************************
+    >   localhost                  : ok=4    changed=4    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   ....
+    >   ....
+    >   PLAY RECAP ********************************************************************************************************************************
+    >   localhost                  : ok=7    changed=6    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   ....
+    >   ....
+    >   PLAY RECAP ********************************************************************************************************************************
+    >   localhost                  : ok=4    changed=4    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# SSH test.
+#[root@ansibler]
+
+    ssh bootstrap \
+        '
+        date
+        hostname
+        '
+
+    >   Thu Apr 13 04:46:08 UTC 2023
+    >   iris-gaia-red-20230413-bootstrap
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the bootstrap node as root.
+#[root@ansibler]
+
+    ssh bootstrap
+
+        sudo su -
+
+
+# -----------------------------------------------------
+# Install Docker.
+# https://docs.docker.com/engine/install/fedora/#install-using-the-repository
+#[root@bootstrap]
+
+    dnf -y install dnf-plugins-core
+
+    dnf config-manager \
+        --add-repo \
+        https://download.docker.com/linux/fedora/docker-ce.repo
+
+    >   ....
+    >   ....
+    >   Adding repo from: https://download.docker.com/linux/fedora/docker-ce.repo
+
+
+    dnf install \
+        -y \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-compose-plugin
+
+    >   ....
+    >   ....
+    >   Installed:
+    >     ....
+    >     ....
+    >     docker-ce-3:20.10.17-3.fc34.x86_64
+
+
+# -----------------------------------------------------
+# Start the Docker service.
+#[root@bootstrap]
+
+    systemctl start docker
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install kubectl.
+# https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/#install-using-native-package-management
+#[root@bootstrap]
+
+    cat > '/etc/yum.repos.d/kubernetes.repo' << EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-\$basearch
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+EOF
+
+    dnf install -y 'kubectl'
+
+    >   ....
+    >   ....
+    >   Installed:
+    >     kubectl-1.27.0-0.x86_64
+
+    #
+    # This is is slightly more recent than installing the Fedora package.
+    # Although, we could try just using the Fedora package.
+    # dnf install -y kubernetes-client
+    #
+
+# -----------------------------------------------------
+# Install kind on the bootstrap node.
+# https://kind.sigs.k8s.io/docs/user/quick-start/#installing-from-release-binaries
+#[root@bootstrap]
+
+    kindversion=0.17.0
+    kindbinary=kind-${kindversion:?}
+    kindtemp=/tmp/${kindbinary:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "${kindtemp:?}" \
+        "https://kind.sigs.k8s.io/dl/v${kindversion:?}/kind-linux-amd64"
+
+    pushd /usr/local/bin
+        mv "${kindtemp:?}" .
+        chown 'root:root' "${kindbinary:?}"
+        chmod 'u=rwx,g=rx,o=rx' "${kindbinary:?}"
+        ln -s "${kindbinary:?}" 'kind'
+    popd
+
+    ls -al /usr/local/bin/
+
+    >   ....
+    >   lrwxrwxrwx.  1 root root       11 Apr 13 04:52 kind -> kind-0.17.0
+    >   -rwxr-xr-x.  1 root root  6929103 Apr 13 04:52 kind-0.17.0
+    >   ....
+
+
+    kind --version
+
+    >   kind version 0.17.0
+
+
+# -----------------------------------------------------
+# Create our initial cluster.
+# https://github.com/kubernetes-sigs/kind/pull/2478#issuecomment-1214656908
+#[root@bootstrap]
+
+    kind create cluster --retain
+
+    >   Creating cluster "kind" ...
+    >    ✓ Ensuring node image (kindest/node:v1.25.3) 🖼
+    >    ✓ Preparing nodes 📦
+    >    ✓ Writing configuration 📜
+    >    ✓ Starting control-plane 🕹️
+    >    ✓ Installing CNI 🔌
+    >    ✓ Installing StorageClass 💾
+    >   ....
+
+
+    kubectl cluster-info --context kind-kind
+
+    >   Kubernetes control plane is running at https://127.0.0.1:33069
+    >   CoreDNS is running at https://127.0.0.1:33069/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+    >   ....
+
+
+    cat /root/.kube/config
+
+    >   apiVersion: v1
+    >   clusters:
+    >   - cluster:
+    >       certificate-authority-data: LS0tLS1C....0tLS0tCg==
+    >       server: https://127.0.0.1:33069
+    >     name: kind-kind
+    >   contexts:
+    >   - context:
+    >       cluster: kind-kind
+    >       user: kind-kind
+    >     name: kind-kind
+    >   current-context: kind-kind
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >   - name: kind-kind
+    >     user:
+    >       client-certificate-data: LS0tLS1C....0tLS0tCg==
+    >       client-key-data: LS0tLS1C....ktLS0tLQo=
+
+
+    kubectl get pods --all-namespaces
+
+    >   NAMESPACE            NAME                                         READY   STATUS    RESTARTS   AGE
+    >   kube-system          coredns-565d847f94-ckxmb                     1/1     Running   0          2m43s
+    >   kube-system          coredns-565d847f94-vrqjw                     1/1     Running   0          2m43s
+    >   kube-system          etcd-kind-control-plane                      1/1     Running   0          2m59s
+    >   kube-system          kindnet-hwbdf                                1/1     Running   0          2m43s
+    >   kube-system          kube-apiserver-kind-control-plane            1/1     Running   0          2m57s
+    >   kube-system          kube-controller-manager-kind-control-plane   1/1     Running   0          2m57s
+    >   kube-system          kube-proxy-ttjgm                             1/1     Running   0          2m43s
+    >   kube-system          kube-scheduler-kind-control-plane            1/1     Running   0          2m58s
+    >   local-path-storage   local-path-provisioner-684f458cdd-dglhf      1/1     Running   0          2m43s
+
+
+# -----------------------------------------------------
+# Install Helm on the bootstrap node.
+# https://helm.sh/docs/intro/install/
+# https://github.com/helm/helm/releases
+#[root@bootstrap]
+
+    helmarch=linux-amd64
+    helmversion=3.11.2
+    helmtarfile=helm-v${helmversion}-${helmarch}.tar.gz
+    helmtmpfile=/tmp/${helmtarfile:?}
+    helmbinary=helm-${helmversion:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "${helmtmpfile:?}" \
+        "https://get.helm.sh/${helmtarfile:?}"
+
+    tar \
+        --gzip \
+        --extract \
+        --directory /tmp \
+        --file "${helmtmpfile:?}"
+
+    pushd /usr/local/bin
+        mv "/tmp/${helmarch:?}/helm" "${helmbinary:?}"
+        chown 'root:root' "${helmbinary:?}"
+        chmod 'u=rwx,g=rx,o=rx' "${helmbinary:?}"
+        ln -s "${helmbinary:?}" 'helm'
+    popd
+
+    ls -al /usr/local/bin/
+
+    >   ....
+    >   lrwxrwxrwx.  1 root root       11 Apr 13 04:57 helm -> helm-3.11.2
+    >   -rwxr-xr-x.  1 root root 46874624 Mar  8 21:17 helm-3.11.2
+    >   ....
+
+
+    helm version
+
+    >   version.BuildInfo{Version:"v3.11.2",
+    >   GitCommit:"912ebc1cd10d38d340f048efaf0abda047c3468e",
+    >   GitTreeState:"clean",
+    >   GoVersion:"go1.18.10"
+    >   }
+
+
+    helm env
+
+    >   HELM_BIN="helm"
+    >   HELM_BURST_LIMIT="100"
+    >   HELM_CACHE_HOME="/root/.cache/helm"
+    >   HELM_CONFIG_HOME="/root/.config/helm"
+    >   HELM_DATA_HOME="/root/.local/share/helm"
+    >   HELM_DEBUG="false"
+    >   HELM_KUBEAPISERVER=""
+    >   HELM_KUBEASGROUPS=""
+    >   HELM_KUBEASUSER=""
+    >   HELM_KUBECAFILE=""
+    >   HELM_KUBECONTEXT=""
+    >   HELM_KUBEINSECURE_SKIP_TLS_VERIFY="false"
+    >   HELM_KUBETLS_SERVER_NAME=""
+    >   HELM_KUBETOKEN=""
+    >   HELM_MAX_HISTORY="10"
+    >   HELM_NAMESPACE="default"
+    >   HELM_PLUGINS="/root/.local/share/helm/plugins"
+    >   HELM_REGISTRY_CONFIG="/root/.config/helm/registry/config.json"
+    >   HELM_REPOSITORY_CACHE="/root/.cache/helm/repository"
+    >   HELM_REPOSITORY_CONFIG="/root/.config/helm/repositories.yaml"
+
+
+# -----------------------------------------------------
+# Install clusterctl
+# The clusterctl CLI tool handles the lifecycle of a Cluster-API management cluster.
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#install-clusterctl
+#[root@bootstrap]
+
+    clusterctlversion=1.4.1
+    clusterctlbinary=clusterctl-${clusterctlversion:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "/tmp/${clusterctlbinary:?}" \
+        "https://github.com/kubernetes-sigs/cluster-api/releases/download/v${clusterctlversion:?}/clusterctl-linux-amd64"
+
+    pushd /usr/local/bin
+        mv "/tmp/${clusterctlbinary:?}" "${clusterctlbinary:?}"
+        chown 'root:root' "${clusterctlbinary:?}"
+        chmod 'u=rwx,g=rx,o=rx' "${clusterctlbinary:?}"
+        ln -s "${clusterctlbinary:?}" 'clusterctl'
+    popd
+
+    ls -al /usr/local/bin/
+
+    >   ....
+    >   lrwxrwxrwx.  1 root root       16 Apr 13 05:01 clusterctl -> clusterctl-1.4.1
+    >   -rwxr-xr-x.  1 root root 68700915 Apr 13 05:01 clusterctl-1.4.1
+    >   ....
+
+
+    clusterctl version
+
+    >   clusterctl version: &version.Info
+    >       {
+    >       Major:"1",
+    >       Minor:"4",
+    >       GitVersion:"v1.4.1",
+    >       GitCommit:"39d87e91080088327c738c43f39e46a7f557d03b",
+    >       GitTreeState:"clean",
+    >       BuildDate:"2023-04-04T17:31:43Z",
+    >       GoVersion:"go1.19.6",
+    >       Compiler:"gc",
+    >       Platform:"linux/amd64"
+    >       }
+
+
+# -----------------------------------------------------
+# Initialize the Openstack management cluster
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#initialization-for-common-providers
+#[root@bootstrap]
+
+    clusterctl init --infrastructure openstack
+
+    >   Fetching providers
+    >   Installing cert-manager Version="v1.11.0"
+    >   Waiting for cert-manager to be available...
+    >   Installing Provider="cluster-api" Version="v1.4.1" TargetNamespace="capi-system"
+    >   Installing Provider="bootstrap-kubeadm" Version="v1.4.1" TargetNamespace="capi-kubeadm-bootstrap-system"
+    >   Installing Provider="control-plane-kubeadm" Version="v1.4.1" TargetNamespace="capi-kubeadm-control-plane-system"
+    >   Installing Provider="infrastructure-openstack" Version="v0.7.1" TargetNamespace="capo-system"
+    >   ....
+    >   ....
+
+
+    kubectl get pods --all-namespaces
+
+    >   NAMESPACE                           NAME                                                             READY   STATUS    RESTARTS   AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-8654485994-8dxrx       1/1     Running   0          38s
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-5d9d9494d5-58rzg   1/1     Running   0          36s
+    >   capi-system                         capi-controller-manager-746b4f5db4-crwpl                         1/1     Running   0          39s
+    >   capo-system                         capo-controller-manager-775d744795-sbkm6                         1/1     Running   0          33s
+    >   cert-manager                        cert-manager-99bb69456-97c47                                     1/1     Running   0          62s
+    >   cert-manager                        cert-manager-cainjector-ffb4747bb-2z4xp                          1/1     Running   0          62s
+    >   cert-manager                        cert-manager-webhook-545bd5d7d8-fllb4                            1/1     Running   0          62s
+    >   kube-system                         coredns-565d847f94-ckxmb                                         1/1     Running   0          12m
+    >   kube-system                         coredns-565d847f94-vrqjw                                         1/1     Running   0          12m
+    >   kube-system                         etcd-kind-control-plane                                          1/1     Running   0          13m
+    >   kube-system                         kindnet-hwbdf                                                    1/1     Running   0          12m
+    >   kube-system                         kube-apiserver-kind-control-plane                                1/1     Running   0          12m
+    >   kube-system                         kube-controller-manager-kind-control-plane                       1/1     Running   0          12m
+    >   kube-system                         kube-proxy-ttjgm                                                 1/1     Running   0          12m
+    >   kube-system                         kube-scheduler-kind-control-plane                                1/1     Running   0          12m
+    >   local-path-storage                  local-path-provisioner-684f458cdd-dglhf                          1/1     Running   0          12m
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the Openstack client container to fetch some IDs.
+#[user@desktop]
+
+    podman exec \
+        -it \
+        ansibler-red \
+            bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# List the available VM flavors and images.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list
+
+    >   +--------------------------------------+-----------------------------+--------+------+-----------+-------+-----------+
+    >   | ID                                   | Name                        |    RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+-----------------------------+--------+------+-----------+-------+-----------+
+    >   | 0997c60d-3460-432a-a7fc-78d2cd466b4c | gaia.vm.cclake.26vcpu       |  44032 |   20 |       180 |    26 | False     |
+    >   | 0bba49a9-a11f-45cb-ad1b-09527bc0e991 | gaia.vm.cclake.himem.12vcpu |  43008 |   20 |        80 |    12 | False     |
+    >   | 166497c3-a0bb-4276-bee3-e56932e6f3e4 | gaia.vm.cclake.1vcpu        |   1024 |    8 |         0 |     1 | False     |
+    >   | 19754fec-4177-4468-99a0-554a0caed37f | gaia.vm.cclake.himem.1vcpu  |   2048 |    8 |         0 |     1 | False     |
+    >   | 2e5dc624-1d3b-4da7-8107-cc2dd4cb5073 | vm.v1.large                 |  32768 |   60 |         0 |     8 | True      |
+    >   | 56c420d5-abea-41da-9863-f5bc08b08430 | gaia.vm.cclake.54vcpu       |  88064 |   20 |       380 |    54 | False     |
+    >   | 58c86aeb-be90-4958-8990-89709fee00b1 | gaia.vm.cclake.himem.2vcpu  |   6144 |   14 |         0 |     2 | False     |
+    >   | 6793b213-5efa-4b51-96bf-1340ff066499 | vm.v1.xsmall                |   2048 |   20 |         0 |     1 | True      |
+    >   | 698a8d46-eceb-4c55-91ff-38286bf9eabb | vm.v1.tiny                  |   1024 |   10 |         0 |     1 | True      |
+    >   | 6b56d6e9-5397-4543-87fb-e0c0b6d47961 | vm.v1.small                 |  16384 |   20 |         0 |     4 | True      |
+    >   | 80e0721d-db0f-407f-a2bf-fe6641312204 | gaia.vm.cclake.4vcpu        |   6144 |   22 |         0 |     4 | False     |
+    >   | a1b2789c-761a-4843-8ea8-603a9209dec8 | gaia.vm.cclake.6vcpu        |   9216 |   20 |        24 |     6 | False     |
+    >   | a61ccf32-a9cf-4c23-9f00-dff5ebacf0cd | gaia.vm.cclake.himem.54vcpu | 176128 |   20 |       380 |    54 | False     |
+    >   | b091654c-428e-47c9-a7f3-b69900b98bea | gaia.vm.cclake.himem.26vcpu |  88064 |   20 |       180 |    26 | False     |
+    >   | b80c05db-da78-4172-ade3-dd3f500c5076 | C2.vss.xlarge               |  12288 |  180 |         0 |    12 | True      |
+    >   | bd2eb2e7-baf9-4a73-9bb1-a5559964c9be | gaia.vm.cclake.himem.4vcpu  |  12288 |   22 |         0 |     4 | False     |
+    >   | df5133ea-1bfb-45fd-ba39-71fc820abcb1 | gaia.vm.cclake.2vcpu        |   3072 |   14 |         0 |     2 | False     |
+    >   | ef01ce36-283f-4df3-a039-1b47504de078 | gaia.vm.cclake.12vcpu       |  21504 |   20 |        80 |    12 | False     |
+    >   | fbbf4183-c727-4fd3-a3bf-7aa08cb45210 | gaia.vm.cclake.himem.6vcpu  |  18432 |   20 |        24 |     6 | False     |
+    >   +--------------------------------------+-----------------------------+--------+------+-----------+-------+-----------+
+
+
+    #
+    # The ubuntu-2004-kube images are hidden with 'community' visibility.
+    # https://wiki.openstack.org/wiki/Glance-v2-community-image-visibility-design
+    #
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image list \
+            --community
+
+    >   +--------------------------------------+----------------------------------------------+--------+
+    >   | ID                                   | Name                                         | Status |
+    >   +--------------------------------------+----------------------------------------------+--------+
+    >   | 948b088f-f15a-4082-9fa2-8d6ec46d63fc | CentOS8-2004                                 | active |
+    >   | f18c8fdd-b5b3-4c6f-a5bf-61fb35c061b1 | openhpc-220830-2042                          | active |
+    >   | b3727075-e811-471b-b72e-c129dc18a221 | openhpc-221027-1557                          | active |
+    >   | fb6bea43-b19b-4dd9-9334-f747060de018 | openhpc-230106-1107                          | active |
+    >   | 86a46069-d395-4157-99ff-254f093edf21 | openhpc-230110-1629                          | active |
+    >   | 5d7dca79-da94-4ce2-90f9-18e5e35d15d0 | openhpc-230217-1440                          | active |
+    >   | 74f481a4-440f-466d-a1dd-7bc521c4418d | rocky-8-20220702                             | active |
+    >   | aba8be34-d96e-4276-863f-af76ebab71d5 | ubuntu-2004-kube-v1.22.12                    | active |
+    >   | 932a8846-ce6d-49a9-b926-f200c322d237 | ubuntu-2004-kube-v1.22.15                    | active |
+    >   | d248843e-f1ea-49b2-b3c8-fca8e0ecb3fe | ubuntu-2004-kube-v1.23.14                    | active |
+    >   | 6d2fe080-a9fe-4fde-a8d3-cd101c5310a3 | ubuntu-2004-kube-v1.23.9                     | active |
+    >   | a83b5cfc-eb5e-4ca3-8d5c-cef95f41bcce | ubuntu-2004-kube-v1.24.2                     | active |
+    >   | 0350c998-23c7-44c5-8782-e29ac9640527 | ubuntu-2004-kube-v1.24.8                     | active |
+    >   | 75f1e989-d2e3-4f31-b660-8a8a9e5fa967 | ubuntu-2004-kube-v1.25.4                     | active |
+    >   | 6c30d015-6193-4479-b962-653a1a18d622 | ubuntu-focal-desktop-220808-1248             | active |
+    >   | 856f77c7-7e68-4d6f-be37-0d414844768b | ubuntu-focal-desktop-220810-0904             | active |
+    >   | f7e6408b-a9b8-4ba2-a4c1-e19f61bebe7e | ubuntu-focal-desktop-221017-1036             | active |
+    >   | 85d3cdde-2661-4e3f-ba14-5c9d061060a1 | ubuntu-focal-jupyter-repo2docker-220808-1351 | active |
+    >   | af5b2e4a-c650-4a50-9aad-b1206e7867d2 | ubuntu-focal-jupyter-repo2docker-220810-1028 | active |
+    >   | 5753f0ed-78de-4e8e-a5b6-c7f31fa34795 | ubuntu-focal-jupyter-repo2docker-221017-1147 | active |
+    >   +--------------------------------------+----------------------------------------------+--------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        availability zone list \
+            --compute \
+            --long
+
+    >   +-----------+-------------+---------------+-----------+--------------+----------------+
+    >   | Zone Name | Zone Status | Zone Resource | Host Name | Service Name | Service Status |
+    >   +-----------+-------------+---------------+-----------+--------------+----------------+
+    >   | nova      | available   |               |           |              |                |
+    >   +-----------+-------------+---------------+-----------+--------------+----------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list \
+            --external
+
+    >   +--------------------------------------+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | ID                                   | Name          | Subnets                                                                                                                                                |
+    >   +--------------------------------------+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs        | 5699fb5d-8316-4b88-b889-b05c8a1ec975                                                                                                                   |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet | 1847b14d-b974-4f78-959d-44d18d4485b8, 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42, 5f1388b3-a0c7-463e-bb58-5532c38e4b40, a79eb610-eca3-4ee8-aaf1-88f4fef5a4e7 |
+    >   +--------------------------------------+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Transfer the Openstack IDs to our bootstrap node.
+#[root@ansibler]
+
+    cat > /tmp/openstack-settings.env << 'EOF'
+export OPENSTACK_CLOUD=iris-gaia-red
+export OPENSTACK_SSH_KEY_NAME=iris-gaia-red-20230409-keypair
+export OPENSTACK_EXTERNAL_NETWORK_ID=57add367-d205-4030-a929-d75617a7c63e
+
+export OPENSTACK_NODE_MACHINE_FLAVOR=vm.v1.large
+export OPENSTACK_CONTROL_PLANE_MACHINE_FLAVOR=vm.v1.small
+
+export KUBERNETES_VERSION=1.25.4
+export OPENSTACK_IMAGE_NAME=ubuntu-2004-kube-v${KUBERNETES_VERSION}
+
+export OPENSTACK_FAILURE_DOMAIN=nova
+
+#
+# Use the Cambridge DNS servers.
+# https://www.dns.cam.ac.uk/servers/rec.html
+# export OPENSTACK_DNS_NAMESERVERS=131.111.8.42,131.111.12.20
+# Only use one, using two addresses caused an error.
+export OPENSTACK_DNS_NAMESERVERS=131.111.8.42
+
+EOF
+
+    scp \
+        /tmp/openstack-settings.env \
+        bootstrap:/tmp/openstack-settings.env
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p \
+            /etc/openstack
+        sudo install \
+            /tmp/openstack-settings.env \
+            /etc/openstack/openstack-settings.env
+        '
+
+
+# -----------------------------------------------------
+# Transfer a copy of our clouds.yaml file.
+#[root@ansibler]
+
+    scp \
+        /etc/openstack/clouds.yaml \
+        bootstrap:/tmp/clouds.yaml
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p \
+            /etc/openstack
+        sudo install \
+            /tmp/clouds.yaml \
+            /etc/openstack/clouds.yaml
+        '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Install yq on the bootstrap node.
+#[root@bootstrap]
+
+    yqversion=4.26.1
+    yqversion=4.33.3
+    yqbinary=yq-${yqversion:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "/tmp/${yqbinary:?}" \
+        "https://github.com/mikefarah/yq/releases/download/v${yqversion}/yq_linux_amd64"
+
+    pushd /usr/local/bin
+        mv "/tmp/${yqbinary:?}" "${yqbinary:?}"
+        chown 'root:root' "${yqbinary:?}"
+        chmod 'u=rwx,g=rx,o=rx' "${yqbinary:?}"
+        ln -s "${yqbinary:?}" 'yq'
+    popd
+
+    ls -al /usr/local/bin/
+
+    >   ....
+    >   lrwxrwxrwx.  1 root root        9 Apr 13 06:00 yq -> yq-4.26.1
+    >   -rwxr-xr-x.  1 root root        9 Apr 13 06:00 yq-4.26.1
+    >   ....
+
+
+    yq --version
+
+    >   yq (https://github.com/mikefarah/yq/) version v4.33.3
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Edit our clouds.yaml file.
+# https://docs.openstack.org/os-client-config/latest/user/configuration.html#ssl-settings
+#[root@bootstrap]
+
+    vi /etc/openstack/clouds.yaml
+
+          iris-gaia-red:
+            auth:
+              auth_url: https://arcus.openstack.hpc.cam.ac.uk:5000
+              ....
+              ....
+            region_name: "RegionOne"
+            interface: "public"
+            identity_api_version: 3
+            auth_type: "v3applicationcredential"
+       +    verify: false
+
+
+# -----------------------------------------------------
+# Load our Openstack settings.
+#[root@bootstrap]
+
+    source /etc/openstack/openstack-settings.env
+
+cat << EOF
+OPENSTACK_CLOUD [${OPENSTACK_CLOUD}]
+OPENSTACK_IMAGE_NAME [${OPENSTACK_IMAGE_NAME}]
+EOF
+
+    >   OPENSTACK_CLOUD [iris-gaia-red]
+    >   OPENSTACK_IMAGE_NAME [ubuntu-2004-kube-v1.25.4]
+
+
+# -----------------------------------------------------
+# Use the script provided by cluster-api-provider-openstack to parse our clouds.yaml file.
+# https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#generate-credentials
+# https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/docs/book/src/clusteropenstack/configuration.md#generate-credentials
+#[root@bootstrap]
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output '/tmp/env.rc' \
+        'https://raw.githubusercontent.com/kubernetes-sigs/cluster-api-provider-openstack/master/templates/env.rc'
+
+    source '/tmp/env.rc' '/etc/openstack/clouds.yaml' "${OPENSTACK_CLOUD:?}"
+
+
+cat << EOF
+OPENSTACK_CLOUD_YAML_B64   [${OPENSTACK_CLOUD_YAML_B64}]
+OPENSTACK_CLOUD_CACERT_B64 [${OPENSTACK_CLOUD_CACERT_B64}]
+OPENSTACK_CLOUD_PROVIDER_CONF_B64 [${OPENSTACK_CLOUD_PROVIDER_CONF_B64}]
+EOF
+
+    >   OPENSTACK_CLOUD_YAML_B64   [Y2xvdWRz....mYWxzZQo=]
+    >   OPENSTACK_CLOUD_CACERT_B64 [Cg==]
+    >   OPENSTACK_CLOUD_PROVIDER_CONF_B64 [W0dsb2Jh....5b28yIgo=]
+
+    #
+    # Blank CA cert, which causes problems later.
+    # Fixed by declaring verify: false in clouds.yaml.
+    # Better to have a valid certificate here.
+    #
+
+
+# -----------------------------------------------------
+# Generate our basic cluster config.
+# https://cluster-api.sigs.k8s.io/clusterctl/commands/generate-cluster.html
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#generating-the-cluster-configuration
+#[root@bootstrap]
+
+    CLUSTER_NAME=green-frog
+
+    clusterctl generate cluster \
+        "${CLUSTER_NAME:?}" \
+        --kubernetes-version "${KUBERNETES_VERSION:?}" \
+        --control-plane-machine-count 3 \
+        --worker-machine-count 3 \
+    | tee "/tmp/${CLUSTER_NAME:?}.yaml"
+
+    >   apiVersion: v1
+    >   data:
+    >     cacert: Cg==
+    >     clouds.yaml: Y2xvdWRz....mYWxzZQo=
+    >   kind: Secret
+    >   metadata:
+    >     labels:
+    >       clusterctl.cluster.x-k8s.io/move: "true"
+    >     name: green-frog-cloud-config
+    >     namespace: default
+    >   ---
+    >   apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    >   kind: KubeadmConfigTemplate
+    >   metadata:
+    >     name: green-frog-md-0
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         files:
+    >         - content: W0dsb2Jh....5b28yIgo=
+    >           encoding: base64
+    >           owner: root
+    >           path: /etc/kubernetes/cloud.conf
+    >           permissions: "0600"
+    >         - content: Cg==
+    >           encoding: base64
+    >           owner: root
+    >           path: /etc/certs/cacert
+    >           permissions: "0600"
+    >         joinConfiguration:
+    >           nodeRegistration:
+    >             kubeletExtraArgs:
+    >               cloud-config: /etc/kubernetes/cloud.conf
+    >               cloud-provider: openstack
+    >             name: '{{ local_hostname }}'
+    >   ---
+    >   apiVersion: cluster.x-k8s.io/v1beta1
+    >   kind: Cluster
+    >   metadata:
+    >     name: green-frog
+    >     namespace: default
+    >   spec:
+    >     clusterNetwork:
+    >       pods:
+    >         cidrBlocks:
+    >         - 192.168.0.0/16
+    >       serviceDomain: cluster.local
+    >     controlPlaneRef:
+    >       apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    >       kind: KubeadmControlPlane
+    >       name: green-frog-control-plane
+    >     infrastructureRef:
+    >       apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >       kind: OpenStackCluster
+    >       name: green-frog
+    >   ---
+    >   apiVersion: cluster.x-k8s.io/v1beta1
+    >   kind: MachineDeployment
+    >   metadata:
+    >     name: green-frog-md-0
+    >     namespace: default
+    >   spec:
+    >     clusterName: green-frog
+    >     replicas: 3
+    >     selector:
+    >       matchLabels: null
+    >     template:
+    >       spec:
+    >         bootstrap:
+    >           configRef:
+    >             apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    >             kind: KubeadmConfigTemplate
+    >             name: green-frog-md-0
+    >         clusterName: green-frog
+    >         failureDomain: nova
+    >         infrastructureRef:
+    >           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >           kind: OpenStackMachineTemplate
+    >           name: green-frog-md-0
+    >         version: 1.25.4
+    >   ---
+    >   apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    >   kind: KubeadmControlPlane
+    >   metadata:
+    >     name: green-frog-control-plane
+    >     namespace: default
+    >   spec:
+    >     kubeadmConfigSpec:
+    >       clusterConfiguration:
+    >         apiServer:
+    >           extraArgs:
+    >             cloud-config: /etc/kubernetes/cloud.conf
+    >             cloud-provider: openstack
+    >           extraVolumes:
+    >           - hostPath: /etc/kubernetes/cloud.conf
+    >             mountPath: /etc/kubernetes/cloud.conf
+    >             name: cloud
+    >             readOnly: true
+    >         controllerManager:
+    >           extraArgs:
+    >             cloud-config: /etc/kubernetes/cloud.conf
+    >             cloud-provider: openstack
+    >           extraVolumes:
+    >           - hostPath: /etc/kubernetes/cloud.conf
+    >             mountPath: /etc/kubernetes/cloud.conf
+    >             name: cloud
+    >             readOnly: true
+    >           - hostPath: /etc/certs/cacert
+    >             mountPath: /etc/certs/cacert
+    >             name: cacerts
+    >             readOnly: true
+    >       files:
+    >       - content: W0dsb2Jh....5b28yIgo=
+    >         encoding: base64
+    >         owner: root
+    >         path: /etc/kubernetes/cloud.conf
+    >         permissions: "0600"
+    >       - content: Cg==
+    >         encoding: base64
+    >         owner: root
+    >         path: /etc/certs/cacert
+    >         permissions: "0600"
+    >       initConfiguration:
+    >         nodeRegistration:
+    >           kubeletExtraArgs:
+    >             cloud-config: /etc/kubernetes/cloud.conf
+    >             cloud-provider: openstack
+    >           name: '{{ local_hostname }}'
+    >       joinConfiguration:
+    >         nodeRegistration:
+    >           kubeletExtraArgs:
+    >             cloud-config: /etc/kubernetes/cloud.conf
+    >             cloud-provider: openstack
+    >           name: '{{ local_hostname }}'
+    >     machineTemplate:
+    >       infrastructureRef:
+    >         apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >         kind: OpenStackMachineTemplate
+    >         name: green-frog-control-plane
+    >     replicas: 3
+    >     version: 1.25.4
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackCluster
+    >   metadata:
+    >     name: green-frog
+    >     namespace: default
+    >   spec:
+    >     apiServerLoadBalancer:
+    >       enabled: true
+    >     cloudName: iris-gaia-red
+    >     dnsNameservers:
+    >     - 131.111.8.42
+    >     externalNetworkId: 57add367-d205-4030-a929-d75617a7c63e
+    >     identityRef:
+    >       kind: Secret
+    >       name: green-frog-cloud-config
+    >     managedSecurityGroups: true
+    >     nodeCidr: 10.6.0.0/24
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackMachineTemplate
+    >   metadata:
+    >     name: green-frog-control-plane
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         cloudName: iris-gaia-red
+    >         flavor: vm.v1.small
+    >         identityRef:
+    >           kind: Secret
+    >           name: green-frog-cloud-config
+    >         image: ubuntu-2004-kube-v1.25.4
+    >         sshKeyName: iris-gaia-red-20230409-keypair
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackMachineTemplate
+    >   metadata:
+    >     name: green-frog-md-0
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         cloudName: iris-gaia-red
+    >         flavor: vm.v1.large
+    >         identityRef:
+    >           kind: Secret
+    >           name: green-frog-cloud-config
+    >         image: ubuntu-2004-kube-v1.25.4
+    >         sshKeyName: iris-gaia-red-20230409-keypair
+
+
+# -----------------------------------------------------
+# Generate our external cluster config.
+# https://cluster-api.sigs.k8s.io/clusterctl/commands/generate-cluster.html
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#generating-the-cluster-configuration
+#[root@bootstrap]
+
+    CLUSTER_NAME=brown-toad
+
+    clusterctl generate cluster \
+        "${CLUSTER_NAME:?}" \
+        --flavor external-cloud-provider \
+        --kubernetes-version "${KUBERNETES_VERSION:?}" \
+        --control-plane-machine-count 3 \
+        --worker-machine-count 3 \
+    | tee "/tmp/${CLUSTER_NAME:?}.yaml"
+
+    >   apiVersion: v1
+    >   data:
+    >     cacert: Cg==
+    >     clouds.yaml: Y2xvdWRz....mYWxzZQo=
+    >   kind: Secret
+    >   metadata:
+    >     labels:
+    >       clusterctl.cluster.x-k8s.io/move: "true"
+    >     name: brown-toad-cloud-config
+    >     namespace: default
+    >   ---
+    >   apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    >   kind: KubeadmConfigTemplate
+    >   metadata:
+    >     name: brown-toad-md-0
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         joinConfiguration:
+    >           nodeRegistration:
+    >             kubeletExtraArgs:
+    >               cloud-provider: external
+    >             name: '{{ local_hostname }}'
+    >   ---
+    >   apiVersion: cluster.x-k8s.io/v1beta1
+    >   kind: Cluster
+    >   metadata:
+    >     name: brown-toad
+    >     namespace: default
+    >   spec:
+    >     clusterNetwork:
+    >       pods:
+    >         cidrBlocks:
+    >         - 192.168.0.0/16
+    >       serviceDomain: cluster.local
+    >     controlPlaneRef:
+    >       apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    >       kind: KubeadmControlPlane
+    >       name: brown-toad-control-plane
+    >     infrastructureRef:
+    >       apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >       kind: OpenStackCluster
+    >       name: brown-toad
+    >   ---
+    >   apiVersion: cluster.x-k8s.io/v1beta1
+    >   kind: MachineDeployment
+    >   metadata:
+    >     name: brown-toad-md-0
+    >     namespace: default
+    >   spec:
+    >     clusterName: brown-toad
+    >     replicas: 3
+    >     selector:
+    >       matchLabels: null
+    >     template:
+    >       spec:
+    >         bootstrap:
+    >           configRef:
+    >             apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    >             kind: KubeadmConfigTemplate
+    >             name: brown-toad-md-0
+    >         clusterName: brown-toad
+    >         failureDomain: nova
+    >         infrastructureRef:
+    >           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >           kind: OpenStackMachineTemplate
+    >           name: brown-toad-md-0
+    >         version: 1.25.4
+    >   ---
+    >   apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    >   kind: KubeadmControlPlane
+    >   metadata:
+    >     name: brown-toad-control-plane
+    >     namespace: default
+    >   spec:
+    >     kubeadmConfigSpec:
+    >       clusterConfiguration:
+    >         apiServer:
+    >           extraArgs:
+    >             cloud-provider: external
+    >         controllerManager:
+    >           extraArgs:
+    >             cloud-provider: external
+    >       initConfiguration:
+    >         nodeRegistration:
+    >           kubeletExtraArgs:
+    >             cloud-provider: external
+    >           name: '{{ local_hostname }}'
+    >       joinConfiguration:
+    >         nodeRegistration:
+    >           kubeletExtraArgs:
+    >             cloud-provider: external
+    >           name: '{{ local_hostname }}'
+    >     machineTemplate:
+    >       infrastructureRef:
+    >         apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >         kind: OpenStackMachineTemplate
+    >         name: brown-toad-control-plane
+    >     replicas: 3
+    >     version: 1.25.4
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackCluster
+    >   metadata:
+    >     name: brown-toad
+    >     namespace: default
+    >   spec:
+    >     apiServerLoadBalancer:
+    >       enabled: true
+    >     cloudName: iris-gaia-red
+    >     dnsNameservers:
+    >     - 131.111.8.42
+    >     externalNetworkId: 57add367-d205-4030-a929-d75617a7c63e
+    >     identityRef:
+    >       kind: Secret
+    >       name: brown-toad-cloud-config
+    >     managedSecurityGroups: true
+    >     nodeCidr: 10.6.0.0/24
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackMachineTemplate
+    >   metadata:
+    >     name: brown-toad-control-plane
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         cloudName: iris-gaia-red
+    >         flavor: vm.v1.small
+    >         identityRef:
+    >           kind: Secret
+    >           name: brown-toad-cloud-config
+    >         image: ubuntu-2004-kube-v1.25.4
+    >         sshKeyName: iris-gaia-red-20230409-keypair
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackMachineTemplate
+    >   metadata:
+    >     name: brown-toad-md-0
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         cloudName: iris-gaia-red
+    >         flavor: vm.v1.large
+    >         identityRef:
+    >           kind: Secret
+    >           name: brown-toad-cloud-config
+    >         image: ubuntu-2004-kube-v1.25.4
+    >         sshKeyName: iris-gaia-red-20230409-keypair
+
+
+# -----------------------------------------------------
+# Compare the two configurations.
+#[root@bootstrap]
+
+    diff \
+        "/tmp/green-frog.yaml" \
+        "/tmp/brown-toad.yaml"
+
+    # Manually removed the name: differences.
+
+    >   20,30d19
+    >   <       files:
+    >   <       - content: W0dsb2Jh....5b28yIgo=
+    >   <         encoding: base64
+    >   <         owner: root
+    >   <         path: /etc/kubernetes/cloud.conf
+    >   <         permissions: "0600"
+    >   <       - content: Cg==
+    >   <         encoding: base64
+    >   <         owner: root
+    >   <         path: /etc/certs/cacert
+    >   <         permissions: "0600"
+    >   34,35c23
+    >   <             cloud-config: /etc/kubernetes/cloud.conf
+    >   <             cloud-provider: openstack
+    >   ---
+    >   >             cloud-provider: external
+    >   93,99c81
+    >   <           cloud-config: /etc/kubernetes/cloud.conf
+    >   <           cloud-provider: openstack
+    >   <         extraVolumes:
+    >   <         - hostPath: /etc/kubernetes/cloud.conf
+    >   <           mountPath: /etc/kubernetes/cloud.conf
+    >   <           name: cloud
+    >   <           readOnly: true
+    >   ---
+    >   >           cloud-provider: external
+    >   102,123c84
+    >   <           cloud-config: /etc/kubernetes/cloud.conf
+    >   <           cloud-provider: openstack
+    >   <         extraVolumes:
+    >   <         - hostPath: /etc/kubernetes/cloud.conf
+    >   <           mountPath: /etc/kubernetes/cloud.conf
+    >   <           name: cloud
+    >   <           readOnly: true
+    >   <         - hostPath: /etc/certs/cacert
+    >   <           mountPath: /etc/certs/cacert
+    >   <           name: cacerts
+    >   <           readOnly: true
+    >   <     files:
+    >   <     - content: W0dsb2Jh....5b28yIgo=
+    >   <       encoding: base64
+    >   <       owner: root
+    >   <       path: /etc/kubernetes/cloud.conf
+    >   <       permissions: "0600"
+    >   <     - content: Cg==
+    >   <       encoding: base64
+    >   <       owner: root
+    >   <       path: /etc/certs/cacert
+    >   <       permissions: "0600"
+    >   ---
+    >   >           cloud-provider: external
+    >   127,128c88
+    >   <           cloud-config: /etc/kubernetes/cloud.conf
+    >   <           cloud-provider: openstack
+    >   ---
+    >   >           cloud-provider: external
+    >   133,134c93
+    >   <           cloud-config: /etc/kubernetes/cloud.conf
+    >   <           cloud-provider: openstack
+    >   ---
+    >   >           cloud-provider: external
+
+
+# -----------------------------------------------------
+# Apply the basic cluster config.
+# https://cluster-api.sigs.k8s.io/user/quick-start.html#apply-the-workload-cluster
+#[root@bootstrap]
+
+    kubectl apply \
+        -f "/tmp/green-frog.yaml"
+
+    >   secret/green-frog-cloud-config created
+    >   kubeadmconfigtemplate.bootstrap.cluster.x-k8s.io/green-frog-md-0 created
+    >   cluster.cluster.x-k8s.io/green-frog created
+    >   machinedeployment.cluster.x-k8s.io/green-frog-md-0 created
+    >   kubeadmcontrolplane.controlplane.cluster.x-k8s.io/green-frog-control-plane created
+    >   openstackcluster.infrastructure.cluster.x-k8s.io/green-frog created
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/green-frog-control-plane created
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/green-frog-md-0 created
+
+
+    kubectl get cluster
+
+    >   NAME         PHASE          AGE   VERSION
+    >   green-frog   Provisioning   39s
+
+
+    clusterctl describe cluster 'green-frog'
+
+    >   NAME                                                           READY  SEVERITY  REASON                           SINCE  MESSAGE
+    >   Cluster/green-frog                                             False  Warning   ScalingUp                        62s    Scaling up control plane to 3 replicas (actual 0)
+    >   ├─ClusterInfrastructure - OpenStackCluster/green-frog
+    >   ├─ControlPlane - KubeadmControlPlane/green-frog-control-plane  False  Warning   ScalingUp                        62s    Scaling up control plane to 3 replicas (actual 0)
+    >   └─Workers
+    >     └─MachineDeployment/green-frog-md-0                          False  Warning   WaitingForAvailableMachines      62s    Minimum availability requires 3 replicas, current 0 available
+    >       └─3 Machines...                                            False  Info      WaitingForClusterInfrastructure  61s    See green-frog-md-0-7b8fd887b6xjpw4f-ldk9q, green-frog-md-0-7b8fd887b6xjpw4f-nrx7l, ...
+
+
+    kubectl \
+        -n capo-system \
+        logs \
+        -l control-plane=capo-controller-manager \
+        -c manager
+
+    >   I0413 07:50:17.652898       1 openstackmachine_controller.go:311]
+    >       "Cluster infrastructure is not ready yet, requeuing machine"
+    >       controller="openstackmachine"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackMachine"
+    >       OpenStackMachine="default/green-frog-md-0-nwg6j"
+    >       namespace="default" name="green-frog-md-0-nwg6j"
+    >       reconcileID=fcacfa63-41cb-42c8-88e8-423b375713cd
+    >       openStackMachine="green-frog-md-0-nwg6j"
+    >       machine="green-frog-md-0-7b8fd887b6xjpw4f-nrx7l"
+    >       cluster="green-frog"
+    >       openStackCluster="green-frog"
+    >   I0413 07:50:17.751852       1 openstackmachine_controller.go:311]
+    >       "Cluster infrastructure is not ready yet, requeuing machine"
+    >       controller="openstackmachine"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackMachine"
+    >       OpenStackMachine="default/green-frog-md-0-tf5vx"
+    >       namespace="default"
+    >       name="green-frog-md-0-tf5vx"
+    >       reconcileID=2940b589-75a9-4470-939e-1b29b6fc26c5 openStackMachine="green-frog-md-0-tf5vx"
+    >       machine="green-frog-md-0-7b8fd887b6xjpw4f-ldk9q"
+    >       cluster="green-frog"
+    >       openStackCluster="green-frog"
+    >   I0413 07:50:18.766433       1 openstackcluster_controller.go:255]
+    >       "Reconciling Cluster" controller="openstackcluster"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackCluster"
+    >       OpenStackCluster="default/green-frog"
+    >       namespace="default"
+    >       name="green-frog"
+    >       reconcileID=4c20770b-c11c-4747-8407-8fc285506e5c
+    >       cluster="green-frog"
+    >   I0413 07:50:18.766921       1 openstackcluster_controller.go:427]
+    >       "Reconciling network components"
+    >       controller="openstackcluster"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackCluster"
+    >       OpenStackCluster="default/green-frog"
+    >       namespace="default"
+    >       name="green-frog"
+    >       reconcileID=4c20770b-c11c-4747-8407-8fc285506e5c
+    >       cluster="green-frog"
+    >   I0413 07:50:19.189414       1 network.go:93]
+    >       "Reconciling network"
+    >       controller="openstackcluster"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackCluster"
+    >       OpenStackCluster="default/green-frog"
+    >       namespace="default"
+    >       reconcileID=4c20770b-c11c-4747-8407-8fc285506e5c
+    >       cluster="green-frog"
+    >       name="k8s-clusterapi-cluster-default-green-frog"
+    >   I0413 07:50:19.326698       1 network.go:177]
+    >       "Reconciling subnet"
+    >       controller="openstackcluster"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackCluster"
+    >       OpenStackCluster="default/green-frog"
+    >       namespace="default"
+    >       reconcileID=4c20770b-c11c-4747-8407-8fc285506e5c
+    >       cluster="green-frog"
+    >       name="k8s-clusterapi-cluster-default-green-frog"
+    >   I0413 07:50:19.386766       1 router.go:48]
+    >       "Reconciling router"
+    >       controller="openstackcluster"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackCluster"
+    >       OpenStackCluster="default/green-frog"
+    >       namespace="default"
+    >       reconcileID=4c20770b-c11c-4747-8407-8fc285506e5c
+    >       cluster="green-frog"
+    >       name="k8s-clusterapi-cluster-default-green-frog"
+    >   I0413 07:50:19.673055       1 securitygroups.go:40]
+    >       "Reconciling security groups"
+    >       controller="openstackcluster"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackCluster"
+    >       OpenStackCluster="default/green-frog"
+    >       namespace="default"
+    >       name="green-frog"
+    >       reconcileID=4c20770b-c11c-4747-8407-8fc285506e5c
+    >       cluster="default-green-frog"
+    >   I0413 07:50:20.077745       1 loadbalancer.go:52]
+    >       "Reconciling load balancer"
+    >       controller="openstackcluster"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackCluster"
+    >       OpenStackCluster="default/green-frog"
+    >       namespace="default"
+    >       reconcileID=4c20770b-c11c-4747-8407-8fc285506e5c
+    >       cluster="green-frog"
+    >       name="k8s-clusterapi-cluster-default-green-frog-kubeapi"
+    >   E0413 07:50:20.101555       1 controller.go:326]
+    >       "Reconciler error"
+    >       err="
+    >           failed to reconcile load balancer:
+    >           listing providers:
+    >               Request forbidden:
+    >                   [GET https://arcus.openstack.hpc.cam.ac.uk:9876/v2.0/lbaas/providers],
+    >                   error message: {
+    >                       \"faultcode\": \"Client\",
+    >                       \"faultstring\":
+    >                       \"Policy does not allow this request to be performed.\",
+    >                       \"debuginfo\": null
+    >                       }
+    >           "
+    >       controller="openstackcluster"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackCluster"
+    >       OpenStackCluster="default/green-frog"
+    >       namespace="default"
+    >       name="green-frog"
+    >       reconcileID=4c20770b-c11c-4747-8407-8fc285506e5c
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# List components created in Openstack.
+#[root@ansibler]
+
+    /deployments/openstack/bin/list-all.sh  "${cloudname:?}"
+
+    >   ---- ---- ----
+    >   File [list-all.sh]
+    >   Path [/deployments/openstack/bin]
+    >   Tree [/deployments]
+    >   ---- ---- ----
+    >   Cloud name [iris-gaia-red]
+    >   ---- ---- ----
+    >   
+    >   ---- ----
+    >   Clusters
+    >   public endpoint for container service in RegionOne region not found
+    >   
+    >   ---- ----
+    >   Servers
+    >   +--------------------------------------+----------------------------------+--------+---------------------------------------------------------------------+---------------+----------------------+
+    >   | ID                                   | Name                             | Status | Networks                                                            | Image         | Flavor               |
+    >   +--------------------------------------+----------------------------------+--------+---------------------------------------------------------------------+---------------+----------------------+
+    >   | 6ebcc6f5-96a7-4f75-a80c-98b7a9c731ee | iris-gaia-red-20230413-bootstrap | ACTIVE | iris-gaia-red-20230413-internal-network=10.10.1.251, 128.232.226.40 | Fedora-34.1.2 | gaia.vm.cclake.2vcpu |
+    >   +--------------------------------------+----------------------------------+--------+---------------------------------------------------------------------+---------------+----------------------+
+    >   
+    >   ---- ----
+    >   Volumes
+    >   
+    >   
+    >   ---- ----
+    >   Floating addresses
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | ID                                   | Floating IP Address | Fixed IP Address | Port                                 | Floating Network                     | Project                          |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | 616893d6-0fc8-403d-ad60-df394791bb96 | 128.232.226.40      | 10.10.1.251      | 15daa375-25d7-423d-8b89-2b06bfad7475 | 57add367-d205-4030-a929-d75617a7c63e | 0dd8cc5ee5a7455c8748cc06d04c93c3 |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   
+    >   ---- ----
+    >   Routers
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                      | Status | State | Project                          |
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+    >   | 4579e1cb-95d1-4545-b78d-6a667f3c3da3 | k8s-clusterapi-cluster-default-green-frog | ACTIVE | UP    | 0dd8cc5ee5a7455c8748cc06d04c93c3 |
+    >   | ec06054d-b1b2-4760-944a-4b297c6b1fe7 | iris-gaia-red-20230413-internal-router    | ACTIVE | UP    | 0dd8cc5ee5a7455c8748cc06d04c93c3 |
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+    >   
+    >   ---- ----
+    >   Networks
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | ID                                   | Name                                      | Subnets                                                                                                                                                |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | 2a1cf99f-45e9-4e24-950e-0f8fbd9f53e4 | k8s-clusterapi-cluster-default-green-frog | 3554a23e-a61e-44de-be36-daa6dd0d6356                                                                                                                   |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                                    | 5699fb5d-8316-4b88-b889-b05c8a1ec975                                                                                                                   |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet                             | 1847b14d-b974-4f78-959d-44d18d4485b8, 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42, 5f1388b3-a0c7-463e-bb58-5532c38e4b40, a79eb610-eca3-4ee8-aaf1-88f4fef5a4e7 |
+    >   | b5c171c1-c1aa-426d-b18e-d2f674b4c9d3 | iris-gaia-red-20230413-internal-network   | 654292f5-b828-47fd-a7da-b715b959ed70                                                                                                                   |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   
+    >   ---- ----
+    >   Subnets
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------+--------------+
+    >   | ID                                   | Name                                      | Network                              | Subnet       |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------+--------------+
+    >   | 3554a23e-a61e-44de-be36-daa6dd0d6356 | k8s-clusterapi-cluster-default-green-frog | 2a1cf99f-45e9-4e24-950e-0f8fbd9f53e4 | 10.6.0.0/24  |
+    >   | 5699fb5d-8316-4b88-b889-b05c8a1ec975 | cephfs                                    | 410920fb-5714-4447-b26a-e7b06092fc62 | 10.9.0.0/16  |
+    >   | 654292f5-b828-47fd-a7da-b715b959ed70 | iris-gaia-red-20230413-internal-subnet    | b5c171c1-c1aa-426d-b18e-d2f674b4c9d3 | 10.10.0.0/16 |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------+--------------+
+    >   
+    >   ---- ----
+    >   Security groups
+    >   +--------------------------------------+------------------------------------------------------+---------------------------+----------------------------------+------+
+    >   | ID                                   | Name                                                 | Description               | Project                          | Tags |
+    >   +--------------------------------------+------------------------------------------------------+---------------------------+----------------------------------+------+
+    >   | 077e293f-1f22-49ea-8d63-0914d242ea6f | k8s-cluster-default-green-frog-secgroup-controlplane | Cluster API managed group | 0dd8cc5ee5a7455c8748cc06d04c93c3 | []   |
+    >   | 0f3c7a9d-d55b-4833-bf72-4f68ab82f36f | k8s-cluster-default-green-frog-secgroup-worker       | Cluster API managed group | 0dd8cc5ee5a7455c8748cc06d04c93c3 | []   |
+    >   | 470418c6-7fb6-420d-869d-f1063eccd6f8 | default                                              | Default security group    | 0dd8cc5ee5a7455c8748cc06d04c93c3 | []   |
+    >   | d649729c-2225-4f3b-a76b-194b96862d13 | iris-gaia-red-20230413-bootstrap-security            |                           | 0dd8cc5ee5a7455c8748cc06d04c93c3 | []   |
+    >   +--------------------------------------+------------------------------------------------------+---------------------------+----------------------------------+------+
+
+    #
+    # So we have some of our components, but not all.
+    # Which implies that basic auth is not the issue.
+    #
+    # Looking at the error message, it looks like we aren't allowed to list load balancer providerss ?
+    # https://docs.openstack.org/api-ref/load-balancer/v2/?expanded=list-providers-detail#providers
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create an unrestricetd application credential our Openstack project
+# and add it to our clouds.yaml file.
+#[root@bootstrap]
+
+    vi /etc/openstack/clouds.yaml
+
+    +    iris-gaia-red-admin:
+    +      auth:
+    +        auth_url: https://arcus.openstack.hpc.cam.ac.uk:5000
+    +        application_credential_id: "...."
+    +        application_credential_secret: "...."
+    +      region_name: "RegionOne"
+    +      interface: "public"
+    +      identity_api_version: 3
+    +      auth_type: "v3applicationcredential"
+    +      verify: false
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Update the cloud name to use the new credentials.
+#[root@bootstrap]
+
+    export OPENSTACK_CLOUD=iris-gaia-red-admin
+
+
+# -----------------------------------------------------
+# Use the script provided by cluster-api-provider-openstack to parse our clouds.yaml file.
+# https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#generate-credentials
+# https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/docs/book/src/clusteropenstack/configuration.md#generate-credentials
+#[root@bootstrap]
+
+    source '/tmp/env.rc' '/etc/openstack/clouds.yaml' "${OPENSTACK_CLOUD:?}"
+
+cat << EOF
+OPENSTACK_CLOUD_YAML_B64   [${OPENSTACK_CLOUD_YAML_B64}]
+OPENSTACK_CLOUD_CACERT_B64 [${OPENSTACK_CLOUD_CACERT_B64}]
+OPENSTACK_CLOUD_PROVIDER_CONF_B64 [${OPENSTACK_CLOUD_PROVIDER_CONF_B64}]
+EOF
+
+    >   OPENSTACK_CLOUD_YAML_B64   [Y2xvdWRz....mYWxzZQo=]
+    >   OPENSTACK_CLOUD_CACERT_B64 [Cg==]
+    >   OPENSTACK_CLOUD_PROVIDER_CONF_B64 [W0dsb2Jh....xdTJ2Igo=]
+
+
+# -----------------------------------------------------
+# Delete the existing cluster.
+#[root@bootstrap]
+
+    CLUSTER_NAME=green-frog
+
+    kubectl delete cluster "${CLUSTER_NAME:?}"
+
+    >   cluster.cluster.x-k8s.io "green-frog" deleted
+
+    #
+    # Command hangs, nothing happening.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# All the Openstack components we created are still present.
+#[root@ansibler]
+
+    /deployments/openstack/bin/list-all.sh  "${cloudname:?}"
+
+    >   ....
+    >   ....
+    >   ---- ----
+    >   Routers
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                      | Status | State | Project                          |
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+    >   | 4579e1cb-95d1-4545-b78d-6a667f3c3da3 | k8s-clusterapi-cluster-default-green-frog | ACTIVE | UP    | 0dd8cc5ee5a7455c8748cc06d04c93c3 |
+    >   | ec06054d-b1b2-4760-944a-4b297c6b1fe7 | iris-gaia-red-20230413-internal-router    | ACTIVE | UP    | 0dd8cc5ee5a7455c8748cc06d04c93c3 |
+    >   +--------------------------------------+-------------------------------------------+--------+-------+----------------------------------+
+    >   
+    >   ---- ----
+    >   Networks
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | ID                                   | Name                                      | Subnets                                                                                                                                                |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | 2a1cf99f-45e9-4e24-950e-0f8fbd9f53e4 | k8s-clusterapi-cluster-default-green-frog | 3554a23e-a61e-44de-be36-daa6dd0d6356                                                                                                                   |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                                    | 5699fb5d-8316-4b88-b889-b05c8a1ec975                                                                                                                   |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet                             | 1847b14d-b974-4f78-959d-44d18d4485b8, 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42, 5f1388b3-a0c7-463e-bb58-5532c38e4b40, a79eb610-eca3-4ee8-aaf1-88f4fef5a4e7 |
+    >   | b5c171c1-c1aa-426d-b18e-d2f674b4c9d3 | iris-gaia-red-20230413-internal-network   | 654292f5-b828-47fd-a7da-b715b959ed70                                                                                                                   |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   
+    >   ---- ----
+    >   Subnets
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------+--------------+
+    >   | ID                                   | Name                                      | Network                              | Subnet       |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------+--------------+
+    >   | 3554a23e-a61e-44de-be36-daa6dd0d6356 | k8s-clusterapi-cluster-default-green-frog | 2a1cf99f-45e9-4e24-950e-0f8fbd9f53e4 | 10.6.0.0/24  |
+    >   | 5699fb5d-8316-4b88-b889-b05c8a1ec975 | cephfs                                    | 410920fb-5714-4447-b26a-e7b06092fc62 | 10.9.0.0/16  |
+    >   | 654292f5-b828-47fd-a7da-b715b959ed70 | iris-gaia-red-20230413-internal-subnet    | b5c171c1-c1aa-426d-b18e-d2f674b4c9d3 | 10.10.0.0/16 |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------+--------------+
+    >   
+    >   ---- ----
+    >   Security groups
+    >   +--------------------------------------+------------------------------------------------------+---------------------------+----------------------------------+------+
+    >   | ID                                   | Name                                                 | Description               | Project                          | Tags |
+    >   +--------------------------------------+------------------------------------------------------+---------------------------+----------------------------------+------+
+    >   | 077e293f-1f22-49ea-8d63-0914d242ea6f | k8s-cluster-default-green-frog-secgroup-controlplane | Cluster API managed group | 0dd8cc5ee5a7455c8748cc06d04c93c3 | []   |
+    >   | 0f3c7a9d-d55b-4833-bf72-4f68ab82f36f | k8s-cluster-default-green-frog-secgroup-worker       | Cluster API managed group | 0dd8cc5ee5a7455c8748cc06d04c93c3 | []   |
+    >   | 470418c6-7fb6-420d-869d-f1063eccd6f8 | default                                              | Default security group    | 0dd8cc5ee5a7455c8748cc06d04c93c3 | []   |
+    >   | d649729c-2225-4f3b-a76b-194b96862d13 | iris-gaia-red-20230413-bootstrap-security            |                           | 0dd8cc5ee5a7455c8748cc06d04c93c3 | []   |
+    >   +--------------------------------------+------------------------------------------------------+---------------------------+----------------------------------+------+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Ctrl^C to exit and try disagnose the problem.
+#[root@bootstrap]
+
+    kubectl get cluster
+
+    >   NAME         PHASE      AGE    VERSION
+    >   green-frog   Deleting   141m
+
+
+    clusterctl describe cluster 'green-frog'
+
+    >   NAME                                                                 READY  SEVERITY  REASON   SINCE  MESSAGE
+    >   !! DELETED !! Cluster/green-frog                                     False  Info      Deleted  8m11s
+    >   └─!! DELETED !! ClusterInfrastructure - OpenStackCluster/green-frog
+
+
+    kubectl \
+        -n capo-system \
+        logs \
+        -l control-plane=capo-controller-manager \
+        -c manager
+
+    >   ....
+    >   ....
+    >   I0413 10:02:37.825692       1 http.go:96]
+    >       "controller-runtime/webhook/webhooks: received request"
+    >       webhook="/validate-infrastructure-cluster-x-k8s-io-v1alpha6-openstackmachine"
+    >       UID=cb029bdd-4fb0-4832-813c-bc623bb19a5a
+    >       kind="infrastructure.cluster.x-k8s.io/v1alpha6,
+    >       Kind=OpenStackMachine"
+    >       resource={
+    >           Group:infrastructure.cluster.x-k8s.io
+    >           Version:v1alpha6 Resource:openstackmachines
+    >           }
+    >   I0413 10:02:37.827408       1 http.go:143]
+    >       "controller-runtime/webhook/webhooks: wrote response"
+    >       webhook="/validate-infrastructure-cluster-x-k8s-io-v1alpha6-openstackmachine"
+    >       code=200
+    >       reason=
+    >           UID=cb029bdd-4fb0-4832-813c-bc623bb19a5a
+    >           allowed=true
+    >   I0413 10:02:37.835151       1 http.go:143]
+    >       "controller-runtime/webhook/webhooks: wrote response"
+    >       webhook="/validate-infrastructure-cluster-x-k8s-io-v1alpha6-openstackmachine"
+    >       code=200
+    >       reason=
+    >           UID=13fe5ca5-311c-48a0-bf09-d55854e1ce7b
+    >           allowed=true
+    >   E0413 10:02:37.841991       1 controller.go:326]
+    >       "Reconciler error"
+    >           err="openstackmachines.infrastructure.cluster.x-k8s.io \"green-frog-md-0-thvpf\" not found"
+    >           controller="openstackmachine"
+    >           controllerGroup="infrastructure.cluster.x-k8s.io"
+    >           controllerKind="OpenStackMachine"
+    >           OpenStackMachine="default/green-frog-md-0-thvpf"
+    >           namespace="default"
+    >           name="green-frog-md-0-thvpf"
+    >           reconcileID=b6ca2914-65d6-4771-9e88-98c71901b069
+    >   E0413 10:02:37.848058       1 controller.go:326]
+    >       "Reconciler error"
+    >           err="openstackmachines.infrastructure.cluster.x-k8s.io \"green-frog-md-0-tf5vx\" not found"
+    >           controller="openstackmachine"
+    >           controllerGroup="infrastructure.cluster.x-k8s.io"
+    >           controllerKind="OpenStackMachine"
+    >           OpenStackMachine="default/green-frog-md-0-tf5vx"
+    >           namespace="default"
+    >           name="green-frog-md-0-tf5vx"
+    >           reconcileID=cffbb69d-aea6-4b7e-9cb7-33b788768a19
+    >   E0413 10:02:37.851451       1 controller.go:326]
+    >       "Reconciler error"
+    >           err="openstackmachines.infrastructure.cluster.x-k8s.io \"green-frog-md-0-nwg6j\"not found"
+    >           controller="openstackmachine"
+    >           controllerGroup="infrastructure.cluster.x-k8s.io"
+    >           controllerKind="OpenStackMachine"
+    >           OpenStackMachine="default/green-frog-md-0-nwg6j"
+    >           namespace="default"
+    >           name="green-frog-md-0-nwg6j"
+    >           reconcileID=d10cf469-432a-43a7-8c4b-4bca63676264
+    >   I0413 10:02:41.937456       1 openstackcluster_controller.go:136]
+    >       "Reconciling Cluster delete"
+    >           controller="openstackcluster"
+    >           controllerGroup="infrastructure.cluster.x-k8s.io"
+    >           controllerKind="OpenStackCluster"
+    >           OpenStackCluster="default/green-frog"
+    >           namespace="default"
+    >           name="green-frog"
+    >           reconcileID=1e0e2ff0-87a6-45b6-912e-bdacd0ed4969
+    >           cluster="green-frog"
+    >   E0413 10:02:42.626219       1 controller.go:326]
+    >       "Reconciler error"
+    >           err="
+    >               failed to delete load balancer:
+    >               Request forbidden: [GET https://arcus.openstack.hpc.cam.ac.uk:9876/v2.0/lbaas/loadbalancers?name=k8s-clusterapi-cluster-default-green-frog-kubeapi],
+    >               error message: {
+    >                   \"faultcode\": \"Client\",
+    >                   \"faultstring\": \"Policy does not allow this request to be performed.\",
+    >                   \"debuginfo\": null
+    >                   }
+    >               "
+    >           controller="openstackcluster"
+    >           controllerGroup="infrastructure.cluster.x-k8s.io"
+    >           controllerKind="OpenStackCluster"
+    >           OpenStackCluster="default/green-frog"
+    >           namespace="default"
+    >           name="green-frog"
+    >           reconcileID=1e0e2ff0-87a6-45b6-912e-bdacd0ed4969
+    >   I0413 10:08:31.221776       1 openstackcluster_controller.go:136]
+    >       "Reconciling Cluster delete"
+    >           controller="openstackcluster"
+    >           controllerGroup="infrastructure.cluster.x-k8s.io"
+    >           controllerKind="OpenStackCluster"
+    >           OpenStackCluster="default/green-frog" namespace="default"
+    >           name="green-frog"
+    >           reconcileID=1f3ea8b5-916f-42d3-8fd4-a2d868c6887b
+    >           cluster="green-frog"
+    >   E0413 10:08:31.910722       1 controller.go:326]
+    >       "Reconciler error"
+    >           err="
+    >               failed to delete load balancer: Request forbidden: [GET https://arcus.openstack.hpc.cam.ac.uk:9876/v2.0/lbaas/loadbalancers?name=k8s-clusterapi-cluster-default-green-frog-kubeapi],
+    >               error message: {
+    >                   \"faultcode\": \"Client\",
+    >                   \"faultstring\": \"Policy does not allow this request to be performed.\",
+    >                   \"debuginfo\": null
+    >                   }
+    >               "
+    >           controller="openstackcluster"
+    >           controllerGroup="infrastructure.cluster.x-k8s.io"
+    >           controllerKind="OpenStackCluster"
+    >           OpenStackCluster="default/green-frog"
+    >           namespace="default"
+    >           name="green-frog"
+    >           reconcileID=1f3ea8b5-916f-42d3-8fd4-a2d868c6887b
+
+    #
+    # Same issue that prevented us from creating a loadbalancer is preventing us from deleting it (or listing before we delete).
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Delete the cluster router.
+# Code copied from /deployments/openstack/bin/delete-all.sh
+#[root@ansibler]
+
+    clustername=k8s-clusterapi-cluster-default-green-frog
+
+    for routerid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router list \
+                --format json \
+        | jq -r ".[] | select(.Name | startswith(\"${clustername}\")) | .ID"
+        )
+    do
+
+        echo "- Router [${routerid}]"
+        echo "-- Deleting routes"
+        for routedesc in $(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                router show \
+                    --format json \
+                    "${routerid:?}" \
+            | jq -r '.routes[] | "gateway=" + .nexthop + ",destination=" + .destination'
+            )
+        do
+            echo "--- Deleting route [${routedesc}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                router unset \
+                    --route "${routedesc:?}" \
+                    "${routerid:?}"
+        done
+
+        echo "-- Deleting ports"
+        for portid in $(
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                router show \
+                    --format json \
+                    "${routerid:?}" \
+                | jq -r '.interfaces_info[].port_id'
+                )
+                do
+                    echo "--- Deleting port [${portid}]"
+                    openstack \
+                        --os-cloud "${cloudname:?}" \
+                        router remove port \
+                            "${routerid:?}" \
+                            "${portid:?}"
+                done
+
+        echo "- Deleting router [${routerid}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            router delete \
+                "${routerid:?}"
+    done
+
+    >   - Router [4579e1cb-95d1-4545-b78d-6a667f3c3da3]
+    >   -- Deleting routes
+    >   -- Deleting ports
+    >   --- Deleting port [df5399f7-890f-4981-bf7f-81d365771e62]
+    >   - Deleting router [4579e1cb-95d1-4545-b78d-6a667f3c3da3]
+
+
+# -----------------------------------------------------
+# Delete the cluster subnet.
+#[root@ansibler]
+
+    for subnetid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet list \
+                --format json \
+        | jq -r ".[] | select(.Name | startswith(\"${clustername}\")) | .ID"
+        )
+    do
+        echo "- Subnet [${subnetid}]"
+
+        echo "-- Deleting subnet ports"
+        for subportid in $(
+                openstack \
+                    --os-cloud "${cloudname:?}" \
+                    port list \
+                        --fixed-ip "subnet=${subnetid:?}" \
+                        --format json \
+                | jq -r '.[] | .ID'
+                )
+
+        do
+            echo "--- Deleting subnet port [${subportid}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                port delete \
+                    "${subportid:?}"
+
+        done
+
+        echo "- Deleting subnet [${subnetid}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            subnet delete \
+                "${subnetid:?}"
+    done
+
+    >   - Subnet [3554a23e-a61e-44de-be36-daa6dd0d6356]
+    >   -- Deleting subnet ports
+    >   --- Deleting subnet port [7dd50f27-1915-4f90-b112-fa16286cb03f]
+    >   --- Deleting subnet port [8e661d55-0a16-42b8-a783-e481df760d36]
+    >   - Deleting subnet [3554a23e-a61e-44de-be36-daa6dd0d6356]
+
+
+# -----------------------------------------------------
+# Delete our cluster network.
+#[root@ansibler]
+
+    for networkid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+                --format json \
+        | jq -r ".[] | select(.Name | startswith(\"${clustername}\")) | .ID"
+        )
+    do
+        echo "- Deleting network [${networkid}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network delete \
+                "${networkid:?}"
+    done
+
+    >   - Deleting network [2a1cf99f-45e9-4e24-950e-0f8fbd9f53e4]
+
+
+# -----------------------------------------------------
+# Delete our cluster security groups.
+#[root@ansibler]
+
+    # YES, this does use a different format for the cluster name.
+    clustername=k8s-cluster-default-green-frog-secgroup-controlplane
+    # Simpler to use a partial match for all the K8scomponents.
+    clustername=k8s-cluster
+
+    for groupid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            security group list \
+                --format json \
+        | jq -r ".[] | select(.Name | startswith(\"${clustername}\")) | .ID"
+        )
+    do
+        echo "- Deleting security group [${groupid}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            security group delete \
+                "${groupid:?}"
+    done
+
+    >   - Deleting security group [077e293f-1f22-49ea-8d63-0914d242ea6f]
+    >   - Deleting security group [0f3c7a9d-d55b-4833-bf72-4f68ab82f36f]
+
+
+# -----------------------------------------------------
+# Check what is left.
+#[root@ansibler]
+
+    /deployments/openstack/bin/list-all.sh  "${cloudname:?}"
+
+    >   ---- ----
+    >   Servers
+    >   +--------------------------------------+----------------------------------+--------+---------------------------------------------------------------------+---------------+----------------------+
+    >   | ID                                   | Name                             | Status | Networks                                                            | Image         | Flavor               |
+    >   +--------------------------------------+----------------------------------+--------+---------------------------------------------------------------------+---------------+----------------------+
+    >   | 6ebcc6f5-96a7-4f75-a80c-98b7a9c731ee | iris-gaia-red-20230413-bootstrap | ACTIVE | iris-gaia-red-20230413-internal-network=10.10.1.251, 128.232.226.40 | Fedora-34.1.2 | gaia.vm.cclake.2vcpu |
+    >   +--------------------------------------+----------------------------------+--------+---------------------------------------------------------------------+---------------+----------------------+
+    >   
+    >   ---- ----
+    >   Volumes
+    >   
+    >   ---- ----
+    >   Floating addresses
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | ID                                   | Floating IP Address | Fixed IP Address | Port                                 | Floating Network                     | Project                          |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | 616893d6-0fc8-403d-ad60-df394791bb96 | 128.232.226.40      | 10.10.1.251      | 15daa375-25d7-423d-8b89-2b06bfad7475 | 57add367-d205-4030-a929-d75617a7c63e | 0dd8cc5ee5a7455c8748cc06d04c93c3 |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   
+    >   ---- ----
+    >   Routers
+    >   +--------------------------------------+----------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                   | Status | State | Project                          |
+    >   +--------------------------------------+----------------------------------------+--------+-------+----------------------------------+
+    >   | ec06054d-b1b2-4760-944a-4b297c6b1fe7 | iris-gaia-red-20230413-internal-router | ACTIVE | UP    | 0dd8cc5ee5a7455c8748cc06d04c93c3 |
+    >   +--------------------------------------+----------------------------------------+--------+-------+----------------------------------+
+    >   
+    >   ---- ----
+    >   Networks
+    >   +--------------------------------------+-----------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | ID                                   | Name                                    | Subnets                                                                                                                                                |
+    >   +--------------------------------------+-----------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                                  | 5699fb5d-8316-4b88-b889-b05c8a1ec975                                                                                                                   |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet                           | 1847b14d-b974-4f78-959d-44d18d4485b8, 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42, 5f1388b3-a0c7-463e-bb58-5532c38e4b40, a79eb610-eca3-4ee8-aaf1-88f4fef5a4e7 |
+    >   | b5c171c1-c1aa-426d-b18e-d2f674b4c9d3 | iris-gaia-red-20230413-internal-network | 654292f5-b828-47fd-a7da-b715b959ed70                                                                                                                   |
+    >   +--------------------------------------+-----------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   
+    >   ---- ----
+    >   Subnets
+    >   +--------------------------------------+----------------------------------------+--------------------------------------+--------------+
+    >   | ID                                   | Name                                   | Network                              | Subnet       |
+    >   +--------------------------------------+----------------------------------------+--------------------------------------+--------------+
+    >   | 5699fb5d-8316-4b88-b889-b05c8a1ec975 | cephfs                                 | 410920fb-5714-4447-b26a-e7b06092fc62 | 10.9.0.0/16  |
+    >   | 654292f5-b828-47fd-a7da-b715b959ed70 | iris-gaia-red-20230413-internal-subnet | b5c171c1-c1aa-426d-b18e-d2f674b4c9d3 | 10.10.0.0/16 |
+    >   +--------------------------------------+----------------------------------------+--------------------------------------+--------------+
+    >   
+    >   ---- ----
+    >   Security groups
+    >   +--------------------------------------+-------------------------------------------+------------------------+----------------------------------+------+
+    >   | ID                                   | Name                                      | Description            | Project                          | Tags |
+    >   +--------------------------------------+-------------------------------------------+------------------------+----------------------------------+------+
+    >   | 470418c6-7fb6-420d-869d-f1063eccd6f8 | default                                   | Default security group | 0dd8cc5ee5a7455c8748cc06d04c93c3 | []   |
+    >   | d649729c-2225-4f3b-a76b-194b96862d13 | iris-gaia-red-20230413-bootstrap-security |                        | 0dd8cc5ee5a7455c8748cc06d04c93c3 | []   |
+    >   +--------------------------------------+-------------------------------------------+------------------------+----------------------------------+------+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check what kubectl thinks is there
+#[root@bootstrap]
+
+    kubectl get cluster
+
+    >   NAME         PHASE      AGE     VERSION
+    >   green-frog   Deleting   5h14m
+
+
+    clusterctl describe cluster 'green-frog'
+
+    >   NAME                                                                 READY  SEVERITY  REASON   SINCE  MESSAGE
+    >   !! DELETED !! Cluster/green-frog                                     False  Info      Deleted  3h1m
+    >   └─!! DELETED !! ClusterInfrastructure - OpenStackCluster/green-frog
+
+
+    kubectl delete cluster 'green-frog'
+
+    >   ....
+
+    #
+    # The delete command still hangs.
+    # No timeout on the list operation :-(
+    #
+
+    kubectl get pods --all-namespaces
+
+    >   NAMESPACE                           NAME                                                             READY   STATUS    RESTARTS   AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-8654485994-8dxrx       1/1     Running   0          8h
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-5d9d9494d5-58rzg   1/1     Running   0          8h
+    >   capi-system                         capi-controller-manager-746b4f5db4-crwpl                         1/1     Running   0          8h
+    >   capo-system                         capo-controller-manager-775d744795-sbkm6                         1/1     Running   0          8h
+    >   cert-manager                        cert-manager-99bb69456-97c47                                     1/1     Running   0          8h
+    >   cert-manager                        cert-manager-cainjector-ffb4747bb-2z4xp                          1/1     Running   0          8h
+    >   cert-manager                        cert-manager-webhook-545bd5d7d8-fllb4                            1/1     Running   0          8h
+    >   kube-system                         coredns-565d847f94-ckxmb                                         1/1     Running   0          8h
+    >   kube-system                         coredns-565d847f94-vrqjw                                         1/1     Running   0          8h
+    >   kube-system                         etcd-kind-control-plane                                          1/1     Running   0          8h
+    >   kube-system                         kindnet-hwbdf                                                    1/1     Running   0          8h
+    >   kube-system                         kube-apiserver-kind-control-plane                                1/1     Running   0          8h
+    >   kube-system                         kube-controller-manager-kind-control-plane                       1/1     Running   0          8h
+    >   kube-system                         kube-proxy-ttjgm                                                 1/1     Running   0          8h
+    >   kube-system                         kube-scheduler-kind-control-plane                                1/1     Running   0          8h
+    >   local-path-storage                  local-path-provisioner-684f458cdd-dglhf                          1/1     Running   0          8h
+
+
+    kubectl get secrets  --all-namespaces
+
+    >   NAMESPACE                           NAME                                              TYPE                            DATA   AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-webhook-service-cert       kubernetes.io/tls               3      8h
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-webhook-service-cert   kubernetes.io/tls               3      8h
+    >   capi-system                         capi-webhook-service-cert                         kubernetes.io/tls               3      8h
+    >   capo-system                         capo-webhook-service-cert                         kubernetes.io/tls               3      8h
+    >   cert-manager                        cert-manager-webhook-ca                           Opaque                          3      8h
+    >   default                             green-frog-cloud-config                           Opaque                          2      5h22m
+    >   kube-system                         bootstrap-token-abcdef                            bootstrap.kubernetes.io/token   6      8h
+
+
+    kubectl describe nodes
+
+    >   Name:               kind-control-plane
+    >   Roles:              control-plane
+    >   Labels:             beta.kubernetes.io/arch=amd64
+    >                       beta.kubernetes.io/os=linux
+    >                       kubernetes.io/arch=amd64
+    >                       kubernetes.io/hostname=kind-control-plane
+    >                       kubernetes.io/os=linux
+    >                       node-role.kubernetes.io/control-plane=
+    >                       node.kubernetes.io/exclude-from-external-load-balancers=
+    >   Annotations:        kubeadm.alpha.kubernetes.io/cri-socket: unix:///run/containerd/containerd.sock
+    >                       node.alpha.kubernetes.io/ttl: 0
+    >                       volumes.kubernetes.io/controller-managed-attach-detach: true
+    >   CreationTimestamp:  Thu, 13 Apr 2023 04:52:57 +0000
+    >   Taints:             <none>
+    >   Unschedulable:      false
+    >   Lease:
+    >     HolderIdentity:  kind-control-plane
+    >     AcquireTime:     <unset>
+    >     RenewTime:       Thu, 13 Apr 2023 13:08:53 +0000
+    >   Conditions:
+    >     Type             Status  LastHeartbeatTime                 LastTransitionTime                Reason                       Message
+    >     ----             ------  -----------------                 ------------------                ------                       -------
+    >     MemoryPressure   False   Thu, 13 Apr 2023 13:05:45 +0000   Thu, 13 Apr 2023 04:52:51 +0000   KubeletHasSufficientMemory   kubelet has sufficient memory available
+    >     DiskPressure     False   Thu, 13 Apr 2023 13:05:45 +0000   Thu, 13 Apr 2023 04:52:51 +0000   KubeletHasNoDiskPressure     kubelet has no disk pressure
+    >     PIDPressure      False   Thu, 13 Apr 2023 13:05:45 +0000   Thu, 13 Apr 2023 04:52:51 +0000   KubeletHasSufficientPID      kubelet has sufficient PID available
+    >     Ready            True    Thu, 13 Apr 2023 13:05:45 +0000   Thu, 13 Apr 2023 04:53:20 +0000   KubeletReady                 kubelet is posting ready status
+    >   Addresses:
+    >     InternalIP:  172.18.0.2
+    >     Hostname:    kind-control-plane
+    >   Capacity:
+    >     cpu:                2
+    >     ephemeral-storage:  14383092Ki
+    >     hugepages-1Gi:      0
+    >     hugepages-2Mi:      0
+    >     memory:             3053244Ki
+    >     pods:               110
+    >   Allocatable:
+    >     cpu:                2
+    >     ephemeral-storage:  14383092Ki
+    >     hugepages-1Gi:      0
+    >     hugepages-2Mi:      0
+    >     memory:             3053244Ki
+    >     pods:               110
+    >   System Info:
+    >     Machine ID:                        ab24e0cffaec4f26ad9ca1576f776cee
+    >     System UUID:                       8346047f-61ae-43ff-ad10-268512bffb79
+    >     Boot ID:                           98ab16ee-8388-4a0c-adcd-fb2410857aa5
+    >     Kernel Version:                    5.11.12-300.fc34.x86_64
+    >     OS Image:                          Ubuntu 22.04.1 LTS
+    >     Operating System:                  linux
+    >     Architecture:                      amd64
+    >     Container Runtime Version:         containerd://1.6.9
+    >     Kubelet Version:                   v1.25.3
+    >     Kube-Proxy Version:                v1.25.3
+    >   PodCIDR:                             10.244.0.0/24
+    >   PodCIDRs:                            10.244.0.0/24
+    >   ProviderID:                          kind://docker/kind/kind-control-plane
+    >   Non-terminated Pods:                 (16 in total)
+    >     Namespace                          Name                                                              CPU Requests  CPU Limits  Memory Requests  Memory Limits  Age
+    >     ---------                          ----                                                              ------------  ----------  ---------------  -------------  ---
+    >     capi-kubeadm-bootstrap-system      capi-kubeadm-bootstrap-controller-manager-8654485994-8dxrx        0 (0%)        0 (0%)      0 (0%)           0 (0%)         8h
+    >     capi-kubeadm-control-plane-system  capi-kubeadm-control-plane-controller-manager-5d9d9494d5-58rzg    0 (0%)        0 (0%)      0 (0%)           0 (0%)         8h
+    >     capi-system                        capi-controller-manager-746b4f5db4-crwpl                          0 (0%)        0 (0%)      0 (0%)           0 (0%)         8h
+    >     capo-system                        capo-controller-manager-775d744795-sbkm6                          0 (0%)        0 (0%)      0 (0%)           0 (0%)         8h
+    >     cert-manager                       cert-manager-99bb69456-97c47                                      0 (0%)        0 (0%)      0 (0%)           0 (0%)         8h
+    >     cert-manager                       cert-manager-cainjector-ffb4747bb-2z4xp                           0 (0%)        0 (0%)      0 (0%)           0 (0%)         8h
+    >     cert-manager                       cert-manager-webhook-545bd5d7d8-fllb4                             0 (0%)        0 (0%)      0 (0%)           0 (0%)         8h
+    >     kube-system                        coredns-565d847f94-ckxmb                                          100m (5%)     0 (0%)      70Mi (2%)        170Mi (5%)     8h
+    >     kube-system                        coredns-565d847f94-vrqjw                                          100m (5%)     0 (0%)      70Mi (2%)        170Mi (5%)     8h
+    >     kube-system                        etcd-kind-control-plane                                           100m (5%)     0 (0%)      100Mi (3%)       0 (0%)         8h
+    >     kube-system                        kindnet-hwbdf                                                     100m (5%)     100m (5%)   50Mi (1%)        50Mi (1%)      8h
+    >     kube-system                        kube-apiserver-kind-control-plane                                 250m (12%)    0 (0%)      0 (0%)           0 (0%)         8h
+    >     kube-system                        kube-controller-manager-kind-control-plane                        200m (10%)    0 (0%)      0 (0%)           0 (0%)         8h
+    >     kube-system                        kube-proxy-ttjgm                                                  0 (0%)        0 (0%)      0 (0%)           0 (0%)         8h
+    >     kube-system                        kube-scheduler-kind-control-plane                                 100m (5%)     0 (0%)      0 (0%)           0 (0%)         8h
+    >     local-path-storage                 local-path-provisioner-684f458cdd-dglhf                           0 (0%)        0 (0%)      0 (0%)           0 (0%)         8h
+    >   Allocated resources:
+    >     (Total limits may be over 100 percent, i.e., overcommitted.)
+    >     Resource           Requests    Limits
+    >     --------           --------    ------
+    >     cpu                950m (47%)  100m (5%)
+    >     memory             290Mi (9%)  390Mi (13%)
+    >     ephemeral-storage  0 (0%)      0 (0%)
+    >     hugepages-1Gi      0 (0%)      0 (0%)
+    >     hugepages-2Mi      0 (0%)      0 (0%)
+    >   Events:              <none>
+
+
+    #
+    # Two ways to go forward ...
+    # One is to try deleting the 'green-frog-cloud-config' secret and then generating a new one with the admin account.
+    # Alternative is to nuke from orbit .. again.
+    #
+
+    #
+    # Two options to try next.
+    # Use the basic config with the admin account - see if that allows us to list the loadbalancer providers.
+    # Use the external provider config and see if that works.
+    #
+
+    #
+    # Too much we don't know about what config fragments are stored where.
+    # If we use the first option, replacing the 'green-frog-cloud-config' secret and trying to re-build.
+    # If the build we don't know if it is because the buld config ios wrong or if we have an old config fragment left over.
+    #
+
+    #
+    # Nuke from orbit .. again.
+    #
+
+

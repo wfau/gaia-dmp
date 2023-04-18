@@ -251,6 +251,48 @@
 
     echo ""
     echo "---- ----"
+    echo "Deleting load balancer listeners"
+
+    for listenerid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer listener \
+                list \
+                    --format json \
+        | jq -r '.[] | .id'
+        )
+    do
+        echo "- Deleting listener [${listenerid}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer listener \
+                delete \
+                    "${listenerid:?}"
+    done
+
+    echo ""
+    echo "---- ----"
+    echo "Deleting load balancer pools"
+
+    for poolid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer pool \
+                list \
+                    --format json \
+        | jq -r '.[] | .id'
+        )
+    do
+        echo "- Deleting pool [${poolid}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer pool \
+                delete \
+                    "${poolid:?}"
+    done
+
+    echo ""
+    echo "---- ----"
     echo "Deleting load balancers"
 
     for balancerid in $(

@@ -76,6 +76,13 @@
         --os-cloud "${cloudname:?}" \
         floating ip list
 
+    echo ""
+    echo "---- ----"
+    echo "Load balancers"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer  list
+
 
     echo ""
     echo "---- ----"

@@ -247,6 +247,29 @@
 
 
 # -----------------------------------------------------
+# Delete any load balancers.
+
+    echo ""
+    echo "---- ----"
+    echo "Deleting load balancers"
+
+    for balancerid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer list \
+                --format json \
+        | jq -r '.[] | .id'
+        )
+        do
+            echo "- Deleting load balancer [${balancerid}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                loadbalancer delete \
+                    "${balancerid}"
+        done
+
+
+# -----------------------------------------------------
 # Delete any routers.
 
     echo ""

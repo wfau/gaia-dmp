@@ -1,0 +1,957 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Initial bootstrap K8s cluster from nothing.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+--START--
+Sun 16 Apr 03:51:35 UTC 2023
+iris-gaia-green-20230308-zeppelin
+--END--
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting red for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+--START--
+real    3m28.834s
+user    1m31.894s
+sys     0m9.978s
+--END--
+
+
+# -----------------------------------------------------
+# Add YAML editor role to our client container.
+# TODO Add this to the Ansible client.
+# https://github.com/wfau/atolmis/issues/30
+#
+#[root@ansibler]
+
+    ansible-galaxy install kwoodson.yedit
+
+--START--
+Starting galaxy role install process
+- downloading role 'yedit', owned by kwoodson
+- downloading role from https://github.com/kwoodson/ansible-role-yedit/archive/master.tar.gz
+- extracting kwoodson.yedit to /root/.ansible/roles/kwoodson.yedit
+- kwoodson.yedit (master) was installed successfully
+--END--
+
+
+# -----------------------------------------------------
+# Create our deployment settings.
+#[root@ansibler]
+
+    deployname=${cloudname:?}-$(date '+%Y%m%d')
+    deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    rm -f "${statusyml}"
+    touch "${statusyml}"
+
+    yq eval \
+        --inplace \
+        "
+        .aglais.deployment.type = \"cluster-api\"   |
+        .aglais.deployment.name = \"${deployname}\" |
+        .aglais.deployment.date = \"${deploydate}\" |
+        .aglais.openstack.cloud.name = \"${cloudname}\"
+        " "${statusyml}"
+
+
+    cat /opt/aglais/aglais-status.yml
+
+--START--
+aglais:
+  deployment:
+    type: cluster-api
+    name: iris-gaia-red-20230416
+    date: 20230416T035730
+  openstack:
+    cloud:
+      name: iris-gaia-red
+--END--
+
+
+# -----------------------------------------------------
+# Create our bootstrap components.
+#[root@ansibler]
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/config/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/01-create-keypair.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/02-create-network.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/03-create-bootstrap.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/04-local-config.yml'
+
+--START--
+....
+....
+PLAY RECAP ****************************************************************************************************************************
+localhost                  : ok=2    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+....
+....
+PLAY RECAP ****************************************************************************************************************************
+localhost                  : ok=4    changed=4    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+....
+....
+PLAY RECAP ****************************************************************************************************************************
+localhost                  : ok=7    changed=6    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+....
+....
+PLAY RECAP ****************************************************************************************************************************
+localhost                  : ok=4    changed=4    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+--END--
+
+
+# -----------------------------------------------------
+# Check our local config.
+#[root@ansibler]
+
+    cat /opt/aglais/aglais-status.yml
+
+--START--
+aglais:
+  deployment:
+    date: 20230416T035730
+    name: iris-gaia-red-20230416
+    type: cluster-api
+  openstack:
+    cloud:
+      name: iris-gaia-red
+    keypairs:
+      team:
+        fingerprint: 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16
+        id: iris-gaia-red-20230416-keypair
+        name: iris-gaia-red-20230416-keypair
+    networks:
+      internal:
+        network:
+          id: 128b5395-9d30-434b-b7ae-3235a9a4ade1
+          name: iris-gaia-red-20230416-internal-network
+        router:
+          id: dadc037d-246d-4b1d-8e7d-5f06b50d6e30
+          name: iris-gaia-red-20230416-internal-router
+        subnet:
+          cidr: 10.10.0.0/16
+          id: 516e2aa1-21a1-41f4-98d5-22512499e635
+          name: iris-gaia-red-20230416-internal-subnet
+    servers:
+      bootstrap:
+        float:
+          external: 128.232.227.14
+          id: aca6ed23-fdbd-4b29-9a97-63596624a806
+          internal: 10.10.3.207
+        server:
+          address:
+            ipv4: 10.10.3.207
+          flavor:
+            name: gaia.vm.cclake.2vcpu
+          hostname: bootstrap
+          id: c75409b1-db2c-47fc-83db-e3ed7b2f4c22
+          image:
+            id: e5c23082-cc34-4213-ad31-ff4684657691
+            name: Fedora-34.1.2
+          name: iris-gaia-red-20230416-bootstrap
+--END--
+
+
+# -----------------------------------------------------
+# SSH test.
+#[root@ansibler]
+
+    ssh bootstrap \
+        '
+        date
+        hostname
+        '
+
+--START--
+Sun Apr 16 04:11:27 UTC 2023
+iris-gaia-red-20230416-bootstrap
+--END--
+
+
+# -----------------------------------------------------
+# Transfer a copy of the config
+#[root@ansibler]
+
+    scp /opt/aglais/aglais-status.yml \
+        bootstrap:/tmp/aglais-status.yml
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p /opt/aglais
+        sudo mv /tmp/aglais-status.yml \
+            /opt/aglais
+        '
+
+--START--
+aglais-status.yml           100% 1280    68.7KB/s   00:00
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the bootstrap node as root.
+#[root@ansibler]
+
+    podman exec \
+        -it \
+        ansibler-red \
+            bash
+
+        ssh bootstrap
+
+            sudo su -
+
+    #
+    # We could prefix everything with sudo, but it gets very boring.
+    #
+
+# -----------------------------------------------------
+# Install Docker.
+# https://docs.docker.com/engine/install/fedora/#install-using-the-repository
+#[root@bootstrap]
+
+    dnf -y install dnf-plugins-core
+
+    dnf config-manager \
+        --add-repo \
+        https://download.docker.com/linux/fedora/docker-ce.repo
+
+    >   ....
+    >   ....
+    >   Adding repo from: https://download.docker.com/linux/fedora/docker-ce.repo
+
+
+    dnf install \
+        -y \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-compose-plugin
+
+    >   ....
+    >   ....
+    >   Installed:
+    >     ....
+    >     ....
+    >     docker-ce-3:20.10.17-3.fc34.x86_64
+
+
+# -----------------------------------------------------
+# Start the Docker service.
+#[root@bootstrap]
+
+    systemctl enable docker
+
+    systemctl start docker
+
+    systemctl status docker --no-pager
+
+--START--
+Created symlink /etc/systemd/system/multi-user.target.wants/docker.service → /usr/lib/systemd/system/docker.service.
+● docker.service - Docker Application Container Engine
+     Loaded: loaded (/usr/lib/systemd/system/docker.service; enabled; vendor preset: disabled)
+     Active: active (running) since Sun 2023-04-16 04:14:14 UTC; 10ms ago
+TriggeredBy: ● docker.socket
+       Docs: https://docs.docker.com
+   Main PID: 8669 (dockerd)
+      Tasks: 8
+     Memory: 29.4M
+        CPU: 199ms
+     CGroup: /system.slice/docker.service
+             └─8669 /usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock
+
+Apr 16 04:14:14 iris-gaia-red-20230416-bootstrap dockerd[8669]: time="2023-04-16T04:14:14.416189971Z" level=info msg="scheme \"…le=grpc
+Apr 16 04:14:14 iris-gaia-red-20230416-bootstrap dockerd[8669]: time="2023-04-16T04:14:14.416237101Z" level=info msg="ccResolve…le=grpc
+Apr 16 04:14:14 iris-gaia-red-20230416-bootstrap dockerd[8669]: time="2023-04-16T04:14:14.416285362Z" level=info msg="ClientCon…le=grpc
+Apr 16 04:14:14 iris-gaia-red-20230416-bootstrap dockerd[8669]: time="2023-04-16T04:14:14.442522247Z" level=info msg="Loading c…start."
+Apr 16 04:14:14 iris-gaia-red-20230416-bootstrap dockerd[8669]: time="2023-04-16T04:14:14.555225291Z" level=info msg="Default b…ddress"
+Apr 16 04:14:14 iris-gaia-red-20230416-bootstrap dockerd[8669]: time="2023-04-16T04:14:14.612456337Z" level=info msg="Loading c… done."
+Apr 16 04:14:14 iris-gaia-red-20230416-bootstrap dockerd[8669]: time="2023-04-16T04:14:14.644281044Z" level=info msg="Docker da…0.10.17
+Apr 16 04:14:14 iris-gaia-red-20230416-bootstrap dockerd[8669]: time="2023-04-16T04:14:14.644408808Z" level=info msg="Daemon ha…zation"
+Apr 16 04:14:14 iris-gaia-red-20230416-bootstrap dockerd[8669]: time="2023-04-16T04:14:14.663633865Z" level=info msg="API liste…r.sock"
+Apr 16 04:14:14 iris-gaia-red-20230416-bootstrap systemd[1]: Started Docker Application Container Engine.
+--END--
+
+
+    docker --version
+
+--START--
+Docker version 20.10.17, build 100c701
+--END--
+
+
+    docker info
+
+--START--
+Client:
+ Context:    default
+ Debug Mode: false
+ Plugins:
+  app: Docker App (Docker Inc., v0.9.1-beta3)
+  buildx: Docker Buildx (Docker Inc., v0.8.2-docker)
+  compose: Docker Compose (Docker Inc., v2.6.0)
+  scan: Docker Scan (Docker Inc., v0.17.0)
+
+Server:
+ Containers: 0
+  Running: 0
+  Paused: 0
+  Stopped: 0
+ Images: 0
+ Server Version: 20.10.17
+ Storage Driver: overlay2
+  Backing Filesystem: extfs
+  Supports d_type: true
+  Native Overlay Diff: true
+  userxattr: false
+ Logging Driver: json-file
+ Cgroup Driver: systemd
+ Cgroup Version: 2
+ Plugins:
+  Volume: local
+  Network: bridge host ipvlan macvlan null overlay
+  Log: awslogs fluentd gcplogs gelf journald json-file local logentries splunk syslog
+ Swarm: inactive
+ Runtimes: io.containerd.runc.v2 io.containerd.runtime.v1.linux runc
+ Default Runtime: runc
+ Init Binary: docker-init
+ containerd version: 10c12954828e7c7c9b6e0ea9b0c02b01407d3ae1
+ runc version: v1.1.2-0-ga916309
+ init version: de40ad0
+ Security Options:
+  seccomp
+   Profile: default
+  cgroupns
+ Kernel Version: 5.11.12-300.fc34.x86_64
+ Operating System: Fedora 34 (Cloud Edition)
+ OSType: linux
+ Architecture: x86_64
+ CPUs: 2
+ Total Memory: 2.912GiB
+ Name: iris-gaia-red-20230416-bootstrap
+ ID: LF6J:GLZJ:EBKT:C55B:QFRK:O2G2:TVTK:BG3I:DTBT:B32C:ZSE4:FQEL
+ Docker Root Dir: /var/lib/docker
+ Debug Mode: false
+ Registry: https://index.docker.io/v1/
+ Labels:
+ Experimental: false
+ Insecure Registries:
+  127.0.0.0/8
+ Live Restore Enabled: false
+--END--
+
+
+# -----------------------------------------------------
+# Install kubectl.
+# https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/#install-using-native-package-management
+#[root@bootstrap]
+
+    cat > '/etc/yum.repos.d/kubernetes.repo' << EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-\$basearch
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+EOF
+
+    dnf install -y 'kubectl'
+
+    >   Installed:
+    >     kubectl-1.27.1-0.x86_64
+
+
+    kubectl version --output json
+
+--START--
+{
+  "clientVersion": {
+    "major": "1",
+    "minor": "27",
+    "gitVersion": "v1.27.1",
+    "gitCommit": "4c9411232e10168d7b050c49a1b59f6df9d7ea4b",
+    "gitTreeState": "clean",
+    "buildDate": "2023-04-14T13:21:19Z",
+    "goVersion": "go1.20.3",
+    "compiler": "gc",
+    "platform": "linux/amd64"
+  },
+  "kustomizeVersion": "v5.0.1"
+}
+The connection to the server localhost:8080 was refused - did you specify the right host or port?
+--END--
+
+
+    kubectl config view
+
+--START--
+apiVersion: v1
+clusters: null
+contexts: null
+current-context: ""
+kind: Config
+preferences: {}
+users: null
+--END--
+
+
+# -----------------------------------------------------
+# Install kind on the bootstrap node.
+# https://kind.sigs.k8s.io/docs/user/quick-start/#installing-from-release-binaries
+#[root@bootstrap]
+
+    kindversion=0.17.0
+    kindbinary=kind-${kindversion:?}
+    kindtemp=/tmp/${kindbinary:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "${kindtemp:?}" \
+        "https://kind.sigs.k8s.io/dl/v${kindversion:?}/kind-linux-amd64"
+
+    pushd /usr/local/bin
+        mv "${kindtemp:?}" .
+        chown 'root:root' "${kindbinary:?}"
+        chmod 'u=rwx,g=rx,o=rx' "${kindbinary:?}"
+        ln -s "${kindbinary:?}" 'kind'
+    popd
+
+    ls -al /usr/local/bin/
+
+--START--
+lrwxrwxrwx.  1 root root      11 Apr 16 04:16 kind -> kind-0.17.0
+-rwxr-xr-x.  1 root root 6929103 Apr 16 04:16 kind-0.17.0
+--END--
+
+
+    kind --version
+
+--START--
+kind version 0.17.0
+--END--
+
+
+# -----------------------------------------------------
+# Install Helm on the bootstrap node.
+# https://helm.sh/docs/intro/install/
+# https://github.com/helm/helm/releases
+#[root@bootstrap]
+
+    helmarch=linux-amd64
+    helmversion=3.11.2
+    helmtarfile=helm-v${helmversion}-${helmarch}.tar.gz
+    helmtmpfile=/tmp/${helmtarfile:?}
+    helmbinary=helm-${helmversion:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "${helmtmpfile:?}" \
+        "https://get.helm.sh/${helmtarfile:?}"
+
+    tar \
+        --gzip \
+        --extract \
+        --directory /tmp \
+        --file "${helmtmpfile:?}"
+
+    pushd /usr/local/bin
+        mv "/tmp/${helmarch:?}/helm" "${helmbinary:?}"
+        chown 'root:root' "${helmbinary:?}"
+        chmod 'u=rwx,g=rx,o=rx' "${helmbinary:?}"
+        ln -s "${helmbinary:?}" 'helm'
+    popd
+
+    ls -al /usr/local/bin/
+
+--START--
+lrwxrwxrwx.  1 root root       11 Apr 16 04:16 helm -> helm-3.11.2
+-rwxr-xr-x.  1 root root 46874624 Mar  8 21:17 helm-3.11.2
+--END--
+
+
+    helm version
+
+--START--
+version.BuildInfo{
+    Version:"v3.11.2",
+    GitCommit:"912ebc1cd10d38d340f048efaf0abda047c3468e",
+    GitTreeState:"clean",
+    GoVersion:"go1.18.10"
+    }
+--END--
+
+
+# -----------------------------------------------------
+# Install clusterctl
+# The clusterctl CLI tool handles the lifecycle of a Cluster-API management cluster.
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#install-clusterctl
+#[root@bootstrap]
+
+    clusterctlversion=1.4.1
+    clusterctlbinary=clusterctl-${clusterctlversion:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "/tmp/${clusterctlbinary:?}" \
+        "https://github.com/kubernetes-sigs/cluster-api/releases/download/v${clusterctlversion:?}/clusterctl-linux-amd64"
+
+    pushd /usr/local/bin
+        mv "/tmp/${clusterctlbinary:?}" "${clusterctlbinary:?}"
+        chown 'root:root' "${clusterctlbinary:?}"
+        chmod 'u=rwx,g=rx,o=rx' "${clusterctlbinary:?}"
+        ln -s "${clusterctlbinary:?}" 'clusterctl'
+    popd
+
+    ls -al /usr/local/bin/
+
+--START--
+lrwxrwxrwx.  1 root root       16 Apr 16 04:17 clusterctl -> clusterctl-1.4.1
+-rwxr-xr-x.  1 root root 68700915 Apr 16 04:17 clusterctl-1.4.1
+--END--
+
+
+    clusterctl version
+
+--START--
+clusterctl version: &version.Info{
+    Major:"1",
+    Minor:"4",
+    GitVersion:"v1.4.1",
+    GitCommit:"39d87e91080088327c738c43f39e46a7f557d03b",
+    GitTreeState:"clean",
+    BuildDate:"2023-04-04T17:31:43Z",
+    GoVersion:"go1.19.6",
+    Compiler:"gc",
+    Platform:"linux/amd64"
+    }
+--END--
+
+
+# -----------------------------------------------------
+# Create our initial Kind cluster.
+# https://github.com/kubernetes-sigs/kind/pull/2478#issuecomment-1214656908
+#[root@bootstrap]
+
+    kind create cluster --retain
+
+--START--
+Creating cluster "kind" ...
+ ✓ Ensuring node image (kindest/node:v1.25.3) 🖼
+ ✓ Preparing nodes 📦
+ ✓ Writing configuration 📜
+ ✓ Starting control-plane 🕹️
+ ✓ Installing CNI 🔌
+ ✓ Installing StorageClass 💾
+....
+....
+--END--
+
+
+    kubectl cluster-info --context kind-kind
+
+--START--
+Kubernetes control plane is running at https://127.0.0.1:36541
+CoreDNS is running at https://127.0.0.1:36541/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+....
+....
+--END--
+
+
+    kubectl get pods --all-namespaces
+
+--START--
+NAMESPACE            NAME                                         READY   STATUS    RESTARTS   AGE
+kube-system          coredns-565d847f94-8cxfm                     1/1     Running   0          42s
+kube-system          coredns-565d847f94-ljqlq                     1/1     Running   0          42s
+kube-system          etcd-kind-control-plane                      1/1     Running   0          57s
+kube-system          kindnet-6xwsb                                1/1     Running   0          43s
+kube-system          kube-apiserver-kind-control-plane            1/1     Running   0          57s
+kube-system          kube-controller-manager-kind-control-plane   1/1     Running   0          57s
+kube-system          kube-proxy-qc8wx                             1/1     Running   0          43s
+kube-system          kube-scheduler-kind-control-plane            1/1     Running   0          56s
+local-path-storage   local-path-provisioner-684f458cdd-t7svp      1/1     Running   0          42s
+--END--
+
+
+# -----------------------------------------------------
+# Initialize the Openstack management cluster
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#initialization-for-common-providers
+#[root@bootstrap]
+
+    clusterctl init --infrastructure openstack
+
+--START--
+Fetching providers
+Installing cert-manager Version="v1.11.0"
+Waiting for cert-manager to be available...
+Installing Provider="cluster-api" Version="v1.4.1" TargetNamespace="capi-system"
+Installing Provider="bootstrap-kubeadm" Version="v1.4.1" TargetNamespace="capi-kubeadm-bootstrap-system"
+Installing Provider="control-plane-kubeadm" Version="v1.4.1" TargetNamespace="capi-kubeadm-control-plane-system"
+Installing Provider="infrastructure-openstack" Version="v0.7.1" TargetNamespace="capo-system"
+....
+....
+--END--
+
+
+    kubectl get pods --all-namespaces
+
+--START--
+NAMESPACE                           NAME                                                             READY   STATUS    RESTARTS   AGE
+capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-8654485994-7df5d       1/1     Running   0          38s
+capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-5d9d9494d5-lps8r   1/1     Running   0          36s
+capi-system                         capi-controller-manager-746b4f5db4-w5nj4                         1/1     Running   0          39s
+capo-system                         capo-controller-manager-775d744795-dvdnr                         1/1     Running   0          34s
+cert-manager                        cert-manager-99bb69456-cbj8t                                     1/1     Running   0          62s
+cert-manager                        cert-manager-cainjector-ffb4747bb-5nnl5                          1/1     Running   0          62s
+cert-manager                        cert-manager-webhook-545bd5d7d8-vb5mf                            1/1     Running   0          62s
+kube-system                         coredns-565d847f94-8cxfm                                         1/1     Running   0          2m12s
+kube-system                         coredns-565d847f94-ljqlq                                         1/1     Running   0          2m12s
+kube-system                         etcd-kind-control-plane                                          1/1     Running   0          2m27s
+kube-system                         kindnet-6xwsb                                                    1/1     Running   0          2m13s
+kube-system                         kube-apiserver-kind-control-plane                                1/1     Running   0          2m27s
+kube-system                         kube-controller-manager-kind-control-plane                       1/1     Running   0          2m27s
+kube-system                         kube-proxy-qc8wx                                                 1/1     Running   0          2m13s
+kube-system                         kube-scheduler-kind-control-plane                                1/1     Running   0          2m26s
+local-path-storage                  local-path-provisioner-684f458cdd-t7svp                          1/1     Running   0          2m12s
+--END--
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# List the available VM flavors and images.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list
+
+--START--
+....
+....
+--END--
+
+
+    #
+    # The ubuntu-2004-kube images are hidden with 'community' visibility.
+    # https://wiki.openstack.org/wiki/Glance-v2-community-image-visibility-design
+    #
+    # We have uploaded our own copy of the ubuntu-2004-kube image.
+    #
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image list \
+            --shared
+
+--START--
+....
+....
+--END--
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        availability zone list \
+            --compute
+
+--START--
+....
+....
+--END--
+
+    #
+    # There is more than one external network, so we would have to filter to select the right one.
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list \
+            --external
+
+--START--
+....
+....
+--END--
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Transfer the Openstack IDs to our bootstrap node.
+#[root@ansibler]
+
+    cat > /tmp/openstack-settings.env << 'EOF'
+export OPENSTACK_CLOUD=iris-gaia-red-admin
+export OPENSTACK_SSH_KEY_NAME=iris-gaia-red-20230414-keypair
+export OPENSTACK_EXTERNAL_NETWORK_ID=57add367-d205-4030-a929-d75617a7c63e
+
+export OPENSTACK_NODE_MACHINE_FLAVOR=vm.v1.large
+export OPENSTACK_CONTROL_PLANE_MACHINE_FLAVOR=vm.v1.small
+
+export KUBERNETES_VERSION=1.25.4
+export OPENSTACK_IMAGE_NAME=gaia-dmp-ubuntu-2004-kube-v1.25.4
+
+export OPENSTACK_FAILURE_DOMAIN=nova
+
+#
+# Use the Cambridge DNS servers.
+# https://www.dns.cam.ac.uk/servers/rec.html
+# export OPENSTACK_DNS_NAMESERVERS=131.111.8.42,131.111.12.20
+# Only use one, using two addresses caused an error.
+export OPENSTACK_DNS_NAMESERVERS=131.111.8.42
+
+EOF
+
+    scp \
+        /tmp/openstack-settings.env \
+        bootstrap:/tmp/openstack-settings.env
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p \
+            /etc/aglais
+        sudo install \
+            /tmp/openstack-settings.env \
+            /etc/aglais/openstack-settings.env
+        '
+
+
+# -----------------------------------------------------
+# Transfer a copy of our clouds.yaml file.
+#[root@ansibler]
+
+    scp \
+        /etc/openstack/clouds.yaml \
+        bootstrap:/tmp/openstack-clouds.yaml
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p \
+            /etc/aglais
+        sudo install \
+            /tmp/openstack-clouds.yaml \
+            /etc/aglais/openstack-clouds.yaml
+        '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Install yq on the bootstrap node.
+#[root@bootstrap]
+
+    yqversion=4.33.3
+    yqbinary=yq-${yqversion:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "/tmp/${yqbinary:?}" \
+        "https://github.com/mikefarah/yq/releases/download/v${yqversion}/yq_linux_amd64"
+
+    pushd /usr/local/bin
+        mv "/tmp/${yqbinary:?}" "${yqbinary:?}"
+        chown 'root:root' "${yqbinary:?}"
+        chmod 'u=rwx,g=rx,o=rx' "${yqbinary:?}"
+        ln -s "${yqbinary:?}" 'yq'
+    popd
+
+    ls -al /usr/local/bin/
+
+--START--
+....
+....
+--END--
+
+
+    yq --version
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Edit our clouds.yaml file to disable TLS certificate checks.
+# https://docs.openstack.org/os-client-config/latest/user/configuration.html#ssl-settings
+#[root@bootstrap]
+
+    vi /etc/aglais/openstack-clouds.yaml
+
+          iris-gaia-red-admin:
+            auth:
+              auth_url: https://arcus.openstack.hpc.cam.ac.uk:5000
+              ....
+              ....
+            region_name: "RegionOne"
+            interface: "public"
+            identity_api_version: 3
+            auth_type: "v3applicationcredential"
+       +    verify: false
+
+
+# -----------------------------------------------------
+# Load our Openstack settings.
+#[root@bootstrap]
+
+    source /etc/aglais/openstack-settings.env
+
+cat << EOF
+OPENSTACK_CLOUD [${OPENSTACK_CLOUD}]
+OPENSTACK_IMAGE_NAME [${OPENSTACK_IMAGE_NAME}]
+EOF
+
+--START--
+....
+....
+--END--
+
+
+# -----------------------------------------------------
+# Use the script provided by cluster-api-provider-openstack to parse our clouds.yaml file.
+# https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#generate-credentials
+# https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/docs/book/src/clusteropenstack/configuration.md#generate-credentials
+#[root@bootstrap]
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output '/tmp/env.rc' \
+        'https://raw.githubusercontent.com/kubernetes-sigs/cluster-api-provider-openstack/master/templates/env.rc'
+
+    source '/tmp/env.rc' '/etc/aglais/openstack-clouds.yaml' "${OPENSTACK_CLOUD:?}"
+
+cat << EOF
+OPENSTACK_CLOUD_YAML_B64   [${OPENSTACK_CLOUD_YAML_B64}]
+OPENSTACK_CLOUD_CACERT_B64 [${OPENSTACK_CLOUD_CACERT_B64}]
+OPENSTACK_CLOUD_PROVIDER_CONF_B64 [${OPENSTACK_CLOUD_PROVIDER_CONF_B64}]
+EOF
+
+--START--
+....
+....
+--END--
+
+# -----------------------------------------------------
+# Generate our basic cluster config.
+# https://cluster-api.sigs.k8s.io/clusterctl/commands/generate-cluster.html
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#generating-the-cluster-configuration
+#[root@bootstrap]
+
+    CLUSTER_NAME=green-frog
+
+    clusterctl generate cluster \
+        "${CLUSTER_NAME:?}" \
+        --kubernetes-version "${KUBERNETES_VERSION:?}" \
+        --control-plane-machine-count 3 \
+        --worker-machine-count 3 \
+    | tee "/tmp/${CLUSTER_NAME:?}.yaml"
+
+
+

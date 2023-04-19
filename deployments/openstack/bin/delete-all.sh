@@ -595,6 +595,13 @@
 
     echo ""
     echo "---- ----"
+    echo "List load balancers"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer list
+
+    echo ""
+    echo "---- ----"
     echo "List routers"
     openstack \
         --os-cloud "${cloudname:?}" \

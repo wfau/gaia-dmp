@@ -1,0 +1,457 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Delete everything and run the build again from the start.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Mon 24 Apr 10:20:33 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting red for the deployment.
+    # Using the 'admin' credentials to allow access to loadbalancers etc.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}-admin
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    0m22.433s
+    >   user    0m19.637s
+    >   sys     0m2.339s
+
+
+# -----------------------------------------------------
+# Add YAML editor role to our client container.
+# TODO Add this to the Ansible client.
+# https://github.com/wfau/atolmis/issues/30
+#[root@ansibler]
+
+    ansible-galaxy install kwoodson.yedit
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our deployment settings.
+#[root@ansibler]
+
+    deployname=${cloudname:?}-$(date '+%Y%m%d')
+    deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    rm -f "${statusyml}"
+    touch "${statusyml}"
+
+    yq eval \
+        --inplace \
+        "
+        .aglais.deployment.type = \"cluster-api\"   |
+        .aglais.deployment.name = \"${deployname}\" |
+        .aglais.deployment.date = \"${deploydate}\" |
+        .aglais.openstack.cloud.name = \"${cloudname}\"
+        " "${statusyml}"
+
+    cat /opt/aglais/aglais-status.yml
+
+    >   aglais:
+    >     deployment:
+    >       type: cluster-api
+    >       name: iris-gaia-red-admin-20230424
+    >       date: 20230424T103016
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-red-admin
+
+
+# -----------------------------------------------------
+# Create our bootstrap components.
+#[root@ansibler]
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/config/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/01-create-keypair.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/02-create-network.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/03-create-bootstrap.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/04-config-ansible.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/05-install-aglais.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/06-install-docker.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/07-install-kubectl.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/08-install-kind.yml'
+
+#   ansible-playbook \
+#       --inventory "${inventory:?}" \
+#       '/deployments/cluster-api/bootstrap/ansible/09-install-helm.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/10-install-clusterctl.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/11-install-yq.yml'
+
+    cat /opt/aglais/aglais-status.yml
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the bootstrap node as root.
+#[root@ansibler]
+
+    podman exec \
+        -it \
+        ansibler-red \
+            bash
+
+        ssh bootstrap
+
+            sudo su -
+
+    #
+    # We could prefix everything with sudo, but it gets very boring.
+    #
+
+
+# -----------------------------------------------------
+# Install Helm on the bootstrap node.
+# https://helm.sh/docs/intro/install/
+# https://github.com/helm/helm/releases
+#[root@bootstrap]
+
+    #
+    # We still need to do this because our incude task doesn't handle tar files yet.
+    #
+
+    helmarch=linux-amd64
+    helmversion=3.11.2
+    helmtarfile=helm-v${helmversion}-${helmarch}.tar.gz
+    helmtmpfile=/tmp/${helmtarfile:?}
+    helmbinary=helm-${helmversion:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "${helmtmpfile:?}" \
+        "https://get.helm.sh/${helmtarfile:?}"
+
+    tar \
+        --gzip \
+        --extract \
+        --directory /tmp \
+        --file "${helmtmpfile:?}"
+
+    pushd /usr/local/bin
+        mv "/tmp/${helmarch:?}/helm" "${helmbinary:?}"
+        chown 'root:root' "${helmbinary:?}"
+        chmod 'u=rwx,g=rx,o=rx' "${helmbinary:?}"
+        ln -s "${helmbinary:?}" 'helm'
+    popd
+
+
+# -----------------------------------------------------
+# Create our initial Kind cluster.
+# https://github.com/kubernetes-sigs/kind/pull/2478#issuecomment-1214656908
+#[root@bootstrap]
+
+    kind create cluster --retain
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Initialize the Openstack management cluster
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#initialization-for-common-providers
+#[root@bootstrap]
+
+    clusterctl init --infrastructure openstack
+
+    >    ✓ Ensuring node image (kindest/node:v1.25.3) 🖼
+    >    ✓ Preparing nodes 📦
+    >    ✓ Writing configuration 📜
+    >    ✓ Starting control-plane 🕹️
+    >    ✓ Installing CNI 🔌
+    >    ✓ Installing StorageClass 💾
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Extract the settings we need.
+#[root@ansibler]
+
+    ctrlnodeflavor=gaia.vm.cclake.4vcpu
+    nodenodeflavor=gaia.vm.cclake.4vcpu
+
+    keypair=$(
+        yq '.aglais.openstack.keypairs.team.name' /opt/aglais/aglais-status.yml
+        )
+
+    externalnet=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            network list \
+                --external \
+                --format json \
+        | jq -r ".[] | select(.Name == \"CUDN-Internet\") | .ID"
+        )
+
+    cat > /tmp/openstack-settings.env << EOF
+export OPENSTACK_CLOUD=${cloudname:?}
+export OPENSTACK_SSH_KEY_NAME=${keypair:?}
+export OPENSTACK_EXTERNAL_NETWORK_ID=${externalnet:?}
+
+export OPENSTACK_NODE_MACHINE_FLAVOR=${nodenodeflavor}
+export OPENSTACK_CONTROL_PLANE_MACHINE_FLAVOR=${ctrlnodeflavor}
+
+export KUBERNETES_VERSION=1.25.4
+export OPENSTACK_IMAGE_NAME=gaia-dmp-ubuntu-2004-kube-v1.25.4
+
+export OPENSTACK_FAILURE_DOMAIN=nova
+
+# Use the Cambridge DNS servers.
+# https://www.dns.cam.ac.uk/servers/rec.html
+export OPENSTACK_DNS_NAMESERVERS=131.111.8.42
+
+EOF
+
+
+# -----------------------------------------------------
+# Transfer the Openstack settings to our bootstrap node.
+#[root@ansibler]
+
+    scp \
+        /tmp/openstack-settings.env \
+        bootstrap:/tmp/openstack-settings.env
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p \
+            /etc/aglais
+        sudo install \
+            /tmp/openstack-settings.env \
+            /etc/aglais/openstack-settings.env
+        '
+
+
+# -----------------------------------------------------
+# Transfer a copy of our clouds.yaml file.
+#[root@ansibler]
+
+    scp \
+        /etc/openstack/clouds.yaml \
+        bootstrap:/tmp/openstack-clouds.yaml
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p \
+            /etc/aglais
+        sudo install \
+            /tmp/openstack-clouds.yaml \
+            /etc/aglais/openstack-clouds.yaml
+        '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Edit our clouds.yaml file to disable TLS certificate checks.
+# https://docs.openstack.org/os-client-config/latest/user/configuration.html#ssl-settings
+#[root@bootstrap]
+
+    vi /etc/aglais/openstack-clouds.yaml
+
+          iris-gaia-red-admin:
+            auth:
+              auth_url: https://arcus.openstack.hpc.cam.ac.uk:5000
+              ....
+              ....
+            region_name: "RegionOne"
+            interface: "public"
+            identity_api_version: 3
+            auth_type: "v3applicationcredential"
+       +    verify: false
+
+
+# -----------------------------------------------------
+# Load our Openstack settings.
+#[root@bootstrap]
+
+    source /etc/aglais/openstack-settings.env
+
+cat << EOF
+OPENSTACK_CLOUD [${OPENSTACK_CLOUD}]
+OPENSTACK_IMAGE_NAME [${OPENSTACK_IMAGE_NAME}]
+EOF
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Use the script provided by cluster-api-provider-openstack to parse our clouds.yaml file.
+# https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#generate-credentials
+# https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/docs/book/src/clusteropenstack/configuration.md#generate-credentials
+#[root@bootstrap]
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output '/tmp/env.rc' \
+        'https://raw.githubusercontent.com/kubernetes-sigs/cluster-api-provider-openstack/master/templates/env.rc'
+
+    source '/tmp/env.rc' '/etc/aglais/openstack-clouds.yaml' "${OPENSTACK_CLOUD:?}"
+
+
+# -----------------------------------------------------
+# Initialize the Openstack management cluster
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#initialization-for-common-providers
+#[root@bootstrap]
+
+    clusterctl init --infrastructure openstack
+
+
+# -----------------------------------------------------
+# Add the StackHPC Helm repo
+#[root@bootstrap]
+
+    helm repo add capi https://stackhpc.github.io/capi-helm-charts
+
+    >   "capi" has been added to your repositories
+
+# -----------------------------------------------------
+# Add the our project ID.
+#[root@bootstrap]
+
+    vi /etc/aglais/openstack-clouds.yaml
+
+https://github.com/stackhpc/capi-helm-charts/tree/main/charts/openstack-cluster#openstack-credentials
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

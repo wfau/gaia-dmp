@@ -140,7 +140,7 @@ else
                     gitpath="${gitbase}/${gitname}"
                     gitrepo="https://github.com/wfau/${gitname}"
 
-                    version='v1.0.1'
+                    version='v1.0.3'
 
                     if [ ! -e "${gitpath}" ]
                     then

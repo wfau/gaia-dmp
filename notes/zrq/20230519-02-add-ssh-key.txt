@@ -1,0 +1,202 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
+#
+
+
+    Target:
+
+        Add a public ssh key to a user's account.
+        This is the first time I've done this, so I'm doing on a test system first.
+        Using the test deployment created in prev notes.
+            20230519-01-workshop-users.txt
+
+    Result:
+
+        Success, key added to the test system.
+        Now we need to apply the same change to the live systen.
+
+    Update:
+
+        Actually, this didn't do what I expected.
+
+        I thought this would update the user's home directory on the tests system,
+        and I could check the changes worked before I applied them to the live system.
+
+        What I didn't remember was a live user's home directory is a network mount of a CephFS share.
+
+        The user's home directory on the test system IS THE SAME FILESYSTEM as the user's home directory on the live system.
+
+        So making the change via the test system also changed the files on the live system.
+
+        The Zeppelin notebook directory is not shared between deployments.
+        So using a test system to make changes to the notebooks is a good idea.
+
+        A test users home directory is not shared between deployments.
+        So if I had run this test on a test user it would have been fine.
+
+        A live users home directory is shared between deployments.
+        So any changes on any system will affect all deployments.
+
+        TL;DR; If you are testing something, use a test user account, not a live user account.
+        Even if it is on a separate test deplyment.
+
+
+# -----------------------------------------------------
+# Add the user's key to our source code.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        pushd deployments/common/users/keys
+
+            mv  "${HOME}/Downloads/id_ed25519.pub" \
+                MLucey.pub
+
+            # Need to reset any context applied by the browser download.
+            # Without this, code inside our container won't be able to access the file.
+            chcon -u 'system_u' -t 'container_file_t' MLucey.pub
+
+        popd
+    popd
+
+
+# -----------------------------------------------------
+# Edit the live-user config to add a reference to the user's key.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit deployments/common/users/live-users.yml
+
+            users:
+              ....
+
+              - name: "MLucey"
+                type: "live"
+                linuxuid: 10018
+        +       publickey: "file:///deployments/common/users/keys/MLucey.pub"
+
+              ....
+
+    popd
+
+
+# -----------------------------------------------------
+# Select a specific user config.
+# We don't need to do this, but skipping the other accounts will speed things up.
+# https://mikefarah.gitbook.io/yq/operators/env-variable-operators
+#[root@ansibler]
+
+    export username=MLucey
+
+    yq '
+        ... comments = "" |
+        .users = [ .users.[] | select(.name == strenv(username)) ]
+        ' \
+        deployments/common/users/live-users.yml \
+    | tee "/tmp/update-${username:?}.yml"
+
+
+    >   users:
+    >     - name: "MLucey"
+    >       type: "live"
+    >       linuxuid: 10018
+    >       publickey: "file:///deployments/common/users/keys/MLucey.pub"
+
+
+# -----------------------------------------------------
+# Import the user config, adding the missing key.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    createyamlusers \
+        "/tmp/update-${username:?}.yml" \
+    | tee "/tmp/update-${username:?}.json"
+
+    jq '.users[].linuxuser' "/tmp/update-${username:?}.json"
+
+    >   {
+    >     "name": "MLucey",
+    >     "type": "live",
+    >     "homedir": "/home/MLucey",
+    >     "linuxuid": "10018",
+    >     "publickey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF75qQUz3T/v4lOz2L6xWssUXyPs8l0DkvkIL7SNsqvf mrlucey1@gmail.com",
+    >     "pkeyhash": "c75c480ef73d7f23fb1a9f9873842264",
+    >     "debug": {
+    >       "script": "create-linux-user.sh",
+    >       "result": "PASS",
+    >       "messages": [
+    >         "SKIP: adduser [MLucey] skipped (done)",
+    >         "SKIP: mkdir [/home/MLucey/.ssh] skipped (done)",
+    >         "PASS: updated public keys for [MLucey] (sed)"
+    >       ]
+    >     }
+    >   }
+
+
+# -----------------------------------------------------
+# Check the key arrived.
+#[root@ansibler]
+
+    ssh zeppelin
+
+        sudo ls -alZ /home/MLucey/
+
+    >   ....
+    >   drwx------.  3 MLucey MLucey system_u:object_r:cephfs_t:s0       1 May 17 13:07 .cache
+    >   drwx------.  3 MLucey MLucey system_u:object_r:cephfs_t:s0       1 May 17 13:07 .config
+    >   drwx------.  2 MLucey MLucey system_u:object_r:cephfs_t:s0       1 May 19 16:56 .ssh
+
+
+        sudo ls -alZ /home/MLucey/.ssh
+
+    >   ....
+    >   -rw-------. 1 MLucey MLucey system_u:object_r:cephfs_t:s0 209 May 19 16:56 authorized_keys
+
+
+        sudo cat /home/MLucey/.ssh/authorized_keys
+
+    >   # BEGIN GaiaDMp managed keys
+    >   # Do not edit this section
+    >   
+    >   # Public key for MLucey
+    >   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF75qQUz3T/v4lOz2L6xWssUXyPs8l0DkvkIL7SNsqvf mrlucey1@gmail.com
+    >   
+    >   # END GaiaDMp managed keys
+
+    #
+    # OK, that worked on the test system.
+    # Now we need to apply the same change to the live systen.
+    #
+
+
+

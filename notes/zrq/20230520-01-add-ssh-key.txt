@@ -1,0 +1,337 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
+#
+
+
+    Target:
+
+        Add a public ssh key to a user's account.
+
+    Result:
+
+        Success, but not as we expected it.
+        Turns out the key was already added when I ran the update on the test system.
+
+
+# -----------------------------------------------------
+# Add the user's key to our source code.
+# Already added in prev notes, so just checking it is in the right place.
+# Check that the key file has the right SELinux context to enable container to access it.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        pushd deployments/common/users/keys
+
+            # Reset the SELinux context applied by the browser download.
+            # Without this, code inside our container won't be able to access the file.
+            # Client container gets weird access errors and can't even list the file.
+
+            chcon -u 'system_u' -t 'container_file_t' MLucey.pub
+
+            ls -alZ *.pub
+
+        popd
+    popd
+
+    >   -rw-r--r--. 1 Zarquan users system_u:object_r:container_file_t:s0 100 May 18 11:53 MLucey.pub
+    >   -rw-r--r--. 1 Zarquan users system_u:object_r:container_file_t:s0 755 Aug 23  2022 SGoughKelly.pub
+
+
+# -----------------------------------------------------
+# Edit the live-user config to add a reference to the user's key.
+# Already added in prev notes, so just checking it is in the right place.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit deployments/common/users/live-users.yml
+
+            users:
+              ....
+
+              - name: "MLucey"
+                type: "live"
+                linuxuid: 10018
+        +       publickey: "file:///deployments/common/users/keys/MLucey.pub"
+
+              ....
+
+    popd
+
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Sat 20 May 11:54:18 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Create a client for the live system.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    clientname=ansibler-live
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+
+# -----------------------------------------------------
+# Fetch the live system config.
+# WARNING This will overwrite aglais-status.yml for the test system.
+#[root@ansibler]
+
+    hostname=live.gaia-dmp.uk
+
+    mkdir -p "${HOME}/.ssh"
+    ssh-keyscan "${hostname:?}" 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+
+    mkdir -p /opt/aglais
+    scp "${hostname:?}:/opt/aglais/aglais-status.yml" \
+        "/opt/aglais/aglais-status.yml"
+
+    cat "/opt/aglais/aglais-status.yml"
+
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-green-20230308
+    >         date: 20230308T134230
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-green
+
+
+# -----------------------------------------------------
+# Extract the cloud and configuration name.
+#[root@ansibler]
+
+    configname=$(
+        yq '.aglais.status.deployment.conf' "/opt/aglais/aglais-status.yml"
+        )
+
+    cloudname=$(
+        yq '.aglais.spec.openstack.cloud.name' "/opt/aglais/aglais-status.yml"
+        )
+
+# -----------------------------------------------------
+# Configure our Ansible client.
+#[root@ansibler]
+
+    inventory="/deployments/hadoop-yarn/ansible/config/${configname:?}.yml"
+
+    pushd "/deployments/hadoop-yarn/ansible"
+
+        ansible-playbook \
+            --inventory "${inventory:?}" \
+            '05-config-ssh.yml'
+
+    popd
+
+# -----------------------------------------------------
+# Check we can login using ssh.
+#[root@ansibler]
+
+    ssh zeppelin \
+        '
+        date
+        hostname
+        '
+
+    >   Sat May 20 11:57:43 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Check the user's keys before we make the change.
+#[root@ansibler]
+
+    username=MLucey
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        echo ""
+        sudo ls -alZ '/home/${username:?}/.ssh/authorized_keys'
+        "
+
+    >   Sat May 20 12:05:59 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+    >   
+    >   -rw-------. 1 MLucey MLucey system_u:object_r:cephfs_t:s0 209 May 19 16:56 /home/MLucey/.ssh/authorized_keys
+
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        echo ""
+        sudo cat '/home/${username:?}/.ssh/authorized_keys'
+        "
+
+    >   Sat May 20 12:06:15 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+    >   
+    >   # BEGIN GaiaDMp managed keys
+    >   # Do not edit this section
+    >   
+    >   # Public key for MLucey
+    >   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF75qQUz3T/v4lOz2L6xWssUXyPs8l0DkvkIL7SNsqvf mrlucey1@gmail.com
+    >   
+    >   # END GaiaDMp managed keys
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # That wasn't expected.
+    #
+    # I expected to see an empty line for the keypair, because it hadn't been set yet.
+    # What we found was the key already in place.
+    #
+
+    #
+    # Looking at my notes from yesterday, and the date/time stamp on the authorized_keys file.
+    # I realised I actually made the change to the live user's account when I was working on the test system.
+    #
+    # Making the change on the test system, added the key to the authorized_keys file in the user's home directory.
+    # BUT - the user's home directories is a network mounted CephFS share.
+    # The user's home directory on the test system is the same CephFS share as the user's home directory on the live system.
+    # So changing something on the test system changes is on the live system as well.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    #
+    # For the record, the following commands would have made the change on the live system.
+    # The only reason I used a test system was I hadn't practiced this for a while.
+    # Normally we just need to run the following commands on the live system.
+    #
+
+# -----------------------------------------------------
+# Select a specific user config.
+# We don't need to do this, but skipping the other accounts will speed things up.
+# https://mikefarah.gitbook.io/yq/operators/env-variable-operators
+# (*) Need to export the environment variable to get yq to pick it up.
+#[root@ansibler]
+
+    export username=MLucey
+
+    yq '
+        ... comments = "" |
+        .users = [ .users.[] | select(.name == strenv(username)) ]
+        ' \
+        deployments/common/users/live-users.yml \
+    | tee "/tmp/update-${username:?}.yml"
+
+    >   users:
+    >     - name: "MLucey"
+    >       type: "live"
+    >       linuxuid: 10018
+    >       publickey: "file:///deployments/common/users/keys/MLucey.pub"
+
+
+# -----------------------------------------------------
+# Import the user config, adding the missing key.
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    createyamlusers \
+        "/tmp/update-${username:?}.yml" \
+    | tee "/tmp/update-${username:?}.json"
+
+    jq '.users[].linuxuser' "/tmp/update-${username:?}.json"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the key arrived.
+#[root@ansibler]
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        echo ""
+        sudo ls -alZ '/home/${username:?}/.ssh/authorized_keys'
+        "
+
+    >   ....
+    >   ....
+
+
+    ssh zeppelin \
+        "
+        date
+        hostname
+        echo ""
+        sudo cat '/home/${username:?}/.ssh/authorized_keys'
+        "
+
+    >   ....
+    >   ....
+

@@ -1,0 +1,538 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+
+Target:
+   
+    Test temporary storage cleaner (yarncleaner)
+    
+Result:
+
+    Success
+    
+    
+
+# -----------------------------------------------------
+# Check which cloud is currently live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+        
+	> iris-gaia-green-20230308-zeppelin
+
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting blue for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=blue
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    time \
+        source /deployments/hadoop-yarn/bin/deploy.sh
+
+        > Done
+        
+
+# -----------------------------------------------------
+# Start NGINX    
+#[root@ansibler]
+
+    source /deployments/hadoop-yarn/bin/start-nginx.sh 
+
+    > Done	
+
+	
+# -----------------------------------------------------
+# Create users    
+#[root@ansibler]
+
+    source /deployments/zeppelin/bin/create-user-tools.sh
+
+    import-test-users
+    
+    > Done        
+        
+        
+# -----------------------------------------------------
+# Copy certificates from data server.
+#[root@ansibler]        
+
+  scp -r fedora@data.gaia-dmp.uk:/home/fedora/certs/20230314/ /root/
+
+
+# -----------------------------------------------------
+# Enable HTTPS
+#[root@ansibler]
+
+    /deployments/hadoop-yarn/bin/setup-ssl.sh \
+        "${cloudname:?}" \
+        "${configname:?}" \
+    | tee /tmp/setup-ssl.log
+    
+
+	    
+	> ---- ---- ----
+	> File [start-nginx.sh]
+	> Path [/deployments/hadoop-yarn/bin]
+	> ---- ----
+	> Starting NGINX
+
+
+
+# -----------------------------------------------------
+# Login & run notebook as test user   
+#[root@ansibler]    
+
+
+%pyspark
+# Set the size of the generated data (adjust as needed)
+# Set the size of the DataFrame (adjust as needed)
+num_rows = 100000000000  # 100 billion rows
+
+# Generate a DataFrame with a large number of rows
+df = spark.range(num_rows).selectExpr("CAST(id AS STRING) AS value")
+
+# Perform some transformations on the DataFrame (optional)
+# df = df.withColumn("new_value", df["value"] * 2)
+
+# Write the DataFrame to temporary storage
+df.persist()
+df = df.coalesce(1)
+
+df.count()
+
+
+
+
+
+# -----------------------------------------------------
+# Check temp disk usage
+
+
+#!/bin/bash
+
+# List of hosts
+hosts=("worker01" "worker02" "worker03" "worker04" "worker05" "worker06")
+
+# Command to check /dev/vdb
+command="df -h /dev/vdb"
+
+# Loop through the hosts
+for host in "${hosts[@]}"
+do
+  ssh "$host" "$command"
+done
+	        
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  158G   11G  94% /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  144G   24G  86% /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  128G   40G  77% /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  129G   40G  77% /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  134G   34G  81% /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  155G   13G  93% /mnt
+
+
+# Wait..
+
+...
+
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  956M  167G   1% /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  956M  167G   1% /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  956M  167G   1% /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  956M  167G   1% /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  956M  167G   1% /mnt
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vdb        177G  956M  167G   1% /mnt
+        
+# Success: Yarn/Spark temporary data directory was cleared
+
+
+# Try running same notebook now:
+
+
+Py4JJavaError: An error occurred while calling o112.defaultParallelism.
+: java.lang.IllegalStateException: Cannot call methods on a stopped SparkContext.
+This stopped SparkContext was created at:
+
+org.apache.spark.sql.SparkSession$Builder.getOrCreate(SparkSession.scala:939)        
+        
+# This is expected.. (Basically Yarn job is killed, Zeppelin Spark context is open but cant find temp data, requires a restart)
+
+# Restart Spark Context:
+
+# Run other notebooks again.. Success
+       
+       
+# -----------------------------------------------------
+# Run tests
+#[root@ansibler]
+
+# Fetch benchmarker
+
+wget https://raw.githubusercontent.com/wfau/aglais-testing/main/gdmp_benchmark/gdmp_benchmark.py
+
+
+
+# -----------------------------------------------------
+# Run a test which causes the disk overflow error as one user
+# user = evison
+#[root@ansibler]
+
+
+   # Create userconfig:
+   nano reyesfan.json
+        ..
+        	    {
+	     "users": [
+			{
+			  "username": "Evison",
+			  "shirouser": {
+			    "name": "Evison",
+			    "password": "...."
+			  }
+			}
+		      ]
+	     }
+        ..
+        
+    usercount=1
+    endpoint="http://iris-gaia-blue.gaia-dmp.uk"
+    notebook_config=/deployments/zeppelin/test/config/disktest.json
+    user_config=/tmp/evison.json
+    delay_start=1
+    delay_notebook=1
+
+    python3 gdmp_benchmark.py \
+        --zeppelin_url  "${endpoint:?}" \
+        --usercount ${usercount:?} \
+        --user_config "${user_config:?}" \
+        --notebook_config "${notebook_config:?}" \
+        --delay_start "${delay_start:?}" \
+        --delay_notebook "${delay_notebook:?}"      
+
+  
+  
+# While job is running observe usage on worker01
+# fedora@worker01
+
+df -h
+
+Filesystem                                                                                                Size  Used Avail Use% Mounted on
+...
+/dev/vdb                                                                                                  177G  164G  4.1G  98% /mnt
+..
+
+
+df -h
+Filesystem                                                                                                Size  Used Avail Use% Mounted on
+..
+/dev/vdb                                                                                                  177G  731M  167G   1% /mnt
+..        
+
+
+# Results
+  
+---start---
+[{
+    "name": "DiskOverflow",
+    "result": "ERROR",
+    "outputs": {
+        "valid": true
+    },
+    "messages": [],
+    "time": {
+        "result": "SLOW",
+        "elapsed": "1286.00",
+        "percent": "157.20",
+        "start": "2023-06-02T12:38:39.842668",
+        "finish": "2023-06-02T13:00:06.326952"
+    },
+    "logs": "[\"Py4JJavaError: An error occurred while calling o104.count.\\n: org.apache.spark.SparkException: Job 0 cancelled because SparkContext was shut down\\n\\tat org.apache.spark.scheduler.DAGScheduler.$anonfun$cleanUpAfterSchedulerStop$1(DAGScheduler.scala:1085)\\n\\tat org.apache.spark.scheduler.DAGScheduler.$anonfun$cleanUpAfterSchedulerStop$1$adapted(DAGScheduler.scala:1083)\\n\\tat scala.collection.mutable.HashSet.foreach(HashSet.scala:79)\\n\\tat org.apache.spark.scheduler.DAGScheduler.cleanUpAfterSchedulerStop(DAGScheduler.scala:1083)\\n\\tat org.apache.spark.scheduler.DAGSchedulerEventProcessLoop.onStop(DAGScheduler.scala:2463)\\n\\tat org.apache.spark.util.EventLoop.stop(EventLoop.scala:84)\\n\\tat org.apache.spark.scheduler.DAGScheduler.stop(DAGScheduler.scala:2369)\\n\\tat org.apache.spark.SparkContext.$anonfun$stop$12(SparkContext.scala:2069)\\n\\tat org.apache.spark.util.Utils$.tryLogNonFatalError(Utils.scala:1419)\\n\\tat org.apache.spark.SparkContext.stop(SparkContext.scala:2069)\\n\\tat org.apache.spark.scheduler.cluster.YarnClientSchedulerBackend$MonitorThread.run(YarnClientSchedulerBackend.scala:124)\\n\\tat org.apache.spark.scheduler.DAGScheduler.runJob(DAGScheduler.scala:868)\\n\\tat org.apache.spark.SparkContext.runJob(SparkContext.scala:2196)\\n\\tat org.apache.spark.SparkContext.runJob(SparkContext.scala:2217)\\n\\tat org.apache.spark.SparkContext.runJob(SparkContext.scala:2236)\\n\\tat org.apache.spark.SparkContext.runJob(SparkContext.scala:2261)\\n\\tat org.apache.spark.rdd.RDD.$anonfun$collect$1(RDD.scala:1030)\\n\\tat org.apache.spark.rdd.RDDOperationScope$.withScope(RDDOperationScope.scala:151)\\n\\tat org.apache.spark.rdd.RDDOperationScope$.withScope(RDDOperationScope.scala:112)\\n\\tat org.apache.spark.rdd.RDD.withScope(RDD.scala:414)\\n\\tat org.apache.spark.rdd.RDD.collect(RDD.scala:1029)\\n\\tat org.apache.spark.sql.execution.SparkPlan.executeCollect(SparkPlan.scala:390)\\n\\tat org.apache.spark.sql.Dataset.$anonfun$count$1(Dataset.scala:3006)\\n\\tat org.apache.spark.sql.Dataset.$anonfun$count$1$adapted(Dataset.scala:3005)\\n\\tat org.apache.spark.sql.Dataset.$anonfun$withAction$1(Dataset.scala:3687)\\n\\tat org.apache.spark.sql.execution.SQLExecution$.$anonfun$withNewExecutionId$5(SQLExecution.scala:103)\\n\\tat org.apache.spark.sql.execution.SQLExecution$.withSQLConfPropagated(SQLExecution.scala:163)\\n\\tat org.apache.spark.sql.execution.SQLExecution$.$anonfun$withNewExecutionId$1(SQLExecution.scala:90)\\n\\tat org.apache.spark.sql.SparkSession.withActive(SparkSession.scala:775)\\n\\tat org.apache.spark.sql.execution.SQLExecution$.withNewExecutionId(SQLExecution.scala:64)\\n\\tat org.apache.spark.sql.Dataset.withAction(Dataset.scala:3685)\\n\\tat org.apache.spark.sql.Dataset.count(Dataset.scala:3005)\\n\\tat sun.reflect.NativeMethodAccessorImpl.invoke0(Native Method)\\n\\tat sun.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:62)\\n\\tat sun.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)\\n\\tat java.lang.reflect.Method.invoke(Method.java:498)\\n\\tat py4j.reflection.MethodInvoker.invoke(MethodInvoker.java:244)\\n\\tat py4j.reflection.ReflectionEngine.invoke(ReflectionEngine.java:357)\\n\\tat py4j.Gateway.invoke(Gateway.java:282)\\n\\tat py4j.commands.AbstractCommand.invokeMethod(AbstractCommand.java:132)\\n\\tat py4j.commands.CallCommand.execute(CallCommand.java:79)\\n\\tat py4j.GatewayConnection.run(GatewayConnection.java:238)\\n\\tat java.lang.Thread.run(Thread.java:748)\\n\\n(<class 'py4j.protocol.Py4JJavaError'>, Py4JJavaError('An error occurred while calling o104.count.\\\\n', JavaObject id=o107), <traceback object at 0x7f03dcbea550>)\"]"
+}]  
+  
+  
+# This is the expected outcome [Expected Error]
+# Basically we kill the yarn/spark job because it filled the temp disk, so user will see this error
+  
+	
+# -----------------------------------------------------
+# Run one quick test as a single user
+# user = reyesfan
+# Run in a separate tab in the ansibler container
+# Reason for doing this as separate runs, is that the benchmarker does not yet allow concurrent tests with different notebook configurations for each
+#[root@ansibler]
+
+   # Create userconfig:
+   nano reyesfan.json
+        ..
+	    {
+	     "users": [
+			{
+			  "username": "Reyesfan",
+			  "shirouser": {
+			    "name": "Reyesfan",
+			    "password": "...."
+			  }
+			}
+		      ]
+	     }
+
+
+        ..
+
+    usercount=1
+    endpoint="http://iris-gaia-blue.gaia-dmp.uk"
+    notebook_config=/deployments/zeppelin/test/config/quick.json
+    user_config=/tmp/reyesfan.json
+    delay_start=1
+    delay_notebook=1
+
+    python3 gdmp_benchmark.py \
+        --zeppelin_url  "${endpoint:?}" \
+        --usercount ${usercount:?} \
+        --user_config "${user_config:?}" \
+        --notebook_config "${notebook_config:?}" \
+        --delay_start "${delay_start:?}" \
+        --delay_notebook "${delay_notebook:?}"      
+
+
+---start---
+[{
+    "name": "GaiaDMPSetup",
+    "result": "SUCCESS",
+    "outputs": {
+        "valid": true
+    },
+    "messages": [],
+    "time": {
+        "result": "SLOW",
+        "elapsed": "727.00",
+        "percent": "1354.00",
+        "start": "2023-06-02T09:48:04.899599",
+        "finish": "2023-06-02T10:00:12.013095"
+    },
+    "logs": "[]"
+},
+ {
+    "name": "Mean_proper_motions_over_the_sky",
+    "result": "SUCCESS",
+    "outputs": {
+        "valid": true
+    },
+    "messages": [],
+    "time": {
+        "result": "FAST",
+        "elapsed": "123.00",
+        "percent": "-1.60",
+        "start": "2023-06-02T10:00:13.013478",
+        "finish": "2023-06-02T10:02:16.203209"
+    },
+    "logs": "[]"
+},
+ {
+    "name": "Source_counts_over_the_sky.json",
+    "result": "SUCCESS",
+    "outputs": {
+        "valid": true
+    },
+    "messages": [],
+    "time": {
+        "result": "FAST",
+        "elapsed": "47.00",
+        "percent": "-14.55",
+        "start": "2023-06-02T10:02:17.204566",
+        "finish": "2023-06-02T10:03:04.588748"
+    },
+    "logs": "[]"
+},
+ {
+    "name": "Library_Validation.json",
+    "result": "SUCCESS",
+    "outputs": {
+        "valid": true
+    },
+    "messages": [],
+    "time": {
+        "result": "FAST",
+        "elapsed": "8.00",
+        "percent": "-46.67",
+        "start": "2023-06-02T10:03:05.589287",
+        "finish": "2023-06-02T10:03:14.165969"
+    },
+    "logs": "[]"
+}]
+---end---
+
+
+# Notes:
+  
+# GaiaDMPSetup took 727 seconds, basically first job took up all the resources and did not release until the job was killed. 
+#   I think this is not unexpected behaviour based on how we've configured the system.
+
+
+# -----------------------------------------------------
+# Run one quick test as a Evison
+#[root@ansibler]
+
+ 
+    usercount=1
+    endpoint="http://iris-gaia-blue.gaia-dmp.uk"
+    notebook_config=/deployments/zeppelin/test/config/quick.json
+    user_config=/tmp/evison.json
+    delay_start=1
+    delay_notebook=1
+
+    python3 gdmp_benchmark.py \
+        --zeppelin_url  "${endpoint:?}" \
+        --usercount ${usercount:?} \
+        --user_config "${user_config:?}" \
+        --notebook_config "${notebook_config:?}" \
+        --delay_start "${delay_start:?}" \
+        --delay_notebook "${delay_notebook:?}" 
+        
+             
+---start---
+[{
+    "name": "GaiaDMPSetup",
+    "result": "SUCCESS",
+    "outputs": {
+        "valid": true
+    },
+    "messages": [],
+    "time": {
+        "result": "FAST",
+        "elapsed": "43.00",
+        "percent": "-14.00",
+        "start": "2023-06-02T10:06:20.220861",
+        "finish": "2023-06-02T10:07:03.314927"
+    },
+    "logs": "[]"
+},
+ {
+    "name": "Mean_proper_motions_over_the_sky",
+    "result": "SUCCESS",
+    "outputs": {
+        "valid": true
+    },
+    "messages": [],
+    "time": {
+        "result": "FAST",
+        "elapsed": "98.00",
+        "percent": "-21.60",
+        "start": "2023-06-02T10:07:04.316078",
+        "finish": "2023-06-02T10:08:42.688338"
+    },
+    "logs": "[]"
+},
+ {
+    "name": "Source_counts_over_the_sky.json",
+    "result": "SUCCESS",
+    "outputs": {
+        "valid": true
+    },
+    "messages": [],
+    "time": {
+        "result": "FAST",
+        "elapsed": "38.00",
+        "percent": "-30.91",
+        "start": "2023-06-02T10:08:43.689250",
+        "finish": "2023-06-02T10:09:22.540579"
+    },
+    "logs": "[]"
+},
+ {
+    "name": "Library_Validation.json",
+    "result": "SUCCESS",
+    "outputs": {
+        "valid": true
+    },
+    "messages": [],
+    "time": {
+        "result": "ERROR",
+        "elapsed": "7.00",
+        "percent": "-53.33",
+        "start": "2023-06-02T10:09:23.541162",
+        "finish": "2023-06-02T10:09:30.845632"
+    },
+    "logs": "[]"
+}]
+---end---
+
+
+# It seems like the Evison user can run new notebooks fine, even though the Yarn application for the previous job, and thus their Spark Context was killed.
+
+# Library Validation finished in 7 seconds
+# This is reported as an error because its less than half the expected time.
+# However I've it works fine when running the library manually, and it seems that 15 is too high for expected runtime, so I'll update that value
+
+
+

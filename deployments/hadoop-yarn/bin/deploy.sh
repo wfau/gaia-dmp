@@ -93,6 +93,15 @@
 
         '
 
+# -----------------------------------------------------
+# Setup SSL
+
+
+    "/deployments/hadoop-yarn/bin/setup-ssl.sh" \
+        "${cloudname:?}" \
+        "${configname:?}"
+
+
 
 # -----------------------------------------------------
 # re-start Zeppelin.
@@ -102,6 +111,8 @@
         '
         zeppelin-daemon.sh restart
         '
+
+
 
 
 # -----------------------------------------------------
@@ -170,6 +181,15 @@ EOF
 #[root@ansibler]
 
     pip install git+https://github.com/wfau/aglais-testing@v0.2.6
+
+
+# -----------------------------------------------------
+# Run tests (Ports, Redirects etc..)
+
+    "/deployments/hadoop-yarn/bin/system-tests.sh" \
+        "${cloudname:?}" \
+        "${configname:?}"
+
 
 
 # -----------------------------------------------------

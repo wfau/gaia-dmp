@@ -1,0 +1,318 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
+#
+
+
+    Target:
+
+        Deploy our Kubernetes cluster in one sequence.
+
+    Result:
+
+        Success:
+            Kubernetes deployment works using FC37 version of Atolmis.
+
+        Caveats:
+            Needs a pause between deploying capi-addons/cluster-api-addon-provider and capi/openstack-cluster.
+
+
+
+# -----------------------------------------------------
+# Create our client container.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}-admin
+
+#   buildtag=$(date '+%Y.%m.%d')
+#   containername=kubernetes-client:${buildtag:?}
+#   containerrepo=ghcr.io/wfau/atolmis
+#   containerfull=${containerrepo:?}/${containername:?}
+
+    containername=kubernetes-client:2023.06.15
+    containerrepo=ghcr.io/wfau/atolmis
+    containerfull=${containerrepo:?}/${containername:?}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        "${containerfull:?}" \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+# -----------------------------------------------------
+# Initialise our status file.
+# TODO Move this into an Ansible task.
+#[root@ansibler]
+
+    /deployments/cluster-api/bootstrap/bin/init-status.sh \
+        "${cloudname:?}"
+
+# -----------------------------------------------------
+# Deploy our bootstrap node.
+#[root@ansibler]
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/config/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+# -----------------------------------------------------
+# Login to our bootstrap node as root.
+#[root@ansibler]
+
+    ssh root@bootstrap
+
+
+# -----------------------------------------------------
+# Create the initial Kubernetes in Docker (KinD) cluster.
+#[root@bootstrap]
+
+    kindclustername=bootstrap
+    kindclusterfull=${kindclustername:?}-$(date '+%Y%m%d')
+    kindclusterpath=/opt/aglais/${kindclustername:?}
+    kindclusterconf=${kindclusterpath:?}/${kindclusterfull:?}-kubeconfig.yml
+
+    mkdir -p "${kindclusterpath}"
+
+    kind create cluster \
+        --name "${kindclusterfull:?}" \
+        --kubeconfig "${kindclusterconf:?}"
+
+
+# -----------------------------------------------------
+# Install the Openstack ClusterAPI components.
+#[root@bootstrap]
+
+    clusterctl init \
+        --kubeconfig "${kindclusterconf:?}" \
+        --infrastructure openstack
+
+
+# -----------------------------------------------------
+# Install the StackHPC Helm charts.
+#[root@bootstrap]
+
+    helm repo add \
+        capi \
+        https://stackhpc.github.io/capi-helm-charts
+
+    helm repo add \
+        capi-addons \
+        https://stackhpc.github.io/cluster-api-addon-provider
+
+    helm upgrade \
+        --kubeconfig "${kindclusterconf:?}" \
+        cluster-api-addon-provider \
+        capi-addons/cluster-api-addon-provider \
+            --install \
+            --version "0.1.0"
+
+# -----------------------------------------------------
+#[root@bootstrap]
+
+        Wait for providers to be ready ..
+
+# -----------------------------------------------------
+# Deploy our target cluster.
+#[root@bootstrap]
+
+    deployclustername=gaia-dmp-one
+    deployclusterfull=${deployclustername:?}-$(date '+%Y%m%d')
+
+    deployclusterpath=/opt/aglais/${deployclustername:?}
+    deployclustertext=${deployclusterpath:?}/${deployclusterfull:?}.txt
+    deployclusterconf=${deployclusterpath:?}/${deployclusterfull:?}-kubeconfig.yml
+
+    helm upgrade \
+        --kubeconfig "${kindclusterconf:?}" \
+        "${deployclusterfull:?}" \
+        capi/openstack-cluster \
+            --install \
+            --version "0.1.0" \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/opt/aglais/openstack-clouds.yaml'
+
+
+# -----------------------------------------------------
+# Check our cluster status.
+#[root@bootstrap]
+
+    watch clusterctl \
+        --kubeconfig "${kindclusterconf:?}" \
+        describe cluster \
+            "${deployclusterfull:?}"
+
+    >   Every 2.0s: clusterctl --kubeconfig /opt/aglais/bootstrap/bootstrap-20230619-kubeconfig.yml describe cluster gaia-dmp-one-20230619
+    >   
+    >   NAME                                                                      READY  SEVERITY  REASON  SINCE
+    >   Cluster/gaia-dmp-one-20230619                                             True                     3m30s
+    >   ├─ClusterInfrastructure - OpenStackCluster/gaia-dmp-one-20230619
+    >   ├─ControlPlane - KubeadmControlPlane/gaia-dmp-one-20230619-control-plane  True                     3m30s
+    >   │ └─3 Machines...                                                         True                     6m17s
+    >   └─Workers
+    >     └─MachineDeployment/gaia-dmp-one-20230619-md-0                          True                     5m40s
+    >       └─3 Machines...
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get cluster-api
+
+
+    >   
+    >   NAME                                                                                                    CLUSTER                 BOOTSTRAP   TARGET NAMESPACE   RELEASE NAME              PHASE      REVISION   AGE
+    >   manifests.addons.stackhpc.com/gaia-dmp-one-20230619-cloud-config                                        gaia-dmp-one-20230619   true        openstack-system   cloud-config              Deployed   1          13m
+    >   manifests.addons.stackhpc.com/gaia-dmp-one-20230619-csi-cinder-storageclass                             gaia-dmp-one-20230619   true        openstack-system   csi-cinder-storageclass   Deployed   1          13m
+    >   
+    >   NAME                                                                                                    CLUSTER                 BOOTSTRAP   TARGET NAMESPACE         RELEASE NAME                PHASE      REVISION   CHART NAME                           CHART VERSION   AGE
+    >   helmrelease.addons.stackhpc.com/gaia-dmp-one-20230619-ccm-openstack                                     gaia-dmp-one-20230619   true        openstack-system         ccm-openstack               Deployed   1          openstack-cloud-controller-manager   1.3.0           13m
+    >   helmrelease.addons.stackhpc.com/gaia-dmp-one-20230619-cni-calico                                        gaia-dmp-one-20230619   true        tigera-operator          cni-calico                  Deployed   1          tigera-operator                      v3.26.0         13m
+    >   helmrelease.addons.stackhpc.com/gaia-dmp-one-20230619-csi-cinder                                        gaia-dmp-one-20230619   true        openstack-system         csi-cinder                  Deployed   1          openstack-cinder-csi                 2.2.0           13m
+    >   helmrelease.addons.stackhpc.com/gaia-dmp-one-20230619-mellanox-network-operator                         gaia-dmp-one-20230619   true        network-operator         mellanox-network-operator   Deployed   1          network-operator                     1.3.0           13m
+    >   helmrelease.addons.stackhpc.com/gaia-dmp-one-20230619-metrics-server                                    gaia-dmp-one-20230619   true        kube-system              metrics-server              Deployed   1          metrics-server                       3.8.2           13m
+    >   helmrelease.addons.stackhpc.com/gaia-dmp-one-20230619-node-feature-discovery                            gaia-dmp-one-20230619   true        node-feature-discovery   node-feature-discovery      Deployed   1          node-feature-discovery               0.11.2          13m
+    >   helmrelease.addons.stackhpc.com/gaia-dmp-one-20230619-nvidia-gpu-operator                               gaia-dmp-one-20230619   true        gpu-operator             nvidia-gpu-operator         Deployed   1          gpu-operator                         v1.11.1         13m
+    >   
+    >   NAME                                                                                                    CLUSTER                 AGE
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane-hjhpd                      gaia-dmp-one-20230619   11m
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane-x5mph                      gaia-dmp-one-20230619   7m31s
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane-xfgxv                      gaia-dmp-one-20230619   6m15s
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-99910806-kkv44                      gaia-dmp-one-20230619   13m
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-99910806-qhcw5                      gaia-dmp-one-20230619   13m
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-99910806-rjbwc                      gaia-dmp-one-20230619   13m
+    >   
+    >   NAME                                                                                                    AGE
+    >   kubeadmconfigtemplate.bootstrap.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-99910806                    13m
+    >   
+    >   NAME                                                                                                    CLUSTER                 EXPECTEDMACHINES   MAXUNHEALTHY   CURRENTHEALTHY   AGE
+    >   machinehealthcheck.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane                                 gaia-dmp-one-20230619   3                  100%           3                13m
+    >   machinehealthcheck.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0                                          gaia-dmp-one-20230619   3                  100%           3                13m
+    >   
+    >   NAME                                                                                                    PHASE         AGE   VERSION
+    >   cluster.cluster.x-k8s.io/gaia-dmp-one-20230619                                                          Provisioned   13m
+    >   
+    >   NAME                                                                                                    CLUSTER                 REPLICAS   READY   UPDATED   UNAVAILABLE   PHASE     AGE   VERSION
+    >   machinedeployment.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0                                           gaia-dmp-one-20230619   3          3       3         0             Running   13m   v1.25.4
+    >   
+    >   NAME                                                                                                    CLUSTER                 REPLICAS   READY   AVAILABLE   AGE   VERSION
+    >   machineset.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-5f88447c74xwqjlp                                 gaia-dmp-one-20230619   3          3       3           13m   v1.25.4
+    >   
+    >   NAME                                                                                                    CLUSTER                 NODENAME                                             PROVIDERID                                          PHASE     AGE     VERSION
+    >   machine.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane-2zwnp                                      gaia-dmp-one-20230619   gaia-dmp-one-20230619-control-plane-623dd852-46kn7   openstack:///247eaaaf-56da-40ec-a876-c2712851bc19   Running   6m15s   v1.25.4
+    >   machine.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane-8gs9h                                      gaia-dmp-one-20230619   gaia-dmp-one-20230619-control-plane-623dd852-sw266   openstack:///030578ea-bc33-43de-b63e-f4d95ac26f4a   Running   7m31s   v1.25.4
+    >   machine.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane-dxdfb                                      gaia-dmp-one-20230619   gaia-dmp-one-20230619-control-plane-623dd852-jh8d5   openstack:///847d11a0-9cee-4be2-a3e5-6b39f945c1f8   Running   11m     v1.25.4
+    >   machine.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-5f88447c74xwqjlp-74xst                              gaia-dmp-one-20230619   gaia-dmp-one-20230619-md-0-623dd852-xpkdb            openstack:///98fed115-ea0b-4c8d-9e93-700848729441   Running   13m     v1.25.4
+    >   machine.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-5f88447c74xwqjlp-frk5r                              gaia-dmp-one-20230619   gaia-dmp-one-20230619-md-0-623dd852-lp5ts            openstack:///4e7bf01a-aaa1-47df-b309-dda1d94f729a   Running   13m     v1.25.4
+    >   machine.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-5f88447c74xwqjlp-wzt72                              gaia-dmp-one-20230619   gaia-dmp-one-20230619-md-0-623dd852-xj5gj            openstack:///194aca67-9bd8-44b7-a328-a6ba08ae94ed   Running   13m     v1.25.4
+    >   
+    >   NAME                                                                                                    CLUSTER                 INITIALIZED   API SERVER AVAILABLE   REPLICAS   READY   UPDATED   UNAVAILABLE   AGE   VERSION
+    >   kubeadmcontrolplane.controlplane.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane                   gaia-dmp-one-20230619   true          true                   3          3       3         0             13m   v1.25.4
+    >   
+    >   NAME                                                                                                    AGE
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane-623dd852   13m
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-623dd852            13m
+    >   
+    >   NAME                                                                                                    CLUSTER                 READY   NETWORK                                SUBNET                                 BASTION IP   AGE
+    >   openstackcluster.infrastructure.cluster.x-k8s.io/gaia-dmp-one-20230619                                  gaia-dmp-one-20230619   true    f76386c6-66a3-40b0-ae27-c0d73136bfc8   086b2d7c-ff7f-45cd-923b-e274f551211a                13m
+    >   
+    >   NAME                                                                                                    CLUSTER                 INSTANCESTATE   READY   PROVIDERID                                          MACHINE                                             AGE
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane-623dd852-46kn7     gaia-dmp-one-20230619   ACTIVE          true    openstack:///247eaaaf-56da-40ec-a876-c2712851bc19   gaia-dmp-one-20230619-control-plane-2zwnp           6m15s
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane-623dd852-jh8d5     gaia-dmp-one-20230619   ACTIVE          true    openstack:///847d11a0-9cee-4be2-a3e5-6b39f945c1f8   gaia-dmp-one-20230619-control-plane-dxdfb           11m
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/gaia-dmp-one-20230619-control-plane-623dd852-sw266     gaia-dmp-one-20230619   ACTIVE          true    openstack:///030578ea-bc33-43de-b63e-f4d95ac26f4a   gaia-dmp-one-20230619-control-plane-8gs9h           7m31s
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-623dd852-lp5ts              gaia-dmp-one-20230619   ACTIVE          true    openstack:///4e7bf01a-aaa1-47df-b309-dda1d94f729a   gaia-dmp-one-20230619-md-0-5f88447c74xwqjlp-frk5r   13m
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-623dd852-xj5gj              gaia-dmp-one-20230619   ACTIVE          true    openstack:///194aca67-9bd8-44b7-a328-a6ba08ae94ed   gaia-dmp-one-20230619-md-0-5f88447c74xwqjlp-wzt72   13m
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/gaia-dmp-one-20230619-md-0-623dd852-xpkdb              gaia-dmp-one-20230619   ACTIVE          true    openstack:///98fed115-ea0b-4c8d-9e93-700848729441   gaia-dmp-one-20230619-md-0-5f88447c74xwqjlp-74xst   13m
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get events \
+            --watch
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+#[root@bootstrap]
+
+    mkdir -p "${deployclusterpath:?}"
+
+    clusterctl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get \
+            kubeconfig "${deployclusterfull:?}" \
+    | tee "${deployclusterconf}" \
+    | yq '.'
+
+    >   apiVersion: v1
+    >   clusters:
+    >     - cluster:
+    >         certificate-authority-data: LS0tLS1C .... tLS0tLQo=
+    >         server: https://128.232.226.214:6443
+    >       name: gaia-dmp-one-20230619
+    >   contexts:
+    >     - context:
+    >         cluster: gaia-dmp-one-20230619
+    >         user: gaia-dmp-one-20230619-admin
+    >       name: gaia-dmp-one-20230619-admin@gaia-dmp-one-20230619
+    >   current-context: gaia-dmp-one-20230619-admin@gaia-dmp-one-20230619
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >     - name: gaia-dmp-one-20230619-admin
+    >       user:
+    >         client-certificate-data: LS0tLS1C .... tLS0tLQo=
+    >         client-key-data: LS0tLS1C .... 0tLS0tCg==
+
+

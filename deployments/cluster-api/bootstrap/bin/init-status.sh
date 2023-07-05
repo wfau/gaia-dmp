@@ -19,8 +19,10 @@
 # </meta:header>
 #
 # AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
-#
 
+#
+# TODO Remove the debug logging when we are happy with this.
+#
 
 # -----------------------------------------------------
 # Settings ...

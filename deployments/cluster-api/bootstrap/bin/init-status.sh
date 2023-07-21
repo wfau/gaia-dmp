@@ -20,10 +20,6 @@
 #
 # AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
 
-#
-# TODO Remove the debug logging when we are happy with this.
-#
-
 # -----------------------------------------------------
 # Settings ...
 
@@ -31,19 +27,19 @@
     binpath="$(dirname $(readlink -f ${0}))"
     treetop="$(dirname $(dirname ${binpath}))"
 
-    echo ""
-    echo "---- ---- ----"
-    echo "File [${binfile}]"
-    echo "Path [${binpath}]"
-    echo "Tree [${treetop}]"
+#   echo ""
+#   echo "---- ---- ----"
+#   echo "File [${binfile}]"
+#   echo "Path [${binpath}]"
+#   echo "Tree [${treetop}]"
 
     cloudname=${1:?}
     statusyml=${2:-'/opt/aglais/aglais-status.yml'}
 
-    echo "---- ---- ----"
-    echo "Cloud name  [${cloudname:?}]"
-    echo "Status file [${statusyml:?}]"
-    echo "---- ---- ----"
+#   echo "---- ---- ----"
+#   echo "Cloud name  [${cloudname:?}]"
+#   echo "Status file [${statusyml:?}]"
+#   echo "---- ---- ----"
 
 # -----------------------------------------------------
 # Create the target directory.
@@ -77,8 +73,7 @@
         --os-cloud "${cloudname:?}" \
         token issue \
             --format json \
-    | tee '/tmp/ostoken.json'   \
-    | jq '.'
+    > '/tmp/ostoken.json'   \
 
     export osuserid=$(
         jq -r '.user_id' '/tmp/ostoken.json'
@@ -89,8 +84,7 @@
         user show \
             --format json \
             "${osuserid}" \
-    | tee '/tmp/osuser.json' \
-    | jq '.'
+    > '/tmp/osuser.json' \
 
     export osusername=$(
         jq -r '.name' '/tmp/osuser.json'
@@ -105,8 +99,7 @@
         project show \
             --format json \
             "${osprojectid}" \
-    | tee '/tmp/osproject.json' \
-    | jq '.'
+    > '/tmp/osproject.json' \
 
     export osprojectname=$(
         jq -r '.name' '/tmp/osproject.json'

@@ -40,13 +40,18 @@
     echo "Cloud name [${cloudname}]"
     echo "---- ---- ----"
 
+# -----------------------------------------------------
+# Set the Manila API version.
+# https://stackoverflow.com/a/58806536
+
+    source /deployments/openstack/bin/settings.sh
 
 # -----------------------------------------------------
-# List the currenbt resources.
+# List the current resources.
 
     echo ""
     echo "---- ----"
-    echo "Clusters"
+    echo "Magnum clusters"
 
     openstack \
         --os-cloud "${cloudname:?}" \
@@ -55,7 +60,7 @@
 
     echo ""
     echo "---- ----"
-    echo "Servers"
+    echo "Nova servers"
     openstack \
         --os-cloud "${cloudname:?}" \
         server list
@@ -63,11 +68,17 @@
 
     echo ""
     echo "---- ----"
-    echo "Volumes"
+    echo "Cinder volumes"
     openstack \
         --os-cloud "${cloudname:?}" \
         volume list
 
+    echo ""
+    echo "---- ----"
+    echo "Manila shares"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
 
     echo ""
     echo "---- ----"

@@ -598,21 +598,21 @@
 
     echo ""
     echo "---- ----"
-    echo "List servers"
+    echo "Nova servers"
     openstack \
         --os-cloud "${cloudname:?}" \
         server list
 
     echo ""
     echo "---- ----"
-    echo "List volumes"
+    echo "Cinder volumes"
     openstack \
         --os-cloud "${cloudname:?}" \
         volume list
 
     echo ""
     echo "---- ----"
-    echo "List shares"
+    echo "Manila shares"
     openstack \
         --os-cloud "${cloudname:?}" \
         share list

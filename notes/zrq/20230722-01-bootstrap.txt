@@ -1,0 +1,516 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
+#
+
+
+    Target:
+
+        Next steps ...
+
+    Result:
+
+        Work in progress ...
+
+        TODO
+        Move the bootstrap cluster creation to Ansible.
+        Add Kind and bootstrap cluster details to aglais-status.yaml
+
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+
+# -----------------------------------------------------
+# Create our client container.
+#[user@desktop]
+
+    agclient blue
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+    #
+    # Still has problems with undeletable shares.
+    #
+
+# -----------------------------------------------------
+# Initialise our status file.
+#[root@ansibler]
+
+    /deployments/cluster-api/bootstrap/bin/init-status.sh \
+        "${cloudname:?}"
+
+    >   aglais:
+    >     deployment:
+    >       type: cluster-api
+    >       name: iris-gaia-blue-20230722
+    >       date: 20230722T023808
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-blue
+    >       user:
+    >         id: 5fa0c97a6dd14e01a3c7d91dad5c6b17
+    >         name: dmorris_gaia
+    >       project:
+    >         id: e918a13fed2648758175a15fac083569
+    >         name: iris-gaia-blue
+
+
+# -----------------------------------------------------
+# Deploy our bootstrap node.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory \
+        '/deployments/cluster-api/bootstrap/ansible/config/inventory.yml' \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to our bootstrap node as root.
+#[root@ansibler]
+
+    ssh root@bootstrap
+
+    statusyml=/opt/aglais/aglais-status.yml
+    touch "${statusyml:?}"
+
+# -----------------------------------------------------
+# Create the initial Kubernetes in Docker (KinD) cluster.
+#[root@bootstrap]
+
+    kindclusterbase=bootstrap
+    kindclustername=${kindclusterbase:?}-$(date '+%Y%m%d')
+    kindclusterpath=/opt/aglais/${kindclusterbase:?}
+    kindclusterconf=${kindclusterpath:?}/${kindclustername:?}-kubeconfig.yml
+
+    yq eval \
+        --inplace \
+        "
+        .aglais.kubernetes.kind.name = \"${kindclustername}\",
+        .aglais.kubernetes.kind.conf = \"${kindclusterconf}\"
+        " \
+        "${statusyml:?}"
+
+    mkdir -p "${kindclusterpath}"
+
+    kind create cluster \
+        --name "${kindclustername:?}" \
+        --kubeconfig "${kindclusterconf:?}"
+
+    >   Creating cluster "bootstrap-20230722" ...
+    >    ✓ Ensuring node image (kindest/node:v1.25.3) 🖼
+    >    ✓ Preparing nodes 📦
+    >    ✓ Writing configuration 📜
+    >    ✓ Starting control-plane 🕹️
+    >    ✓ Installing CNI 🔌
+    >    ✓ Installing StorageClass 💾
+    >   Set kubectl context to "kind-bootstrap-20230722"
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install the Openstack ClusterAPI components.
+#[root@bootstrap]
+
+    clusterctl init \
+        --kubeconfig "${kindclusterconf:?}" \
+        --infrastructure openstack
+
+    >   Fetching providers
+    >   Installing cert-manager Version="v1.12.2"
+    >   Waiting for cert-manager to be available...
+    >   Installing Provider="cluster-api" Version="v1.4.4" TargetNamespace="capi-system"
+    >   Installing Provider="bootstrap-kubeadm" Version="v1.4.4" TargetNamespace="capi-kubeadm-bootstrap-system"
+    >   Installing Provider="control-plane-kubeadm" Version="v1.4.4" TargetNamespace="capi-kubeadm-control-plane-system"
+    >   Installing Provider="infrastructure-openstack" Version="v0.7.3" TargetNamespace="capo-system"
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install the StackHPC Helm charts.
+#[root@bootstrap]
+
+    helm repo add \
+        capi \
+        https://stackhpc.github.io/capi-helm-charts
+
+    helm repo add \
+        capi-addons \
+        https://stackhpc.github.io/cluster-api-addon-provider
+
+    helm upgrade \
+        --wait \
+        --kubeconfig "${kindclusterconf:?}" \
+        cluster-api-addon-provider \
+        capi-addons/cluster-api-addon-provider \
+            --install \
+            --version "0.1.0"
+
+    >   Release "cluster-api-addon-provider" does not exist. Installing it now.
+    >   NAME: cluster-api-addon-provider
+    >   LAST DEPLOYED: Sat Jul 22 02:45:23 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        api-resources \
+            --api-group addons.stackhpc.com
+
+    >   NAME           SHORTNAMES   APIVERSION                     NAMESPACED   KIND
+    >   helmreleases                addons.stackhpc.com/v1alpha1   true         HelmRelease
+    >   manifests                   addons.stackhpc.com/v1alpha1   true         Manifests
+
+
+# -----------------------------------------------------
+# Reboot the bootstrap VM.
+#[root@bootstrap]
+
+    reboot
+
+    ....
+    ....
+
+    ssh root@bootstrap
+
+    statusyml=/opt/aglais/aglais-status.yml
+    touch "${statusyml:?}"
+
+# -----------------------------------------------------
+# Read our Kind cluster settings.
+#[root@ansibler]
+
+    kindclustername=$(
+        yq '
+           .aglais.kubernetes.kind.name
+           ' "${statusyml:?}"
+        )
+
+    kindclusterconf=$(
+        yq '
+           .aglais.kubernetes.kind.conf
+           ' "${statusyml:?}"
+        )
+
+# -----------------------------------------------------
+# Deploy our target cluster.
+#[root@bootstrap]
+
+    workclusterbase=gaia-dmp-one
+    workclustername=${workclusterbase:?}-$(date '+%Y%m%d')
+
+    workclusterpath=/opt/aglais/${workclusterbase:?}
+    workclusterconf=${workclusterpath:?}/${workclustername:?}-kubeconfig.yml
+
+    yq eval \
+        --inplace \
+        "
+        .aglais.kubernetes.work.name = \"${workclustername}\",
+        .aglais.kubernetes.work.conf = \"${workclusterconf}\"
+        " \
+        "${statusyml:?}"
+
+    helm upgrade \
+        --kubeconfig "${kindclusterconf:?}" \
+        "${workclustername:?}" \
+        capi/openstack-cluster \
+            --install \
+            --version "0.1.0" \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/opt/aglais/openstack-clouds.yaml'
+
+    >   NAME: gaia-dmp-one-20230722
+    >   LAST DEPLOYED: Sat Jul 22 03:03:52 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+
+
+# -----------------------------------------------------
+# Watch the cluster status.
+#[root@bootstrap]
+
+    watch clusterctl \
+        --kubeconfig "${kindclusterconf:?}" \
+        describe cluster \
+            "${workclustername:?}"
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get cluster-api
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Launch another client terminal.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler-blue \
+            bash
+
+    ssh root@bootstrap
+
+    statusyml=/opt/aglais/aglais-status.yml
+    touch "${statusyml:?}"
+
+    kindclustername=$(
+        yq '
+           .aglais.kubernetes.kind.name
+           ' "${statusyml:?}"
+        )
+
+    kindclusterconf=$(
+        yq '
+           .aglais.kubernetes.kind.conf
+           ' "${statusyml:?}"
+        )
+
+    workclustername=$(
+        yq '
+           .aglais.kubernetes.work.name
+           ' "${statusyml:?}"
+        )
+
+    workclusterconf=$(
+        yq '
+           .aglais.kubernetes.work.conf
+           ' "${statusyml:?}"
+        )
+
+# -----------------------------------------------------
+# Follow the addon-provider logs.
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get pods
+
+    >   NAME                                               READY   STATUS              RESTARTS      AGE
+    >   cluster-api-addon-provider-5cb78d8945-szjrg        1/1     Running             2 (36s ago)   18m
+    >   gaia-dmp-one-20230722-autoscaler-866fbdd79-xbgcf   0/1     ContainerCreating   0             14s
+
+
+    podname=$(
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get pods \
+                --output json \
+        | jq -r '.items[].metadata.name | select(test("cluster-api-addon-provider")) '
+        )
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs "${podname:?}" \
+            --follow
+
+    >   ....
+    >   ....
+
+    #
+    # Looks like it all succeeded.
+    # There isn't a clear log message that means it is all done.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Fetch the work cluster config.
+#[root@bootstrap]
+
+    mkdir -p $(dirname "${workclusterconf}")
+
+    clusterctl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get \
+            kubeconfig "${workclustername:?}" \
+    | tee "${workclusterconf}" \
+    | yq '.'
+
+    >   apiVersion: v1
+    >   clusters:
+    >     - cluster:
+    >         certificate-authority-data: LS0tLS1C........tLS0tLQo=
+    >         server: https://128.232.226.87:6443
+    >       name: gaia-dmp-one-20230722
+    >   contexts:
+    >     - context:
+    >         cluster: gaia-dmp-one-20230722
+    >         user: gaia-dmp-one-20230722-admin
+    >       name: gaia-dmp-one-20230722-admin@gaia-dmp-one-20230722
+    >   current-context: gaia-dmp-one-20230722-admin@gaia-dmp-one-20230722
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >     - name: gaia-dmp-one-20230722-admin
+    >       user:
+    >         client-certificate-data: LS0tLS1C........tLS0tLQo=
+    >         client-key-data: LS0tLS1C........0tLS0tCg==
+
+
+# -----------------------------------------------------
+# Check what pods are running.
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        get pods \
+            --all-namespaces
+
+    >   NAMESPACE                NAME                                                                         READY   STATUS             RESTARTS       AGE
+    >   calico-apiserver         calico-apiserver-55b464db5b-5vzvq                                            1/1     Running            0              7m37s
+    >   calico-apiserver         calico-apiserver-55b464db5b-77lg5                                            1/1     Running            0              7m37s
+    >   calico-system            calico-kube-controllers-7b8fc95756-tkn2d                                     1/1     Running            0              8m41s
+    >   calico-system            calico-node-7k9q7                                                            1/1     Running            0              8m41s
+    >   calico-system            calico-node-b92p8                                                            1/1     Running            0              8m41s
+    >   calico-system            calico-node-crqzl                                                            1/1     Running            0              8m32s
+    >   calico-system            calico-node-dksmm                                                            1/1     Running            0              7m33s
+    >   calico-system            calico-node-g2d4n                                                            1/1     Running            0              6m47s
+    >   calico-system            calico-node-zwbd7                                                            1/1     Running            0              8m30s
+    >   calico-system            calico-typha-68cd97796f-6lpdj                                                1/1     Running            0              7m23s
+    >   calico-system            calico-typha-68cd97796f-j4jgf                                                1/1     Running            0              8m41s
+    >   calico-system            calico-typha-68cd97796f-lk54p                                                1/1     Running            0              8m22s
+    >   calico-system            csi-node-driver-2rtpk                                                        2/2     Running            0              8m32s
+    >   calico-system            csi-node-driver-4bjcd                                                        2/2     Running            0              8m41s
+    >   calico-system            csi-node-driver-8pplf                                                        2/2     Running            0              8m30s
+    >   calico-system            csi-node-driver-rgwxc                                                        2/2     Running            0              6m47s
+    >   calico-system            csi-node-driver-t45cl                                                        2/2     Running            0              8m41s
+    >   calico-system            csi-node-driver-xjs8s                                                        2/2     Running            0              7m33s
+    >   gpu-operator             gpu-operator-56c9cf6799-5vw4c                                                1/1     Running            0              9m4s
+    >   kube-system              coredns-565d847f94-95jdr                                                     1/1     Running            0              9m17s
+    >   kube-system              coredns-565d847f94-982x7                                                     1/1     Running            0              9m17s
+    >   kube-system              etcd-gaia-dmp-one-20230722-control-plane-cca540f1-c2crk                      1/1     Running            0              7m30s
+    >   kube-system              etcd-gaia-dmp-one-20230722-control-plane-cca540f1-fhpxz                      1/1     Running            0              9m17s
+    >   kube-system              etcd-gaia-dmp-one-20230722-control-plane-cca540f1-mcpf8                      1/1     Running            0              6m42s
+    >   kube-system              kube-apiserver-gaia-dmp-one-20230722-control-plane-cca540f1-c2crk            1/1     Running            0              7m19s
+    >   kube-system              kube-apiserver-gaia-dmp-one-20230722-control-plane-cca540f1-fhpxz            1/1     Running            0              9m17s
+    >   kube-system              kube-apiserver-gaia-dmp-one-20230722-control-plane-cca540f1-mcpf8            1/1     Running            0              6m46s
+    >   kube-system              kube-controller-manager-gaia-dmp-one-20230722-control-plane-cca540f1-c2crk   1/1     Running            0              7m27s
+    >   kube-system              kube-controller-manager-gaia-dmp-one-20230722-control-plane-cca540f1-fhpxz   1/1     Running            0              9m16s
+    >   kube-system              kube-controller-manager-gaia-dmp-one-20230722-control-plane-cca540f1-mcpf8   1/1     Running            0              6m46s
+    >   kube-system              kube-proxy-5bnx2                                                             1/1     Running            0              7m33s
+    >   kube-system              kube-proxy-9xw22                                                             1/1     Running            0              9m17s
+    >   kube-system              kube-proxy-gjl82                                                             1/1     Running            0              8m32s
+    >   kube-system              kube-proxy-kxx65                                                             1/1     Running            0              6m47s
+    >   kube-system              kube-proxy-svwtp                                                             1/1     Running            0              8m30s
+    >   kube-system              kube-proxy-xtdmk                                                             1/1     Running            0              8m42s
+    >   kube-system              kube-scheduler-gaia-dmp-one-20230722-control-plane-cca540f1-c2crk            1/1     Running            0              7m21s
+    >   kube-system              kube-scheduler-gaia-dmp-one-20230722-control-plane-cca540f1-fhpxz            1/1     Running            0              9m16s
+    >   kube-system              kube-scheduler-gaia-dmp-one-20230722-control-plane-cca540f1-mcpf8            1/1     Running            0              6m46s
+    >   kube-system              metrics-server-554f79c654-4lwjf                                              1/1     Running            0              9m
+    >   network-operator         mellanox-network-operator-778bffd589-f98rx                                   0/1     CrashLoopBackOff   6 (104s ago)   9m
+    >   node-feature-discovery   node-feature-discovery-master-6968cdc89f-n5pj7                               1/1     Running            0              9m1s
+    >   node-feature-discovery   node-feature-discovery-worker-255xg                                          1/1     Running            0              9m1s
+    >   node-feature-discovery   node-feature-discovery-worker-8m7fr                                          1/1     Running            0              8m42s
+    >   node-feature-discovery   node-feature-discovery-worker-gbl2t                                          1/1     Running            0              6m47s
+    >   node-feature-discovery   node-feature-discovery-worker-k69c8                                          1/1     Running            0              8m32s
+    >   node-feature-discovery   node-feature-discovery-worker-vgl9r                                          1/1     Running            0              7m33s
+    >   node-feature-discovery   node-feature-discovery-worker-w8rmv                                          1/1     Running            0              8m30s
+    >   openstack-system         openstack-cinder-csi-controllerplugin-86ddbc8bc4-vp7vk                       6/6     Running            0              9m4s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-2pw58                                        3/3     Running            0              8m30s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-dc4nc                                        3/3     Running            0              8m32s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-j76ns                                        3/3     Running            0              7m33s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-ltqmh                                        3/3     Running            0              8m42s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-pg8bn                                        3/3     Running            0              6m47s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-xdcf5                                        3/3     Running            0              9m4s
+    >   openstack-system         openstack-cloud-controller-manager-k9cft                                     1/1     Running            0              6m27s
+    >   openstack-system         openstack-cloud-controller-manager-rhzjs                                     1/1     Running            0              8m26s
+    >   openstack-system         openstack-cloud-controller-manager-tt5hb                                     1/1     Running            0              7m2s
+    >   tigera-operator          tigera-operator-7f96bd8bf8-t2l4c                                             1/1     Running            0              8m58s
+
+
+
+# -----------------------------------------------------
+# Enable monitoring.
+#[root@bootstrap]
+
+    vi '/opt/aglais/clusterapi-config.yml'
+
+        addons:
+
+          ....
+          ....
+
+    +     kubernetesDashboard:
+    +
+    +       enabled: true
+    +
+    +     monitoring:
+    +
+    +       enabled: true
+
+
+    helm upgrade \
+        --kubeconfig "${kindclusterconf:?}" \
+        "${workclustername:?}" \
+        capi/openstack-cluster \
+            --install \
+            --version "0.1.0" \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/opt/aglais/openstack-clouds.yaml'
+
+
+    #
+    # Connect to the worker kubectl ..
+    # Connect to the worker dashboard ..
+    # Connect to the worker monitoring ..
+    #
+
+
+

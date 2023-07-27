@@ -180,7 +180,7 @@ EOF
 # Install our integration tests.
 #[root@ansibler]
 
-    pip install git+https://github.com/wfau/aglais-testing@v0.2.6
+    pip install git+https://github.com/wfau/aglais-testing@v0.2.7
 
 
 # -----------------------------------------------------

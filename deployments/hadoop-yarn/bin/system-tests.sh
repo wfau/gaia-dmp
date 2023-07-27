@@ -2,7 +2,7 @@
 #
 # <meta:header>
 #   <meta:licence>
-#     Copyright (c) 2022, ROE (http://www.roe.ac.uk/)
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
 #
 #     This information is free software: you can redistribute it and/or modify
 #     it under the terms of the GNU General Public License as published by
@@ -40,27 +40,19 @@
 
     inventory="${treetop:?}/hadoop-yarn/ansible/config/${deployconf:?}.yml"
 
-    echo "---- ---- ----"
-    echo "Deploy conf [${deployconf}]"
-    echo "---- ---- ----"
 
-    # Copy latest SSL certificates
-    scp -o "StrictHostKeyChecking=no"  -r fedora@data.gaia-dmp.uk:/home/fedora/certs/latest/ /root/certs/
 
-    # Setup SSL for nginx
+# -----------------------------------------------------
+# Run tests (Ports, Redirects etc..)
+
+    echo ""
+    echo "---- ----"
+    echo "Run some system status tests"
 
     pushd "/deployments/hadoop-yarn/ansible"
 
         ansible-playbook \
-            --verbose \
             --inventory "${inventory:?}" \
-            "43-setup-ssl.yml"
-
+            "45-system-tests.yml"
     popd
 
-
-
-# -----------------------------------------------------
-# Restart NGINX proxy
-
-    "${treetop:?}/hadoop-yarn/bin/start-nginx.sh"

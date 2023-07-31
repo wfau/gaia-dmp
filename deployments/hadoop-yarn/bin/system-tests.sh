@@ -21,25 +21,17 @@
 #
 #
 
-    set -eu
-    set -o pipefail
-
     binfile="$(basename ${0})"
     binpath="$(dirname $(readlink -f ${0}))"
     treetop="$(dirname $(dirname ${binpath}))"
-
-    echo ""
-    echo "---- ---- ----"
-    echo "File [${binfile}]"
-    echo "Path [${binpath}]"
-    echo "Tree [${treetop}]"
-
-    cloudbase='arcus'
     cloudname="${1:?}"
     deployconf="${2:?}"
-
     inventory="${treetop:?}/hadoop-yarn/ansible/config/${deployconf:?}.yml"
 
+
+# Sleep to give enough time for the DNS records to update
+
+    sleep 360
 
 
 # -----------------------------------------------------

@@ -1,5 +1,14 @@
 # Instructions for deploying a live GDMP Service
 
+### Setup aglais.env (if it doesn't exist)
+
+edit "${HOME:?}/aglais.env"
+	
+	AGLAIS_REPO='git@github.com:wfau/aglais.git'
+	AGLAIS_HOME="/home/user/gdmp_repo_location"
+	AGLAIS_CODE="${AGLAIS_HOME:?}/"
+
+
 ### Check current live deploy 
 
     [user@desktop]

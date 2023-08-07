@@ -29,11 +29,6 @@
     inventory="${treetop:?}/hadoop-yarn/ansible/config/${deployconf:?}.yml"
 
 
-# Sleep to give enough time for the DNS records to update
-
-    sleep 360
-
-
 # -----------------------------------------------------
 # Run tests (Ports, Redirects etc..)
 

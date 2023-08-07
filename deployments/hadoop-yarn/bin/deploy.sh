@@ -176,6 +176,12 @@ EOF
     echo "----"
 
 
+
+# Sleep to give enough time for the DNS records to update
+
+    sleep 360
+
+    
 # -----------------------------------------------------
 # Install our integration tests.
 #[root@ansibler]

@@ -44,7 +44,7 @@
 
 ### Backup the notebooks onto data node.
 
-    [user@desktop]
+    [root@ansibler]
 
     ssh fedora@data.gaia-dmp.uk
 

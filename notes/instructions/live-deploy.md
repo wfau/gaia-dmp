@@ -123,6 +123,15 @@ Verify the results
         source /deployments/hadoop-yarn/bin/deploy.sh
 
 
+### Manually validate our service
+
+    [user@dekstop]
+    
+    firefox \
+        --new-window \
+        'https://iris-gaia-red.gaia-dmp.uk/'
+	
+
 ### Import our live users.
     
     [root@ansibler]
@@ -131,15 +140,6 @@ Verify the results
 
     import-live-users   
     
-    
-### Manually validate our service
-
-    [user@dekstop]
-    
-    firefox \
-        --new-window \
-        'https://iris-gaia-red.gaia-dmp.uk/'
-
 
 ### Get the public IP address of our Zeppelin node.
 

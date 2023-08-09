@@ -139,9 +139,11 @@ Verify the results
     source /deployments/zeppelin/bin/create-user-tools.sh
 
     import-live-users   
+    
 
 ### Run UI Tests    
-[user@desktop]
+
+    [user@desktop]
 
     git clone https://github.com/stvoutsin/gaiadmp-ui-testing/
 

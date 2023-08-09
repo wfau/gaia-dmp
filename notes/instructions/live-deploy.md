@@ -139,6 +139,20 @@ Verify the results
     source /deployments/zeppelin/bin/create-user-tools.sh
 
     import-live-users   
+
+### Run UI Tests    
+[user@desktop]
+
+    git clone https://github.com/stvoutsin/gaiadmp-ui-testing/
+
+Edit settings
+
+    tests/settings.py
+
+Install requirements
+
+    pip install -r requirements.txt
+    pytest 
     
 
 ### Get the public IP address of our Zeppelin node.

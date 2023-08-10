@@ -1,0 +1,557 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Work on getting components deployed into Kubernetes.
+
+    Result:
+
+        Two steps backwards.
+        Failed to get work cluster deployed.
+        Something that worked last week fails this week.
+
+
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Tue  8 Aug 03:35:52 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create our client container.
+#[user@desktop]
+
+    agclient blue
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete and deploy everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+
+
+
+    >   ....
+    >   TASK [Create work cluster [iris-gaia-blue-20230808-work-cluster]] **********************************
+    >   fatal: [bootstrap]: FAILED! => {
+    >       "changed": false,
+    >       "command": "
+    >           /usr/local/bin/helm
+    >               --version=0.1.0
+    >               upgrade
+    >               -i
+    >               --reset-values
+    >               --wait
+    >               --values=/opt/aglais/clusterapi-config.yml
+    >               --values=/opt/aglais/openstack-clouds.yml
+    >               iris-gaia-blue-20230808-work-cluster
+    >               capi/openstack-cluster
+    >           ",
+    >       "msg": "
+    >           Failure when executing Helm command. Exited 1.\n
+    >           stdout: Release \"iris-gaia-blue-20230808-work-cluster\" does not exist. Installing it now.\n
+    >           \n
+    >           stderr: Error: context deadline exceeded\n
+    >           ",
+    >       "stderr": "Error: context deadline exceeded\n",
+    >       "stderr_lines": [
+    >           "Error: context deadline exceeded"
+    >           ],
+    >       "stdout": "Release \"iris-gaia-blue-20230808-work-cluster\" does not exist. Installing it now.\n",
+    >       "stdout_lines": [
+    >           "Release \"iris-gaia-blue-20230808-work-cluster\" does not exist. Installing it now."
+    >           ]
+    >       }
+    >   
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to our bootstrap node as root.
+#[root@ansibler]
+
+    ssh root@bootstrap
+
+    source loadconfig
+
+cat << EOF
+kindclustername [${kindclustername}]
+kindclusterconf [${kindclusterconf}]
+workclustername [${workclustername}]
+workclusterconf [${workclusterconf}]
+EOF
+
+    >   kindclustername [iris-gaia-blue-20230808-kind-cluster]
+    >   kindclusterconf [/opt/aglais/iris-gaia-blue-20230808-kind-cluster.yml]
+    >   workclustername [iris-gaia-blue-20230808-work-cluster]
+    >   workclusterconf [/opt/aglais/iris-gaia-blue-20230808-work-cluster.yml]
+
+
+# -----------------------------------------------------
+# Check the cluster status.
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackClusters
+
+    >   NAME                                   CLUSTER                                READY   NETWORK   SUBNET   BASTION IP   AGE
+    >   iris-gaia-blue-20230808-work-cluster   iris-gaia-blue-20230808-work-cluster                                           13m
+
+
+# -----------------------------------------------------
+# Watch the cluster description.
+#[root@bootstrap]
+
+    watch clusterctl \
+        --kubeconfig "${kindclusterconf:?}" \
+        describe cluster \
+            "${workclustername:?}"
+
+    >   NAME                                                                                     READY  SEVERITY  REASON                           SINCE  MESSAGE
+    >   Cluster/iris-gaia-blue-20230808-work-cluster                                             False  Warning   ScalingUp                        13m    Scaling up control plane to 3 replicas (actual 0)
+    >   ├─ClusterInfrastructure - OpenStackCluster/iris-gaia-blue-20230808-work-cluster
+    >   ├─ControlPlane - KubeadmControlPlane/iris-gaia-blue-20230808-work-cluster-control-plane  False  Warning   ScalingUp                        13m    Scaling up control plane to 3 replicas (actual 0)
+    >   └─Workers
+    >       └─MachineDeployment/iris-gaia-blue-20230808-work-cluster-md-0                          False  Warning   WaitingForAvailableMachines      13m    Minimum availability requires 2 replicas, current 0 available
+    >           └─3 Machines...                                                                      False  Info      WaitingForClusterInfrastructure  13m    See iris-gaia-blue-20230808-work-cluster-md-0-d45df5db9xs5w9x-dtk4r, iris-gaia-blue-20230808-work-cluster-md-0-d45df5db9xs5w9x-qnnn7, ...
+
+
+# -----------------------------------------------------
+# Check the addon-provider logs.
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get pods
+
+    >   NAME                                                              READY   STATUS              RESTARTS   AGE
+    >   cluster-api-addon-provider-66cc76bbbf-dznbp                       1/1     Running             0          16m
+    >   iris-gaia-blue-20230808-work-cluster-autoscaler-d8fbfbd55-bqllr   0/1     ContainerCreating   0          16m
+
+
+    podname=$(
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get pods \
+                --output json \
+        | jq -r '.items[].metadata.name | select(test("cluster-api-addon-provider")) '
+        )
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs "${podname:?}" \
+    | tee /tmp/cluster-api-addon-provider.log
+
+    >   ....
+    >   ....
+    >   [2023-08-08 04:21:49,472] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20230808-work-cluster-csi-cinder-storageclass] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20230808-work-cluster' is not ready
+
+    #
+    # Filter out the boring errors ..
+
+    sed "
+        /cluster '.*' is not ready/d
+        s/https:\/\/10.96.0.1\/apis/..../g
+        " \
+        /tmp/cluster-api-addon-provider.log \
+    | less
+
+
+
+
+    #
+    # No new information ..
+    #
+
+
+# -----------------------------------------------------
+# Check what Openstack resources have been created.
+#[root@ansibler]
+
+    /deployments/openstack/bin/list-all.sh \
+        "${cloudname:?}"
+
+    #
+    # Missing the cluster VMs.
+    #
+
+    >   ....
+    >   ---- ----
+    >   Nova servers
+    >   +--------------------------------------+----------------------------------------+--------+------------------------------------------------------------------------+---------------+----------------------+
+    >   | ID                                   | Name                                   | Status | Networks                                                               | Image         | Flavor               |
+    >   +--------------------------------------+----------------------------------------+--------+------------------------------------------------------------------------+---------------+----------------------+
+    >   | 1fff4b65-4505-4c6c-b661-4c286bf62829 | iris-gaia-blue-20230808-bootstrap-node | ACTIVE | iris-gaia-blue-20230808-bootstrap-network=10.10.3.129, 128.232.226.116 | Fedora-34.1.2 | gaia.vm.cclake.2vcpu |
+    >   +--------------------------------------+----------------------------------------+--------+------------------------------------------------------------------------+---------------+----------------------+
+    >   ....
+
+    #
+    # Cluster network looks good.
+    #
+
+    >   ....
+    >   ---- ----
+    >   Floating addresses
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | ID                                   | Floating IP Address | Fixed IP Address | Port                                 | Floating Network                     | Project                          |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | 005404d1-58c3-4363-9b75-584aec9cc7c6 | 128.232.226.116     | 10.10.3.129      | 164c4d69-4a8d-4582-a8d6-34f045dd7698 | 57add367-d205-4030-a929-d75617a7c63e | e918a13fed2648758175a15fac083569 |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   
+    >   ---- ----
+    >   Load balancers
+    >   +--------------------------------------+-----------------------------------------------------------------------------+----------------------------------+--------------+---------------------+------------------+----------+
+    >   | id                                   | name                                                                        | project_id                       | vip_address  | provisioning_status | operating_status | provider |
+    >   +--------------------------------------+-----------------------------------------------------------------------------+----------------------------------+--------------+---------------------+------------------+----------+
+    >   | 2e077aff-9f11-4bc0-a11f-568fd32ccb3e | k8s-clusterapi-cluster-default-iris-gaia-blue-20230808-work-cluster-kubeapi | e918a13fed2648758175a15fac083569 | 192.168.3.32 | ERROR               | OFFLINE          | amphora  |
+    >   +--------------------------------------+-----------------------------------------------------------------------------+----------------------------------+--------------+---------------------+------------------+----------+
+    >   
+    >   ---- ----
+    >   Routers
+    >   +--------------------------------------+---------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                                                | Status | State | Project                          |
+    >   +--------------------------------------+---------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   | 641ff3b3-f9f1-4345-9a21-5b673eb59c55 | iris-gaia-blue-20230808-bootstrap-network-router                    | ACTIVE | UP    | e918a13fed2648758175a15fac083569 |
+    >   | c002fdfc-e03d-4592-a2de-eae1d07903c4 | k8s-clusterapi-cluster-default-iris-gaia-blue-20230808-work-cluster | ACTIVE | UP    | e918a13fed2648758175a15fac083569 |
+    >   +--------------------------------------+---------------------------------------------------------------------+--------+-------+----------------------------------+
+    >   
+    >   ---- ----
+    >   Networks
+    >   +--------------------------------------+---------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | ID                                   | Name                                                                | Subnets                                                                                                                                                |
+    >   +--------------------------------------+---------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | 1d4678ab-1809-4061-97f9-0b075a693910 | iris-gaia-blue-20230808-bootstrap-network                           | f2ba6ec3-6093-45d1-b097-eddbeb1f2da3                                                                                                                   |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                                                              | 5699fb5d-8316-4b88-b889-b05c8a1ec975                                                                                                                   |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet                                                       | 1847b14d-b974-4f78-959d-44d18d4485b8, 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42, 5f1388b3-a0c7-463e-bb58-5532c38e4b40, a79eb610-eca3-4ee8-aaf1-88f4fef5a4e7 |
+    >   | c8bd9bc3-08bb-417a-9e92-e673382366fe | k8s-clusterapi-cluster-default-iris-gaia-blue-20230808-work-cluster | 8eba3e8a-21b2-49ca-87b0-4b395a299f6b                                                                                                                   |
+    >   +--------------------------------------+---------------------------------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   
+    >   ---- ----
+    >   Subnets
+    >   +--------------------------------------+---------------------------------------------------------------------+--------------------------------------+----------------+
+    >   | ID                                   | Name                                                                | Network                              | Subnet         |
+    >   +--------------------------------------+---------------------------------------------------------------------+--------------------------------------+----------------+
+    >   | 5699fb5d-8316-4b88-b889-b05c8a1ec975 | cephfs                                                              | 410920fb-5714-4447-b26a-e7b06092fc62 | 10.9.0.0/16    |
+    >   | 8eba3e8a-21b2-49ca-87b0-4b395a299f6b | k8s-clusterapi-cluster-default-iris-gaia-blue-20230808-work-cluster | c8bd9bc3-08bb-417a-9e92-e673382366fe | 192.168.3.0/24 |
+    >   | f2ba6ec3-6093-45d1-b097-eddbeb1f2da3 | iris-gaia-blue-20230808-bootstrap-network-subnet                    | 1d4678ab-1809-4061-97f9-0b075a693910 | 10.10.0.0/16   |
+    >   +--------------------------------------+---------------------------------------------------------------------+--------------------------------------+----------------+
+    >   ....
+
+# -----------------------------------------------------
+# List the available images.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image list
+
+    >   +--------------------------------------+------------------------------------------------+--------+
+    >   | ID                                   | Name                                           | Status |
+    >   +--------------------------------------+------------------------------------------------+--------+
+    >   | ........                             | ........                                       | active |
+    >   | ........                             | ........                                       | active |
+    >   | 6ac13e0f-fee8-4cfc-9b88-fe94b3237f9a | gaia-dmp-ubuntu-2004-kube-v1.25.4              | active |
+    >   | ........                             | ........                                       | active |
+    >   +--------------------------------------+------------------------------------------------+--------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image show \
+            '6ac13e0f-fee8-4cfc-9b88-fe94b3237f9a'
+
+    >   +------------------+------------------------------------------------------------------------------------------------------------------------+
+    >   | Field            | Value                                                                                                                  |
+    >   +------------------+------------------------------------------------------------------------------------------------------------------------+
+    >   | checksum         | 225a4fec21b30be3fbb4121554baa8f4                                                                                       |
+    >   | container_format | bare                                                                                                                   |
+    >   | created_at       | 2023-07-21T03:14:26Z                                                                                                   |
+    >   | disk_format      | qcow2                                                                                                                  |
+    >   | file             | /v2/images/6ac13e0f-fee8-4cfc-9b88-fe94b3237f9a/file                                                                   |
+    >   | id               | 6ac13e0f-fee8-4cfc-9b88-fe94b3237f9a                                                                                   |
+    >   | min_disk         | 0                                                                                                                      |
+    >   | min_ram          | 0                                                                                                                      |
+    >   | name             | gaia-dmp-ubuntu-2004-kube-v1.25.4                                                                                      |
+    >   | owner            | e918a13fed2648758175a15fac083569                                                                                       |
+    >   | properties       | direct_url='                                                                                                           |
+    >   |                  |     rbd://a900cf30-f8a3-42bf-98d6-af7ce92f1a1a/arcus-images/6ac13e0f-fee8-4cfc-9b88-fe94b3237f9a/snap',                |
+    >   |                  |     locations='                                                                                                        |
+    >   |                  |       [                                                                                                                |
+    >   |                  |         {                                                                                                              |
+    >   |                  |           'url': 'rbd://a900cf30-f8a3-42bf-98d6-af7ce92f1a1a/arcus-images/6ac13e0f-fee8-4cfc-9b88-fe94b3237f9a/snap',  |
+    >   |                  |           'metadata': {                                                                                                |
+    >   |                  |             'store': 'rbd'                                                                                             |
+    >   |                  |             }                                                                                                          |
+    >   |                  |         }                                                                                                              |
+    >   |                  |       ]',                                                                                                              |
+    >   |                  |     os_hash_algo='sha512',                                                                                             |
+    >   |                  |     os_hash_value='3b00....8961',                                                                                      |
+    >   |                  |     os_hidden='False',                                                                                                 |
+    >   |                  |     owner_specified.openstack.md5='',                                                                                  |
+    >   |                  |     owner_specified.openstack.object='images/gaia-dmp-ubuntu-2004-kube-v1.25.4',                                       |
+    >   |                  |     owner_specified.openstack.sha256='',                                                                               |
+    >   |                  |     stores='rbd'                                                                                                       |
+    >   | protected        | False                                                                                                                  |
+    >   | schema           | /v2/schemas/image                                                                                                      |
+    >   | size             | 4441047040                                                                                                             |
+    >   | status           | active                                                                                                                 |
+    >   | tags             |                                                                                                                        |
+    >   | updated_at       | 2023-07-21T03:16:35Z                                                                                                   |
+    >   | virtual_size     | 21474836480                                                                                                            |
+    >   | visibility       | shared                                                                                                                 |
+    >   +------------------+------------------------------------------------------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Back to the addon-provider logs.
+#[root@bootstrap]
+
+    sed "
+        /cluster '.*' is not ready/d
+        s/https:\/\/10.96.0.1\/apis/..../g
+        " \
+        /tmp/cluster-api-addon-provider.log \
+    | less
+
+    >   [2023-08-08 04:02:58,134] easykube.rest.client [INFO    ] API request: "GET ..../apiextensions.k8s.io/v1" 200
+    >   [2023-08-08 04:02:58,158] easykube.rest.client [INFO    ] API request: "PATCH ..../apiextensions.k8s.io/v1/customresourcedefinitions/helmreleases.addons.stackhpc.com?fieldManager=cluster-api
+    >   -addon-provider" 201
+    >   [2023-08-08 04:02:58,196] easykube.rest.client [INFO    ] API request: "PATCH ..../apiextensions.k8s.io/v1/customresourcedefinitions/manifests.addons.stackhpc.com?fieldManager=cluster-api-ad
+    >   don-provider" 201
+    >   [2023-08-08 04:02:58,197] kopf.activities.star [INFO    ] Activity 'apply_settings' succeeded.
+    >   [2023-08-08 04:02:58,197] kopf._core.engines.a [INFO    ] Initial authentication has been initiated.
+    >   [2023-08-08 04:02:58,199] kopf.activities.auth [INFO    ] Activity 'login_with_service_account' succeeded.
+    >   [2023-08-08 04:02:58,199] kopf._core.engines.a [INFO    ] Initial authentication has finished.
+    >   [2023-08-08 04:03:07,306] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1" 200
+    >   [2023-08-08 04:03:07,313] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases" 200
+    >   [2023-08-08 04:03:07,360] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/manifests" 200
+    >   [2023-08-08 04:03:07,361] kopf.objects         [INFO    ] [default/iris-gaia-blue-20230808-work-cluster-kubernetes-dashboard-config] Handler 'handle_secret_event' succeeded.
+    >   [2023-08-08 04:03:07,364] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases" 200
+    >   [2023-08-08 04:03:07,368] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases" 200
+    >   [2023-08-08 04:03:07,371] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases" 200
+    >   [2023-08-08 04:03:07,373] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases" 200
+    >   [2023-08-08 04:03:07,375] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases" 200
+    >   [2023-08-08 04:03:07,378] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases" 200
+    >   [2023-08-08 04:03:07,382] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases" 200
+    >   [2023-08-08 04:03:07,391] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/manifests" 200
+    >   [2023-08-08 04:03:07,392] kopf.objects         [INFO    ] [default/iris-gaia-blue-20230808-work-cluster-nvidia-gpu-operator-config] Handler 'handle_secret_event' succeeded.
+    >   [2023-08-08 04:03:07,395] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/manifests" 200
+    >   [2023-08-08 04:03:07,395] kopf.objects         [INFO    ] [default/iris-gaia-blue-20230808-work-cluster-node-feature-discovery-config] Handler 'handle_secret_event' succeeded.
+    >   [2023-08-08 04:03:07,396] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/manifests" 200
+    >   [2023-08-08 04:03:07,396] kopf.objects         [INFO    ] [default/iris-gaia-blue-20230808-work-cluster-csi-cinder-config] Handler 'handle_secret_event' succeeded.
+    >   [2023-08-08 04:03:07,406] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/manifests" 200
+    >   [2023-08-08 04:03:07,406] kopf.objects         [INFO    ] [default/iris-gaia-blue-20230808-work-cluster-metrics-server-config] Handler 'handle_secret_event' succeeded.
+    >   [2023-08-08 04:03:07,408] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/manifests" 200
+    >   [2023-08-08 04:03:07,408] kopf.objects         [INFO    ] [default/iris-gaia-blue-20230808-work-cluster-cni-calico-config] Handler 'handle_secret_event' succeeded.
+    >   [2023-08-08 04:03:07,409] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/manifests" 200
+    >   [2023-08-08 04:03:07,409] kopf.objects         [INFO    ] [default/iris-gaia-blue-20230808-work-cluster-mellanox-network-operator-config] Handler 'handle_secret_event' succeeded.
+    >   [2023-08-08 04:03:07,413] easykube.rest.client [INFO    ] API request: "GET ..../addons.stackhpc.com/v1alpha1/namespaces/default/manifests" 200
+    >   [2023-08-08 04:03:07,413] kopf.objects         [INFO    ] [default/iris-gaia-blue-20230808-work-cluster-ccm-openstack-config] Handler 'handle_secret_event' succeeded.
+    >   [2023-08-08 04:03:07,680] easykube.rest.client [INFO    ] API request: "PUT ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/iris-gaia-blue-20230808-work-cluster-mellanox-ne
+    >   twork-operator/status" 200
+    >   [2023-08-08 04:03:07,684] easykube.rest.client [INFO    ] API request: "GET ..../cluster.x-k8s.io" 200
+    >   [2023-08-08 04:03:07,688] easykube.rest.client [INFO    ] API request: "GET ..../cluster.x-k8s.io/v1beta1" 200
+    >   [2023-08-08 04:03:07,733] easykube.rest.client [INFO    ] API request: "GET ..../cluster.x-k8s.io/v1beta1/namespaces/default/clusters/iris-gaia-blue-20230808-work-cluster" 200
+    >   [2023-08-08 04:03:07,751] easykube.rest.client [INFO    ] API request: "PUT ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/iris-gaia-blue-20230808-work-cluster-node-featur
+    >   e-discovery/status" 200
+    >   [2023-08-08 04:03:07,753] easykube.rest.client [INFO    ] API request: "PUT ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/iris-gaia-blue-20230808-work-cluster-csi-cinder/status" 200
+    >   [2023-08-08 04:03:07,761] easykube.rest.client [INFO    ] API request: "PUT ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/iris-gaia-blue-20230808-work-cluster-ccm-openstack/status" 200
+    >   [2023-08-08 04:03:07,800] easykube.rest.client [INFO    ] API request: "GET ..../cluster.x-k8s.io/v1beta1/namespaces/default/clusters/iris-gaia-blue-20230808-work-cluster" 200
+    >   [2023-08-08 04:03:07,805] easykube.rest.client [INFO    ] API request: "PUT ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/iris-gaia-blue-20230808-work-cluster-kubernetes-dashboard/status" 200
+    >   [2023-08-08 04:03:07,806] easykube.rest.client [INFO    ] API request: "PUT ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/iris-gaia-blue-20230808-work-cluster-nvidia-gpu-operator/status" 200
+    >   [2023-08-08 04:03:07,810] easykube.rest.client [INFO    ] API request: "PUT ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/iris-gaia-blue-20230808-work-cluster-cni-calico/status" 200
+    >   [2023-08-08 04:03:07,812] easykube.rest.client [INFO    ] API request: "PUT ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/iris-gaia-blue-20230808-work-cluster-metrics-server/status" 200
+    >   [2023-08-08 04:03:07,851] easykube.rest.client [INFO    ] API request: "GET ..../cluster.x-k8s.io/v1beta1/namespaces/default/clusters/iris-gaia-blue-20230808-work-cluster" 200
+    >   [2023-08-08 04:03:07,858] easykube.rest.client [INFO    ] API request: "GET ..../cluster.x-k8s.io/v1beta1/namespaces/default/clusters/iris-gaia-blue-20230808-work-cluster" 200
+    >   [2023-08-08 04:03:07,859] easykube.rest.client [INFO    ] API request: "GET ..../cluster.x-k8s.io/v1beta1/namespaces/default/clusters/iris-gaia-blue-20230808-work-cluster" 200
+    >   [2023-08-08 04:03:07,863] easykube.rest.client [INFO    ] API request: "PATCH ..../addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/iris-gaia-blue-20230808-work-cluster-csi-cinder" 200
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Missed a clue - load balancer has failed.
+#[root@bootstrap]
+
+    /deployments/openstack/bin/list-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ---- ----
+    >   Load balancers
+    >   +--------------------------------------+-----------------------------------------------------------------------------+----------------------------------+--------------+---------------------+------------------+----------+
+    >   | id                                   | name                                                                        | project_id                       | vip_address  | provisioning_status | operating_status | provider |
+    >   +--------------------------------------+-----------------------------------------------------------------------------+----------------------------------+--------------+---------------------+------------------+----------+
+    >   | 2e077aff-9f11-4bc0-a11f-568fd32ccb3e | k8s-clusterapi-cluster-default-iris-gaia-blue-20230808-work-cluster-kubeapi | e918a13fed2648758175a15fac083569 | 192.168.3.32 | ERROR               | OFFLINE          | amphora  |
+    >   +--------------------------------------+-----------------------------------------------------------------------------+----------------------------------+--------------+---------------------+------------------+----------+
+    >   ....
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer show \
+            '2e077aff-9f11-4bc0-a11f-568fd32ccb3e'
+
+    >   +---------------------+------------------------------------------------------------------------------------------------+
+    >   | Field               | Value                                                                                          |
+    >   +---------------------+------------------------------------------------------------------------------------------------+
+    >   | admin_state_up      | True                                                                                           |
+    >   | availability_zone   | None                                                                                           |
+    >   | created_at          | 2023-08-08T04:03:33                                                                            |
+    >   | description         | Created by cluster-api-provider-openstack cluster default-iris-gaia-blue-20230808-work-cluster |
+    >   | flavor_id           | None                                                                                           |
+    >   | id                  | 2e077aff-9f11-4bc0-a11f-568fd32ccb3e                                                           |
+    >   | listeners           |                                                                                                |
+    >   | name                | k8s-clusterapi-cluster-default-iris-gaia-blue-20230808-work-cluster-kubeapi                    |
+    >   | operating_status    | OFFLINE                                                                                        |
+    >   | pools               |                                                                                                |
+    >   | project_id          | e918a13fed2648758175a15fac083569                                                               |
+    >   | provider            | amphora                                                                                        |
+    >   | provisioning_status | ERROR                                                                                          |
+    >   | updated_at          | 2023-08-08T04:03:50                                                                            |
+    >   | vip_address         | 192.168.3.32                                                                                   |
+    >   | vip_network_id      | c8bd9bc3-08bb-417a-9e92-e673382366fe                                                           |
+    >   | vip_port_id         | c8777625-a185-4591-95f1-322f03ef31fb                                                           |
+    >   | vip_qos_policy_id   | None                                                                                           |
+    >   | vip_subnet_id       | 8eba3e8a-21b2-49ca-87b0-4b395a299f6b                                                           |
+    >   | tags                |                                                                                                |
+    >   +---------------------+------------------------------------------------------------------------------------------------+
+
+
+# -----------------------------------------------------
+# Login to our bootstrap node as root.
+#[root@ansibler]
+
+    ssh root@bootstrap
+
+    source loadconfig
+
+cat << EOF
+kindclustername [${kindclustername}]
+kindclusterconf [${kindclusterconf}]
+workclustername [${workclustername}]
+workclusterconf [${workclusterconf}]
+EOF
+
+    >   kindclustername [iris-gaia-blue-20230808-kind-cluster]
+    >   kindclusterconf [/opt/aglais/iris-gaia-blue-20230808-kind-cluster.yml]
+    >   workclustername [iris-gaia-blue-20230808-work-cluster]
+    >   workclusterconf [/opt/aglais/iris-gaia-blue-20230808-work-cluster.yml]
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get pods
+
+    >   NAME                                                              READY   STATUS              RESTARTS   AGE
+    >   cluster-api-addon-provider-66cc76bbbf-dznbp                       1/1     Running             0          84m
+    >   iris-gaia-blue-20230808-work-cluster-autoscaler-d8fbfbd55-bqllr   0/1     ContainerCreating   0          83m
+
+
+    controlpodid=$(
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get pods \
+                --output json \
+                --namespace capi-kubeadm-control-plane-system \
+        | jq -r '.items[0] | .metadata.name'
+        )
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace capi-kubeadm-control-plane-system  \
+            "${controlpodid:?}"
+
+
+    >   ....
+    >   ....
+    >   I0808 04:03:08.362809       1 controller.go:355] "Cluster infrastructure is not ready yet" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/iris-gaia-blue-20230808-work-cluster-control-plane" namespace="default" name="iris-gaia-blue-20230808-work-cluster-control-plane" reconcileID=8cd21440-fd60-45c2-b258-9ab9a4baf888 Cluster="default/iris-gaia-blue-20230808-work-cluster"
+    >   E0808 04:03:08.466574       1 controller.go:214] "Failed to update KubeadmControlPlane Status" err="failed to create remote cluster client: failed to create cluster accessor: error fetching REST client config for remote cluster \"default/iris-gaia-blue-20230808-work-cluster\": failed to retrieve kubeconfig secret for Cluster default/iris-gaia-blue-20230808-work-cluster: Secret \"iris-gaia-blue-20230808-work-cluster-kubeconfig\" not found" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/iris-gaia-blue-20230808-work-cluster-control-plane" namespace="default" name="iris-gaia-blue-20230808-work-cluster-control-plane" reconcileID=8cd21440-fd60-45c2-b258-9ab9a4baf888 Cluster="default/iris-gaia-blue-20230808-work-cluster"
+    >   ....
+    >   E0808 05:19:10.292236       1 controller.go:324] "Reconciler error"
+    >       err="
+    >           failed to create remote cluster client:
+    >           failed to create cluster accessor:
+    >           error fetching REST client config for remote cluster
+    >               \"default/iris-gaia-blue-20230808-work-cluster\":
+    >           failed to retrieve kubeconfig secret for Cluster default/iris-gaia-blue-20230808-work-cluster:
+    >           Secret \"iris-gaia-blue-20230808-work-cluster-kubeconfig\" not found
+    >           "
+    >       controller="kubeadmcontrolplane"
+    >       controllerGroup="controlplane.cluster.x-k8s.io"
+    >       controllerKind="KubeadmControlPlane"
+    >       KubeadmControlPlane="default/iris-gaia-blue-20230808-work-cluster-control-plane"
+    >       namespace="default"
+    >       name="iris-gaia-blue-20230808-work-cluster-control-plane"
+    >       reconcileID=aace7572-6bea-4520-ba3e-d1d75d4cc4a6
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Missed a clue - only one floating IP address.
+#[root@bootstrap]
+
+    /deployments/openstack/bin/list-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ---- ----
+    >   Floating addresses
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | ID                                   | Floating IP Address | Fixed IP Address | Port                                 | Floating Network                     | Project                          |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | 005404d1-58c3-4363-9b75-584aec9cc7c6 | 128.232.226.116     | 10.10.3.129      | 164c4d69-4a8d-4582-a8d6-34f045dd7698 | 57add367-d205-4030-a929-d75617a7c63e | e918a13fed2648758175a15fac083569 |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   ....
+

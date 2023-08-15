@@ -1,0 +1,874 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+
+    Target:
+
+        Try again.
+        Add firewall rules to limit access to the kubectl endpoint.
+
+    Result:
+
+        We can add a list of allowed CIDR addresses.
+        ... most of the time.
+
+        The Kubernetes patch fails to be deployed some of the time.
+        Sometimes the patch works and shows up in the status.
+        Sometimes the spec is updated, but then nothing ..
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Tue 15 Aug 14:11:33 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create our client container.
+#[user@desktop]
+
+    agclient blue
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete and deploy everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to our bootstrap node as root.
+#[root@ansibler]
+
+    ssh root@bootstrap
+
+    source loadconfig
+
+cat << EOF
+kindclustername [${kindclustername}]
+kindclusterconf [${kindclusterconf}]
+workclustername [${workclustername}]
+workclusterconf [${workclusterconf}]
+EOF
+
+    >   kindclustername [iris-gaia-blue-20230815-kind]
+    >   kindclusterconf [/opt/aglais/iris-gaia-blue-20230815-kind.yml]
+    >   workclustername [iris-gaia-blue-20230815-work]
+    >   workclusterconf [/opt/aglais/iris-gaia-blue-20230815-work.yml]
+
+
+# -----------------------------------------------------
+# Check the cluster status.
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackClusters
+
+    >   NAME                           CLUSTER                        READY   NETWORK                                SUBNET                                 BASTION IP   AGE
+    >   iris-gaia-blue-20230815-work   iris-gaia-blue-20230815-work   true    14c09291-4f30-4366-96f7-7dd09ce1a453   50acadc1-1501-4533-b637-6824f6a23ce6                12m
+
+
+    clusterctl \
+        --kubeconfig "${kindclusterconf:?}" \
+        describe cluster \
+            "${workclustername:?}"
+
+    >   NAME                                                                             READY  SEVERITY  REASON  SINCE  MESSAGE
+    >   Cluster/iris-gaia-blue-20230815-work                                             True                     7m25s
+    >   ├─ClusterInfrastructure - OpenStackCluster/iris-gaia-blue-20230815-work
+    >   ├─ControlPlane - KubeadmControlPlane/iris-gaia-blue-20230815-work-control-plane  True                     7m25s
+    >   │ └─3 Machines...                                                                True                     11m    See iris-gaia-blue-20230815-work-control-plane-999vv, iris-gaia-blue-20230815-work-control-plane-fzrzj, ...
+    >   └─Workers
+    >     └─MachineDeployment/iris-gaia-blue-20230815-work-md-0                          True                     8m29s
+    >       └─3 Machines...                                                              True                     9m26s  See iris-gaia-blue-20230815-work-md-0-646cfd65f8xwcgcb-kdg26, iris-gaia-blue-20230815-work-md-0-646cfd65f8xwcgcb-nvldt, ...
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Extract the kubectl endpoint.
+#[root@ansibler]
+
+    source /deployments/cluster-api/bootstrap/ansible/files/aglais/bin/loadconfig
+
+    endpoint=$(
+        yq '.clusters[0].cluster.server' \
+            "${workclusterconf}"
+        )
+
+    echo "Endpoint [${endpoint}]"
+
+    >   Endpoint [https://128.232.227.92:6443]
+
+# -----------------------------------------------------
+# Try to access the API from our client container.
+#[root@ansibler]
+
+    curl \
+        --head \
+        --silent \
+        --insecure \
+        "${endpoint:?}"
+
+    >   HTTP/2 403
+    >   audit-id: 84f00e57-7145-453a-9f73-d9f046231aa4
+    >   cache-control: no-cache, private
+    >   content-type: application/json
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Try to access the API from our bootstrap node.
+#[root@ansibler]
+
+    ssh bootstrap \
+        "
+        curl \
+            --head \
+            --silent \
+            --insecure \
+            '${endpoint:?}'
+        "
+
+    >   HTTP/2 403
+    >   audit-id: b06e3f37-4e80-44e9-a095-4cd8d7483dca
+    >   cache-control: no-cache, private
+    >   content-type: application/json
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Try to access the API from our DigitalOcean node.
+#[root@ansibler]
+
+    ssh "root@164.92.185.112" \
+        "
+        curl \
+            --head \
+            --silent \
+            --insecure \
+            '${endpoint:?}'
+        "
+
+    >   HTTP/2 403
+    >   audit-id: 53455c8d-53d5-4386-865a-7430fc8b74fa
+    >   cache-control: no-cache, private
+    >   content-type: application/json
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the current state.
+#[user@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.spec.apiServerLoadBalancer'
+
+    >   {
+    >     "enabled": true
+    >   }
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.status.network.apiServerLoadBalancer'
+
+    >   {
+    >     "id": "e8a87c9c-bb37-43d4-abff-96c1685a9c3a",
+    >     "internalIP": "192.168.3.64",
+    >     "ip": "128.232.227.92",
+    >     "name": "k8s-clusterapi-cluster-default-iris-gaia-blue-20230815-work-kubeapi"
+    >   }
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Apply our new Ansible task.
+#[root@ansibler]
+
+    ansible-playbook \
+        -vvv \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/bootstrap/ansible/26-secure-work-cluster.yml'
+
+    >   ....
+    >   changed: [bootstrap] => {
+    >       "changed": true,
+    >       "cmd": "
+    >           kubectl
+    >             --kubeconfig \"/opt/aglais/iris-gaia-blue-20230815-kind.yml\"
+    >             patch OpenStackCluster
+    >                 \"iris-gaia-blue-20230815-work\"
+    >                 --type merge
+    >                 --patch-file '/tmp/cluster-access-patch.yml'
+    >           ",
+    >       "delta": "0:00:00.107323",
+    >       "end": "2023-08-15 14:42:39.222530",
+    >       "invocation": {
+    >           "module_args": {
+    >               "_raw_params": "
+    >                   kubectl
+    >                       --kubeconfig \"/opt/aglais/iris-gaia-blue-20230815-kind.yml\"
+    >                       patch OpenStackCluster
+    >                           \"iris-gaia-blue-20230815-work\"
+    >                           --type merge
+    >                           --patch-file '/tmp/cluster-access-patch.yml'
+    >                   ",
+    >               "_uses_shell": true,
+    >               "argv": null,
+    >               "chdir": null,
+    >               "creates": null,
+    >               "executable": null,
+    >               "removes": null,
+    >               "stdin": null,
+    >               "stdin_add_newline": true,
+    >               "strip_empty_ends": true
+    >           }
+    >       },
+    >       "msg": "",
+    >       "rc": 0,
+    >       "start": "2023-08-15 14:42:39.115207",
+    >       "stderr": "",
+    >       "stderr_lines": [],
+    >       "stdout": "openstackcluster.infrastructure.cluster.x-k8s.io/iris-gaia-blue-20230815-work patched",
+    >       "stdout_lines": [
+    >           "openstackcluster.infrastructure.cluster.x-k8s.io/iris-gaia-blue-20230815-work patched"
+    >       ]
+    >   }
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the updated state.
+#[user@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.spec.apiServerLoadBalancer'
+
+    >   {
+    >     "allowedCidrs": [
+    >       "128.232.226.108/32",
+    >       "90.155.51.57/32"
+    >     ],
+    >     "enabled": true
+    >   }
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.status.network.apiServerLoadBalancer'
+
+    >   {
+    >     "id": "e8a87c9c-bb37-43d4-abff-96c1685a9c3a",
+    >     "internalIP": "192.168.3.64",
+    >     "ip": "128.232.227.92",
+    >     "name": "k8s-clusterapi-cluster-default-iris-gaia-blue-20230815-work-kubeapi"
+    >   }
+
+    #
+    # Wait ....
+    #
+
+    sleep 60
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.status.network.apiServerLoadBalancer'
+
+    >   {
+    >     "id": "e8a87c9c-bb37-43d4-abff-96c1685a9c3a",
+    >     "internalIP": "192.168.3.64",
+    >     "ip": "128.232.227.92",
+    >     "name": "k8s-clusterapi-cluster-default-iris-gaia-blue-20230815-work-kubeapi"
+    >   }
+
+    #
+    # Nope, the patch is updating the spec, but it isn't showing up in the status.
+    #
+
+# -----------------------------------------------------
+# Try applying the same patch file manually.
+#[user@bootstrap]
+
+    cat /tmp/cluster-access-patch.yml
+
+    >   #
+    >   # <meta:header>
+    >   # ....
+    >   # ....
+    >   # </meta:header>
+    >   #
+    >   # AIMetrics: []
+    >   #
+    >   
+    >   spec:
+    >     apiServerLoadBalancer:
+    >       allowedCidrs:
+    >       - "128.232.226.108/32"
+    >       - "90.155.51.57/32"
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        patch OpenStackCluster \
+            "${workclustername:?}" \
+            --type merge \
+            --patch-file '/tmp/cluster-access-patch.yml'
+
+    >   openstackcluster.infrastructure.cluster.x-k8s.io/iris-gaia-blue-20230815-work patched (no change)
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.spec.apiServerLoadBalancer'
+
+    >   {
+    >     "allowedCidrs": [
+    >       "128.232.226.108/32",
+    >       "90.155.51.57/32"
+    >     ],
+    >     "enabled": true
+    >   }
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.status.network.apiServerLoadBalancer'
+
+    >   {
+    >     "id": "e8a87c9c-bb37-43d4-abff-96c1685a9c3a",
+    >     "internalIP": "192.168.3.64",
+    >     "ip": "128.232.227.92",
+    >     "name": "k8s-clusterapi-cluster-default-iris-gaia-blue-20230815-work-kubeapi"
+    >   }
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the capo-controller-manager logs.
+#[user@bootstrap]
+
+    source /opt/aglais/bin/loadconfig
+
+    namespace=capo-system
+    podnamepart=capo-controller-manager
+
+    podname=$(
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get pods \
+                --output json \
+                --namespace "${namespace:?}" \
+        | jq -r ".items[].metadata.name | select(test(\"${podnamepart:?}\"))"
+        )
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --follow \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Manually tweak the patch file, adding an extra CIDR,  and apply it.
+#[user@bootstrap]
+
+    vi /tmp/cluster-access-patch.yml
+
+        #
+        # <meta:header>
+        # ....
+        # ....
+        # </meta:header>
+        #
+        spec:
+          apiServerLoadBalancer:
+            allowedCidrs:
+    +       - "128.232.226.109/32"
+            - "128.232.226.108/32"
+            - "90.155.51.57/32"
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        patch OpenStackCluster \
+        "${workclustername:?}" \
+            --type merge \
+            --patch-file '/tmp/cluster-access-patch.yml'
+
+    >   openstackcluster.infrastructure.cluster.x-k8s.io/iris-gaia-blue-20230815-work patched
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}"
+    | jq '.status.network.apiServerLoadBalancer'
+
+    >   {
+    >     "allowedCIDRs": [
+    >       "128.232.226.108/32",
+    >       "128.232.226.109/32",
+    >       "128.232.226.111/32",
+    >       "192.168.3.0/24",
+    >       "90.155.51.57/32"
+    >     ],
+    >     "id": "e8a87c9c-bb37-43d4-abff-96c1685a9c3a",
+    >     "internalIP": "192.168.3.64",
+    >     "ip": "128.232.227.92",
+    >     "name": "k8s-clusterapi-cluster-default-iris-gaia-blue-20230815-work-kubeapi"
+    >   }
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the capo-controller-manager logs.
+#[user@bootstrap]
+
+    >   ....
+    >   ....
+    >   I0815 15:13:55.746756       1 recorder.go:103] "
+    >       events:
+    >       Updated allowed_cidrs [
+    >           128.232.226.108/32
+    >           128.232.226.109/32
+    >           128.232.226.111/32
+    >           192.168.3.0/24
+    >           90.155.51.57/32
+    >           ]
+    >       for listener
+    >           k8s-clusterapi-cluster-default-iris-gaia-blue-20230815-work-kubeapi-6443
+    >       with id
+    >           f120d73b-ec7b-4345-96b8-c60618760e90
+    >           "
+    >       type="Normal"
+    >       object={
+    >           Kind:OpenStackCluster
+    >           Namespace:default
+    >           Name:iris-gaia-blue-20230815-work
+    >           UID:d3961ddb-7baa-4e67-bea3-d8c2e9cefae4
+    >           APIVersion:infrastructure.cluster.x-k8s.io/v1alpha6
+    >           ResourceVersion:12694
+    >           FieldPath:
+    >           }
+    >       reason="Successfulupdatelistener"
+    >   I0815 15:13:56.043268       1 openstackcluster_controller.go:301]
+    >       "Reconciled Cluster create successfully"
+    >       controller="openstackcluster"
+    >       controllerGroup="infrastructure.cluster.x-k8s.io"
+    >       controllerKind="OpenStackCluster"
+    >       OpenStackCluster="default/iris-gaia-blue-20230815-work"
+    >       namespace="default"
+    >       name="iris-gaia-blue-20230815-work"
+    >       reconcileID=3a2b9501-165c-4704-9a2d-b5b6466faf29
+    >       cluster="iris-gaia-blue-20230815-work"
+    >   ....
+    >   ....
+
+    #
+    # OK - what am I missing.
+    # Applying the patch manually updates the spec, which triggers an update to the system that gets propagated to the status.
+    #
+
+
+    #
+    # My manual patch.
+    #
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        patch OpenStackCluster \
+        "${workclustername:?}" \
+            --type merge \
+            --patch-file '/tmp/cluster-access-patch.yml'
+
+    #
+    # The Ansible task.
+    #
+
+    - name: "Apply our patch"
+      ansible.builtin.shell: |
+        kubectl \
+            --kubeconfig "{{ aglais.kubernetes.cluster.kind.conf }}" \
+            patch OpenStackCluster \
+                "{{ aglais.kubernetes.cluster.work.name }}" \
+                --type merge \
+                --patch-file '/tmp/cluster-access-patch.yml'
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# If we apply the Ansible task, does it revert the CIDR list back ?
+#[root@ansibler]
+
+    ansible-playbook \
+        -vvv \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/bootstrap/ansible/26-secure-work-cluster.yml'
+
+    >   ....
+    >       "stdout": "openstackcluster.infrastructure.cluster.x-k8s.io/iris-gaia-blue-20230815-work patched",
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the capo-controller-manager logs.
+#[user@bootstrap]
+
+    >   ....
+    >   I0815 15:37:23.906582       1 recorder.go:103]
+    >       "
+    >       events: Updated allowed_cidrs [
+    >           128.232.226.108/32
+    >           128.232.226.111/32
+    >           192.168.3.0/24
+    >           90.155.51.57/32
+    >           ]
+    >       for listener
+    >           k8s-clusterapi-cluster-default-iris-gaia-blue-20230815-work-kubeapi-6443
+    >       with id
+    >           f120d73b-ec7b-4345-96b8-c60618760e90
+    >           "
+    >       type="Normal"
+    >       object={
+    >           Kind:OpenStackCluster
+    >           Namespace:default
+    >           Name:iris-gaia-blue-20230815-work
+    >           UID:d3961ddb-7baa-4e67-bea3-d8c2e9cefae4
+    >           APIVersion:infrastructure.cluster.x-k8s.io/v1alpha6
+    >           ResourceVersion:17109
+    >           FieldPath:
+    >           }
+    >       reason="Successfulupdatelistener"
+    >   ....
+
+    #
+    # PASS - updating with the correct list of allowed_cidrs.
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the load balancer spec.
+#[user@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.spec.apiServerLoadBalancer'
+
+    >   {
+    >     "allowedCidrs": [
+    >       "128.232.226.108/32",
+    >       "90.155.51.57/32"
+    >     ],
+    >     "enabled": true
+    >   }
+
+    #
+    # PASS - updated with the correct list of allowedCidrs.
+    #
+
+# -----------------------------------------------------
+# Check the load balancer status.
+#[user@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.status.network.apiServerLoadBalancer'
+
+    >   {
+    >     "allowedCIDRs": [
+    >       "128.232.226.108/32",
+    >       "128.232.226.109/32",
+    >       "128.232.226.111/32",
+    >       "192.168.3.0/24",
+    >       "90.155.51.57/32"
+    >     ],
+    >     "id": "e8a87c9c-bb37-43d4-abff-96c1685a9c3a",
+    >     "internalIP": "192.168.3.64",
+    >     "ip": "128.232.227.92",
+    >     "name": "k8s-clusterapi-cluster-default-iris-gaia-blue-20230815-work-kubeapi"
+    >   }
+
+    #
+    # FAIL - status still has the old set of allowedCIDRs.
+    #
+
+
+# -----------------------------------------------------
+# Try to access the API from our client container.
+#[root@ansibler]
+
+    curl \
+        --head \
+        --silent \
+        --insecure \
+        "${endpoint:?}"
+
+    >   HTTP/2 403
+    >   audit-id: 4b0f8672-fe5b-47c2-bde5-f48c72310763
+    >   cache-control: no-cache, private
+    >   content-type: application/json
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Try to access the API from our bootstrap node.
+#[root@ansibler]
+
+    ssh bootstrap \
+        "
+        curl \
+            --head \
+            --silent \
+            --insecure \
+            '${endpoint:?}'
+        "
+
+    >   HTTP/2 403
+    >   audit-id: 576fbf21-2047-4afd-af6c-89bf2c35e400
+    >   cache-control: no-cache, private
+    >   content-type: application/json
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Try to access the API from our DigitalOcean node.
+#[root@ansibler]
+
+    ssh "root@164.92.185.112" \
+        "
+        curl \
+            --head \
+            --insecure \
+            --no-progress-meter \
+            '${endpoint:?}'
+        "
+
+    >   curl: (28) Failed to connect to 128.232.227.92 port 6443 after 129331 ms: Couldn't connect to server
+
+    #
+    # PASS - This is what we are aiming for, but reliably and automatically.
+    #
+
+    #
+    # Try another pass
+    #
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Edit our Ansible code to add the IP address of our Digital Ocean node to the patch.
+#[user@desktop]
+
+    gedit "${AGLAIS_CODE:?}/deployments/cluster-api/bootstrap/ansible/templates/cluster-access-patch.j2" &
+
+        spec:
+          apiServerLoadBalancer:
+            allowedCidrs:
+    +       - "164.92.185.112/32"
+            - "{{ aglais.openstack.servers.bootstrap.float.external }}/32"
+            - "{{ aglais.builder.ipv4 }}/32"
+
+# -----------------------------------------------------
+# Apply the patch with Ansible.
+#[root@ansibler]
+
+    ansible-playbook \
+        -vvv \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/bootstrap/ansible/26-secure-work-cluster.yml'
+
+    >   ....
+    >       "stdout": "openstackcluster.infrastructure.cluster.x-k8s.io/iris-gaia-blue-20230815-work patched",
+    >   ....
+
+    #
+    # PASS
+    #
+
+# -----------------------------------------------------
+# Check the capo-controller-manager logs.
+#[user@bootstrap]
+
+    >   ....
+    >   I0815 16:04:08.454584       1 recorder.go:103]
+    >       "
+    >       events: Updated allowed_cidrs [128.232.226.108/32 128.232.226.111/32 164.92.185.112/32 192.168.3.0/24 90.155.51.57/32] ....
+    >       "
+    >   ....
+
+    #
+    # PASS
+    #
+
+# -----------------------------------------------------
+# Check the load balancer spec.
+#[user@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.spec.apiServerLoadBalancer'
+
+    >   {
+    >     "allowedCidrs": [
+    >       "164.92.185.112/32",
+    >       "128.232.226.108/32",
+    >       "90.155.51.57/32"
+    >     ],
+    >     "enabled": true
+    >   }
+
+    #
+    # PASS
+    #
+
+# -----------------------------------------------------
+# Check the load balancer status.
+#[user@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.status.network.apiServerLoadBalancer'
+
+    >   {
+    >     "allowedCIDRs": [
+    >       "128.232.226.108/32",
+    >       "128.232.226.111/32",
+    >       "164.92.185.112/32",
+    >       "192.168.3.0/24",
+    >       "90.155.51.57/32"
+    >     ],
+    >     "id": "e8a87c9c-bb37-43d4-abff-96c1685a9c3a",
+    >     "internalIP": "192.168.3.64",
+    >     "ip": "128.232.227.92",
+    >     "name": "k8s-clusterapi-cluster-default-iris-gaia-blue-20230815-work-kubeapi"
+    >   }
+
+    #
+    # PASS
+    #
+
+# -----------------------------------------------------
+# Try to access the API from our DigitalOcean node.
+#[root@ansibler]
+
+    ssh "root@164.92.185.112" \
+        "
+        curl \
+            --head \
+            --insecure \
+            --no-progress-meter \
+            '${endpoint:?}'
+        "
+
+    >   HTTP/2 403
+    >   audit-id: dea1c004-f74c-4de6-b041-a11e667b4485
+    >   cache-control: no-cache, private
+    >   content-type: application/json
+    >   ....
+    >   ....
+
+    #
+    # PASS
+    #
+
+    #
+    # So what the £$%^& did I do differently this time !?
+    #
+
+
+

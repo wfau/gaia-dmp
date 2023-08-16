@@ -1,0 +1,427 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+
+    Target:
+
+        Try again.
+        Add the firewall patch to the deployment script.
+        Measure the success rate.
+
+    Result:
+
+        Seems to work.
+        Access from the DigitalOcean node is blocked.
+
+        What does 'loadbalancer operating_status DEGRADED' mean ?
+        Issue seems to fade, so might be an artefact that occurs during startup.
+
+        Improvemnts:
+
+            * Test with two DigitalOcean nodes.
+              One allowed, one blocked.
+
+            * Accept new ssh fingerprints.
+              StrictHostKeyChecking=accept-new
+              https://askubuntu.com/a/123080
+
+
+
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Wed 16 Aug 03:46:46 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create our client container.
+#[user@desktop]
+
+    agclient blue
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete and deploy everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP *******************************************************************************************************
+    >   bootstrap                  : ok=55   changed=45   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   localhost                  : ok=32   changed=24   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to our bootstrap node.
+#[root@ansibler]
+
+    ssh bootstrap
+
+    source loadconfig
+
+cat << EOF
+kindclustername [${kindclustername}]
+kindclusterconf [${kindclusterconf}]
+workclustername [${workclustername}]
+workclusterconf [${workclusterconf}]
+EOF
+
+    >   kindclustername [iris-gaia-blue-20230816-kind]
+    >   kindclusterconf [/opt/aglais/iris-gaia-blue-20230816-kind.yml]
+    >   workclustername [iris-gaia-blue-20230816-work]
+    >   workclusterconf [/opt/aglais/iris-gaia-blue-20230816-work.yml]
+
+
+# -----------------------------------------------------
+# Check the cluster status.
+#[user@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackClusters
+
+    >   NAME                           CLUSTER                        READY   NETWORK                                SUBNET                                 BASTION IP   AGE
+    >   iris-gaia-blue-20230816-work   iris-gaia-blue-20230816-work   true    21135092-9c02-4397-9284-b45e9852c07d   4944a411-df62-4740-bc9c-c18958464ef1                3m21s
+
+
+    clusterctl \
+        --kubeconfig "${kindclusterconf:?}" \
+        describe cluster \
+            "${workclustername:?}"
+
+    >   NAME                                                                             READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/iris-gaia-blue-20230816-work                                             False  Warning   ScalingUp                    104s   Scaling up control plane to 3 replicas (actual 1)
+    >   ├─ClusterInfrastructure - OpenStackCluster/iris-gaia-blue-20230816-work
+    >   ├─ControlPlane - KubeadmControlPlane/iris-gaia-blue-20230816-work-control-plane  False  Warning   ScalingUp                    104s   Scaling up control plane to 3 replicas (actual 1)
+    >   │ └─Machine/iris-gaia-blue-20230816-work-control-plane-fvc9h                     True                                          95s
+    >   └─Workers
+    >     └─MachineDeployment/iris-gaia-blue-20230816-work-md-0                          False  Warning   WaitingForAvailableMachines  3m33s  Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                                              True                                          12s    See iris-gaia-blue-20230816-work-md-0-547b7d44bfxbdcp9-dw9fz, iris-gaia-blue-20230816-work-md-0-547b7d44bfxbdcp9-lfj2q, ...
+
+
+# -----------------------------------------------------
+# Check the Kubernetes loadbalancer spec.
+#[user@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.spec.apiServerLoadBalancer'
+
+    >   {
+    >     "allowedCidrs": [
+    >       "128.232.227.117/32",
+    >       "90.155.51.57/32"
+    >     ],
+    >     "enabled": true
+    >   }
+
+
+# -----------------------------------------------------
+# Check the Kubernetes loadbalancer status.
+#[user@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get OpenStackCluster \
+            --output json \
+            "${workclustername:?}" \
+    | jq '.status.network.apiServerLoadBalancer'
+
+    >   {
+    >     "id": "364339e1-60a9-4752-870d-02390b5af55b",
+    >     "internalIP": "192.168.3.165",
+    >     "ip": "128.232.226.173",
+    >     "name": "k8s-clusterapi-cluster-default-iris-gaia-blue-20230816-work-kubeapi"
+    >   }
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check the actual load balancer.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer list
+
+    >   +--------------------------------------+---------------------------------------------------------------------+----------------------------------+---------------+---------------------+------------------+----------+
+    >   | id                                   | name                                                                | project_id                       | vip_address   | provisioning_status | operating_status | provider |
+    >   +--------------------------------------+---------------------------------------------------------------------+----------------------------------+---------------+---------------------+------------------+----------+
+    >   | 364339e1-60a9-4752-870d-02390b5af55b | k8s-clusterapi-cluster-default-iris-gaia-blue-20230816-work-kubeapi | e918a13fed2648758175a15fac083569 | 192.168.3.165 | ACTIVE              | DEGRADED         | amphora  |
+    >   +--------------------------------------+---------------------------------------------------------------------+----------------------------------+---------------+---------------------+------------------+----------+
+
+    #
+    # What does this mean ?
+    # operating_status DEGRADED
+    #
+
+    # Just pick the first in the list
+    loadbalancerid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer list \
+            --format json \
+        | jq -r '.[0].id'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer show \
+            "${loadbalancerid:?}"
+
+    >   +---------------------+----------------------------------------------------------------------------------------+
+    >   | Field               | Value                                                                                  |
+    >   +---------------------+----------------------------------------------------------------------------------------+
+    >   | admin_state_up      | True                                                                                   |
+    >   | availability_zone   | None                                                                                   |
+    >   | created_at          | 2023-08-16T03:57:49                                                                    |
+    >   | description         | Created by cluster-api-provider-openstack cluster default-iris-gaia-blue-20230816-work |
+    >   | flavor_id           | None                                                                                   |
+    >   | id                  | 364339e1-60a9-4752-870d-02390b5af55b                                                   |
+    >   | listeners           | 35b401c0-e80e-4f91-964d-4bf22d3171d4                                                   |
+    >   | name                | k8s-clusterapi-cluster-default-iris-gaia-blue-20230816-work-kubeapi                    |
+    >   | operating_status    | DEGRADED                                                                               |
+    >   | pools               | 138901e9-2eae-4c5b-b4f6-1e8f2e467dca                                                   |
+    >   | project_id          | e918a13fed2648758175a15fac083569                                                       |
+    >   | provider            | amphora                                                                                |
+    >   | provisioning_status | ACTIVE                                                                                 |
+    >   | updated_at          | 2023-08-16T04:03:39                                                                    |
+    >   | vip_address         | 192.168.3.165                                                                          |
+    >   | vip_network_id      | 21135092-9c02-4397-9284-b45e9852c07d                                                   |
+    >   | vip_port_id         | bf327cb0-3994-400c-a50b-dcda99a75802                                                   |
+    >   | vip_qos_policy_id   | None                                                                                   |
+    >   | vip_subnet_id       | 4944a411-df62-4740-bc9c-c18958464ef1                                                   |
+    >   | tags                |                                                                                        |
+    >   +---------------------+----------------------------------------------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer show \
+            --format json \
+            "${loadbalancerid:?}" \
+    | jq -r '.operating_status'
+
+    >   DEGRADED
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer listener list \
+            --loadbalancer "${loadbalancerid:?}"
+
+    >   +--------------------------------------+--------------------------------------+--------------------------------------------------------------------------+----------------------------------+----------+---------------+----------------+
+    >   | id                                   | default_pool_id                      | name                                                                     | project_id                       | protocol | protocol_port | admin_state_up |
+    >   +--------------------------------------+--------------------------------------+--------------------------------------------------------------------------+----------------------------------+----------+---------------+----------------+
+    >   | 35b401c0-e80e-4f91-964d-4bf22d3171d4 | 138901e9-2eae-4c5b-b4f6-1e8f2e467dca | k8s-clusterapi-cluster-default-iris-gaia-blue-20230816-work-kubeapi-6443 | e918a13fed2648758175a15fac083569 | TCP      |          6443 | True           |
+    >   +--------------------------------------+--------------------------------------+--------------------------------------------------------------------------+----------------------------------+----------+---------------+----------------+
+
+
+    # Just pick the first in the list
+    loadlistenerid=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer listener list \
+                --loadbalancer "${loadbalancerid:?}" \
+                --format json \
+        | jq -r '.[0].id'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer listener show \
+            "${loadlistenerid:?}"
+
+    >   +-----------------------------+--------------------------------------------------------------------------+
+    >   | Field                       | Value                                                                    |
+    >   +-----------------------------+--------------------------------------------------------------------------+
+    >   | admin_state_up              | True                                                                     |
+    >   | connection_limit            | -1                                                                       |
+    >   | created_at                  | 2023-08-16T03:58:44                                                      |
+    >   | default_pool_id             | 138901e9-2eae-4c5b-b4f6-1e8f2e467dca                                     |
+    >   | default_tls_container_ref   | None                                                                     |
+    >   | description                 |                                                                          |
+    >   | id                          | 35b401c0-e80e-4f91-964d-4bf22d3171d4                                     |
+    >   | insert_headers              | None                                                                     |
+    >   | l7policies                  |                                                                          |
+    >   | loadbalancers               | 364339e1-60a9-4752-870d-02390b5af55b                                     |
+    >   | name                        | k8s-clusterapi-cluster-default-iris-gaia-blue-20230816-work-kubeapi-6443 |
+    >   | operating_status            | ONLINE                                                                   |
+    >   | project_id                  | e918a13fed2648758175a15fac083569                                         |
+    >   | protocol                    | TCP                                                                      |
+    >   | protocol_port               | 6443                                                                     |
+    >   | provisioning_status         | ACTIVE                                                                   |
+    >   | sni_container_refs          | []                                                                       |
+    >   | timeout_client_data         | 50000                                                                    |
+    >   | timeout_member_connect      | 5000                                                                     |
+    >   | timeout_member_data         | 50000                                                                    |
+    >   | timeout_tcp_inspect         | 0                                                                        |
+    >   | updated_at                  | 2023-08-16T04:03:38                                                      |
+    >   | client_ca_tls_container_ref | None                                                                     |
+    >   | client_authentication       | NONE                                                                     |
+    >   | client_crl_container_ref    | None                                                                     |
+    >   | allowed_cidrs               | 128.232.227.117/32                                                       |
+    >   |                             | 128.232.227.96/32                                                        |
+    >   |                             | 192.168.3.0/24                                                           |
+    >   |                             | 90.155.51.57/32                                                          |
+    >   | tls_ciphers                 | None                                                                     |
+    >   | tls_versions                | None                                                                     |
+    >   | alpn_protocols              | None                                                                     |
+    >   | tags                        |                                                                          |
+    >   +-----------------------------+--------------------------------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer listener show \
+            --format json \
+            "${loadlistenerid:?}" \
+    | jq -r '.allowed_cidrs' \
+    | sed 's/\\n/\n/'
+
+    >   128.232.227.117/32
+    >   128.232.227.96/32
+    >   192.168.3.0/24
+    >   90.155.51.57/32
+
+
+# -----------------------------------------------------
+# Extract the kubectl endpoint.
+#[root@ansibler]
+
+    source /deployments/cluster-api/bootstrap/ansible/files/aglais/bin/loadconfig
+
+    endpoint=$(
+        yq '.clusters[0].cluster.server' \
+            "${workclusterconf}"
+        )
+
+    echo "Endpoint [${endpoint}]"
+
+    >   Endpoint [https://128.232.226.173:6443]
+
+
+# -----------------------------------------------------
+# Try to access the API from our client container.
+#[root@ansibler]
+
+    curl \
+        --head \
+        --insecure \
+        --no-progress-meter \
+        "${endpoint:?}"
+
+    >   HTTP/2 403
+    >   audit-id: 70df6f9d-ea87-499e-a2b8-9f91b2430b3f
+    >   cache-control: no-cache, private
+    >   content-type: application/json
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Try to access the API from our bootstrap node.
+#[root@ansibler]
+
+    ssh bootstrap \
+        "
+        curl \
+            --head \
+            --insecure \
+            --no-progress-meter \
+            '${endpoint:?}'
+        "
+
+    >   HTTP/2 403
+    >   audit-id: fc95a4f2-ba87-4251-aa32-eb25118b6582
+    >   cache-control: no-cache, private
+    >   content-type: application/json
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Try to access the API from our DigitalOcean node.
+#[root@ansibler]
+
+    # TODO Accept the ssh fingerprint.
+    # StrictHostKeyChecking=accept-new
+
+    ssh "root@68.183.37.33" \
+        "
+        date
+        hostname
+        "
+
+    >   ....
+    >   ....
+    >   Wed Aug 16 04:11:15 AM UTC 2023
+    >   fedora-s-1vcpu-1gb-lon1-01
+
+    ssh "root@68.183.37.33" \
+        "
+        curl \
+            --head \
+            --insecure \
+            --no-progress-meter \
+            '${endpoint:?}'
+        "
+
+    >   curl: (28) Failed to connect to 128.232.226.173 port 6443 after 129350 ms: Couldn't connect to server
+
+    #
+    # TODO test with two DigitalOcean nodes.
+    # One allowed, one blocked.
+    #
+
+
+

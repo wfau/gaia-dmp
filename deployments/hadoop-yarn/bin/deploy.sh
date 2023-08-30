@@ -176,12 +176,33 @@ EOF
     echo "----"
 
 
+    # Wait until the IP address has been propagated
 
-# Sleep to give enough time for the DNS records to update
+    domain="$cloudname.gaia-dmp.uk"
+    polling_interval=30
+    time_limit=500
+    start_time=$(date +%s)
 
-    sleep 360
+    while true; do
+        current_time=$(date +%s)
+        elapsed_time=$((current_time - start_time))
 
-    
+        if [ "$elapsed_time" -ge "$time_limit" ]; then
+            echo "Time limit reached. DNS IP not updated within 5 minutes. Exiting."
+            exit 1
+        fi
+
+        current_ip=$(nslookup "$domain" | awk '/^Address: / { print $2 }')
+
+        if [ "$current_ip" = "$ipaddress" ]; then
+            break
+        else
+            echo "DNS IP is $current_ip. Waiting for update..."
+            sleep "$polling_interval"
+        fi
+    done
+
+
 # -----------------------------------------------------
 # Install our integration tests.
 #[root@ansibler]

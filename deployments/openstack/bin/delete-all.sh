@@ -420,6 +420,12 @@
             (.Name != "CUDN-Internet")
             and
             (.Name != "cephfs")
+            and
+            (.Name != "external")
+            and
+            (.Name != "cephfs-subnet")
+            and
+            (.Name != "test-subnet")
             ) | .ID'
         )
     do
@@ -470,6 +476,10 @@
             (.Name != "CUDN-Internet")
             and
             (.Name != "cephfs")
+            and
+            (.Name != "external")
+            and
+            (.Name != "test")
             ) | .ID'
         )
     do

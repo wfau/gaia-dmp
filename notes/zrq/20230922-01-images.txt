@@ -1,0 +1,387 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Build images for Openstack Arcus and Somerville.
+        Modify build to use site config files.
+
+    Result:
+
+        Success.
+        Created the Fedora-38 image on red, green, blue and data.
+        Tested on red ..
+
+
+# -----------------------------------------------------
+
+    Uploading an image on our ADSL line is likley to be slow.
+    Alternative is to run it on a test VM within the target cloud.
+    Would need to copy the clouds.yaml file across.
+
+    Create a VM on the Arcus system.
+    VM + network - might as well use the existing bootstrap node.
+
+    Copy our clouds.yaml file across.
+    Download and upload the Fedora image.
+
+# -----------------------------------------------------
+# Start a new client.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    agclient red
+
+    >   ---- ---- ----
+    >   File [agclient]
+    >   Path [/var/local/projects/WFAU/gaia-dmp/github-zrq/bin]
+    >   ---- ---- ----
+    >   Cloud name  [iris-gaia-red]
+    >   Client name [ansibler-red]
+    >   ---- ---- ----
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Transfger our clouds.yaml file.
+#[root@ansibler]
+
+    scp /etc/openstack/clouds.yaml bootstrap:/tmp/clouds.yaml
+
+    ssh bootstrap \
+        '
+        sudo mkdir /etc/openstack
+        sudo mv /tmp/clouds.yaml /etc/openstack/clouds.yaml
+        '
+
+# -----------------------------------------------------
+# Add the new image.
+#[root@bootstrap]
+
+    #
+    # Run a client container on the bootstrap node.
+
+    containername=kubernetes-client:2023.06.15
+    containerrepo=ghcr.io/wfau/atolmis
+    containerfull=ghcr.io/wfau/atolmis/${containername:?}
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --volume "/tmp/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        "${containerfull:?}" \
+        bash
+
+
+    #
+    # Download the latest Fedora
+
+    imageurl=https://download.fedoraproject.org/pub/fedora/linux/releases/38/Cloud/x86_64/images/Fedora-Cloud-Base-38-1.6.x86_64.qcow2
+    imagefile=Fedora-Cloud-Base-38-1.6.x86_64.qcow2
+    imagename=fedora-cloud-38-1.6
+
+    dnf instal -y wget
+    wget "${imageurl:?}"
+
+    #
+    # Install the new image.
+
+    cloudname=iris-gaia-red
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image create \
+        --disk-format 'qcow2' \
+        --container-format 'bare' \
+        --file "${imagefile:?}" \
+        "${imagename:?}"
+
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | Field            | Value                                                                                                                                                                   |
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | container_format | bare                                                                                                                                                                    |
+    >   | created_at       | 2023-09-22T01:03:41Z                                                                                                                                                    |
+    >   | disk_format      | qcow2                                                                                                                                                                   |
+    >   | file             | /v2/images/8b608db9-a74c-4de2-ac04-8eddb3041f39/file                                                                                                                    |
+    >   | id               | 8b608db9-a74c-4de2-ac04-8eddb3041f39                                                                                                                                    |
+    >   | min_disk         | 0                                                                                                                                                                       |
+    >   | min_ram          | 0                                                                                                                                                                       |
+    >   | name             | fedora-cloud-38-1.6                                                                                                                                                     |
+    >   | owner            | 0dd8cc5ee5a7455c8748cc06d04c93c3                                                                                                                                        |
+    >   | properties       | locations='[]', os_hidden='False', owner_specified.openstack.md5='', owner_specified.openstack.object='images/fedora-cloud-38-1.6', owner_specified.openstack.sha256='' |
+    >   | protected        | False                                                                                                                                                                   |
+    >   | schema           | /v2/schemas/image                                                                                                                                                       |
+    >   | status           | queued                                                                                                                                                                  |
+    >   | tags             |                                                                                                                                                                         |
+    >   | updated_at       | 2023-09-22T01:03:41Z                                                                                                                                                    |
+    >   | visibility       | shared                                                                                                                                                                  |
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+    #
+    # Exit the bootstrap node.
+    # Update the build settings to use the new image.
+    # Create it all again using the new image.
+    #
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create everything.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Check the bootstrap node version.
+#[root@ansibler]
+
+    ssh bootstrap \
+        '
+        date
+        hostname
+        cat /etc/redhat-release
+        '
+
+    >   Fri Sep 22 01:21:46 AM UTC 2023
+    >   iris-gaia-red-20230922-bootstrap-node
+    >   Fedora release 38 (Thirty Eight)
+
+
+# -----------------------------------------------------
+
+    #
+    # Repeat the same for green and blue.
+    #
+
+# -----------------------------------------------------
+# Transfger our clouds.yaml file.
+#[root@ansibler]
+
+    scp /etc/openstack/clouds.yaml bootstrap:/tmp/clouds.yaml
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the bootstrap and run a client container.
+#[root@bootstrap]
+
+
+    #
+    # Run a client container on the bootstrap node.
+
+    containername=kubernetes-client:2023.06.15
+    containerrepo=ghcr.io/wfau/atolmis
+    containerfull=ghcr.io/wfau/atolmis/${containername:?}
+
+    docker run \
+        --rm \
+        --tty \
+        --interactive \
+        --volume "/tmp/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        "${containerfull:?}" \
+        bash
+
+
+    #
+    # Download the latest Fedora
+
+    imageurl=https://download.fedoraproject.org/pub/fedora/linux/releases/38/Cloud/x86_64/images/Fedora-Cloud-Base-38-1.6.x86_64.qcow2
+    imagefile=Fedora-Cloud-Base-38-1.6.x86_64.qcow2
+    imagename=fedora-cloud-38-1.6
+
+    dnf instal -y wget
+    wget "${imageurl:?}"
+
+    #
+    # Install the new image.
+
+    cloudname=iris-gaia-green
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image create \
+        --disk-format 'qcow2' \
+        --container-format 'bare' \
+        --file "${imagefile:?}" \
+        "${imagename:?}"
+
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | Field            | Value                                                                                                                                                                   |
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | container_format | bare                                                                                                                                                                    |
+    >   | created_at       | 2023-09-22T01:29:45Z                                                                                                                                                    |
+    >   | disk_format      | qcow2                                                                                                                                                                   |
+    >   | file             | /v2/images/cb375d63-4b7d-4362-bf89-0bf586d503b6/file                                                                                                                    |
+    >   | id               | cb375d63-4b7d-4362-bf89-0bf586d503b6                                                                                                                                    |
+    >   | min_disk         | 0                                                                                                                                                                       |
+    >   | min_ram          | 0                                                                                                                                                                       |
+    >   | name             | fedora-cloud-38-1.6                                                                                                                                                     |
+    >   | owner            | de5ddc6b4d1e445bb73e45c7b8971673                                                                                                                                        |
+    >   | properties       | locations='[]', os_hidden='False', owner_specified.openstack.md5='', owner_specified.openstack.object='images/fedora-cloud-38-1.6', owner_specified.openstack.sha256='' |
+    >   | protected        | False                                                                                                                                                                   |
+    >   | schema           | /v2/schemas/image                                                                                                                                                       |
+    >   | status           | queued                                                                                                                                                                  |
+    >   | tags             |                                                                                                                                                                         |
+    >   | updated_at       | 2023-09-22T01:29:45Z                                                                                                                                                    |
+    >   | visibility       | shared                                                                                                                                                                  |
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+
+    cloudname=iris-gaia-blue
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image create \
+        --disk-format 'qcow2' \
+        --container-format 'bare' \
+        --file "${imagefile:?}" \
+        "${imagename:?}"
+
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | Field            | Value                                                                                                                                                                   |
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | container_format | bare                                                                                                                                                                    |
+    >   | created_at       | 2023-09-22T01:30:41Z                                                                                                                                                    |
+    >   | disk_format      | qcow2                                                                                                                                                                   |
+    >   | file             | /v2/images/a00d8a08-0112-4f74-9d93-8f6756073ac0/file                                                                                                                    |
+    >   | id               | a00d8a08-0112-4f74-9d93-8f6756073ac0                                                                                                                                    |
+    >   | min_disk         | 0                                                                                                                                                                       |
+    >   | min_ram          | 0                                                                                                                                                                       |
+    >   | name             | fedora-cloud-38-1.6                                                                                                                                                     |
+    >   | owner            | e918a13fed2648758175a15fac083569                                                                                                                                        |
+    >   | properties       | locations='[]', os_hidden='False', owner_specified.openstack.md5='', owner_specified.openstack.object='images/fedora-cloud-38-1.6', owner_specified.openstack.sha256='' |
+    >   | protected        | False                                                                                                                                                                   |
+    >   | schema           | /v2/schemas/image                                                                                                                                                       |
+    >   | status           | queued                                                                                                                                                                  |
+    >   | tags             |                                                                                                                                                                         |
+    >   | updated_at       | 2023-09-22T01:30:41Z                                                                                                                                                    |
+    >   | visibility       | shared                                                                                                                                                                  |
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+
+    cloudname=iris-gaia-data
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image create \
+        --disk-format 'qcow2' \
+        --container-format 'bare' \
+        --file "${imagefile:?}" \
+        "${imagename:?}"
+
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | Field            | Value                                                                                                                                                                   |
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | container_format | bare                                                                                                                                                                    |
+    >   | created_at       | 2023-09-22T01:31:23Z                                                                                                                                                    |
+    >   | disk_format      | qcow2                                                                                                                                                                   |
+    >   | file             | /v2/images/91d06a5b-b3ec-4382-8d70-53e4eec60d4f/file                                                                                                                    |
+    >   | id               | 91d06a5b-b3ec-4382-8d70-53e4eec60d4f                                                                                                                                    |
+    >   | min_disk         | 0                                                                                                                                                                       |
+    >   | min_ram          | 0                                                                                                                                                                       |
+    >   | name             | fedora-cloud-38-1.6                                                                                                                                                     |
+    >   | owner            | e216e6b502134b6185380be6ccd0bf09                                                                                                                                        |
+    >   | properties       | locations='[]', os_hidden='False', owner_specified.openstack.md5='', owner_specified.openstack.object='images/fedora-cloud-38-1.6', owner_specified.openstack.sha256='' |
+    >   | protected        | False                                                                                                                                                                   |
+    >   | schema           | /v2/schemas/image                                                                                                                                                       |
+    >   | status           | queued                                                                                                                                                                  |
+    >   | tags             |                                                                                                                                                                         |
+    >   | updated_at       | 2023-09-22T01:31:23Z                                                                                                                                                    |
+    >   | visibility       | shared                                                                                                                                                                  |
+    >   +------------------+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+    #
+    # Add a prefix to our image names.
+    #
+
+    oldname=fedora-cloud-38-1.6
+    newname=gaia-dmp-${oldname}
+
+    clouds=(
+        iris-gaia-data
+        iris-gaia-red
+        iris-gaia-green
+        iris-gaia-blue
+        )
+
+    for cloudname in ${clouds[@]}
+    do
+        echo "Cloud [$cloudname]"
+
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            image set \
+            --name "${newname:?}" \
+            "${oldname:?}"
+    done
+
+
+
+
+

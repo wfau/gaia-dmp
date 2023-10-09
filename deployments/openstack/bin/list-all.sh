@@ -126,6 +126,12 @@
         --os-cloud "${cloudname:?}" \
         security group list
 
+    echo ""
+    echo "---- ----"
+    echo "SSH keys"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        keypair list
 
 
 

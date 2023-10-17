@@ -1,0 +1,276 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Stress test to figure out how many resources we have.
+        Based on original tests from 2021.
+          See 20210223-01-resources.txt
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Check the live server.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Mon 16 Oct 14:47:03 UTC 2023
+    >   iris-gaia-blue-20230926-zeppelin
+
+
+# -----------------------------------------------------
+# Start a new client.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    agclient red
+
+
+# -----------------------------------------------------
+# Delete everything in red and green.
+#[root@ansibler]
+
+    testclouds=(
+        iris-gaia-red
+        iris-gaia-green
+        )
+
+    for testcloud in "${testclouds[@]}"
+    do
+        echo "Cloud [${testcloud}]"
+        /deployments/openstack/bin/delete-all.sh \
+            "${testcloud:?}"
+    done
+
+
+# -----------------------------------------------------
+# Create a network, subnet, router and keypair on each test cloud.
+#[root@ansibler]
+
+    for testcloud in "${testclouds[@]}"
+    do
+        echo ""
+        echo "Cloud [${testcloud}]"
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/bootstrap/ansible/00-init-status.yml'
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/bootstrap/ansible/01-create-keypair.yml'
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/bootstrap/ansible/02-create-network.yml'
+
+        mv "/opt/aglais/aglais-status.yml" \
+           "/opt/aglais/${testcloud:?}-status.yml"
+    done
+
+
+# -----------------------------------------------------
+# Start with the larger flavors and see how many we can create..
+#[root@ansibler]
+
+    testcloud=iris-gaia-red
+    imagename=gaia-dmp-fedora-cloud-38-1.6
+    flavorname=gaia.vm.cclake.54vcpu
+    flavorcount=20
+
+    imageid=$(
+        openstack \
+            --os-cloud "${testcloud:?}" \
+            image list \
+                --format json \
+        | jq -r \
+            --arg imagename "${imagename:?}" \
+            '
+            .[]
+            | select(.Name == $imagename)
+            | .ID
+            '
+        )
+
+    flavorid=$(
+        openstack \
+            --os-cloud "${testcloud:?}" \
+            flavor list \
+                --format json \
+        | jq -r \
+            --arg flavorname "${flavorname:?}" \
+            '
+            .[]
+            | select(.Name == $flavorname)
+            | .ID
+            '
+        )
+
+    networkid=$(
+        yq '
+           .aglais.openstack.networks.bootstrap.network.id
+           ' "/opt/aglais/${testcloud:?}-status.yml"
+        )
+
+    keypairid=$(
+        yq '
+           .aglais.openstack.keypairs.team.id
+           ' "/opt/aglais/${testcloud:?}-status.yml"
+        )
+
+    echo ""
+    echo "---- ----"
+    echo "Deleting servers"
+
+    for serverid in $(
+        openstack \
+            --os-cloud "${testcloud:?}" \
+            server list \
+                --format json \
+        | jq -r '.[] | .ID'
+        )
+    do
+        echo "- Deleting server [${serverid}]"
+        openstack \
+            --os-cloud "${testcloud:?}" \
+            server delete \
+                "${serverid:?}"
+    done
+
+    echo ""
+    echo "---- ----"
+    echo "Creating servers"
+
+
+    for (( i=0 ; i < flavorcount ; i++))
+    do
+
+        vmname=${testcloud}-$(printf '%02d' ${i})
+        echo ""
+        echo "Node   [${vmname}]"
+
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server create \
+            --image "${imageid:?}" \
+            --flavor "${flavorid:?}" \
+            --nic "net-id=${networkid:?}" \
+            --key-name "${keypairid}" \
+            "${vmname}"
+
+    done
+
+
+    openstack \
+        --os-cloud "${testcloud:?}" \
+        server list
+
+    >   +--------------------------------------+------------------+--------+------------------------------------------------------+------------------------------+-----------------------+
+    >   | ID                                   | Name             | Status | Networks                                             | Image                        | Flavor                |
+    >   +--------------------------------------+------------------+--------+------------------------------------------------------+------------------------------+-----------------------+
+    >   | 290262f3-d425-4811-bd4a-434d04522767 | iris-gaia-red-19 | ERROR  |                                                      | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | ................                     | ........         | ...... | ................                                     | ................             | ................      |
+    >   | 1ccb95ea-0d46-459e-bdef-fc549972f812 | iris-gaia-red-12 | ERROR  |                                                      | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | f5de130c-f0f6-4a67-abcf-98ad01499321 | iris-gaia-red-11 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.0.97  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | 2d6d7bb3-06bf-4628-bc00-6c9cfa3c2c21 | iris-gaia-red-10 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.0.146 | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | 69ab3ecb-4c55-4856-a9aa-02911cfa5ed2 | iris-gaia-red-09 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.2.170 | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | 833635ba-6be7-459c-ac5f-39bd17ba3ab6 | iris-gaia-red-08 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.1.48  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | 1d8a11fe-7474-470b-8d0c-6b7f2f4459be | iris-gaia-red-07 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.2.52  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | 531ae565-271d-49f1-8ec9-35cf8ca982ff | iris-gaia-red-06 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.0.211 | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | bd6d18a0-6039-459f-bd6b-bff389d04f53 | iris-gaia-red-05 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.1.89  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | abdc54a3-4eaa-45f1-a0ef-5e6aa0195a62 | iris-gaia-red-04 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.0.47  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | c9997ac2-8a91-4194-a20c-55040534bc33 | iris-gaia-red-03 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.3.199 | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | f85b5d1d-df85-426d-aac7-bc20f33c2406 | iris-gaia-red-02 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.1.218 | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | 02aeb91d-6dd0-4fc7-b470-2d279004fc6d | iris-gaia-red-01 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.0.4   | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | 0c3d4909-af2e-4edf-9328-32d24c53ee14 | iris-gaia-red-00 | ACTIVE | iris-gaia-red-20231016-bootstrap-network=10.10.0.73  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   +--------------------------------------+------------------+--------+------------------------------------------------------+------------------------------+-----------------------+
+
+
+    openstack \
+        --os-cloud "${testcloud:?}" \
+        server list \
+            --column Name \
+            --column Status \
+            --column Image \
+            --column Flavor \
+            --sort-column Name
+
+    >   +------------------+--------+------------------------------+-----------------------+
+    >   | Name             | Status | Image                        | Flavor                |
+    >   +------------------+--------+------------------------------+-----------------------+
+    >   | iris-gaia-red-00 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-01 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-02 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-03 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-04 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-05 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-06 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-07 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-08 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-09 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-10 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-11 | ACTIVE | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-12 | ERROR  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-13 | ERROR  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-14 | ERROR  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-15 | ERROR  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-16 | ERROR  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-17 | ERROR  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-18 | ERROR  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   | iris-gaia-red-19 | ERROR  | gaia-dmp-fedora-cloud-38-1.6 | gaia.vm.cclake.54vcpu |
+    >   +------------------+--------+------------------------------+-----------------------+
+
+    #
+    # Space for 12 54vcpu instances.
+    #
+    # Try allocating a smaller instance ?
+    # Try allocating a himem instances ?
+    #
+
+
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            server create \
+            --image "${imageid:?}" \
+            --flavor "${flavorid:?}" \
+            --nic "net-id=${networkid:?}" \
+            --key-name "${keypairid}" \
+            "${vmname}"
+
+
+

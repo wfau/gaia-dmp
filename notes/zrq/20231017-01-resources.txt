@@ -1,0 +1,805 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Stress test to figure out how many resources we have.
+        Based on original tests from 2021.
+          See 20210223-01-resources.txt
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Check the live server.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Tue 17 Oct 04:42:10 UTC 2023
+    >   iris-gaia-blue-20230926-zeppelin
+
+
+# -----------------------------------------------------
+# Start a new client.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    agclient red
+
+
+# -----------------------------------------------------
+# Delete everything in red and green.
+#[root@ansibler]
+
+    testclouds=(
+        iris-gaia-red
+        iris-gaia-green
+        )
+
+    for testcloud in "${testclouds[@]}"
+    do
+        echo "Cloud [${testcloud}]"
+        /deployments/openstack/bin/delete-all.sh \
+            "${testcloud:?}"
+    done
+
+
+# -----------------------------------------------------
+# Create a network, subnet, router and keypair on each test cloud.
+#[root@ansibler]
+
+    for cloudname in "${testclouds[@]}"
+    do
+        echo ""
+        echo "Cloud [${cloudname}]"
+
+        rm -f "/opt/aglais/${cloudname:?}-status.yml"
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/bootstrap/ansible/00-init-status.yml'
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/bootstrap/ansible/01-create-keypair.yml'
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/bootstrap/ansible/02-create-network.yml'
+
+        mv "/opt/aglais/aglais-status.yml" \
+           "/opt/aglais/${cloudname:?}-status.yml"
+    done
+
+
+# -----------------------------------------------------
+# Create a set of test functions.
+#[root@ansibler]
+
+    getnetworkid()
+        {
+        local testcloud=${1:?}
+        yq '
+           .aglais.openstack.networks.bootstrap.network.id
+           ' "/opt/aglais/${testcloud:?}-status.yml"
+        }
+
+    getkeypairid()
+        {
+        local testcloud=${1:?}
+        yq '
+           .aglais.openstack.keypairs.team.id
+           ' "/opt/aglais/${testcloud:?}-status.yml"
+        }
+
+    getimageid()
+        {
+        local testcloud=${1:?}
+        local imagename=${2:?}
+        openstack \
+            --os-cloud "${testcloud:?}" \
+            image list \
+                --format json \
+        | jq -r \
+            --arg imagename "${imagename:?}" \
+            '
+            .[]
+            | select(.Name == $imagename)
+            | .ID
+            '
+        }
+
+    getflavorid()
+        {
+        local testcloud=${1:?}
+        local flavorname=${2:?}
+        openstack \
+            --os-cloud "${testcloud:?}" \
+            flavor list \
+                --format json \
+        | jq -r \
+            --arg flavorname "${flavorname:?}" \
+            '
+            .[]
+            | select(.Name == $flavorname)
+            | .ID
+            '
+        }
+
+
+# -----------------------------------------------------
+# Test the lookup functions.
+#[root@ansibler]
+
+    for cloudname in "${testclouds[@]}"
+    do
+        getnetworkid \
+            "${cloudname}"
+    done
+
+    >   22f9815f-7fab-4508-b570-7cc2eafabb21
+    >   52b9a2ba-6510-40c9-92a5-911349cef808
+
+
+    for cloudname in "${testclouds[@]}"
+    do
+        getkeypairid \
+            "${cloudname}"
+    done
+
+    >   iris-gaia-red-20231017-keypair
+    >   iris-gaia-green-20231017-keypair
+
+
+    for cloudname in "${testclouds[@]}"
+    do
+        getimageid \
+            "${cloudname}" \
+            'gaia-dmp-fedora-cloud-38-1.6'
+    done
+
+    >   8b608db9-a74c-4de2-ac04-8eddb3041f39
+    >   cb375d63-4b7d-4362-bf89-0bf586d503b6
+
+
+    for cloudname in "${testclouds[@]}"
+    do
+        getflavorid \
+            "${cloudname}" \
+            'gaia.vm.cclake.54vcpu'
+    done
+
+    >   56c420d5-abea-41da-9863-f5bc08b08430
+    >   56c420d5-abea-41da-9863-f5bc08b08430
+
+
+# -----------------------------------------------------
+# Create our loop functions.
+#[root@ansibler]
+
+    delete-loop()
+        {
+        local testcloud=${1:?}
+
+        echo ""
+        echo "---- ----"
+        echo "Deleting servers"
+        echo "  Cloud [${testcloud}]"
+
+        for serverid in $(
+            openstack \
+                --os-cloud "${testcloud:?}" \
+                server list \
+                    --format json \
+            | jq -r '.[] | .ID'
+            )
+        do
+            echo "- Deleting server [${serverid}]"
+            openstack \
+                --os-cloud "${testcloud:?}" \
+                server delete \
+                    "${serverid:?}"
+        done
+        }
+
+    create-loop()
+        {
+        local testcloud=${1:?}
+        local flavorname=${2:?}
+        local testcount=${3:?}
+
+        local imagename=gaia-dmp-fedora-cloud-38-1.6
+
+        local imageid=$(
+            getimageid "${testcloud}" "${imagename}"
+            )
+        local flavorid=$(
+            getflavorid "${testcloud}" "${flavorname}"
+            )
+
+        local networkid=$(
+            getnetworkid  "${testcloud}"
+            )
+
+        local keypairid=$(
+            getkeypairid  "${testcloud}"
+            )
+
+        echo ""
+        echo "---- ----"
+        echo "Creating servers"
+        echo "  Cloud  [${testcloud}]"
+        echo "  Image  [${imagename}][${imageid}]"
+        echo "  Flavor [${flavorname}][${flavorid}]"
+        echo "  Count  [${testcount}]"
+        echo ""
+
+        for (( i=0 ; i < testcount ; i++))
+        do
+
+            vmname=${testcloud}-${flavorname}-$(printf '%02d' ${i})
+            echo "Node [${vmname}]"
+
+            openstack \
+                --os-cloud "${testcloud:?}" \
+                server create \
+                --image "${imageid:?}" \
+                --flavor "${flavorid:?}" \
+                --nic "net-id=${networkid:?}" \
+                --key-name "${keypairid}" \
+                "${vmname}" \
+                    --format json \
+            > "/tmp/${vmname}.json"
+
+
+        done
+        }
+
+    server-list()
+        {
+        local testcloud=${1:?}
+
+        echo ""
+        echo "---- ----"
+        echo "Listing servers"
+        echo "  Cloud [${testcloud}]"
+
+        openstack \
+            --os-cloud "${testcloud:?}" \
+            server list \
+                --column Name \
+                --column Status \
+                --sort-column Name
+        }
+
+
+# -----------------------------------------------------
+# Start with a clean set.
+#[root@ansibler]
+
+    delete-loop \
+        'iris-gaia-red'
+
+    >   ....
+    >   ....
+
+
+    delete-loop \
+        'iris-gaia-green'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Start with the larger flavors (54vcpu) in red.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-red' \
+        'gaia.vm.cclake.54vcpu' \
+        20
+
+    server-list \
+        'iris-gaia-red'
+
+    >   +----------------------------------------+--------+
+    >   | Name                                   | Status |
+    >   +----------------------------------------+--------+
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-00 | ACTIVE |
+    >   | ................                       | ...... |
+    >   | ................                       | ...... |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-11 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-12 | ERROR  |
+    >   | ................                       | ...... |
+    >   | ................                       | ...... |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-19 | ERROR  |
+    >   +----------------------------------------+--------+
+
+
+# -----------------------------------------------------
+# Try creating the same (54vcpu) in the green cloud.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-green' \
+        'gaia.vm.cclake.54vcpu' \
+        5
+
+    server-list \
+        'iris-gaia-green'
+
+    >   +------------------------------------------+--------+
+    >   | Name                                     | Status |
+    >   +------------------------------------------+--------+
+    >   | iris-gaia-green-gaia.vm.cclake.54vcpu-00 | ERROR  |
+    >   | ................                         | ...... |
+    >   | iris-gaia-green-gaia.vm.cclake.54vcpu-04 | ERROR  |
+    >   +------------------------------------------+--------+
+
+    #
+    # No space in green.
+    #
+
+# -----------------------------------------------------
+# Try creating some smaller (26vcpu) VMs in red.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-red' \
+        'gaia.vm.cclake.26vcpu' \
+        5
+
+    server-list \
+        'iris-gaia-red'
+
+    >   +----------------------------------------+--------+
+    >   | Name                                   | Status |
+    >   +----------------------------------------+--------+
+    >   | iris-gaia-red-gaia.vm.cclake.26vcpu-00 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.26vcpu-01 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.26vcpu-02 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.26vcpu-03 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.26vcpu-04 | ERROR  |
+    >   | ................                       | ...... |
+    >   | ................                       | ...... |
+    >   +----------------------------------------+--------+
+
+    #
+    # Room for three 26vcpu in red.
+    #
+
+# -----------------------------------------------------
+# Try creating some smaller (26vcpu) VMs in green.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-green' \
+        'gaia.vm.cclake.26vcpu' \
+        5
+
+    server-list \
+        'iris-gaia-green'
+
+
+    >   +------------------------------------------+--------+
+    >   | Name                                     | Status |
+    >   +------------------------------------------+--------+
+    >   | iris-gaia-green-gaia.vm.cclake.26vcpu-00 | ERROR  |
+    >   | ................                         | ...... |
+    >   | iris-gaia-green-gaia.vm.cclake.26vcpu-04 | ERROR  |
+    >   | ................                         | ...... |
+    >   | ................                         | ...... |
+    >   +------------------------------------------+--------+
+
+    #
+    # No space in green.
+    #
+
+# -----------------------------------------------------
+# Try creating some smaller (12vcpu) VMs in red.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-red' \
+        'gaia.vm.cclake.12vcpu' \
+        5
+
+    server-list \
+        'iris-gaia-red'
+
+    >   +----------------------------------------+--------+
+    >   | Name                                   | Status |
+    >   +----------------------------------------+--------+
+    >   | iris-gaia-red-gaia.vm.cclake.12vcpu-00 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.12vcpu-01 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.12vcpu-02 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.12vcpu-03 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.12vcpu-04 | ERROR  |
+    >   | ................                       | ...... |
+    >   | ................                       | ...... |
+    >   +----------------------------------------+--------+
+
+    #
+    # Space for one 12vcpu in red.
+    #
+
+# -----------------------------------------------------
+# Try creating some smaller (6vcpu) VMs in red.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-red' \
+        'gaia.vm.cclake.6vcpu' \
+        5
+
+    server-list \
+        'iris-gaia-red'
+
+    >   +----------------------------------------+--------+
+    >   | Name                                   | Status |
+    >   +----------------------------------------+--------+
+    >   | iris-gaia-red-gaia.vm.cclake.6vcpu-00  | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.6vcpu-01  | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.6vcpu-02  | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.6vcpu-03  | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.6vcpu-04  | ERROR  |
+    >   | ................                       | ...... |
+    >   | ................                       | ...... |
+    >   +----------------------------------------+--------+
+
+    #
+    # Space for one 6vcpu in red.
+    #
+
+# -----------------------------------------------------
+# Try creating some smaller (4vcpu) VMs in red.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-red' \
+        'gaia.vm.cclake.4vcpu' \
+        5
+
+    server-list \
+        'iris-gaia-red'
+
+    >   +----------------------------------------+--------+
+    >   | Name                                   | Status |
+    >   +----------------------------------------+--------+
+    >   | iris-gaia-red-gaia.vm.cclake.4vcpu-00  | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.4vcpu-01  | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.4vcpu-02  | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.4vcpu-03  | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.4vcpu-04  | ERROR  |
+    >   | ................                       | ...... |
+    >   | ................                       | ...... |
+    >   +----------------------------------------+--------+
+
+    #
+    # Space for one 4vcpu in red.
+    #
+
+
+# -----------------------------------------------------
+# Try creating some smaller (2vcpu) VMs in red.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-red' \
+        'gaia.vm.cclake.2vcpu' \
+        5
+
+    server-list \
+        'iris-gaia-red'
+
+    >   +----------------------------------------+--------+
+    >   | Name                                   | Status |
+    >   +----------------------------------------+--------+
+    >   | iris-gaia-red-gaia.vm.cclake.2vcpu-00  | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.2vcpu-01  | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.2vcpu-02  | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.2vcpu-03  | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.2vcpu-04  | ERROR  |
+    >   | ................                       | ...... |
+    >   | ................                       | ...... |
+    >   +----------------------------------------+--------+
+
+    #
+    # No space in red.
+    #
+
+# -----------------------------------------------------
+# Summary ....
+#[root@ansibler]
+
+    openstack \
+        --os-cloud 'iris-gaia-red' \
+        server list \
+            --format json \
+    | jq '.[] | select(.Status == "ACTIVE") | .Name'
+
+    >   "iris-gaia-red-gaia.vm.cclake.4vcpu-00"
+    >   "iris-gaia-red-gaia.vm.cclake.6vcpu-00"
+    >   "iris-gaia-red-gaia.vm.cclake.12vcpu-00"
+    >   "iris-gaia-red-gaia.vm.cclake.26vcpu-02"
+    >   "iris-gaia-red-gaia.vm.cclake.26vcpu-01"
+    >   "iris-gaia-red-gaia.vm.cclake.26vcpu-00"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-11"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-10"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-09"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-08"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-07"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-06"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-05"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-04"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-03"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-02"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-01"
+    >   "iris-gaia-red-gaia.vm.cclake.54vcpu-00"
+
+    1 *  4vcpu
+    1 *  6vcpu
+    1 * 12vcpu
+    3 * 26vcpu
+   12 * 54vcpu
+
+   (12*54)+(3*26)+(1*12)+(1*6)+(1*4) = 748 vcpu
+
+
+# -----------------------------------------------------
+# Include the live system.
+# https://stackoverflow.com/a/37710802
+# https://stackoverflow.com/questions/37710718/concat-2-fields-in-json-using-jq
+#[root@ansibler]
+
+    openstack \
+        --os-cloud 'iris-gaia-blue' \
+        server list \
+            --format json \
+    | jq '.[] | select(.Status == "ACTIVE") | [.Name, .Flavor]'
+
+    >   [
+    >     "iris-gaia-blue-20230926-worker06",
+    >     "gaia.vm.cclake.26vcpu"
+    >   ]
+    >   [
+    >     "iris-gaia-blue-20230926-worker05",
+    >     "gaia.vm.cclake.26vcpu"
+    >   ]
+    >   [
+    >     "iris-gaia-blue-20230926-worker04",
+    >     "gaia.vm.cclake.26vcpu"
+    >   ]
+    >   [
+    >     "iris-gaia-blue-20230926-worker03",
+    >     "gaia.vm.cclake.26vcpu"
+    >   ]
+    >   [
+    >     "iris-gaia-blue-20230926-worker02",
+    >     "gaia.vm.cclake.26vcpu"
+    >   ]
+    >   [
+    >     "iris-gaia-blue-20230926-worker01",
+    >     "gaia.vm.cclake.26vcpu"
+    >   ]
+    >   [
+    >     "iris-gaia-blue-20230926-master01",
+    >     "gaia.vm.cclake.2vcpu"
+    >   ]
+    >   [
+    >     "iris-gaia-blue-20230926-monitor",
+    >     "gaia.vm.cclake.2vcpu"
+    >   ]
+    >   [
+    >     "iris-gaia-blue-20230926-zeppelin",
+    >     "gaia.vm.cclake.54vcpu"
+    >   ]
+
+
+    openstack \
+        --os-cloud 'iris-gaia-blue' \
+        server list \
+            --format json \
+    | jq '.[] | select(.Status == "ACTIVE") | .Flavor'
+
+    >   "gaia.vm.cclake.26vcpu"
+    >   "gaia.vm.cclake.26vcpu"
+    >   "gaia.vm.cclake.26vcpu"
+    >   "gaia.vm.cclake.26vcpu"
+    >   "gaia.vm.cclake.26vcpu"
+    >   "gaia.vm.cclake.26vcpu"
+    >   "gaia.vm.cclake.2vcpu"
+    >   "gaia.vm.cclake.2vcpu"
+    >   "gaia.vm.cclake.54vcpu"
+
+
+    (1*54)+(6*26)+(2*2)= 214 vcpu
+
+    Total in red
+
+        748 + 214 = 962
+
+# -----------------------------------------------------
+# Try creating some large (54vcpu) himem nodes.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-red' \
+        'gaia.vm.cclake.himem.54vcpu' \
+        5
+
+    server-list \
+        'iris-gaia-red'
+
+    >   +----------------------------------------------+--------+
+    >   | Name                                         | Status |
+    >   +----------------------------------------------+--------+
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-00 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-01 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-02 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-03 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-04 | ERROR  |
+    >   | ................                             | .....  |
+    >   +----------------------------------------------+--------+
+
+    #
+    # No room for himem nodes either.
+    #
+
+
+# -----------------------------------------------------
+# Start again with a clean set.
+#[root@ansibler]
+
+    delete-loop \
+        'iris-gaia-red'
+
+    delete-loop \
+        'iris-gaia-green'
+
+    server-list \
+        'iris-gaia-red'
+
+    server-list \
+        'iris-gaia-green'
+
+
+# -----------------------------------------------------
+# Try creating some large (54vcpu) himem nodes.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-red' \
+        'gaia.vm.cclake.himem.54vcpu' \
+        20
+
+    server-list \
+        'iris-gaia-red'
+
+    >   +----------------------------------------------+--------+
+    >   | Name                                         | Status |
+    >   +----------------------------------------------+--------+
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-00 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-01 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-02 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-03 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-04 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-05 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-06 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-07 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-08 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-09 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-10 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-11 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-12 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-13 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-14 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-15 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-16 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-17 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-18 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-19 | ERROR  |
+    >   +----------------------------------------------+--------+
+
+    #
+    # Space for four himem 54vcpu nodes.
+    #
+
+# -----------------------------------------------------
+# Try adding some large (54vcpu) nodes.
+#[root@ansibler]
+
+    create-loop \
+        'iris-gaia-red' \
+        'gaia.vm.cclake.54vcpu' \
+        20
+
+    server-list \
+        'iris-gaia-red'
+
+    >   +----------------------------------------------+--------+
+    >   | Name                                         | Status |
+    >   +----------------------------------------------+--------+
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-00       | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-01       | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-02       | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-03       | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-04       | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-05       | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-06       | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-07       | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-08       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-09       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-10       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-11       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-12       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-13       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-14       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-15       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-16       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-17       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-18       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.54vcpu-19       | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-00 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-01 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-02 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-03 | ACTIVE |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-04 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-05 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-06 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-07 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-08 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-09 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-10 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-11 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-12 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-13 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-14 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-15 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-16 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-17 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-18 | ERROR  |
+    >   | iris-gaia-red-gaia.vm.cclake.himem.54vcpu-19 | ERROR  |
+    >   +----------------------------------------------+--------+
+
+    #
+    # Four himem 54vcpu, plus eight normal 54vcpu.
+    # Total of 12 instances.
+    #
+

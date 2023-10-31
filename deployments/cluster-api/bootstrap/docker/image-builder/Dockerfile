@@ -61,6 +61,26 @@ RUN apt-get install \
       python3-wheel
 
 #
+# Install Jq.
+RUN apt-get install \
+      --yes \
+      jq
+
+#
+# Install Yq.
+# https://mikefarah.gitbook.io/yq/v/v3.x/#on-ubuntu-16.04-or-higher-from-debian-package
+RUN apt-get install \
+      --yes \
+      software-properties-common
+RUN add-apt-repository \
+      --yes \
+      ppa:rmescandon/yq
+RUN apt-get update
+RUN apt-get install \
+      --yes \
+      yq
+
+#
 # Install the Openstack client.
 RUN apt-get install \
       --yes \

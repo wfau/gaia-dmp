@@ -23,7 +23,7 @@
 
 timestamp=$(date +"%Y%m%d")
 
-directory_name="/tmp/${timestamp}-live.gaia-dmp.uk-notebooks/"
+directory_name="/var/local/backups/notebooks/${timestamp}-live.gaia-dmp.uk-notebooks/"
 
 if [ -d "$directory_name" ]; then
   # If the directory already exists, synchronize with the remote directory

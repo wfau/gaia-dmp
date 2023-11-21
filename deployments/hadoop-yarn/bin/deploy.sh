@@ -24,6 +24,11 @@
 
     live_hostname=$(ssh  -o "StrictHostKeyChecking no" fedora@live.gaia-dmp.uk 'hostname')
 
+    if [ $? -ne 0 ]; then
+        echo "Failed to check the live system hostname - exiting ..."
+        exit
+    fi
+
     if [[ "$live_hostname" == *"$cloudname"* ]]; then
         read -p "You are replacing the current live system!! Do you want to proceed? (y/N) " -n 1 -r
         echo

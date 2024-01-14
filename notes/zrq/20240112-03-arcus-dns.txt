@@ -1,0 +1,222 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2024, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Deploy a K8s cluster on Arcus without the custom DNS server address.
+
+    Result:
+
+        Sucess.
+        Works on Arcus.
+
+
+# -----------------------------------------------------
+# Comment out the custom DNS addresses.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE:?}"
+
+        vi deployments/cluster-api/bootstrap/ansible/templates/clusterapi-config.j2
+
+        ~   # # Custom nameservers to use for the hosts
+        ~   # dnsNameservers:
+        ~   #   - "{{ deployments[aglais.openstack.cloud.site].dnsservers }}"
+
+    popd
+
+# -----------------------------------------------------
+# Delete and create everything on blue.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    agclient blue
+
+        export cloudsite='cambridge-arcus'
+
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP *******************************************************************************************************
+    >   bootstrap                  : ok=58   changed=45   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   localhost                  : ok=35   changed=26   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Login to our bootstrap node and check the work cluster status.
+#[root@ansibler]
+
+    ssh bootstrap
+
+        source loadconfig
+
+        watch \
+            clusterctl \
+                --kubeconfig "${kindclusterconf:?}" \
+                describe cluster \
+                    "${workclustername:?}"
+
+    >   NAME                                                                             READY  SEVERITY  REASON  SINCE  MESSAGE
+    >   Cluster/iris-gaia-blue-20240112-work                                             True                     6m38s
+    >   ├─ClusterInfrastructure - OpenStackCluster/iris-gaia-blue-20240112-work
+    >   ├─ControlPlane - KubeadmControlPlane/iris-gaia-blue-20240112-work-control-plane  True                     6m38s
+    >   │ └─3 Machines...                                                                True                     11m    See iris-gaia-blue-20240112-work-control-plane-cpd9r, iris-gaia-blue-20240112-work-control-plane-dzngk, ...
+    >   └─Workers
+    >     └─MachineDeployment/iris-gaia-blue-20240112-work-md-0                          True                     9m38s
+    >       └─6 Machines...                                                              True                     10m    See iris-gaia-blue-20240112-work-md-0-bsfzk-2sbs6, iris-gaia-blue-20240112-work-md-0-bsfzk-bw4xc, ...
+
+
+# -----------------------------------------------------
+# Deploy our gaia-dmp Helm chart.
+#[root@ansibler]
+
+    # TODO something to put this into the PATH
+    export PATH=${PATH}:/deployments/cluster-api/bootstrap/ansible/files/aglais/bin
+    source loadconfig
+
+    helm dependency build \
+        --kubeconfig "${workclusterconf:?}" \
+        '/deployments/cluster-api/bootstrap/helm/gaia-dmp'
+
+    >   Saving 2 charts
+    >   Deleting outdated charts
+
+
+    helm upgrade \
+        --wait \
+        --debug \
+        --kubeconfig "${workclusterconf:?}" \
+        'gaia-dmp' \
+        '/deployments/cluster-api/bootstrap/helm/gaia-dmp' \
+        --install
+
+    >   ....
+    >   ....
+    >   NAME: gaia-dmp
+    >   LAST DEPLOYED: Fri Jan 12 17:37:01 2024
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   USER-SUPPLIED VALUES:
+    >   {}
+    >   
+    >   COMPUTED VALUES:
+    >   charts:
+    >     dashboard:
+    >       enabled: true
+    >     zeppelin:
+    >       enabled: true
+    >   gaia-dmp-dashboard:
+    >     global: {}
+    >   gaia-dmp-zeppelin:
+    >     global: {}
+    >     zeppelin:
+    >       interpreter:
+    >         image:
+    >           name: apache/zeppelin:0.10.1
+    >       server:
+    >         image:
+    >           name: apache/zeppelin:0.10.1
+    >       spark:
+    >         image:
+    >           name: spark:2.4.5
+
+
+# -----------------------------------------------------
+# Generate a dashboard token.
+#[root@ansibler]
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        --namespace "gaia-dmp" \
+        create token \
+            "dashboard-admin-account"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Launch a kubectl proxy.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler-blue \
+            bash -c \
+                '
+                source /deployments/cluster-api/bootstrap/ansible/files/aglais/bin/loadconfig ;\
+                kubectl \
+                    --kubeconfig "${workclusterconf:?}" \
+                    --address 0.0.0.0 \
+                    proxy
+                '
+
+    >   Starting to serve on [::]:8001
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Launch browser pointed at the dashboard.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        'http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:https/proxy/#/login' \
+        &
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Launch browser pointed at Zeppelin.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        'http://localhost:8001/api/v1/namespaces/default/services/http:zeppelin-server:http/proxy/#/' \
+        &
+
+    >   ....
+    >   ....
+
+

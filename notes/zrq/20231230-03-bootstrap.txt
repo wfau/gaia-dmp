@@ -1,0 +1,524 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Edit the Helm config to disable the loadbalancer on the K8s endpoint.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Check the live service.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+    pushd "${AGLAIS_CODE:?}"
+
+        gedit deployments/cluster-api/bootstrap/ansible/templates/clusterapi-config.j2 &
+
+    >   ....
+    >   # Settings for the API server interface
+    >   apiServer:
+    >   
+    >     # Disable the load balancer
+    >     enableLoadBalancer: false
+    >   
+    >   ....
+
+
+
+# -----------------------------------------------------
+# Check the live service.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Sun 31 Dec 2023 02:40:04 AM UTC
+    >   iris-gaia-green-20231027-zeppelin
+
+
+# -----------------------------------------------------
+# Delete and create everything.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    agclient blue
+
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+    >   TASK [Create work cluster [iris-gaia-blue-20231231-work]] *********************************************************************
+    >   
+    >   fatal: [bootstrap]: FAILED! => {"changed": false, "command": "/usr/local/bin/helm --version=0.1.0 upgrade -i --reset-values --wait --values=/opt/aglais/clusterapi-config.yml --values=/opt/aglais/openstack-clouds.yml iris-gaia-blue-20231231-work capi/openstack-cluster", "msg": "Failure when executing Helm command. Exited 1.\nstdout: Release \"iris-gaia-blue-20231231-work\" does not exist. Installing it now.\n\nstderr: Error: context deadline exceeded\n", "stderr": "Error: context deadline exceeded\n", "stderr_lines": ["Error: context deadline exceeded"], "stdout": "Release \"iris-gaia-blue-20231231-work\" does not exist. Installing it now.\n", "stdout_lines": ["Release \"iris-gaia-blue-20231231-work\" does not exist. Installing it now."]}
+    >   
+    >   PLAY RECAP ********************************************************************************************************************
+    >   bootstrap                  : ok=50   changed=39   unreachable=0    failed=1    skipped=0    rescued=0    ignored=0
+    >   localhost                  : ok=32   changed=21   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+    #
+    # OK, now what is wrong ?
+    #
+
+# -----------------------------------------------------
+# Login to our bootstrap node to exploer.
+#[user@desktop]
+
+    podman \
+        exec \
+            -tty \
+            --interactive \
+            ansibler-blue \
+                bash
+
+        kindclusterconf=$(
+            yq '.aglais.kubernetes.cluster.kind.conf' \
+                /opt/aglais/aglais-status.yml
+            )
+
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get deployments
+
+    >   NAME                                      READY   UP-TO-DATE   AVAILABLE   AGE
+    >   cluster-api-addon-provider                1/1     1            1           17m
+    >   iris-gaia-blue-20231231-work-autoscaler   0/1     1            0           16m
+
+
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            logs \
+                deployment/cluster-api-addon-provider \
+        | grep '\[ERROR'
+
+    >   [2023-12-31 03:24:09,289] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-nvidia-gpu-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:09,297] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-csi-cinder] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:09,300] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-node-feature-discovery] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:09,302] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-kubernetes-dashboard] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:09,305] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-mellanox-network-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:09,308] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-ccm-openstack] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:09,310] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-metrics-server] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:09,313] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-cni-calico] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:24,492] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-node-feature-discovery] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:24,499] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-nvidia-gpu-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:24,542] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-csi-cinder] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:24,546] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-metrics-server] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:24,548] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-mellanox-network-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:24,552] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-kubernetes-dashboard] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:24,554] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-ccm-openstack] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:24,556] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-cni-calico] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:39,641] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-node-feature-discovery] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:39,645] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-nvidia-gpu-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:39,686] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-csi-cinder] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:39,724] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-metrics-server] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:39,743] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-cni-calico] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:39,754] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-mellanox-network-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:39,757] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-ccm-openstack] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:39,760] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-kubernetes-dashboard] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:54,815] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-node-feature-discovery] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:54,817] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-nvidia-gpu-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:54,848] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-csi-cinder] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:54,866] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-metrics-server] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:54,890] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-cni-calico] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:54,915] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-mellanox-network-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:54,935] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-ccm-openstack] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:24:54,939] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-kubernetes-dashboard] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:25:09,969] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-nvidia-gpu-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   [2023-12-31 03:25:09,984] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20231231-work-csi-cinder] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20231231-work' is not ready
+    >   ....
+    >   ....
+
+    #
+    # Basically, that tells us nothing.
+    #
+
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get pods
+
+    >   NAME                                                       READY   STATUS             RESTARTS       AGE
+    >   cluster-api-addon-provider-66cc76bbbf-kxr7h                1/1     Running            0              27m
+    >   iris-gaia-blue-20231231-work-autoscaler-58865d4c97-zn4th   0/1     CrashLoopBackOff   10 (35s ago)   27m
+
+
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get pods \
+                --all-namespaces
+
+    >   NAMESPACE                           NAME                                                                 READY   STATUS             RESTARTS        AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-55d5767547-xhxdf           1/1     Running            0               42m
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-85fd48fb9b-6thzs       1/1     Running            0               42m
+    >   capi-system                         capi-controller-manager-7cb6bcd4db-qdxcj                             1/1     Running            0               42m
+    >   capo-system                         capo-controller-manager-544cb69b9d-t4tqx                             1/1     Running            0               42m
+    >   cert-manager                        cert-manager-66d9545484-ch4nj                                        1/1     Running            0               43m
+    >   cert-manager                        cert-manager-cainjector-7d8b6bd6fb-c6d6v                             1/1     Running            0               43m
+    >   cert-manager                        cert-manager-webhook-669b96dcfd-sx7jh                                1/1     Running            0               43m
+    >   default                             cluster-api-addon-provider-66cc76bbbf-kxr7h                          1/1     Running            0               42m
+    >   default                             iris-gaia-blue-20231231-work-autoscaler-58865d4c97-zn4th             0/1     CrashLoopBackOff   12 (5m7s ago)   42m
+    >   kube-system                         coredns-5d78c9869d-c6r76                                             1/1     Running            0               43m
+    >   kube-system                         coredns-5d78c9869d-nlk4z                                             1/1     Running            0               43m
+    >   kube-system                         etcd-iris-gaia-blue-20231231-kind-control-plane                      1/1     Running            0               43m
+    >   kube-system                         kindnet-nxh7d                                                        1/1     Running            0               43m
+    >   kube-system                         kube-apiserver-iris-gaia-blue-20231231-kind-control-plane            1/1     Running            0               43m
+    >   kube-system                         kube-controller-manager-iris-gaia-blue-20231231-kind-control-plane   1/1     Running            0               43m
+    >   kube-system                         kube-proxy-jhrhq                                                     1/1     Running            0               43m
+    >   kube-system                         kube-scheduler-iris-gaia-blue-20231231-kind-control-plane            1/1     Running            0               43m
+    >   local-path-storage                  local-path-provisioner-6bc4bddd6b-z4b28                              1/1     Running            0               43m
+
+
+    podident=$(
+        kubectl \
+            --output json \
+            --kubeconfig "${kindclusterconf:?}" \
+            get pods \
+                --all-namespaces \
+        | jq -r '
+            .items[].metadata |
+            select(
+                .name | startswith("cluster-api")
+                ) |
+            .name
+            '
+        )
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        describe pod \
+            "${podident:?}"
+
+    >   Name:             cluster-api-addon-provider-66cc76bbbf-kxr7h
+    >   Namespace:        default
+    >   Priority:         0
+    >   Service Account:  cluster-api-addon-provider
+    >   Node:             iris-gaia-blue-20231231-kind-control-plane/172.18.0.2
+    >   Start Time:       Sun, 31 Dec 2023 03:23:30 +0000
+    >   Labels:           app.kubernetes.io/instance=cluster-api-addon-provider
+    >                     app.kubernetes.io/name=cluster-api-addon-provider
+    >                     pod-template-hash=66cc76bbbf
+    >   Annotations:      addons.stackhpc.com/config-hash: e979d8b000ad8aa218e995842641d63f9cc626c9cb1ace9e892bde03e574c6cf
+    >   Status:           Running
+    >   IP:               10.244.0.12
+    >   IPs:
+    >     IP:           10.244.0.12
+    >   Controlled By:  ReplicaSet/cluster-api-addon-provider-66cc76bbbf
+    >   Containers:
+    >     cluster-api-addon-provider:
+    >       Container ID:   containerd://3d6327fcc94d1fa65090df1d3d962cb18fc924460c3d38c7808d45591dbea485
+    >       Image:          ghcr.io/stackhpc/cluster-api-addon-provider:07153a3
+    >       Image ID:       ghcr.io/stackhpc/cluster-api-addon-provider@sha256:97dfeb53ddf203d95715c346d0adf053b30e046da197f6879262da7243acf400
+    >       Port:           <none>
+    >       Host Port:      <none>
+    >       State:          Running
+    >         Started:      Sun, 31 Dec 2023 03:23:59 +0000
+    >       Ready:          True
+    >       Restart Count:  0
+    >       Environment:    <none>
+    >       Mounts:
+    >         /etc/capi-addon-provider from etc-capi-addon-provider (ro)
+    >         /tmp from tmp (rw)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-2fjml (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             True
+    >     ContainersReady   True
+    >     PodScheduled      True
+    >   Volumes:
+    >     etc-capi-addon-provider:
+    >       Type:      ConfigMap (a volume populated by a ConfigMap)
+    >       Name:      cluster-api-addon-provider
+    >       Optional:  false
+    >     tmp:
+    >       Type:       EmptyDir (a temporary directory that shares a pod's lifetime)
+    >       Medium:
+    >       SizeLimit:  <unset>
+    >     kube-api-access-2fjml:
+    >       Type:                    Projected (a volume that contains injected data from multiple sources)
+    >       TokenExpirationSeconds:  3607
+    >       ConfigMapName:           kube-root-ca.crt
+    >       ConfigMapOptional:       <nil>
+    >       DownwardAPI:             true
+    >   QoS Class:                   BestEffort
+    >   Node-Selectors:              <none>
+    >   Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+    >                                node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+    >   Events:
+    >     Type    Reason     Age   From               Message
+    >     ----    ------     ----  ----               -------
+    >     Normal  Scheduled  38m   default-scheduler  Successfully assigned default/cluster-api-addon-provider-66cc76bbbf-kxr7h to iris-gaia-blue-20231231-kind-control-plane
+    >     Normal  Pulling    38m   kubelet            Pulling image "ghcr.io/stackhpc/cluster-api-addon-provider:07153a3"
+    >     Normal  Pulled     37m   kubelet            Successfully pulled image "ghcr.io/stackhpc/cluster-api-addon-provider:07153a3" in 21.471546735s (28.335159553s including waiting)
+    >     Normal  Created    37m   kubelet            Created container cluster-api-addon-provider
+    >     Normal  Started    37m   kubelet            Started container cluster-api-addon-provider
+
+
+    kubectl \
+        --output json \
+        --kubeconfig "${kindclusterconf:?}" \
+        get pods \
+            --all-namespaces \
+    | jq -r '
+        .items[].metadata |
+        select(
+            .name | startswith("capi-controller-manager")
+            )
+        ' \
+    | tee /tmp/capi-controller.json
+
+    podident=$(jq -r '.name' /tmp/capi-controller.json)
+    podspace=$(jq -r '.namespace' /tmp/capi-controller.json)
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        describe pod \
+            --namespace "${podspace:?}" \
+            "${podident:?}"
+
+    >   Name:             capi-controller-manager-7cb6bcd4db-qdxcj
+    >   Namespace:        capi-system
+    >   Priority:         0
+    >   Service Account:  capi-manager
+    >   Node:             iris-gaia-blue-20231231-kind-control-plane/172.18.0.2
+    >   Start Time:       Sun, 31 Dec 2023 03:23:15 +0000
+    >   Labels:           cluster.x-k8s.io/provider=cluster-api
+    >                     control-plane=controller-manager
+    >                     pod-template-hash=7cb6bcd4db
+    >   Annotations:      <none>
+    >   Status:           Running
+    >   SeccompProfile:   RuntimeDefault
+    >   IP:               10.244.0.8
+    >   IPs:
+    >     IP:           10.244.0.8
+    >   Controlled By:  ReplicaSet/capi-controller-manager-7cb6bcd4db
+    >   Containers:
+    >     manager:
+    >       Container ID:  containerd://ccc6bb78948ed9ec6779d28a2d2f0e97782f811b8cdb778533f7f11d9cd9002c
+    >       Image:         registry.k8s.io/cluster-api/cluster-api-controller:v1.6.0
+    >       Image ID:      registry.k8s.io/cluster-api/cluster-api-controller@sha256:211632c5b695212bce78e0d35da5eb7b7672a3b2ff598883f8c60ebb557a7185
+    >       Ports:         9443/TCP, 9440/TCP, 8443/TCP
+    >       Host Ports:    0/TCP, 0/TCP, 0/TCP
+    >       Command:
+    >         /manager
+    >       Args:
+    >         --leader-elect
+    >         --diagnostics-address=:8443
+    >         --insecure-diagnostics=false
+    >         --feature-gates=MachinePool=false,ClusterResourceSet=false,ClusterTopology=false,RuntimeSDK=false,MachineSetPreflightChecks=false
+    >       State:          Running
+    >         Started:      Sun, 31 Dec 2023 03:23:25 +0000
+    >       Ready:          True
+    >       Restart Count:  0
+    >       Liveness:       http-get http://:healthz/healthz delay=0s timeout=1s period=10s #success=1 #failure=3
+    >       Readiness:      http-get http://:healthz/readyz delay=0s timeout=1s period=10s #success=1 #failure=3
+    >       Environment:
+    >         POD_NAMESPACE:  capi-system (v1:metadata.namespace)
+    >         POD_NAME:       capi-controller-manager-7cb6bcd4db-qdxcj (v1:metadata.name)
+    >         POD_UID:         (v1:metadata.uid)
+    >       Mounts:
+    >         /tmp/k8s-webhook-server/serving-certs from cert (ro)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-fqpql (ro)
+    >   Conditions:
+    >     Type              Status
+    >     Initialized       True
+    >     Ready             True
+    >     ContainersReady   True
+    >     PodScheduled      True
+    >   Volumes:
+    >     cert:
+    >       Type:        Secret (a volume populated by a Secret)
+    >       SecretName:  capi-webhook-service-cert
+    >       Optional:    false
+    >     kube-api-access-fqpql:
+    >       Type:                    Projected (a volume that contains injected data from multiple sources)
+    >       TokenExpirationSeconds:  3607
+    >       ConfigMapName:           kube-root-ca.crt
+    >       ConfigMapOptional:       <nil>
+    >       DownwardAPI:             true
+    >   QoS Class:                   BestEffort
+    >   Node-Selectors:              <none>
+    >   Tolerations:                 node-role.kubernetes.io/control-plane:NoSchedule
+    >                                node-role.kubernetes.io/master:NoSchedule
+    >                                node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+    >                                node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+    >   Events:
+    >     Type     Reason       Age   From               Message
+    >     ----     ------       ----  ----               -------
+    >     Normal   Scheduled    58m   default-scheduler  Successfully assigned capi-system/capi-controller-manager-7cb6bcd4db-qdxcj to iris-gaia-blue-20231231-kind-control-plane
+    >     Warning  FailedMount  58m   kubelet            MountVolume.SetUp failed for volume "cert" : secret "capi-webhook-service-cert" not found
+    >     Normal   Pulling      58m   kubelet            Pulling image "registry.k8s.io/cluster-api/cluster-api-controller:v1.6.0"
+    >     Normal   Pulled       57m   kubelet            Successfully pulled image "registry.k8s.io/cluster-api/cluster-api-controller:v1.6.0" in 7.762532307s (7.762734032s including waiting)
+    >     Normal   Created      57m   kubelet            Created container manager
+    >     Normal   Started      57m   kubelet            Started container manager
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${podspace:?}" \
+            "${podident:?}" \
+    | less
+
+    >   ....
+    >   ....
+    >   I1231 03:24:08.344208       1 recorder.go:104] "events: Cluster iris-gaia-blue-20231231-work is Provisioning" type="Normal" object={"kind":"Cluster","namespace":"default","name":"iris-gaia-blue-20231231-work","uid":"9323b341-9e64-4a14-bff8-d384034f39f5","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"1196"} reason="Provisioning"
+    >   2023/12/31 03:24:08 http: TLS handshake error from 10.244.0.1:39178: EOF
+    >   I1231 03:24:08.874507       1 cluster_controller_phases.go:89] "Could not find external object for cluster, requeuing" controller="cluster" controllerGroup="cluster.x-k8s.io" controllerKind="Cluster" Cluster="default/iris-gaia-blue-20231231-work" namespace="default" name="iris-gaia-blue-20231231-work" reconcileID="665e649e-d7dd-414c-a9b5-d370a7032a7c" refGroupVersionKind="infrastructure.cluster.x-k8s.io/v1alpha7, Kind=OpenStackCluster" refName="iris-gaia-blue-20231231-work"
+    >   E1231 03:24:08.950054       1 machinedeployment_controller.go:167] "Failed to reconcile MachineDeployment" err="failed to retrieve OpenStackMachineTemplate external object \"default\"/\"iris-gaia-blue-20231231-work-md-0-d6fda40b\": OpenStackMachineTemplate.infrastructure.cluster.x-k8s.io \"iris-gaia-blue-20231231-work-md-0-d6fda40b\" not found" controller="machinedeployment" controllerGroup="cluster.x-k8s.io" controllerKind="MachineDeployment" MachineDeployment="default/iris-gaia-blue-20231231-work-md-0" namespace="default" name="iris-gaia-blue-20231231-work-md-0" reconcileID="894ecb3a-7467-4ed6-91bf-6c0f922aa36e" Cluster="default/iris-gaia-blue-20231231-work"
+    >   I1231 03:24:08.951551       1 recorder.go:104] "events: failed to retrieve OpenStackMachineTemplate external object \"default\"/\"iris-gaia-blue-20231231-work-md-0-d6fda40b\": OpenStackMachineTemplate.infrastructure.cluster.x-k8s.io \"iris-gaia-blue-20231231-work-md-0-d6fda40b\" not found" type="Warning" object={"kind":"MachineDeployment","namespace":"default","name":"iris-gaia-blue-20231231-work-md-0","uid":"3ddfaa29-11b6-4298-b7aa-e4c8fa71af67","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"1236"} reason="ReconcileError"
+    >   I1231 03:24:08.978034       1 tracker.go:60] "Adding watch on external object \"controlplane.cluster.x-k8s.io/v1beta1, Kind=KubeadmControlPlane\"" controller="cluster" controllerGroup="cluster.x-k8s.io" controllerKind="Cluster" Cluster="default/iris-gaia-blue-20231231-work" namespace="default" name="iris-gaia-blue-20231231-work" reconcileID="665e649e-d7dd-414c-a9b5-d370a7032a7c"
+    >   I1231 03:24:08.978068       1 controller.go:135] "Starting EventSource" controller="cluster" controllerGroup="cluster.x-k8s.io" controllerKind="Cluster" source="kind source: *unstructured.Unstructured"
+    >   E1231 03:24:09.040400       1 controller.go:329] "Reconciler error" err="failed to retrieve OpenStackMachineTemplate external object \"default\"/\"iris-gaia-blue-20231231-work-md-0-d6fda40b\": OpenStackMachineTemplate.infrastructure.cluster.x-k8s.io \"iris-gaia-blue-20231231-work-md-0-d6fda40b\" not found" controller="machinedeployment" controllerGroup="cluster.x-k8s.io" controllerKind="MachineDeployment" MachineDeployment="default/iris-gaia-blue-20231231-work-md-0" namespace="default" name="iris-gaia-blue-20231231-work-md-0" reconcileID="894ecb3a-7467-4ed6-91bf-6c0f922aa36e"
+    >   ....
+    >   ....
+
+    #
+    # Google for [cluster api provisioning TLS handshake error] doesn't help with anything.
+    # Possibly because we skip the TLS certificate?
+    #
+
+
+    #
+    # Check the whole message and it might not be anythoing to do with TLS.
+    #
+
+    >   ....
+    >   I1231 03:24:08.344208       1 recorder.go:104] "events: Cluster iris-gaia-blue-20231231-work is Provisioning" type="Normal" object={"kind":"Cluster","namespace":"default","name":"iris-gaia-blue-20231231-work","uid":"9323b341-9e64-4a14-bff8-d384034f39f5","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"1196"} reason="Provisioning"
+    >   2023/12/31 03:24:08 http: TLS handshake error from 10.244.0.1:39178: EOF
+    >   ....
+
+    #
+    # These are two separate messages.
+    #
+
+    >   ....
+    >   I1231 03:24:08.344208       1 recorder.go:104]
+    >       "events: Cluster iris-gaia-blue-20231231-work is Provisioning"
+    >       type="Normal"
+    >       object={
+    >           "kind":"Cluster",
+    >           "namespace":"default",
+    >           "name":"iris-gaia-blue-20231231-work",
+    >           "uid":"9323b341-9e64-4a14-bff8-d384034f39f5",
+    >           "apiVersion":"cluster.x-k8s.io/v1beta1",
+    >           "resourceVersion":"1196"
+    >           }
+    >       reason="Provisioning"
+    >   2023/12/31 03:24:08 http: TLS handshake error from 10.244.0.1:39178: EOF
+    >   ....
+
+    #
+    # The TLS error could be because the node that it is trying to talk to doesn't exist yet, hence the EOF error.
+    #
+
+
+    #
+    # Check what servers we have running.
+    #
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+    >   +--------------------------------------+-----------------------------------------------------------+--------+---------------------------------------------------------------------------+-----------------------------------+----------------------+
+    >   | ID                                   | Name                                                      | Status | Networks                                                                  | Image                             | Flavor               |
+    >   +--------------------------------------+-----------------------------------------------------------+--------+---------------------------------------------------------------------------+-----------------------------------+----------------------+
+    >   | 0030d27f-bf21-4461-a1c6-c00e7021b828 | iris-gaia-blue-20231231-work-control-plane-1441b7b4-hnw7r | ACTIVE | k8s-clusterapi-cluster-default-iris-gaia-blue-20231231-work=192.168.3.221 | gaia-dmp-ubuntu-2204-kube-v1.26.7 | gaia.vm.cclake.4vcpu |
+    >   | 800191a2-b97d-4ab1-9c7e-0cb2f28cdc67 | iris-gaia-blue-20231231-bootstrap-node                    | ACTIVE | iris-gaia-blue-20231231-bootstrap-network=10.10.2.185, 128.232.226.68     | gaia-dmp-fedora-cloud-38-1.6      | gaia.vm.cclake.2vcpu |
+    >   +--------------------------------------+-----------------------------------------------------------+--------+---------------------------------------------------------------------------+-----------------------------------+----------------------+
+
+
+    #
+    # The logs show the machines being created ?
+    #
+
+    >   ....
+    >   I1231 03:24:09.456900       1 machineset_controller.go:439] "MachineSet is scaling up to 3 replicas by creating 3 machines" controller="machineset" controllerGroup="cluster.x-k8s.io" controllerKind="MachineSet" MachineSet="default/iris-gaia-blue-20231231-work-md-0-5hbfh" namespace="default" name="iris-gaia-blue-20231231-work-md-0-5hbfh" reconcileID="becba99d-b343-46fc-8d29-a44664c73195" MachineDeployment="default/iris-gaia-blue-20231231-work-md-0" Cluster="default/iris-gaia-blue-20231231-work" replicas=3 machineCount=0
+    >   I1231 03:24:09.457498       1 recorder.go:104] "events: Created MachineSet default/iris-gaia-blue-20231231-work-md-0-5hbfh" type="Normal" object={"kind":"MachineDeployment","namespace":"default","name":"iris-gaia-blue-20231231-work-md-0","uid":"3ddfaa29-11b6-4298-b7aa-e4c8fa71af67","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"1249"} reason="SuccessfulCreate"
+    >   I1231 03:24:09.580048       1 machineset_controller.go:542] "Created machine 1 of 3" controller="machineset" controllerGroup="cluster.x-k8s.io" controllerKind="MachineSet" MachineSet="default/iris-gaia-blue-20231231-work-md-0-5hbfh" namespace="default" name="iris-gaia-blue-20231231-work-md-0-5hbfh" reconcileID="becba99d-b343-46fc-8d29-a44664c73195" MachineDeployment="default/iris-gaia-blue-20231231-work-md-0" Cluster="default/iris-gaia-blue-20231231-work" KubeadmConfig="default/iris-gaia-blue-20231231-work-md-0-99910806-zmqqm" OpenStackMachine="default/iris-gaia-blue-20231231-work-md-0-d6fda40b-pwbqc" Machine="default/iris-gaia-blue-20231231-work-md-0-5hbfh-9pnvf"
+    >   I1231 03:24:09.580385       1 recorder.go:104] "events: Created machine \"iris-gaia-blue-20231231-work-md-0-5hbfh-9pnvf\"" type="Normal" object={"kind":"MachineSet","namespace":"default","name":"iris-gaia-blue-20231231-work-md-0-5hbfh","uid":"fc492d1a-a2f0-4cd1-9aab-30ea7ca121d7","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"1296"} reason="SuccessfulCreate"
+    >   ....
+
+    >   ....
+    >   I1231 03:24:09.615516       1 tracker.go:60] "Adding watch on external object \"bootstrap.cluster.x-k8s.io/v1beta1, Kind=KubeadmConfig\"" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/iris-gaia-blue-20231231-work-md-0-5hbfh-tk77p" namespace="default" name="iris-gaia-blue-20231231-work-md-0-5hbfh-tk77p" reconcileID="0571ba51-b9b4-46e6-ab71-c1b65ed9144c" MachineSet="default/iris-gaia-blue-20231231-work-md-0-5hbfh" MachineDeployment="default/iris-gaia-blue-20231231-work-md-0" Cluster="default/iris-gaia-blue-20231231-work"
+    >   I1231 03:24:09.615675       1 controller.go:135] "Starting EventSource" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" source="kind source: *unstructured.Unstructured"
+    >   ....
+
+    >   ....
+    >   I1231 03:24:09.615917       1 machineset_controller.go:542] "Created machine 2 of 3" controller="machineset" controllerGroup="cluster.x-k8s.io" controllerKind="MachineSet" MachineSet="default/iris-gaia-blue-20231231-work-md-0-5hbfh" namespace="default" name="iris-gaia-blue-20231231-work-md-0-5hbfh" reconcileID="becba99d-b343-46fc-8d29-a44664c73195" MachineDeployment="default/iris-gaia-blue-20231231-work-md-0" Cluster="default/iris-gaia-blue-20231231-work" KubeadmConfig="default/iris-gaia-blue-20231231-work-md-0-99910806-j47jj" OpenStackMachine="default/iris-gaia-blue-20231231-work-md-0-d6fda40b-4nz7w" Machine="default/iris-gaia-blue-20231231-work-md-0-5hbfh-tk77p"
+    >   I1231 03:24:09.618296       1 recorder.go:104] "events: Created machine \"iris-gaia-blue-20231231-work-md-0-5hbfh-tk77p\"" type="Normal" object={"kind":"MachineSet","namespace":"default","name":"iris-gaia-blue-20231231-work-md-0-5hbfh","uid":"fc492d1a-a2f0-4cd1-9aab-30ea7ca121d7","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"1296"} reason="SuccessfulCreate"
+    >   I1231 03:24:09.637676       1 machine_controller_phases.go:222] "Waiting for bootstrap provider to generate data secret and report status.ready" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/iris-gaia-blue-20231231-work-md-0-5hbfh-tk77p" namespace="default" name="iris-gaia-blue-20231231-work-md-0-5hbfh-tk77p" reconcileID="0571ba51-b9b4-46e6-ab71-c1b65ed9144c" MachineSet="default/iris-gaia-blue-20231231-work-md-0-5hbfh" MachineDeployment="default/iris-gaia-blue-20231231-work-md-0" Cluster="default/iris-gaia-blue-20231231-work" KubeadmConfig="default/iris-gaia-blue-20231231-work-md-0-99910806-j47jj"
+    >   ....
+
+    >   ....
+    >   I1231 03:24:09.665514       1 machineset_controller.go:542] "Created machine 3 of 3" controller="machineset" controllerGroup="cluster.x-k8s.io" controllerKind="MachineSet" MachineSet="default/iris-gaia-blue-20231231-work-md-0-5hbfh" namespace="default" name="iris-gaia-blue-20231231-work-md-0-5hbfh" reconcileID="becba99d-b343-46fc-8d29-a44664c73195" MachineDeployment="default/iris-gaia-blue-20231231-work-md-0" Cluster="default/iris-gaia-blue-20231231-work" KubeadmConfig="default/iris-gaia-blue-20231231-work-md-0-99910806-nnl7r" OpenStackMachine="default/iris-gaia-blue-20231231-work-md-0-d6fda40b-zp94g" Machine="default/iris-gaia-blue-20231231-work-md-0-5hbfh-v5w79"
+    >   I1231 03:24:09.670313       1 recorder.go:104] "events: Created machine \"iris-gaia-blue-20231231-work-md-0-5hbfh-v5w79\"" type="Normal" object={"kind":"MachineSet","namespace":"default","name":"iris-gaia-blue-20231231-work-md-0-5hbfh","uid":"fc492d1a-a2f0-4cd1-9aab-30ea7ca121d7","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"1296"} reason="SuccessfulCreate"
+    >   I1231 03:24:09.711051       1 machine_controller_phases.go:222] "Waiting for bootstrap provider to generate data secret and report status.ready" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/iris-gaia-blue-20231231-work-md-0-5hbfh-9pnvf" namespace="default" name="iris-gaia-blue-20231231-work-md-0-5hbfh-9pnvf" reconcileID="0c3affc8-8927-4682-9dce-b2943f5cdb96" MachineSet="default/iris-gaia-blue-20231231-work-md-0-5hbfh" MachineDeployment="default/iris-gaia-blue-20231231-work-md-0" Cluster="default/iris-gaia-blue-20231231-work" KubeadmConfig="default/iris-gaia-blue-20231231-work-md-0-99910806-zmqqm"
+    >   ....
+
+    >   ....
+    >   I1231 03:24:09.711154       1 tracker.go:60] "Adding watch on external object \"infrastructure.cluster.x-k8s.io/v1alpha7, Kind=OpenStackMachine\"" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/iris-gaia-blue-20231231-work-md-0-5hbfh-9pnvf" namespace="default" name="iris-gaia-blue-20231231-work-md-0-5hbfh-9pnvf" reconcileID="0c3affc8-8927-4682-9dce-b2943f5cdb96" MachineSet="default/iris-gaia-blue-20231231-work-md-0-5hbfh" MachineDeployment="default/iris-gaia-blue-20231231-work-md-0" Cluster="default/iris-gaia-blue-20231231-work"
+    >   I1231 03:24:09.711179       1 controller.go:135] "Starting EventSource" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" source="kind source: *unstructured.Unstructured"
+    >   ....
+
+    >   ....
+    >   I1231 03:24:44.384216       1 machine_controller_noderef.go:58] "Waiting for infrastructure provider to report spec.providerID" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/iris-gaia-blue-20231231-work-control-plane-kb97n" namespace="default" name="iris-gaia-blue-20231231-work-control-plane-kb97n" reconcileID="3a8525f8-18f4-4b88-bfe3-3507a5d23199" KubeadmControlPlane="default/iris-gaia-blue-20231231-work-control-plane" Cluster="default/iris-gaia-blue-20231231-work" OpenStackMachine="default/iris-gaia-blue-20231231-work-control-plane-1441b7b4-lph2h"
+    >   I1231 03:24:44.435275       1 recorder.go:104] "events: Machine default/iris-gaia-blue-20231231-work-control-plane/iris-gaia-blue-20231231-work-control-plane-kb97n/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"iris-gaia-blue-20231231-work-control-plane-kb97n","uid":"b26ac5e9-b896-49e8-9e51-38e898426622","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"1624"} reason="DetectedUnhealthy"
+    >   ....
+    >   I1231 03:24:44.476423       1 machine_controller_phases.go:280] "Infrastructure provider has completed machine infrastructure provisioning and reports status.ready" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/iris-gaia-blue-20231231-work-control-plane-kb97n" namespace="default" name="iris-gaia-blue-20231231-work-control-plane-kb97n" reconcileID="098efa7e-1922-41d2-a41a-d87eccc668f1" KubeadmControlPlane="default/iris-gaia-blue-20231231-work-control-plane" Cluster="default/iris-gaia-blue-20231231-work" OpenStackMachine="default/iris-gaia-blue-20231231-work-control-plane-1441b7b4-lph2h"
+    >   I1231 03:24:44.599855       1 recorder.go:104] "events: Machine default/iris-gaia-blue-20231231-work-control-plane/iris-gaia-blue-20231231-work-control-plane-kb97n/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"iris-gaia-blue-20231231-work-control-plane-kb97n","uid":"b26ac5e9-b896-49e8-9e51-38e898426622","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"1633"} reason="DetectedUnhealthy"
+    >   ....
+    >   E1231 03:24:44.625405       1 controller.go:329] "Reconciler error" err="failed to create cluster accessor: error creating client for remote cluster \"default/iris-gaia-blue-20231231-work\": error getting rest mapping: failed to get API group resources: unable to retrieve the complete list of server APIs: v1: Get \"https://128.232.226.253:6443/api/v1?timeout=10s\": dial tcp 128.232.226.253:6443: connect: connection refused" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/iris-gaia-blue-20231231-work-control-plane-kb97n" namespace="default" name="iris-gaia-blue-20231231-work-control-plane-kb97n" reconcileID="098efa7e-1922-41d2-a41a-d87eccc668f1"
+    >   ....
+    >   I1231 03:24:44.626881       1 recorder.go:104] "events: Machine default/iris-gaia-blue-20231231-work-control-plane/iris-gaia-blue-20231231-work-control-plane-kb97n/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"iris-gaia-blue-20231231-work-control-plane-kb97n","uid":"b26ac5e9-b896-49e8-9e51-38e898426622","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"1635"} reason="DetectedUnhealthy"
+    >   ....
+    >   E1231 03:24:44.636730       1 controller.go:329] "Reconciler error" err="failed to create cluster accessor: error creating client for remote cluster \"default/iris-gaia-blue-20231231-work\": error getting rest mapping: failed to get API group resources: unable to retrieve the complete list of server APIs: v1: Get \"https://128.232.226.253:6443/api/v1?timeout=10s\": dial tcp 128.232.226.253:6443: connect: connection refused" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/iris-gaia-blue-20231231-work-control-plane-kb97n" namespace="default" name="iris-gaia-blue-20231231-work-control-plane-kb97n" reconcileID="a6e01738-76cf-452f-ad7c-fb57c10d9906"
+    >   E1231 03:24:44.641535       1 controller.go:329] "Reconciler error" err="failed to create cluster accessor: error creating client for remote cluster \"default/iris-gaia-blue-20231231-work\": error getting rest mapping: failed to get API group resources: unable to retrieve the complete list of server APIs: v1: Get \"https://128.232.226.253:6443/api/v1?timeout=10s\": dial tcp 128.232.226.253:6443: connect: connection refused" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/iris-gaia-blue-20231231-work-control-plane-kb97n" namespace="default" name="iris-gaia-blue-20231231-work-control-plane-kb97n" reconcileID="fec3dcc2-5cf1-43b9-9ce4-cc13485c7d17"
+    >   ....
+
+    #
+    # Always assume it could be us.
+    # Try removing our access control patch.
+    #
+
+

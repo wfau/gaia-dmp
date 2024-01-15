@@ -1,0 +1,96 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+# AIMetrics: []
+# Limit access to the kubectl API loadbalancer.
+#
+
+---
+- name: "Save our client IP address"
+  gather_facts: false
+  hosts: localhost
+  roles:
+    - kwoodson.yedit
+  vars_files:
+    - config/aglais.yml
+
+  tasks:
+
+    - name: "Get our client IPv4 address"
+      ansible.builtin.shell: |
+        curl --silent 'http://ipv4.icanhazip.com/'
+      register: icanhazip4
+
+    - name: "Save our IPv4 IP address"
+      yedit:
+        src: "{{ agstatuspath }}"
+        key: "aglais.ansibler.external"
+        value:
+          ipv4: "{{ icanhazip4.stdout }}"
+
+- name: "Patch our Openstack cluster"
+  gather_facts: false
+  become: true
+  hosts: bootstrap
+  vars_files:
+    - config/aglais.yml
+    - /opt/aglais/aglais-status.yml
+
+  tasks:
+
+    - name: "Show the allowed addresses"
+      ansible.builtin.debug:
+        msg: "Allowed [{{ aglais.ansibler.external.ipv4 }}, {{ aglais.openstack.servers.bootstrap.float.external }}]"
+
+    - name: "Show the target cluster name"
+      ansible.builtin.debug:
+        msg: "Target [{{ aglais.kubernetes.cluster.work.name }}]"
+
+#   - name: "Update our loadbalancer"
+#     kubernetes.core.k8s:
+#       state: present
+#       kind: "OpenStackCluster"
+#       api_version: "infrastructure.cluster.x-k8s.io/v1alpha6"
+#       namespace: "default"
+#       name: "{{ aglais.kubernetes.cluster.work.name }}"
+#       merge_type: "merge"
+#       kubeconfig: "{{ aglais.kubernetes.cluster.kind.conf }}"
+#       definition:
+#         spec:
+#           apiServerLoadBalancer:
+#             allowedCidrs:
+#             - "{{ aglais.openstack.servers.bootstrap.float.external }}/32"
+#             - "{{ aglais.builder.ipv4 }}/32"
+
+    - name: "Create our patch"
+      ansible.builtin.template:
+        src:  "templates/cluster-access-patch.j2"
+        dest: "/tmp/cluster-access-patch.yml"
+        mode: 'u=rw,g=rw,o=r'
+
+    - name: "Apply our patch"
+      ansible.builtin.shell: |
+        kubectl \
+            --kubeconfig "{{ aglais.kubernetes.cluster.kind.conf }}" \
+            patch OpenStackCluster \
+                "{{ aglais.kubernetes.cluster.work.name }}" \
+                --type merge \
+                --patch-file '/tmp/cluster-access-patch.yml'
+

@@ -1,0 +1,2264 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Initial bootstrap K8s cluster from nothing.
+
+    Result:
+
+        Work in progress ...
+
+    References:
+
+        Cluster-API - Openstack credentials
+        https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#openstack-credential
+
+        Cluster-API - Openstack credentials
+        https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#ca-certificates
+
+        Configuring os-client-config Applications
+        https://docs.openstack.org/os-client-config/latest/user/configuration.html#ssl-settings
+
+        Setting Environment Variables for OpenStack CLI Clients
+        https://docs.oracle.com/cd/E96260_01/E96262/html/docker-ostk-envars.html
+
+        Openstack client configuration
+        https://docs.openstack.org/python-openstackclient/latest/configuration/index.html
+
+        "x509: certificate signed by unknown authority" on openstack-cloud-controller-manager
+        https://github.com/kubernetes-sigs/kubespray/issues/9518
+
+        tls unsigned certificate when using terraform
+        https://stackoverflow.com/questions/70266479/tls-unsigned-certificate-when-using-terraform
+
+        Openstack Cluster-API
+        https://cluster-api-openstack.sigs.k8s.io/introduction.html
+        https://cluster-api-openstack.sigs.k8s.io/getting-started.html
+
+        Openstack Cluster-API provider
+        https://github.com/kubernetes-sigs/cluster-api-provider-openstack
+
+        Openstack Cluster-API provider - CA certificates
+        https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#ca-certificates
+
+        Openstack Cluster-API provider - configuration
+        https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/docs/book/src/clusteropenstack/configuration.md#required-configuration
+
+        Openstack Cluster-API trouble shooting
+        https://cluster-api-openstack.sigs.k8s.io/topics/troubleshooting.html
+
+        `clusterctl` commands
+        https://cluster-api.sigs.k8s.io/clusterctl/commands/commands.html
+
+        Cluster-API quick start
+        https://cluster-api.sigs.k8s.io/user/quick-start.html
+
+        StackHPC - capi-helm-charts
+        https://github.com/stackhpc/capi-helm-charts
+
+
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Tue  4 Apr 15:41:25 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting red for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    2m4.760s
+    >   user    0m56.294s
+    >   sys     0m6.073s
+
+
+# -----------------------------------------------------
+# Add YAML editor role to our client container.
+#[root@ansibler]
+
+    ansible-galaxy install kwoodson.yedit
+
+    >   Starting galaxy role install process
+    >   - downloading role 'yedit', owned by kwoodson
+    >   - downloading role from https://github.com/kwoodson/ansible-role-yedit/archive/master.tar.gz
+    >   - extracting kwoodson.yedit to /root/.ansible/roles/kwoodson.yedit
+    >   - kwoodson.yedit (master) was installed successfully
+
+
+# -----------------------------------------------------
+# Create our deployment settings.
+#[root@ansibler]
+
+    deployname=${cloudname:?}-$(date '+%Y%m%d')
+    deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    rm -f "${statusyml}"
+    touch "${statusyml}"
+
+    yq eval \
+        --inplace \
+        "
+        .aglais.deployment.type = \"cluster-api\"   |
+        .aglais.deployment.name = \"${deployname}\" |
+        .aglais.deployment.date = \"${deploydate}\" |
+        .aglais.openstack.cloud.name = \"${cloudname}\"
+        " "${statusyml}"
+
+
+# -----------------------------------------------------
+# Create our bootstrap node.
+#[root@ansibler]
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/config/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/01-create-keypair.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/02-create-network.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/03-create-bootstrap.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/04-local-config.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP **********************************************************************************************************
+    >   localhost                  : ok=2    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   ....
+    >   ....
+    >   PLAY RECAP **********************************************************************************************************
+    >   localhost                  : ok=4    changed=4    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   ....
+    >   ....
+    >   PLAY RECAP **********************************************************************************************************
+    >   localhost                  : ok=7    changed=6    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   ....
+    >   ....
+    >   PLAY RECAP **********************************************************************************************************
+    >   localhost                  : ok=4    changed=4    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Check our local config.
+#[root@ansibler]
+
+    cat /opt/aglais/aglais-status.yml
+
+    >   aglais:
+    >     deployment:
+    >       date: 20230404T155040
+    >       name: iris-gaia-red-20230404
+    >       type: cluster-api
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-red
+    >       keypairs:
+    >         team:
+    >           fingerprint: 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16
+    >           id: iris-gaia-red-20230404-keypair
+    >           name: iris-gaia-red-20230404-keypair
+    >       networks:
+    >         internal:
+    >           network:
+    >             id: 05750b83-08c6-4ad4-838b-4a47fbcf29d8
+    >             name: iris-gaia-red-20230404-internal-network
+    >           router:
+    >             id: 4ce12070-96ac-44a7-b60e-c38f0dfe68aa
+    >             name: iris-gaia-red-20230404-internal-router
+    >           subnet:
+    >             cidr: 10.10.0.0/16
+    >             id: 043d114c-86f5-4267-8ec8-97a3e028bafb
+    >             name: iris-gaia-red-20230404-internal-subnet
+    >       servers:
+    >         bootstrap:
+    >           float:
+    >             external: 128.232.227.17
+    >             id: 63903d51-6e08-4bf6-82c8-460483b3496d
+    >             internal: 10.10.3.127
+    >           server:
+    >             address:
+    >               ipv4: 10.10.3.127
+    >             flavor:
+    >               name: gaia.vm.cclake.2vcpu
+    >             hostname: bootstrap
+    >             id: bfbbb840-ba12-4ff6-93ff-1a5afa16c962
+    >             image:
+    >               id: e5c23082-cc34-4213-ad31-ff4684657691
+    >               name: Fedora-34.1.2
+    >             name: iris-gaia-red-20230404-bootstrap
+
+
+# -----------------------------------------------------
+# SSH test.
+#[root@ansibler]
+
+    ssh bootstrap \
+        '
+        date
+        hostname
+        '
+
+    >   Tue Apr  4 15:55:48 UTC 2023
+    >   iris-gaia-red-20230404-bootstrap
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the bootstrap node.
+#[root@ansibler]
+
+    ssh bootstrap
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install Docker.
+# https://docs.docker.com/engine/install/fedora/#install-using-the-repository
+#[fedora@bootstrap]
+
+    sudo dnf -y install dnf-plugins-core
+
+    sudo dnf config-manager \
+        --add-repo \
+        https://download.docker.com/linux/fedora/docker-ce.repo
+
+    >   ....
+    >   ....
+    >   Adding repo from: https://download.docker.com/linux/fedora/docker-ce.repo
+
+
+    sudo dnf install \
+        -y \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-compose-plugin
+
+    >   ....
+    >   ....
+    >   Installed:
+    >     ....
+    >     ....
+    >     docker-ce-3:20.10.17-3.fc34.x86_64
+
+
+# -----------------------------------------------------
+# Start the Docker service.
+#[fedora@bootstrap]
+
+    sudo systemctl start docker
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install kubectl.
+# https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/#install-using-native-package-management
+#[fedora@bootstrap]
+
+cat > '/tmp/kubernetes.repo' << EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-\$basearch
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+EOF
+
+    sudo chown 'root:root' '/tmp/kubernetes.repo'
+    sudo mv '/tmp/kubernetes.repo' '/etc/yum.repos.d/kubernetes.repo'
+
+    sudo dnf install -y 'kubectl'
+
+    >   ....
+    >   ....
+    >   Installed:
+    >     kubectl-1.26.3-0.x86_64
+
+    #
+    # This is is slightly more recent than installing the Fedora package.
+    # Although, we could try just using the Fedora package.
+    # dnf install -y kubernetes-client
+    #
+
+# -----------------------------------------------------
+# Install kind on the bootstrap node.
+# https://kind.sigs.k8s.io/docs/user/quick-start/#installing-from-release-binaries
+#[fedora@bootstrap]
+
+    kindversion=0.17.0
+    kindbinary=kind-${kindversion:?}
+    kindtemp=/tmp/${kindbinary:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "${kindtemp:?}" \
+        "https://kind.sigs.k8s.io/dl/v${kindversion:?}/kind-linux-amd64"
+
+    pushd /usr/local/bin
+        sudo mv "${kindtemp:?}" .
+        sudo chown 'root:root' "${kindbinary:?}"
+        sudo chmod 'u=rwx,g=rx,o=rx' "${kindbinary:?}"
+        sudo ln -s "${kindbinary:?}" 'kind'
+    popd
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create a cluster, with logs.
+# https://github.com/kubernetes-sigs/kind/pull/2478#issuecomment-1214656908
+#[fedora@bootstrap]
+
+    sudo kind create cluster --retain
+
+    >   Creating cluster "kind" ...
+    >    ✓ Ensuring node image (kindest/node:v1.25.3) 🖼
+    >    ✓ Preparing nodes 📦
+    >    ✓ Writing configuration 📜
+    >    ✓ Starting control-plane 🕹️
+    >    ✓ Installing CNI 🔌
+    >    ✓ Installing StorageClass 💾
+    >   Set kubectl context to "kind-kind"
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Start to explore ....
+#[fedora@bootstrap]
+
+    sudo kubectl cluster-info --context kind-kind
+
+    >   Kubernetes control plane is running at https://127.0.0.1:46203
+    >   CoreDNS is running at https://127.0.0.1:46203/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+    >   ....
+    >   ....
+
+    # Sucks that we need to be root for all of this.
+    # TODO Replace Docker with Podman and run our containers rootless.
+
+
+# -----------------------------------------------------
+# ....
+#[fedora@bootstrap]
+
+    sudo cat /root/.kube/config
+
+    >   apiVersion: v1
+    >   clusters:
+    >   - cluster:
+    >       certificate-authority-data: LS0tLS1C....0tLS0tCg==
+    >       server: https://127.0.0.1:46203
+    >     name: kind-kind
+    >   contexts:
+    >   - context:
+    >       cluster: kind-kind
+    >       user: kind-kind
+    >     name: kind-kind
+    >   current-context: kind-kind
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >   - name: kind-kind
+    >     user:
+    >       client-certificate-data: LS0tLS1C....0tLS0tCg==
+    >       client-key-data: LS0tLS1C....0tLS0tCg==
+
+    # Lots of 'kind' things in all that ...
+
+    >   clusters:
+    >   - name: kind-kind
+    >     ....
+    >   contexts:
+    >   - name: kind-kind
+    >     ....
+    >   ...
+    >   users:
+    >   - name: kind-kind
+
+
+    # References from one 'kind' thing to all the others.
+
+    >   ....
+    >   contexts:
+    >   - context:
+    >       cluster: kind-kind
+    >       user: kind-kind
+    >     name: kind-kind
+    >   current-context: kind-kind
+    >   ....
+
+
+    # .. but this is a different 'kind' of thing
+
+    >   ....
+    >   kind: Config
+    >   ....
+
+
+# -----------------------------------------------------
+# ....
+#[fedora@bootstrap]
+
+    sudo kubectl get pods --all-namespaces
+
+    >   NAMESPACE            NAME                                         READY   STATUS    RESTARTS   AGE
+    >   kube-system          coredns-565d847f94-lks6r                     1/1     Running   0          5m53s
+    >   kube-system          coredns-565d847f94-wf86h                     1/1     Running   0          5m53s
+    >   kube-system          etcd-kind-control-plane                      1/1     Running   0          6m6s
+    >   kube-system          kindnet-lfmqb                                1/1     Running   0          5m53s
+    >   kube-system          kube-apiserver-kind-control-plane            1/1     Running   0          6m6s
+    >   kube-system          kube-controller-manager-kind-control-plane   1/1     Running   0          6m6s
+    >   kube-system          kube-proxy-xt6zc                             1/1     Running   0          5m53s
+    >   kube-system          kube-scheduler-kind-control-plane            1/1     Running   0          6m6s
+    >   local-path-storage   local-path-provisioner-684f458cdd-4jzzq      1/1     Running   0          5m53s
+
+
+# -----------------------------------------------------
+# Install Helm on the bootstrap node.
+# https://helm.sh/docs/intro/install/
+# https://github.com/helm/helm/releases
+#[fedora@bootstrap]
+
+    helmarch=linux-amd64
+    helmversion=3.11.2
+    helmtarfile=helm-v${helmversion}-${helmarch}.tar.gz
+    helmtmpfile=/tmp/${helmtarfile:?}
+    helmbinary=helm-${helmversion:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "${helmtmpfile:?}" \
+        "https://get.helm.sh/${helmtarfile:?}"
+
+    tar \
+        --gzip \
+        --extract \
+        --directory /tmp \
+        --file "${helmtmpfile:?}"
+
+    pushd /usr/local/bin
+        sudo mv "/tmp/${helmarch:?}/helm" "${helmbinary:?}"
+        sudo chown 'root:root' "${helmbinary:?}"
+        sudo chmod 'u=rwx,g=rx,o=rx' "${helmbinary:?}"
+        sudo ln -s "${helmbinary:?}" 'helm'
+    popd
+
+
+    helm env
+
+    >   HELM_BIN="helm"
+    >   HELM_BURST_LIMIT="100"
+    >   HELM_CACHE_HOME="/home/fedora/.cache/helm"
+    >   HELM_CONFIG_HOME="/home/fedora/.config/helm"
+    >   HELM_DATA_HOME="/home/fedora/.local/share/helm"
+    >   HELM_DEBUG="false"
+    >   HELM_KUBEAPISERVER=""
+    >   HELM_KUBEASGROUPS=""
+    >   HELM_KUBEASUSER=""
+    >   HELM_KUBECAFILE=""
+    >   HELM_KUBECONTEXT=""
+    >   HELM_KUBEINSECURE_SKIP_TLS_VERIFY="false"
+    >   HELM_KUBETLS_SERVER_NAME=""
+    >   HELM_KUBETOKEN=""
+    >   HELM_MAX_HISTORY="10"
+    >   HELM_NAMESPACE="default"
+    >   HELM_PLUGINS="/home/fedora/.local/share/helm/plugins"
+    >   HELM_REGISTRY_CONFIG="/home/fedora/.config/helm/registry/config.json"
+    >   HELM_REPOSITORY_CACHE="/home/fedora/.cache/helm/repository"
+    >   HELM_REPOSITORY_CONFIG="/home/fedora/.config/helm/repositories.yaml"
+
+
+    sudo helm env
+
+    >   HELM_BIN="helm"
+    >   HELM_BURST_LIMIT="100"
+    >   HELM_CACHE_HOME="/root/.cache/helm"
+    >   HELM_CONFIG_HOME="/root/.config/helm"
+    >   HELM_DATA_HOME="/root/.local/share/helm"
+    >   HELM_DEBUG="false"
+    >   HELM_KUBEAPISERVER=""
+    >   HELM_KUBEASGROUPS=""
+    >   HELM_KUBEASUSER=""
+    >   HELM_KUBECAFILE=""
+    >   HELM_KUBECONTEXT=""
+    >   HELM_KUBEINSECURE_SKIP_TLS_VERIFY="false"
+    >   HELM_KUBETLS_SERVER_NAME=""
+    >   HELM_KUBETOKEN=""
+    >   HELM_MAX_HISTORY="10"
+    >   HELM_NAMESPACE="default"
+    >   HELM_PLUGINS="/root/.local/share/helm/plugins"
+    >   HELM_REGISTRY_CONFIG="/root/.config/helm/registry/config.json"
+    >   HELM_REPOSITORY_CACHE="/root/.cache/helm/repository"
+    >   HELM_REPOSITORY_CONFIG="/root/.config/helm/repositories.yaml"
+
+
+# -----------------------------------------------------
+# Install StackHPC's Helm charts
+# https://github.com/stackhpc/capi-helm-charts
+#[fedora@bootstrap]
+
+    helm repo add capi https://stackhpc.github.io/capi-helm-charts
+
+    >   "capi" has been added to your repositories
+
+
+    helm search repo capi --versions
+
+    >   NAME                  	CHART VERSION	APP VERSION	DESCRIPTION
+    >   capi/cluster-addons   	0.1.0        	75676de    	Helm chart that deploys cluster addons for a CA...
+    >   capi/openstack-cluster	0.1.0        	75676de    	Helm chart for deploying a cluster on an OpenSt...
+
+
+
+    StackHPC's README has a warning about the version of the Openstack Cluster-API Provider.
+
+    WARNING
+    This chart depends on features in cluster-api-provider-openstack that are not yet in a release.
+    StackHPC maintain custom builds of cluster-api-provider-openstack for use with this chart. You can find these in the StackHPC fork of cluster-api-provider-openstack.
+
+    Checking StackHPC's fork of the Openstack Cluster-API Provider.
+    https://github.com/stackhpc/cluster-api-provider-openstack
+
+    The main branch is behind the upstream kubernetes repository.
+    My guess is that the changes have been merged and this is no longer needed.
+
+        Prerequisites
+
+            First, you must set up a [Cluster-API management cluster][1] with the [OpenStack Infrastructure Provider][3] installed.
+
+            Addons are managed by the Cluster-API Addon Provider, which must also be installed if you wish to use the addons functionality.
+
+            In addition, Helm must be installed and configured to access your management cluster, and the chart repository containing this chart must be configured:
+                helm repo add capi https://stackhpc.github.io/capi-helm-charts
+
+    [1] Management cluster
+    https://cluster-api.sigs.k8s.io/user/concepts.html#management-cluster
+
+        A Kubernetes cluster that manages the lifecycle of Workload Clusters.
+        A Management Cluster is also where one or more providers run, and where resources such as Machines are stored.
+
+    [2] Infrastructure provider
+    https://cluster-api.sigs.k8s.io/user/concepts.html#infrastructure-provider
+
+        A component responsible for the provisioning of infrastructure/computational resources required by the Cluster
+        or by Machines (e.g. VMs, networking, etc.). For example, cloud Infrastructure Providers include AWS, Azure,
+        and Google, and bare metal Infrastructure Providers include VMware, MAAS, and metal3.io.
+
+    [3] Kubernetes Cluster-API Provider OpenStack
+    https://github.com/kubernetes-sigs/cluster-api-provider-openstack
+
+        Documentation
+        Please see our book for in-depth documentation.
+        https://cluster-api-openstack.sigs.k8s.io/
+
+
+# -----------------------------------------------------
+# Install clusterctl
+# The clusterctl CLI tool handles the lifecycle of a Cluster-API management cluster.
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#install-clusterctl
+#[fedora@bootstrap]
+
+    cctlversion=1.4.1
+    cctlbinary=clusterctl-${cctlversion:?}
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output "/tmp/${cctlbinary:?}" \
+        "https://github.com/kubernetes-sigs/cluster-api/releases/download/v${cctlversion:?}/clusterctl-linux-amd64"
+
+    sudo install \
+        --owner 'root' \
+        --group 'root' \
+        --mode  'u=,g=rwx,o=rx' \
+        "/tmp/${cctlbinary:?}" \
+        "/usr/local/bin/"
+
+    pushd "/usr/local/bin"
+        sudo ln -s "${cctlbinary:?}" "clusterctl"
+    popd
+
+    clusterctl version
+
+    >   clusterctl version: &version.Info
+    >       {
+    >       Major:"1",
+    >       Minor:"4",
+    >       GitVersion:"v1.4.1",
+    >       GitCommit:"39d87e91080088327c738c43f39e46a7f557d03b",
+    >       GitTreeState:"clean",
+    >       BuildDate:"2023-04-04T17:31:43Z",
+    >       GoVersion:"go1.19.6",
+    >       Compiler:"gc",
+    >       Platform:"linux/amd64"
+    >       }
+
+
+# -----------------------------------------------------
+# Initialize the Openstack management cluster
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#initialization-for-common-providers
+#[fedora@bootstrap]
+
+    sudo clusterctl init --infrastructure openstack
+
+    >   Fetching providers
+    >   Installing cert-manager Version="v1.11.0"
+    >   Waiting for cert-manager to be available...
+    >   Installing Provider="cluster-api" Version="v1.4.1" TargetNamespace="capi-system"
+    >   Installing Provider="bootstrap-kubeadm" Version="v1.4.1" TargetNamespace="capi-kubeadm-bootstrap-system"
+    >   Installing Provider="control-plane-kubeadm" Version="v1.4.1" TargetNamespace="capi-kubeadm-control-plane-system"
+    >   Installing Provider="infrastructure-openstack" Version="v0.7.1" TargetNamespace="capo-system"
+    >
+    >   Your management cluster has been initialized successfully!
+    >
+    >   You can now create your first workload cluster by running the following:
+    >
+    >     clusterctl generate cluster [name] --kubernetes-version [version] | kubectl apply -f -
+
+
+    sudo kubectl get pods --all-namespaces
+
+    >   NAMESPACE                           NAME                                                             READY   STATUS    RESTARTS   AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-8654485994-m99zc       1/1     Running   0          69s
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-5d9d9494d5-65cv9   1/1     Running   0          68s
+    >   capi-system                         capi-controller-manager-746b4f5db4-p5r8g                         1/1     Running   0          71s
+    >   capo-system                         capo-controller-manager-775d744795-r7wqz                         1/1     Running   0          65s
+    >   cert-manager                        cert-manager-99bb69456-fdb77                                     1/1     Running   0          99s
+    >   cert-manager                        cert-manager-cainjector-ffb4747bb-hd555                          1/1     Running   0          99s
+    >   cert-manager                        cert-manager-webhook-545bd5d7d8-ktd9w                            1/1     Running   0          99s
+    >   kube-system                         coredns-565d847f94-lks6r                                         1/1     Running   0          94m
+    >   kube-system                         coredns-565d847f94-wf86h                                         1/1     Running   0          94m
+    >   kube-system                         etcd-kind-control-plane                                          1/1     Running   0          94m
+    >   kube-system                         kindnet-lfmqb                                                    1/1     Running   0          94m
+    >   kube-system                         kube-apiserver-kind-control-plane                                1/1     Running   0          94m
+    >   kube-system                         kube-controller-manager-kind-control-plane                       1/1     Running   0          94m
+    >   kube-system                         kube-proxy-xt6zc                                                 1/1     Running   0          94m
+    >   kube-system                         kube-scheduler-kind-control-plane                                1/1     Running   0          94m
+    >   local-path-storage                  local-path-provisioner-684f458cdd-4jzzq                          1/1     Running   0          94m
+
+
+# -----------------------------------------------------
+# Create a workload cluster
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#required-configuration-for-common-providers
+#[fedora@bootstrap]
+
+    #
+    # List the environment variables we would need to set.
+    #
+
+    clusterctl generate cluster --infrastructure openstack --list-variables capi-quickstart
+
+    >   Required Variables:
+    >     - KUBERNETES_VERSION
+    >     - OPENSTACK_CLOUD
+    >     - OPENSTACK_CLOUD_CACERT_B64
+    >     - OPENSTACK_CLOUD_PROVIDER_CONF_B64
+    >     - OPENSTACK_CLOUD_YAML_B64
+    >     - OPENSTACK_CONTROL_PLANE_MACHINE_FLAVOR
+    >     - OPENSTACK_DNS_NAMESERVERS
+    >     - OPENSTACK_EXTERNAL_NETWORK_ID
+    >     - OPENSTACK_FAILURE_DOMAIN
+    >     - OPENSTACK_IMAGE_NAME
+    >     - OPENSTACK_NODE_MACHINE_FLAVOR
+    >     - OPENSTACK_SSH_KEY_NAME
+    >
+    >   Optional Variables:
+    >     - CLUSTER_NAME                 (defaults to capi-quickstart)
+    >     - CONTROL_PLANE_MACHINE_COUNT  (defaults to 1)
+    >     - WORKER_MACHINE_COUNT         (defaults to 0)
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# List the available VM flavors and images.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        flavor list
+
+    >   +--------------------------------------+-----------------------------+--------+------+-----------+-------+-----------+
+    >   | ID                                   | Name                        |    RAM | Disk | Ephemeral | VCPUs | Is Public |
+    >   +--------------------------------------+-----------------------------+--------+------+-----------+-------+-----------+
+    >   | 0997c60d-3460-432a-a7fc-78d2cd466b4c | gaia.vm.cclake.26vcpu       |  44032 |   20 |       180 |    26 | False     |
+    >   | 0bba49a9-a11f-45cb-ad1b-09527bc0e991 | gaia.vm.cclake.himem.12vcpu |  43008 |   20 |        80 |    12 | False     |
+    >   | 166497c3-a0bb-4276-bee3-e56932e6f3e4 | gaia.vm.cclake.1vcpu        |   1024 |    8 |         0 |     1 | False     |
+    >   | 19754fec-4177-4468-99a0-554a0caed37f | gaia.vm.cclake.himem.1vcpu  |   2048 |    8 |         0 |     1 | False     |
+    >   | 2e5dc624-1d3b-4da7-8107-cc2dd4cb5073 | vm.v1.large                 |  32768 |   60 |         0 |     8 | True      |
+    >   | 56c420d5-abea-41da-9863-f5bc08b08430 | gaia.vm.cclake.54vcpu       |  88064 |   20 |       380 |    54 | False     |
+    >   | 58c86aeb-be90-4958-8990-89709fee00b1 | gaia.vm.cclake.himem.2vcpu  |   6144 |   14 |         0 |     2 | False     |
+    >   | 6793b213-5efa-4b51-96bf-1340ff066499 | vm.v1.xsmall                |   2048 |   20 |         0 |     1 | True      |
+    >   | 698a8d46-eceb-4c55-91ff-38286bf9eabb | vm.v1.tiny                  |   1024 |   10 |         0 |     1 | True      |
+    >   | 6b56d6e9-5397-4543-87fb-e0c0b6d47961 | vm.v1.small                 |  16384 |   20 |         0 |     4 | True      |
+    >   | 80e0721d-db0f-407f-a2bf-fe6641312204 | gaia.vm.cclake.4vcpu        |   6144 |   22 |         0 |     4 | False     |
+    >   | a1b2789c-761a-4843-8ea8-603a9209dec8 | gaia.vm.cclake.6vcpu        |   9216 |   20 |        24 |     6 | False     |
+    >   | a61ccf32-a9cf-4c23-9f00-dff5ebacf0cd | gaia.vm.cclake.himem.54vcpu | 176128 |   20 |       380 |    54 | False     |
+    >   | b091654c-428e-47c9-a7f3-b69900b98bea | gaia.vm.cclake.himem.26vcpu |  88064 |   20 |       180 |    26 | False     |
+    >   | b80c05db-da78-4172-ade3-dd3f500c5076 | C2.vss.xlarge               |  12288 |  180 |         0 |    12 | True      |
+    >   | bd2eb2e7-baf9-4a73-9bb1-a5559964c9be | gaia.vm.cclake.himem.4vcpu  |  12288 |   22 |         0 |     4 | False     |
+    >   | df5133ea-1bfb-45fd-ba39-71fc820abcb1 | gaia.vm.cclake.2vcpu        |   3072 |   14 |         0 |     2 | False     |
+    >   | ef01ce36-283f-4df3-a039-1b47504de078 | gaia.vm.cclake.12vcpu       |  21504 |   20 |        80 |    12 | False     |
+    >   | fbbf4183-c727-4fd3-a3bf-7aa08cb45210 | gaia.vm.cclake.himem.6vcpu  |  18432 |   20 |        24 |     6 | False     |
+    >   +--------------------------------------+-----------------------------+--------+------+-----------+-------+-----------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image list
+
+    >   +--------------------------------------+------------------------------------------------+--------+
+    >   | ID                                   | Name                                           | Status |
+    >   +--------------------------------------+------------------------------------------------+--------+
+    >   | 0f242b58-0563-46c5-b357-64b46cf46030 | AlmaLinux-8.5-20211119                         | active |
+    >   | 490eb74c-11ed-4dc3-bd94-68d7cb3a9220 | CentOS-Stream-GenericCloud-8-20220913.0.x86_64 | active |
+    >   | cdd05545-8373-4af8-b31a-9d6bea5d9d79 | CentOS7-1907                                   | active |
+    >   | 0757b325-9d08-41d7-a101-dddf4a055507 | CentOS7-2009                                   | active |
+    >   | 15209bdf-fe99-4447-9879-7895492dd86e | CentOS7-2111                                   | active |
+    >   | 913904b6-fff6-4644-bc7c-1061f4ec1988 | CentOS7.9-OFED-5.4-1.0.3.0                     | active |
+    >   | 9ae4e489-fef6-44b4-aaf9-ba24b51ff545 | CentOS8-2011                                   | active |
+    >   | 9ab38ae7-61ee-4de7-aa95-138c7b4b916f | CentOS8-2105                                   | active |
+    >   | ec7c8e40-ef9e-43f3-a960-afd495117f40 | CentOS8.4-OFED-5.4-1.0.3.0                     | active |
+    >   | c6ab1a0f-7d3c-4c3d-b05a-c820cd921f8b | Cirros-0.5.1                                   | active |
+    >   | 65ba7d67-ccdb-4d32-bd64-7ceb6ae15805 | Debian-Bullseye-11.0.0                         | active |
+    >   | 854e54a4-2d43-462e-b565-aef8b17ed94e | Debian-Buster-10.10.0                          | active |
+    >   | d264ae9a-bef7-4738-b1d9-18eadc4cc244 | Debian-Buster-10.10.3                          | active |
+    >   | 79ab3e50-6f97-4f15-955d-6b0517f1d562 | Debian-Buster-10.2.0                           | active |
+    >   | e70a961c-e7ff-490d-87d4-89377c44b874 | Debian-Buster-10.7.4                           | active |
+    >   | f73a0735-6a67-4407-8436-9ad54822e6f8 | Debian-Stretch-9.11.6                          | active |
+    >   | 5c17f6d4-6201-4436-aa08-6b71c6ca20ef | Debian-Stretch-9.13.13                         | active |
+    >   | 7ea9d508-c992-4cbb-a983-c098c51aeb0c | Debian-Stretch-9.13.24                         | active |
+    >   | 700b6450-c1d1-42aa-a15f-61199e5c1bf6 | Debian-Stretch-9.13.27                         | active |
+    >   | 1779f380-780d-40d8-8052-b3acb91ed530 | Fedora-31-1.9                                  | active |
+    >   | e62a71df-4bd2-4498-9eae-058ff476b5ad | Fedora-33-1.2                                  | active |
+    >   | e5c23082-cc34-4213-ad31-ff4684657691 | Fedora-34.1.2                                  | active |
+    >   | dcb41a5f-868a-4880-9fd5-04b95ab97c47 | FedoraAtomic29-20191126                        | active |
+    >   | a079781f-80b7-4d89-95ae-ef65bfb0834f | FedoraCoreOS33                                 | active |
+    >   | 191d3d4d-60cc-4b87-b4a7-0a03cc48a51e | FedoraCoreOS34                                 | active |
+    >   | 7f7153a4-48f2-4e1f-a8f6-89ca70f3e2b6 | Rocky-8-GenericCloud-LVM.20221130.0.x86_64     | active |
+    >   | e7432a57-9bf1-43f2-8ea5-5f4e5436b30e | Rocky-9-GenericCloud-LVM-9.1-20221130.0.x86_64 | active |
+    >   | aebeee6a-1435-42fc-91f7-edc861a2d8cf | RockyLinux-8.5-20211114.2                      | active |
+    >   | c3f0319c-58b5-48a5-82be-0d71c84a9544 | Ubuntu-Bionic-18.04-20191218                   | active |
+    >   | 9cd29964-d27b-44b6-9fa1-b3b8a9449858 | Ubuntu-Bionic-18.04-20210112                   | active |
+    >   | 583aae83-50ec-41f3-8c84-d5c1d38bc622 | Ubuntu-Bionic-18.04-20210609                   | active |
+    >   | 3c8331a4-2445-42eb-870a-23f240e09ef1 | Ubuntu-Bionic-18.04-20210922                   | active |
+    >   | 8be8c170-cd91-4c05-b2eb-269bfd68316d | Ubuntu-Focal-20.04-20210114                    | active |
+    >   | d9887730-d28e-497f-b676-6f2fb81c4a31 | Ubuntu-Focal-20.04-20210624                    | active |
+    >   | b13c5939-927d-487b-b8e0-d72d071dd3e1 | Ubuntu-Focal-20.04-20210922                    | active |
+    >   | a42aef9d-a910-4a5e-b2f4-9a3e9d8cfc7e | Ubuntu-Focal-20.04-20220124                    | active |
+    >   | b662809e-5000-416c-8283-5ada993e2386 | kayobe-rocky-8.6-rc5                           | active |
+    >   | e8b6f548-4a5f-49ac-8207-ce6f2e4adb9a | kayobe-rocky-8.6-uefi-v2                       | active |
+    >   | 6de54d53-adda-470c-91c3-9fe41e78e1e7 | kayobe-rocky-8.6-uefi-v3                       | active |
+    >   | 0b1414f8-8758-42ab-b5b0-070135305dd1 | kayobe-rocky-8.6-uefi-v4                       | active |
+    >   | 796cc099-e302-4e9b-b5cf-d99a633da092 | os_migrate_conv                                | active |
+    >   +--------------------------------------+------------------------------------------------+--------+
+
+    #
+    # StackHPC's example uses an Ubuntu image.
+    # https://github.com/stackhpc/capi-helm-charts/tree/main/charts/openstack-cluster#managing-a-workload-cluster
+    #
+
+    >   ....
+    >   # The target Kubernetes version
+    >   kubernetesVersion: 1.22.1
+    >
+    >   # An image with the required software installed at the target version
+    >   machineImage: ubuntu-2004-kube-v{{ .Values.kubernetesVersion }}
+    >   ....
+
+    #
+    # When we are logged in via the Horizon GUI, we can see an 'ubuntu-2004-kube' image, and create a VM with it.
+    #
+
+    #
+    # When we are logged in via the command line, we can't see the image.
+    #
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image show \
+            'ubuntu-2004-kube-v1.25.4'
+
+    >   No Image found for ubuntu-2004-kube-v1.25.4
+
+    #
+    # Because the visibility is set to 'community'.
+    # https://wiki.openstack.org/wiki/Glance-v2-community-image-visibility-design
+    #
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        image list \
+            --community
+
+    >   +--------------------------------------+----------------------------------------------+--------+
+    >   | ID                                   | Name                                         | Status |
+    >   +--------------------------------------+----------------------------------------------+--------+
+    >   | 948b088f-f15a-4082-9fa2-8d6ec46d63fc | CentOS8-2004                                 | active |
+    >   | f18c8fdd-b5b3-4c6f-a5bf-61fb35c061b1 | openhpc-220830-2042                          | active |
+    >   | b3727075-e811-471b-b72e-c129dc18a221 | openhpc-221027-1557                          | active |
+    >   | fb6bea43-b19b-4dd9-9334-f747060de018 | openhpc-230106-1107                          | active |
+    >   | 86a46069-d395-4157-99ff-254f093edf21 | openhpc-230110-1629                          | active |
+    >   | 5d7dca79-da94-4ce2-90f9-18e5e35d15d0 | openhpc-230217-1440                          | active |
+    >   | 74f481a4-440f-466d-a1dd-7bc521c4418d | rocky-8-20220702                             | active |
+    >   | aba8be34-d96e-4276-863f-af76ebab71d5 | ubuntu-2004-kube-v1.22.12                    | active |
+    >   | 932a8846-ce6d-49a9-b926-f200c322d237 | ubuntu-2004-kube-v1.22.15                    | active |
+    >   | d248843e-f1ea-49b2-b3c8-fca8e0ecb3fe | ubuntu-2004-kube-v1.23.14                    | active |
+    >   | 6d2fe080-a9fe-4fde-a8d3-cd101c5310a3 | ubuntu-2004-kube-v1.23.9                     | active |
+    >   | a83b5cfc-eb5e-4ca3-8d5c-cef95f41bcce | ubuntu-2004-kube-v1.24.2                     | active |
+    >   | 0350c998-23c7-44c5-8782-e29ac9640527 | ubuntu-2004-kube-v1.24.8                     | active |
+    >   | 75f1e989-d2e3-4f31-b660-8a8a9e5fa967 | ubuntu-2004-kube-v1.25.4                     | active |
+    >   | 6c30d015-6193-4479-b962-653a1a18d622 | ubuntu-focal-desktop-220808-1248             | active |
+    >   | 856f77c7-7e68-4d6f-be37-0d414844768b | ubuntu-focal-desktop-220810-0904             | active |
+    >   | f7e6408b-a9b8-4ba2-a4c1-e19f61bebe7e | ubuntu-focal-desktop-221017-1036             | active |
+    >   | 85d3cdde-2661-4e3f-ba14-5c9d061060a1 | ubuntu-focal-jupyter-repo2docker-220808-1351 | active |
+    >   | af5b2e4a-c650-4a50-9aad-b1206e7867d2 | ubuntu-focal-jupyter-repo2docker-220810-1028 | active |
+    >   | 5753f0ed-78de-4e8e-a5b6-c7f31fa34795 | ubuntu-focal-jupyter-repo2docker-221017-1147 | active |
+    >   +--------------------------------------+----------------------------------------------+--------+
+
+    #
+    # 'ubuntu-focal' and 'ubuntu-2004' are the same thing.
+    # https://wiki.ubuntu.com/Releases
+    # Released April 2020.
+    # Ubuntu have released 22.04, Jammy Jellyfish, released April 2022, but that isn't in the image list yet.
+    #
+    # If we are going to use a custom image, I'd go for Rocky or CoreOS.
+    # Later ..
+    #
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        availability zone list \
+            --long
+
+    >   +-----------+-------------+---------------+-----------+--------------+----------------+
+    >   | Zone Name | Zone Status | Zone Resource | Host Name | Service Name | Service Status |
+    >   +-----------+-------------+---------------+-----------+--------------+----------------+
+    >   | nova      | available   |               |           |              |                |
+    >   | nova      | available   |               |           |              |                |
+    >   | nova      | available   | network       |           |              |                |
+    >   | nova      | available   | router        |           |              |                |
+    >   +-----------+-------------+---------------+-----------+--------------+----------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        availability zone list \
+            --compute \
+            --long
+
+    >   +-----------+-------------+---------------+-----------+--------------+----------------+
+    >   | Zone Name | Zone Status | Zone Resource | Host Name | Service Name | Service Status |
+    >   +-----------+-------------+---------------+-----------+--------------+----------------+
+    >   | nova      | available   |               |           |              |                |
+    >   +-----------+-------------+---------------+-----------+--------------+----------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list \
+            --external
+
+    >   +--------------------------------------+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | ID                                   | Name          | Subnets                                                                                                                                                |
+    >   +--------------------------------------+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs        | 5699fb5d-8316-4b88-b889-b05c8a1ec975                                                                                                                   |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet | 1847b14d-b974-4f78-959d-44d18d4485b8, 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42, 5f1388b3-a0c7-463e-bb58-5532c38e4b40, a79eb610-eca3-4ee8-aaf1-88f4fef5a4e7 |
+    >   +--------------------------------------+---------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+    #
+    # This detects more than one 'external' network, so we will need to specify which one is the real external network.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Set the environment variables used by cloud-provider-openstack.
+# https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html
+#[fedora@bootstrap]
+
+    #
+    # The image name 'ubuntu-2004-kube-v1.25.4' gives us the OS image and the K8s version.
+    #
+
+    KUBERNETES_VERSION=1.25.4
+    OPENSTACK_IMAGE_NAME=ubuntu-2004-kube-v1.25.4
+
+    #
+    # The Ubuntu images are quite large, and won't fit on a tiny image.
+    # Error message from Horizon GUI :
+
+    >   Error: Failed to perform requested operation on instance "vsdfhc",
+    >   the instance has an error status: Please try again later
+    >       [
+    >       Error: Build of instance d701f3f9-1f98-4d01-bf8a-b2b4cde741b7 aborted:
+    >       Flavor's disk is too small for requested image.
+    >       Flavor disk is 10737418240 bytes, image is 21474836480 bytes.
+    >       ].
+
+
+    OPENSTACK_CONTROL_PLANE_MACHINE_FLAVOR=vm.v1.small
+    OPENSTACK_NODE_MACHINE_FLAVOR=vm.v1.large
+
+    OPENSTACK_CLOUD=iris-gaia-red
+    OPENSTACK_SSH_KEY_NAME=iris-gaia-red-20230409-keypair
+    OPENSTACK_EXTERNAL_NETWORK_ID=57add367-d205-4030-a929-d75617a7c63e
+
+    OPENSTACK_FAILURE_DOMAIN=nova
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Transfer a copy of our clouds.yaml file.
+#[root@ansibler]
+
+    scp /etc/openstack/clouds.yaml bootstrap:/tmp/clouds.yaml
+
+    ssh bootstrap 'sudo mkdir -p /etc/openstack'
+    ssh bootstrap 'sudo install --target-directory '/etc/openstack' /tmp/clouds.yaml'
+
+    #
+    # If we can expose the cluster endpoint, we should be able to do more in the client container.
+    # Look at this next round.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Install yq on the bootstrap node.
+#[fedora@bootstrap]
+
+    linkedinstall()
+        {
+        local sourcepath=${1}
+        local sourcename=$(basename "${sourcepath}")
+        local shortname=${2}
+        local destpath=/usr/local/bin/
+
+        sudo install \
+            --owner 'root' \
+            --group 'root' \
+            --mode  'u=rwx,g=rwx,o=rx' \
+            "${sourcepath}" \
+            "${destpath}"
+
+        pushd "${destpath}"
+            sudo ln -s "${sourcename}" "${shortname}"
+        popd
+        }
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output '/tmp/yq-4.26.1' \
+        'https://github.com/mikefarah/yq/releases/download/v4.26.1/yq_linux_amd64'
+
+    linkedinstall '/tmp/yq-4.26.1' 'yq'
+
+
+# -----------------------------------------------------
+# Use the script provided by cluster-api-provider-openstack to parse our clouds.yaml file.
+# https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#generate-credentials
+# https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/docs/book/src/clusteropenstack/configuration.md#generate-credentials
+#[fedora@bootstrap]
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output '/tmp/env.rc' \
+        'https://raw.githubusercontent.com/kubernetes-sigs/cluster-api-provider-openstack/master/templates/env.rc'
+
+    source '/tmp/env.rc' '/etc/openstack/clouds.yaml' "${OPENSTACK_CLOUD:?}"
+
+    echo "CLOUD_YAML_B64 [${OPENSTACK_CLOUD_YAML_B64}]"
+    echo "CLOUD_CACERT_B64 [${OPENSTACK_CLOUD_CACERT_B64}]"
+    echo "CLOUD_PROVIDER_CONF_B64 [${OPENSTACK_CLOUD_PROVIDER_CONF_B64}]"
+
+    >   CLOUD_YAML_B64 [Y2xvdWRz....aWFsIgo=]
+    >   CLOUD_CACERT_B64 [Cg==]
+    >   CLOUD_PROVIDER_CONF_B64 [W0dsb2Jh....5b28yIgo=]
+
+
+    #
+    # https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html
+    # Note: Only the [external cloud provider][1] supports [Application Credentials][2].
+    # [1] https://cluster-api-openstack.sigs.k8s.io/topics/external-cloud-provider.html
+    # [2] https://docs.openstack.org/keystone/latest/user/application_credentials.html
+    #
+
+    #
+    # https://cluster-api-openstack.sigs.k8s.io/topics/external-cloud-provider.html
+    # To deploy a cluster using [external cloud provider][3], create a cluster configuration with the [external cloud provider template][4] or refer to [helm chart][5].
+    # [3] https://github.com/kubernetes/cloud-provider-openstack
+    # [4] https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/templates/cluster-template-external-cloud-provider.yaml
+    # [5] https://github.com/kubernetes/cloud-provider-openstack/tree/master/charts/openstack-cloud-controller-manager
+    #
+
+    #
+    # https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#required-configuration
+    # Note: By default the command creates highly available control plane with internal OpenStack cloud provider.
+    # If you wish to create highly available control plane with external OpenStack cloud provider
+    # or single control plane without load balancer, use external-cloud-provider or without-lb flavor respectively.
+    #
+
+    #
+    # cluster-api-provider-openstack configuration.
+    # https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/docs/book/src/clusteropenstack/configuration.md
+    #
+
+
+# -----------------------------------------------------
+# Generate our cluster config.
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#generating-the-cluster-configuration
+#[fedora@bootstrap]
+
+    CLUSTER_BASE=green-frog
+
+    #
+    # Basic quick-start.
+    CLUSTER_NAME=${CLUSTER_BASE}-basic
+    sudo clusterctl generate cluster \
+        "${CLUSTER_NAME:?}" \
+        --kubernetes-version "${KUBERNETES_VERSION:?}" \
+        --control-plane-machine-count 3 \
+        --worker-machine-count 3 \
+    | tee "/tmp/${CLUSTER_NAME:?}.yaml" \
+    | yq -P
+
+
+    >   Error: value for variables [
+    >       OPENSTACK_CLOUD,
+    >       OPENSTACK_CLOUD_CACERT_B64,
+    >       OPENSTACK_CLOUD_PROVIDER_CONF_B64,
+    >       OPENSTACK_CLOUD_YAML_B64,
+    >       OPENSTACK_CONTROL_PLANE_MACHINE_FLAVOR,
+    >       OPENSTACK_DNS_NAMESERVERS,
+    >       OPENSTACK_EXTERNAL_NETWORK_ID,
+    >       OPENSTACK_FAILURE_DOMAIN,
+    >       OPENSTACK_IMAGE_NAME,
+    >       OPENSTACK_NODE_MACHINE_FLAVOR,
+    >       OPENSTACK_SSH_KEY_NAME
+    >       ] is not set.
+    >       Please set the value using os environment variables or the clusterctl config file
+
+    #
+    # Bugger.
+    # We need to run 'clusterctl' as root because (Docker),
+    # but we have set all the environment variables in 'fedora's environment.
+    #
+
+    #
+    # My guess is once we have started the control cluster on bootstrap VM,
+    # we should be able to do everything else in the client container.
+    #
+
+    #
+    # Perhaps ... we could run control cluster locally ?
+    # Just a thought.
+    # Does it _need_ to be inside the Openstack platform ?
+    # Just somewhere safe.
+    # So probably not on the client machine or we will run into the terraform state problem.
+    #
+
+
+# -----------------------------------------------------
+# Become root for the duration ...
+#[fedora@bootstrap]
+
+    sudo su -
+
+    export OPENSTACK_CLOUD=iris-gaia-red
+
+    export KUBERNETES_VERSION=1.25.4
+    export OPENSTACK_IMAGE_NAME=ubuntu-2004-kube-v1.25.4
+
+    export OPENSTACK_CONTROL_PLANE_MACHINE_FLAVOR=vm.v1.small
+    export OPENSTACK_NODE_MACHINE_FLAVOR=vm.v1.large
+
+    export OPENSTACK_SSH_KEY_NAME=iris-gaia-red-20230409-keypair
+    export OPENSTACK_EXTERNAL_NETWORK_ID=57add367-d205-4030-a929-d75617a7c63e
+
+    export OPENSTACK_FAILURE_DOMAIN=nova
+
+    source '/tmp/env.rc' '/etc/openstack/clouds.yaml' "${OPENSTACK_CLOUD:?}"
+
+    echo "CLOUD_YAML_B64 [${OPENSTACK_CLOUD_YAML_B64}]"
+    echo "CLOUD_CACERT_B64 [${OPENSTACK_CLOUD_CACERT_B64}]"
+    echo "CLOUD_PROVIDER_CONF_B64 [${OPENSTACK_CLOUD_PROVIDER_CONF_B64}]"
+
+    #
+    # Use the Cambridge DNS servers.
+    # https://www.dns.cam.ac.uk/servers/rec.html
+    export OPENSTACK_DNS_NAMESERVERS=131.111.8.42,131.111.12.20
+
+
+# -----------------------------------------------------
+# Generate our basic cluster config.
+# https://cluster-api.sigs.k8s.io/clusterctl/commands/generate-cluster.html
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#generating-the-cluster-configuration
+#[root@bootstrap]
+
+    CLUSTER_NAME=green-frog
+
+    clusterctl generate cluster \
+        "${CLUSTER_NAME:?}" \
+        --kubernetes-version "${KUBERNETES_VERSION:?}" \
+        --control-plane-machine-count 3 \
+        --worker-machine-count 3 \
+    | tee "/tmp/${CLUSTER_NAME:?}-basic.yaml"
+
+    yq -P "/tmp/${CLUSTER_NAME:?}-basic.yaml"
+
+    >   apiVersion: v1
+    >   data:
+    >     cacert: Cg==
+    >     clouds.yaml: Y2xvdWRz....0aWFsIgo=
+    >   kind: Secret
+    >   metadata:
+    >     labels:
+    >       clusterctl.cluster.x-k8s.io/move: "true"
+    >     name: green-frog-cloud-config
+    >     namespace: default
+    >   ---
+    >   apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    >   kind: KubeadmConfigTemplate
+    >   metadata:
+    >     name: green-frog-md-0
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         files:
+    >           - content: W0dsb2Jh....5b28yIgo=
+    >             encoding: base64
+    >             owner: root
+    >             path: /etc/kubernetes/cloud.conf
+    >             permissions: "0600"
+    >           - content: Cg==
+    >             encoding: base64
+    >             owner: root
+    >             path: /etc/certs/cacert
+    >             permissions: "0600"
+    >         joinConfiguration:
+    >           nodeRegistration:
+    >             kubeletExtraArgs:
+    >               cloud-config: /etc/kubernetes/cloud.conf
+    >               cloud-provider: openstack
+    >             name: '{{ local_hostname }}'
+    >   ---
+    >   apiVersion: cluster.x-k8s.io/v1beta1
+    >   kind: Cluster
+    >   metadata:
+    >     name: green-frog
+    >     namespace: default
+    >   spec:
+    >     clusterNetwork:
+    >       pods:
+    >         cidrBlocks:
+    >           - 192.168.0.0/16
+    >       serviceDomain: cluster.local
+    >     controlPlaneRef:
+    >       apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    >       kind: KubeadmControlPlane
+    >       name: green-frog-control-plane
+    >     infrastructureRef:
+    >       apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >       kind: OpenStackCluster
+    >       name: green-frog
+    >   ---
+    >   apiVersion: cluster.x-k8s.io/v1beta1
+    >   kind: MachineDeployment
+    >   metadata:
+    >     name: green-frog-md-0
+    >     namespace: default
+    >   spec:
+    >     clusterName: green-frog
+    >     replicas: 3
+    >     selector:
+    >       matchLabels: null
+    >     template:
+    >       spec:
+    >         bootstrap:
+    >           configRef:
+    >             apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    >             kind: KubeadmConfigTemplate
+    >             name: green-frog-md-0
+    >         clusterName: green-frog
+    >         failureDomain: nova
+    >         infrastructureRef:
+    >           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >           kind: OpenStackMachineTemplate
+    >           name: green-frog-md-0
+    >         version: 1.25.4
+    >   ---
+    >   apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    >   kind: KubeadmControlPlane
+    >   metadata:
+    >     name: green-frog-control-plane
+    >     namespace: default
+    >   spec:
+    >     kubeadmConfigSpec:
+    >       clusterConfiguration:
+    >         apiServer:
+    >           extraArgs:
+    >             cloud-config: /etc/kubernetes/cloud.conf
+    >             cloud-provider: openstack
+    >           extraVolumes:
+    >             - hostPath: /etc/kubernetes/cloud.conf
+    >               mountPath: /etc/kubernetes/cloud.conf
+    >               name: cloud
+    >               readOnly: true
+    >         controllerManager:
+    >           extraArgs:
+    >             cloud-config: /etc/kubernetes/cloud.conf
+    >             cloud-provider: openstack
+    >           extraVolumes:
+    >             - hostPath: /etc/kubernetes/cloud.conf
+    >               mountPath: /etc/kubernetes/cloud.conf
+    >               name: cloud
+    >               readOnly: true
+    >             - hostPath: /etc/certs/cacert
+    >               mountPath: /etc/certs/cacert
+    >               name: cacerts
+    >               readOnly: true
+    >       files:
+    >         - content: W0dsb2Jh....5b28yIgo=
+    >           encoding: base64
+    >           owner: root
+    >           path: /etc/kubernetes/cloud.conf
+    >           permissions: "0600"
+    >         - content: Cg==
+    >           encoding: base64
+    >           owner: root
+    >           path: /etc/certs/cacert
+    >           permissions: "0600"
+    >       initConfiguration:
+    >         nodeRegistration:
+    >           kubeletExtraArgs:
+    >             cloud-config: /etc/kubernetes/cloud.conf
+    >             cloud-provider: openstack
+    >           name: '{{ local_hostname }}'
+    >       joinConfiguration:
+    >         nodeRegistration:
+    >           kubeletExtraArgs:
+    >             cloud-config: /etc/kubernetes/cloud.conf
+    >             cloud-provider: openstack
+    >           name: '{{ local_hostname }}'
+    >     machineTemplate:
+    >       infrastructureRef:
+    >         apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >         kind: OpenStackMachineTemplate
+    >         name: green-frog-control-plane
+    >     replicas: 3
+    >     version: 1.25.4
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackCluster
+    >   metadata:
+    >     name: green-frog
+    >     namespace: default
+    >   spec:
+    >     apiServerLoadBalancer:
+    >       enabled: true
+    >     cloudName: iris-gaia-red
+    >     dnsNameservers:
+    >       - 131.111.8.42,131.111.12.20
+    >     externalNetworkId: 57add367-d205-4030-a929-d75617a7c63e
+    >     identityRef:
+    >       kind: Secret
+    >       name: green-frog-cloud-config
+    >     managedSecurityGroups: true
+    >     nodeCidr: 10.6.0.0/24
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackMachineTemplate
+    >   metadata:
+    >     name: green-frog-control-plane
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         cloudName: iris-gaia-red
+    >         flavor: vm.v1.small
+    >         identityRef:
+    >           kind: Secret
+    >           name: green-frog-cloud-config
+    >         image: ubuntu-2004-kube-v1.25.4
+    >         sshKeyName: iris-gaia-red-20230409-keypair
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackMachineTemplate
+    >   metadata:
+    >     name: green-frog-md-0
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         cloudName: iris-gaia-red
+    >         flavor: vm.v1.large
+    >         identityRef:
+    >           kind: Secret
+    >           name: green-frog-cloud-config
+    >         image: ubuntu-2004-kube-v1.25.4
+    >         sshKeyName: iris-gaia-red-20230409-keypair
+
+
+# -----------------------------------------------------
+# Generate our external cluster config.
+# https://cluster-api.sigs.k8s.io/clusterctl/commands/generate-cluster.html
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#generating-the-cluster-configuration
+#[root@bootstrap]
+
+    CLUSTER_NAME=green-frog
+
+    clusterctl generate cluster \
+        "${CLUSTER_NAME:?}" \
+        --flavor external-cloud-provider \
+        --kubernetes-version "${KUBERNETES_VERSION:?}" \
+        --control-plane-machine-count 3 \
+        --worker-machine-count 3 \
+    | tee "/tmp/${CLUSTER_NAME:?}-external.yaml"
+
+    yq -P "/tmp/${CLUSTER_NAME:?}-external.yaml"
+
+
+    >   apiVersion: v1
+    >   data:
+    >     cacert: Cg==
+    >     clouds.yaml: Y2xvdWRz....0aWFsIgo=
+    >   kind: Secret
+    >   metadata:
+    >     labels:
+    >       clusterctl.cluster.x-k8s.io/move: "true"
+    >     name: green-frog-cloud-config
+    >     namespace: default
+    >   ---
+    >   apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    >   kind: KubeadmConfigTemplate
+    >   metadata:
+    >     name: green-frog-md-0
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         joinConfiguration:
+    >           nodeRegistration:
+    >             kubeletExtraArgs:
+    >               cloud-provider: external
+    >             name: '{{ local_hostname }}'
+    >   ---
+    >   apiVersion: cluster.x-k8s.io/v1beta1
+    >   kind: Cluster
+    >   metadata:
+    >     name: green-frog
+    >     namespace: default
+    >   spec:
+    >     clusterNetwork:
+    >       pods:
+    >         cidrBlocks:
+    >           - 192.168.0.0/16
+    >       serviceDomain: cluster.local
+    >     controlPlaneRef:
+    >       apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    >       kind: KubeadmControlPlane
+    >       name: green-frog-control-plane
+    >     infrastructureRef:
+    >       apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >       kind: OpenStackCluster
+    >       name: green-frog
+    >   ---
+    >   apiVersion: cluster.x-k8s.io/v1beta1
+    >   kind: MachineDeployment
+    >   metadata:
+    >     name: green-frog-md-0
+    >     namespace: default
+    >   spec:
+    >     clusterName: green-frog
+    >     replicas: 3
+    >     selector:
+    >       matchLabels: null
+    >     template:
+    >       spec:
+    >         bootstrap:
+    >           configRef:
+    >             apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+    >             kind: KubeadmConfigTemplate
+    >             name: green-frog-md-0
+    >         clusterName: green-frog
+    >         failureDomain: nova
+    >         infrastructureRef:
+    >           apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >           kind: OpenStackMachineTemplate
+    >           name: green-frog-md-0
+    >         version: 1.25.4
+    >   ---
+    >   apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    >   kind: KubeadmControlPlane
+    >   metadata:
+    >     name: green-frog-control-plane
+    >     namespace: default
+    >   spec:
+    >     kubeadmConfigSpec:
+    >       clusterConfiguration:
+    >         apiServer:
+    >           extraArgs:
+    >             cloud-provider: external
+    >         controllerManager:
+    >           extraArgs:
+    >             cloud-provider: external
+    >       initConfiguration:
+    >         nodeRegistration:
+    >           kubeletExtraArgs:
+    >             cloud-provider: external
+    >           name: '{{ local_hostname }}'
+    >       joinConfiguration:
+    >         nodeRegistration:
+    >           kubeletExtraArgs:
+    >             cloud-provider: external
+    >           name: '{{ local_hostname }}'
+    >     machineTemplate:
+    >       infrastructureRef:
+    >         apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >         kind: OpenStackMachineTemplate
+    >         name: green-frog-control-plane
+    >     replicas: 3
+    >     version: 1.25.4
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackCluster
+    >   metadata:
+    >     name: green-frog
+    >     namespace: default
+    >   spec:
+    >     apiServerLoadBalancer:
+    >       enabled: true
+    >     cloudName: iris-gaia-red
+    >     dnsNameservers:
+    >       - 131.111.8.42,131.111.12.20
+    >     externalNetworkId: 57add367-d205-4030-a929-d75617a7c63e
+    >     identityRef:
+    >       kind: Secret
+    >       name: green-frog-cloud-config
+    >     managedSecurityGroups: true
+    >     nodeCidr: 10.6.0.0/24
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackMachineTemplate
+    >   metadata:
+    >     name: green-frog-control-plane
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         cloudName: iris-gaia-red
+    >         flavor: vm.v1.small
+    >         identityRef:
+    >           kind: Secret
+    >           name: green-frog-cloud-config
+    >         image: ubuntu-2004-kube-v1.25.4
+    >         sshKeyName: iris-gaia-red-20230409-keypair
+    >   ---
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackMachineTemplate
+    >   metadata:
+    >     name: green-frog-md-0
+    >     namespace: default
+    >   spec:
+    >     template:
+    >       spec:
+    >         cloudName: iris-gaia-red
+    >         flavor: vm.v1.large
+    >         identityRef:
+    >           kind: Secret
+    >           name: green-frog-cloud-config
+    >         image: ubuntu-2004-kube-v1.25.4
+    >         sshKeyName: iris-gaia-red-20230409-keypair
+
+
+# -----------------------------------------------------
+# Compare the two configurations.
+#[root@bootstrap]
+
+    diff \
+        "/tmp/${CLUSTER_NAME:?}-basic.yaml" \
+        "/tmp/${CLUSTER_NAME:?}-external.yaml"
+
+    >   20,30d19
+    >   <       files:
+    >   <       - content: W0dsb2Jh....5b28yIgo=
+    >   <         encoding: base64
+    >   <         owner: root
+    >   <         path: /etc/kubernetes/cloud.conf
+    >   <         permissions: "0600"
+    >   <       - content: Cg==
+    >   <         encoding: base64
+    >   <         owner: root
+    >   <         path: /etc/certs/cacert
+    >   <         permissions: "0600"
+    >   34,35c23
+    >   <             cloud-config: /etc/kubernetes/cloud.conf
+    >   <             cloud-provider: openstack
+    >   ---
+    >   >             cloud-provider: external
+    >   93,99c81
+    >   <           cloud-config: /etc/kubernetes/cloud.conf
+    >   <           cloud-provider: openstack
+    >   <         extraVolumes:
+    >   <         - hostPath: /etc/kubernetes/cloud.conf
+    >   <           mountPath: /etc/kubernetes/cloud.conf
+    >   <           name: cloud
+    >   <           readOnly: true
+    >   ---
+    >   >           cloud-provider: external
+    >   102,123c84
+    >   <           cloud-config: /etc/kubernetes/cloud.conf
+    >   <           cloud-provider: openstack
+    >   <         extraVolumes:
+    >   <         - hostPath: /etc/kubernetes/cloud.conf
+    >   <           mountPath: /etc/kubernetes/cloud.conf
+    >   <           name: cloud
+    >   <           readOnly: true
+    >   <         - hostPath: /etc/certs/cacert
+    >   <           mountPath: /etc/certs/cacert
+    >   <           name: cacerts
+    >   <           readOnly: true
+    >   <     files:
+    >   <     - content: W0dsb2Jh....5b28yIgo=
+    >   <       encoding: base64
+    >   <       owner: root
+    >   <       path: /etc/kubernetes/cloud.conf
+    >   <       permissions: "0600"
+    >   <     - content: Cg==
+    >   <       encoding: base64
+    >   <       owner: root
+    >   <       path: /etc/certs/cacert
+    >   <       permissions: "0600"
+    >   ---
+    >   >           cloud-provider: external
+    >   127,128c88
+    >   <           cloud-config: /etc/kubernetes/cloud.conf
+    >   <           cloud-provider: openstack
+    >   ---
+    >   >           cloud-provider: external
+    >   133,134c93
+    >   <           cloud-config: /etc/kubernetes/cloud.conf
+    >   <           cloud-provider: openstack
+    >   ---
+    >   >           cloud-provider: external
+
+    #
+    # So the 'external' form removes the openstack cloud.conf and cacert secrets.
+    #
+
+
+# -----------------------------------------------------
+# Apply the workload cluster.
+# https://cluster-api.sigs.k8s.io/user/quick-start.html#apply-the-workload-cluster
+#[root@bootstrap]
+
+    kubectl get pods --all-namespaces
+
+    >   NAMESPACE                           NAME                                                             READY   STATUS    RESTARTS   AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-8654485994-m99zc       1/1     Running   0          44h
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-5d9d9494d5-65cv9   1/1     Running   0          44h
+    >   capi-system                         capi-controller-manager-746b4f5db4-p5r8g                         1/1     Running   0          44h
+    >   capo-system                         capo-controller-manager-775d744795-r7wqz                         1/1     Running   0          44h
+    >   cert-manager                        cert-manager-99bb69456-fdb77                                     1/1     Running   0          44h
+    >   cert-manager                        cert-manager-cainjector-ffb4747bb-hd555                          1/1     Running   0          44h
+    >   cert-manager                        cert-manager-webhook-545bd5d7d8-ktd9w                            1/1     Running   0          44h
+    >   kube-system                         coredns-565d847f94-lks6r                                         1/1     Running   0          46h
+    >   kube-system                         coredns-565d847f94-wf86h                                         1/1     Running   0          46h
+    >   kube-system                         etcd-kind-control-plane                                          1/1     Running   0          46h
+    >   kube-system                         kindnet-lfmqb                                                    1/1     Running   0          46h
+    >   kube-system                         kube-apiserver-kind-control-plane                                1/1     Running   0          46h
+    >   kube-system                         kube-controller-manager-kind-control-plane                       1/1     Running   0          46h
+    >   kube-system                         kube-proxy-xt6zc                                                 1/1     Running   0          46h
+    >   kube-system                         kube-scheduler-kind-control-plane                                1/1     Running   0          46h
+    >   local-path-storage                  local-path-provisioner-684f458cdd-4jzzq                          1/1     Running   0          46h
+
+
+    kubectl apply \
+        -f "/tmp/${CLUSTER_NAME:?}-basic.yaml"
+
+    >   secret/green-frog-cloud-config created
+    >   kubeadmconfigtemplate.bootstrap.cluster.x-k8s.io/green-frog-md-0 created
+    >   cluster.cluster.x-k8s.io/green-frog created
+    >   machinedeployment.cluster.x-k8s.io/green-frog-md-0 created
+    >   kubeadmcontrolplane.controlplane.cluster.x-k8s.io/green-frog-control-plane created
+    >   openstackcluster.infrastructure.cluster.x-k8s.io/green-frog created
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/green-frog-control-plane created
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/green-frog-md-0 created
+
+
+    kubectl get cluster
+
+    >   NAME         PHASE          AGE   VERSION
+    >   green-frog   Provisioning   45s
+
+
+    clusterctl describe cluster "${CLUSTER_NAME:?}"
+
+    >   NAME                                                           READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/green-frog                                             False  Warning   ScalingUp                    84s    Scaling up control plane to 3 replicas (actual 0)
+    >   ├─ClusterInfrastructure - OpenStackCluster/green-frog
+    >   ├─ControlPlane - KubeadmControlPlane/green-frog-control-plane  False  Warning   ScalingUp                    84s    Scaling up control plane to 3 replicas (actual 0)
+    >   └─Workers
+    >     └─MachineDeployment/green-frog-md-0                          False  Warning   WaitingForAvailableMachines  85s    Minimum availability requires 3 replicas, current 0 available
+    >       └─3 Machines...                                            False  Info      WaitingForInfrastructure     84s    See green-frog-md-0-7b8fd887b6xsgldw-6226h, green-frog-md-0-7b8fd887b6xsgldw-hzdwn, ...
+
+
+    >   NAME                                                           READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/green-frog                                             False  Warning   ScalingUp                    4m43s  Scaling up control plane to 3 replicas (actual 0)
+    >   ├─ClusterInfrastructure - OpenStackCluster/green-frog
+    >   ├─ControlPlane - KubeadmControlPlane/green-frog-control-plane  False  Warning   ScalingUp                    4m43s  Scaling up control plane to 3 replicas (actual 0)
+    >   └─Workers
+    >     └─MachineDeployment/green-frog-md-0                          False  Warning   WaitingForAvailableMachines  4m44s  Minimum availability requires 3 replicas, current 0 available
+    >       └─3 Machines...                                            False  Info      WaitingForInfrastructure     4m43s  See green-frog---END--
+    >
+    >
+    >
+    >       kubectl get pods --all-namespaces
+    >
+    >   NAMESPACE                           NAME                                                             READY   STATUS    RESTARTS   AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-8654485994-m99zc       1/1     Running   0          45h
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-5d9d9494d5-65cv9   1/1     Running   0          45h
+    >   capi-system                         capi-controller-manager-746b4f5db4-p5r8g                         1/1     Running   0          45h
+    >   capo-system                         capo-controller-manager-775d744795-r7wqz                         1/1     Running   0          44h
+    >   cert-manager                        cert-manager-99bb69456-fdb77                                     1/1     Running   0          45h
+    >   cert-manager                        cert-manager-cainjector-ffb4747bb-hd555                          1/1     Running   0          45h
+    >   cert-manager                        cert-manager-webhook-545bd5d7d8-ktd9w                            1/1     Running   0          45h
+    >   kube-system                         coredns-565d847f94-lks6r                                         1/1     Running   0          46h
+    >   kube-system                         coredns-565d847f94-wf86h                                         1/1     Running   0          46h
+    >   kube-system                         etcd-kind-control-plane                                          1/1     Running   0          46h
+    >   kube-system                         kindnet-lfmqb                                                    1/1     Running   0          46h
+    >   kube-system                         kube-apiserver-kind-control-plane                                1/1     Running   0          46h
+    >   kube-system                         kube-controller-manager-kind-control-plane                       1/1     Running   0          46h
+    >   kube-system                         kube-proxy-xt6zc                                                 1/1     Running   0          46h
+    >   kube-system                         kube-scheduler-kind-control-plane                                1/1     Running   0          46h
+    >   local-path-storage                  local-path-provisioner-684f458cdd-4jzzq                          1/1     Running   0          46h
+
+    #
+    # Looks like it gets stuck ...
+    # Looks like we should be using the 'external' cloud provider.
+    # https://cluster-api-openstack.sigs.k8s.io/topics/external-cloud-provider.html
+    #
+
+    #
+    # Control plane isn't initialised yet ..
+    #
+    #
+
+    kubectl get kubeadmcontrolplane
+
+    >   NAME                       CLUSTER      INITIALIZED   API SERVER AVAILABLE   REPLICAS   READY   UPDATED   UNAVAILABLE   AGE   VERSION
+    >   green-frog-control-plane   green-frog                                                                                   15m   v1.25.4
+
+    #
+    # Note:
+    # "The control plane won’t be Ready until we install a CNI in the next step."
+    #
+
+
+# -----------------------------------------------------
+# Get the kubeconfig for our cluster.
+#[root@bootstrap]
+
+    clusterctl get kubeconfig "${CLUSTER_NAME:?}" \
+    | tee "${CLUSTER_NAME:?}.kubeconfig"
+
+    >   Error: "green-frog-kubeconfig" not found in namespace "default": secrets "green-frog-kubeconfig" not found
+
+
+    kubectl get secrets --all-namespaces
+
+    >   NAMESPACE                           NAME                                              TYPE                DATA   AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-webhook-service-cert       kubernetes.io/tls   3      45h
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-webhook-service-cert   kubernetes.io/tls   3      45h
+    >   capi-system                         capi-webhook-service-cert                         kubernetes.io/tls   3      45h
+    >   capo-system                         capo-webhook-service-cert                         kubernetes.io/tls   3      45h
+    >   cert-manager                        cert-manager-webhook-ca                           Opaque              3      45h
+    >   default                             green-frog-cloud-config                           Opaque              2      32m
+
+
+    #
+    # I suspect that things are stalled because the credentials are wrong.
+    # Remember that note :
+    # Only the external cloud provider supports Application Credentials.
+    #
+
+    #
+    # Delete this cluster and try the external config.
+    #
+
+
+# -----------------------------------------------------
+# Delete our cluster.
+#[root@bootstrap]
+
+    kubectl delete cluster "${CLUSTER_NAME:?}"
+
+    >   cluster.cluster.x-k8s.io "green-frog" deleted
+
+
+    kubectl get cluster
+
+    >   No resources found in default namespace.
+
+
+    kubectl get kubeadmcontrolplane
+
+    >   No resources found in default namespace.
+
+
+    clusterctl describe cluster "${CLUSTER_NAME:?}"
+
+    >   Error: clusters.cluster.x-k8s.io "green-frog" not found
+
+
+# -----------------------------------------------------
+# Try the external cluster.
+#[root@bootstrap]
+
+    kubectl apply \
+        -f "/tmp/${CLUSTER_NAME:?}-external.yaml"
+
+    >   secret/green-frog-cloud-config unchanged
+    >   kubeadmconfigtemplate.bootstrap.cluster.x-k8s.io/green-frog-md-0 created
+    >   cluster.cluster.x-k8s.io/green-frog created
+    >   machinedeployment.cluster.x-k8s.io/green-frog-md-0 created
+    >   kubeadmcontrolplane.controlplane.cluster.x-k8s.io/green-frog-control-plane created
+    >   openstackcluster.infrastructure.cluster.x-k8s.io/green-frog created
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/green-frog-control-plane created
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/green-frog-md-0 created
+
+
+    kubectl get cluster
+
+    >   NAME         PHASE          AGE   VERSION
+    >   green-frog   Provisioning   18s
+
+
+    kubectl get kubeadmcontrolplane
+
+    >   NAME                       CLUSTER      INITIALIZED   API SERVER AVAILABLE   REPLICAS   READY   UPDATED   UNAVAILABLE   AGE   VERSION
+    >   green-frog-control-plane   green-frog                                                                                   30s   v1.25.4
+
+
+    clusterctl describe cluster "${CLUSTER_NAME:?}"
+
+    >   NAME                                                           READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/green-frog                                             False  Warning   ScalingUp                    60s    Scaling up control plane to 3 replicas (actual 0)
+    >   ├─ClusterInfrastructure - OpenStackCluster/green-frog
+    >   ├─ControlPlane - KubeadmControlPlane/green-frog-control-plane  False  Warning   ScalingUp                    60s    Scaling up control plane to 3 replicas (actual 0)
+    >   └─Workers
+    >     └─MachineDeployment/green-frog-md-0                          False  Warning   WaitingForAvailableMachines  59s    Minimum availability requires 3 replicas, current 0 available
+    >       └─3 Machines...                                            False  Info      WaitingForInfrastructure     59s    See green-frog-md-0-7b8fd887b6xkb5dk-6d9wh, green-frog-md-0-7b8fd887b6xkb5dk-qhjk7, ...
+
+    #
+    # Same problem ..
+    # Stalled before the control plane is up and running.
+    #
+
+    #
+    # Subsequent steps need the kubeconfig
+    # https://cluster-api-openstack.sigs.k8s.io/topics/external-cloud-provider.html
+
+
+    kubectl get pods --all-namespaces
+
+    >   NAMESPACE                           NAME                                                             READY   STATUS    RESTARTS   AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-8654485994-m99zc       1/1     Running   0          45h
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-5d9d9494d5-65cv9   1/1     Running   0          45h
+    >   capi-system                         capi-controller-manager-746b4f5db4-p5r8g                         1/1     Running   0          45h
+    >   capo-system                         capo-controller-manager-775d744795-r7wqz                         1/1     Running   0          45h
+    >   cert-manager                        cert-manager-99bb69456-fdb77                                     1/1     Running   0          45h
+    >   cert-manager                        cert-manager-cainjector-ffb4747bb-hd555                          1/1     Running   0          45h
+    >   cert-manager                        cert-manager-webhook-545bd5d7d8-ktd9w                            1/1     Running   0          45h
+    >   kube-system                         coredns-565d847f94-lks6r                                         1/1     Running   0          47h
+    >   kube-system                         coredns-565d847f94-wf86h                                         1/1     Running   0          47h
+    >   kube-system                         etcd-kind-control-plane                                          1/1     Running   0          47h
+    >   kube-system                         kindnet-lfmqb                                                    1/1     Running   0          47h
+    >   kube-system                         kube-apiserver-kind-control-plane                                1/1     Running   0          47h
+    >   kube-system                         kube-controller-manager-kind-control-plane                       1/1     Running   0          47h
+    >   kube-system                         kube-proxy-xt6zc                                                 1/1     Running   0          47h
+    >   kube-system                         kube-scheduler-kind-control-plane                                1/1     Running   0          47h
+    >   local-path-storage                  local-path-provisioner-684f458cdd-4jzzq                          1/1     Running   0          47h
+
+
+    kubectl logs --namespace capi-kubeadm-bootstrap-system capi-kubeadm-bootstrap-controller-manager-8654485994-m99zc
+
+    >   ....
+    >   ....
+    >   I0411 02:18:41.481053       1 kubeadmconfig_controller.go:249] "Cluster infrastructure is not ready, waiting" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" KubeadmConfig="default/green-frog-md-0-q884d" namespace="default" name="green-frog-md-0-q884d" reconcileID=8a6eddf2-0654-4456-84d5-ed523c9223d9 Machine="default/green-frog-md-0-7b8fd887b6xkb5dk-qhjk7" Machine="default/green-frog-md-0-7b8fd887b6xkb5dk-qhjk7" resourceVersion="504799" Cluster="default/green-frog"
+
+
+    kubectl logs --namespace capi-kubeadm-control-plane-system capi-kubeadm-control-plane-controller-manager-5d9d9494d5-65cv9
+
+    >   ....
+    >   ....
+    >   E0411 02:15:28.413671       1 controller.go:199] "Failed to update KubeadmControlPlane Status" err="failed to create remote cluster client: failed to retrieve kubeconfig secret for Cluster default/green-frog: secrets \"green-frog-kubeconfig\" not found" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/green-frog-control-plane" namespace="default" name="green-frog-control-plane" reconcileID=d68e2c63-2dcc-4f8c-96e0-7b87685300ae Cluster="default/green-frog"
+    >   E0411 02:15:28.414317       1 controller.go:329] "Reconciler error" err="failed to create remote cluster client: failed to retrieve kubeconfig secret for Cluster default/green-frog: secrets \"green-frog-kubeconfig\" not found" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/green-frog-control-plane" namespace="default" name="green-frog-control-plane" reconcileID=d68e2c63-2dcc-4f8c-96e0-7b87685300ae
+    >   I0411 02:20:14.417895       1 controller.go:276] "Reconcile KubeadmControlPlane" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/green-frog-control-plane" namespace="default" name="green-frog-control-plane" reconcileID=2f82203b-4258-40fd-b30f-ce182c5183c8 Cluster="default/green-frog"
+    >   I0411 02:20:14.420766       1 controller.go:285] "Cluster infrastructure is not ready yet" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/green-frog-control-plane" namespace="default" name="green-frog-control-plane" reconcileID=2f82203b-4258-40fd-b30f-ce182c5183c8 Cluster="default/green-frog"
+    >   E0411 02:20:14.422612       1 controller.go:199] "Failed to update KubeadmControlPlane Status" err="failed to create remote cluster client: failed to retrieve kubeconfig secret for Cluster default/green-frog: secrets \"green-frog-kubeconfig\" not found" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/green-frog-control-plane" namespace="default" name="green-frog-control-plane" reconcileID=2f82203b-4258-40fd-b30f-ce182c5183c8 Cluster="default/green-frog"
+    >   E0411 02:20:14.423383       1 controller.go:329] "Reconciler error" err="failed to create remote cluster client: failed to retrieve kubeconfig secret for Cluster default/green-frog: secrets \"green-frog-kubeconfig\" not found" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/green-frog-control-plane" namespace="default" name="green-frog-control-plane" reconcileID=2f82203b-4258-40fd-b30f-ce182c5183c8
+
+
+
+    kubectl \
+        -n capo-system \
+        logs \
+        -l control-plane=capo-controller-manager \
+        -c manager
+
+
+    >   ....
+    >   ....
+    >   I0411 02:19:20.345312       1 http.go:96] "controller-runtime/webhook/webhooks: received request" webhook="/validate-infrastructure-cluster-x-k8s-io-v1alpha6-openstackmachine" UID=ba08bfaa-1bc8-41d4-a29e-250e468e09fc kind="infrastructure.cluster.x-k8s.io/v1alpha6, Kind=OpenStackMachine" resource={Group:infrastructure.cluster.x-k8s.io Version:v1alpha6 Resource:openstackmachines}
+    >   I0411 02:19:20.345718       1 http.go:143] "controller-runtime/webhook/webhooks: wrote response" webhook="/validate-infrastructure-cluster-x-k8s-io-v1alpha6-openstackmachine" code=200 reason= UID=ba08bfaa-1bc8-41d4-a29e-250e468e09fc allowed=true
+    >   I0411 02:19:20.371439       1 http.go:96] "controller-runtime/webhook/webhooks: received request" webhook="/mutate-infrastructure-cluster-x-k8s-io-v1alpha6-openstackmachine" UID=a7fbf2b2-1a71-462e-a5b8-9073ec2a8202 kind="infrastructure.cluster.x-k8s.io/v1alpha6, Kind=OpenStackMachine" resource={Group:infrastructure.cluster.x-k8s.io Version:v1alpha6 Resource:openstackmachines}
+    >   I0411 02:19:20.371876       1 http.go:143] "controller-runtime/webhook/webhooks: wrote response" webhook="/mutate-infrastructure-cluster-x-k8s-io-v1alpha6-openstackmachine" code=200 reason= UID=a7fbf2b2-1a71-462e-a5b8-9073ec2a8202 allowed=true
+    >   I0411 02:19:20.373705       1 http.go:96] "controller-runtime/webhook/webhooks: received request" webhook="/validate-infrastructure-cluster-x-k8s-io-v1alpha6-openstackmachine" UID=979b0489-1a0f-4115-ab10-4d19eaaf4d60 kind="infrastructure.cluster.x-k8s.io/v1alpha6, Kind=OpenStackMachine" resource={Group:infrastructure.cluster.x-k8s.io Version:v1alpha6 Resource:openstackmachines}
+    >   I0411 02:19:20.374125       1 http.go:143] "controller-runtime/webhook/webhooks: wrote response" webhook="/validate-infrastructure-cluster-x-k8s-io-v1alpha6-openstackmachine" code=200 reason= UID=979b0489-1a0f-4115-ab10-4d19eaaf4d60 allowed=true
+    >   E0411 02:20:14.525452       1 controller.go:326] "Reconciler error" err="providerClient authentication err: Get \"https://arcus.openstack.hpc.cam.ac.uk:5000/\": x509: certificate signed by unknown authority" controller="openstackcluster" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackCluster" OpenStackCluster="default/green-frog" namespace="default" name="green-frog" reconcileID=4a24a89c-5389-4c47-a983-50c417e157a7
+    >   E0411 02:22:09.085225       1 controller.go:326] "Reconciler error" err="providerClient authentication err: Get \"https://arcus.openstack.hpc.cam.ac.uk:5000/\": x509: certificate signed by unknown authority" controller="openstackmachine" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackMachine" OpenStackMachine="default/green-frog-md-0-6pzdj" namespace="default" name="green-frog-md-0-6pzdj" reconcileID=bc094c04-803e-453e-b8c1-0d0ae9d2b5f0
+    >   E0411 02:22:09.086648       1 controller.go:326] "Reconciler error" err="providerClient authentication err: Get \"https://arcus.openstack.hpc.cam.ac.uk:5000/\": x509: certificate signed by unknown authority" controller="openstackmachine" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackMachine" OpenStackMachine="default/green-frog-md-0-zf4t2" namespace="default" name="green-frog-md-0-zf4t2" reconcileID=2eaa9b0c-5362-45df-8ac9-b2daaf26c0a4
+    >   E0411 02:22:09.088042       1 controller.go:326] "Reconciler error" err="providerClient authentication err: Get \"https://arcus.openstack.hpc.cam.ac.uk:5000/\": x509: certificate signed by unknown authority" controller="openstackmachine" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackMachine" OpenStackMachine="default/green-frog-md-0-l4k7b" namespace="default" name="green-frog-md-0-l4k7b" reconcileID=5ee774f0-7a69-4242-968a-8036a796c63f
+
+    #
+    # Interesting debugging clues ..
+    # https://github.com/kubernetes-sigs/kubespray/issues/9518
+
+
+
+    kubectl describe nodes
+
+    >   Name:               kind-control-plane
+    >   Roles:              control-plane
+    >   Labels:             beta.kubernetes.io/arch=amd64
+    >                       beta.kubernetes.io/os=linux
+    >                       kubernetes.io/arch=amd64
+    >                       kubernetes.io/hostname=kind-control-plane
+    >                       kubernetes.io/os=linux
+    >                       node-role.kubernetes.io/control-plane=
+    >                       node.kubernetes.io/exclude-from-external-load-balancers=
+    >   Annotations:        kubeadm.alpha.kubernetes.io/cri-socket: unix:///run/containerd/containerd.sock
+    >                       node.alpha.kubernetes.io/ttl: 0
+    >                       volumes.kubernetes.io/controller-managed-attach-detach: true
+    >   CreationTimestamp:  Sun, 09 Apr 2023 03:03:15 +0000
+    >   Taints:             <none>
+    >   Unschedulable:      false
+    >   Lease:
+    >     HolderIdentity:  kind-control-plane
+    >     AcquireTime:     <unset>
+    >     RenewTime:       Tue, 11 Apr 2023 02:27:22 +0000
+    >   Conditions:
+    >     Type             Status  LastHeartbeatTime                 LastTransitionTime                Reason                       Message
+    >     ----             ------  -----------------                 ------------------                ------                       -------
+    >     MemoryPressure   False   Tue, 11 Apr 2023 02:22:26 +0000   Sun, 09 Apr 2023 03:03:08 +0000   KubeletHasSufficientMemory   kubelet has sufficient memory available
+    >     DiskPressure     False   Tue, 11 Apr 2023 02:22:26 +0000   Sun, 09 Apr 2023 03:03:08 +0000   KubeletHasNoDiskPressure     kubelet has no disk pressure
+    >     PIDPressure      False   Tue, 11 Apr 2023 02:22:26 +0000   Sun, 09 Apr 2023 03:03:08 +0000   KubeletHasSufficientPID      kubelet has sufficient PID available
+    >     Ready            True    Tue, 11 Apr 2023 02:22:26 +0000   Sun, 09 Apr 2023 03:03:38 +0000   KubeletReady                 kubelet is posting ready status
+    >   Addresses:
+    >     InternalIP:  172.18.0.2
+    >     Hostname:    kind-control-plane
+    >   Capacity:
+    >     cpu:                2
+    >     ephemeral-storage:  14383092Ki
+    >     hugepages-1Gi:      0
+    >     hugepages-2Mi:      0
+    >     memory:             3053244Ki
+    >     pods:               110
+    >   Allocatable:
+    >     cpu:                2
+    >     ephemeral-storage:  14383092Ki
+    >     hugepages-1Gi:      0
+    >     hugepages-2Mi:      0
+    >     memory:             3053244Ki
+    >     pods:               110
+    >   System Info:
+    >     Machine ID:                        867b69ccea414f4b89f65a24c38fa8e2
+    >     System UUID:                       68c00a16-df75-4306-8171-48172dc997b1
+    >     Boot ID:                           965c100a-b2e6-448e-82fe-77250497b058
+    >     Kernel Version:                    5.11.12-300.fc34.x86_64
+    >     OS Image:                          Ubuntu 22.04.1 LTS
+    >     Operating System:                  linux
+    >     Architecture:                      amd64
+    >     Container Runtime Version:         containerd://1.6.9
+    >     Kubelet Version:                   v1.25.3
+    >     Kube-Proxy Version:                v1.25.3
+    >   PodCIDR:                             10.244.0.0/24
+    >   PodCIDRs:                            10.244.0.0/24
+    >   ProviderID:                          kind://docker/kind/kind-control-plane
+    >   Non-terminated Pods:                 (16 in total)
+    >     Namespace                          Name                                                              CPU Requests  CPU Limits  Memory Requests  Memory Limits  Age
+    >     ---------                          ----                                                              ------------  ----------  ---------------  -------------  ---
+    >     capi-kubeadm-bootstrap-system      capi-kubeadm-bootstrap-controller-manager-8654485994-m99zc        0 (0%)        0 (0%)      0 (0%)           0 (0%)         45h
+    >     capi-kubeadm-control-plane-system  capi-kubeadm-control-plane-controller-manager-5d9d9494d5-65cv9    0 (0%)        0 (0%)      0 (0%)           0 (0%)         45h
+    >     capi-system                        capi-controller-manager-746b4f5db4-p5r8g                          0 (0%)        0 (0%)      0 (0%)           0 (0%)         45h
+    >     capo-system                        capo-controller-manager-775d744795-r7wqz                          0 (0%)        0 (0%)      0 (0%)           0 (0%)         45h
+    >     cert-manager                       cert-manager-99bb69456-fdb77                                      0 (0%)        0 (0%)      0 (0%)           0 (0%)         45h
+    >     cert-manager                       cert-manager-cainjector-ffb4747bb-hd555                           0 (0%)        0 (0%)      0 (0%)           0 (0%)         45h
+    >     cert-manager                       cert-manager-webhook-545bd5d7d8-ktd9w                             0 (0%)        0 (0%)      0 (0%)           0 (0%)         45h
+    >     kube-system                        coredns-565d847f94-lks6r                                          100m (5%)     0 (0%)      70Mi (2%)        170Mi (5%)     47h
+    >     kube-system                        coredns-565d847f94-wf86h                                          100m (5%)     0 (0%)      70Mi (2%)        170Mi (5%)     47h
+    >     kube-system                        etcd-kind-control-plane                                           100m (5%)     0 (0%)      100Mi (3%)       0 (0%)         47h
+    >     kube-system                        kindnet-lfmqb                                                     100m (5%)     100m (5%)   50Mi (1%)        50Mi (1%)      47h
+    >     kube-system                        kube-apiserver-kind-control-plane                                 250m (12%)    0 (0%)      0 (0%)           0 (0%)         47h
+    >     kube-system                        kube-controller-manager-kind-control-plane                        200m (10%)    0 (0%)      0 (0%)           0 (0%)         47h
+    >     kube-system                        kube-proxy-xt6zc                                                  0 (0%)        0 (0%)      0 (0%)           0 (0%)         47h
+    >     kube-system                        kube-scheduler-kind-control-plane                                 100m (5%)     0 (0%)      0 (0%)           0 (0%)         47h
+    >     local-path-storage                 local-path-provisioner-684f458cdd-4jzzq                           0 (0%)        0 (0%)      0 (0%)           0 (0%)         47h
+    >   Allocated resources:
+    >     (Total limits may be over 100 percent, i.e., overcommitted.)
+    >     Resource           Requests    Limits
+    >     --------           --------    ------
+    >     cpu                950m (47%)  100m (5%)
+    >     memory             290Mi (9%)  390Mi (13%)
+    >     ephemeral-storage  0 (0%)      0 (0%)
+    >     hugepages-1Gi      0 (0%)      0 (0%)
+    >     hugepages-2Mi      0 (0%)      0 (0%)
+    >   Events:              <none>
+
+
+# -----------------------------------------------------
+
+    #
+    # More info on CA certificates
+
+    https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#ca-certificates
+
+        When using an https openstack endpoint, providing CA certificates is required unless verification is explicitly disabled.
+        You can choose to provide your ca certificates per cluster or globally using a specific capo flag.
+
+        Per cluster
+        To use the per cluster ca certificate, you can use the OPENSTACK_CLOUD_CACERT_B64 environment variable. The generator will set the cacert key with the variable’s content in the cluster’s cloud-config secret.
+
+        Global configuration
+        To use the same ca certificate for all clusters you can use the --ca-certs flag. When reconciling a cluster, if no cacert is set in the cluster’s cloud-config secret, CAPO will use the certicates provided with this flag.
+
+
+    #
+    # Various resources suggest the validation is client side.
+    #
+    # I think we can switch that off in our cloud.yaml
+    # https://docs.openstack.org/os-client-config/latest/user/configuration.html#ssl-settings
+    # verify: False
+    #
+
+# -----------------------------------------------------
+# Delete our cluster.
+#[root@bootstrap]
+
+    kubectl delete cluster "${CLUSTER_NAME:?}"
+
+    >   cluster.cluster.x-k8s.io "green-frog" deleted
+
+
+# -----------------------------------------------------
+# Edit our local copy of clouds.yaml.
+#[root@bootstrap]
+
+    vi /etc/openstack/clouds.yaml
+
+          iris-gaia-red:
+            auth:
+              auth_url: https://arcus.openstack.hpc.cam.ac.uk:5000
+              ....
+              ....
+            region_name: "RegionOne"
+            interface: "public"
+            identity_api_version: 3
+            auth_type: "v3applicationcredential"
+       +    verify: false
+
+
+# -----------------------------------------------------
+# Use the script provided by cluster-api-provider-openstack to parse our clouds.yaml file.
+# https://cluster-api-openstack.sigs.k8s.io/clusteropenstack/configuration.html#generate-credentials
+# https://github.com/kubernetes-sigs/cluster-api-provider-openstack/blob/main/docs/book/src/clusteropenstack/configuration.md#generate-credentials
+#[fedora@bootstrap]
+
+    curl \
+        --location \
+        --no-progress-meter \
+        --output '/tmp/env.rc' \
+        'https://raw.githubusercontent.com/kubernetes-sigs/cluster-api-provider-openstack/master/templates/env.rc'
+
+    source '/tmp/env.rc' '/etc/openstack/clouds.yaml' "${OPENSTACK_CLOUD:?}"
+
+
+cat << EOF
+OPENSTACK_CLOUD_YAML_B64   [${OPENSTACK_CLOUD_YAML_B64}]
+OPENSTACK_CLOUD_CACERT_B64 [${OPENSTACK_CLOUD_CACERT_B64}]
+OPENSTACK_CLOUD_PROVIDER_CONF_B64 [${OPENSTACK_CLOUD_PROVIDER_CONF_B64}]
+EOF
+
+    >   OPENSTACK_CLOUD_YAML_B64   [Y2xvdWRz....mYWxzZQo=]
+    >   OPENSTACK_CLOUD_CACERT_B64 [Cg==]
+    >   OPENSTACK_CLOUD_PROVIDER_CONF_B64 [W0dsb2Jh....5b28yIgo=]
+
+
+# -----------------------------------------------------
+# Generate our basic cluster config.
+# https://cluster-api.sigs.k8s.io/clusterctl/commands/generate-cluster.html
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#generating-the-cluster-configuration
+#[root@bootstrap]
+
+    CLUSTER_NAME=green-frog
+
+    clusterctl generate cluster \
+        "${CLUSTER_NAME:?}" \
+        --kubernetes-version "${KUBERNETES_VERSION:?}" \
+        --control-plane-machine-count 3 \
+        --worker-machine-count 3 \
+    | tee "/tmp/${CLUSTER_NAME:?}.yaml"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Generate our external cluster config.
+# https://cluster-api.sigs.k8s.io/clusterctl/commands/generate-cluster.html
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#generating-the-cluster-configuration
+#[root@bootstrap]
+
+    CLUSTER_NAME=brown-toad
+
+    clusterctl generate cluster \
+        "${CLUSTER_NAME:?}" \
+        --flavor external-cloud-provider \
+        --kubernetes-version "${KUBERNETES_VERSION:?}" \
+        --control-plane-machine-count 3 \
+        --worker-machine-count 3 \
+    | tee "/tmp/${CLUSTER_NAME:?}.yaml"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Apply the basic cluster config.
+# https://cluster-api.sigs.k8s.io/user/quick-start.html#apply-the-workload-cluster
+#[root@bootstrap]
+
+    CLUSTER_NAME=green-frog
+
+    kubectl apply \
+        -f "/tmp/${CLUSTER_NAME:?}.yaml"
+
+
+    >   secret/green-frog-cloud-config configured
+    >   kubeadmconfigtemplate.bootstrap.cluster.x-k8s.io/green-frog-md-0 created
+    >   cluster.cluster.x-k8s.io/green-frog created
+    >   machinedeployment.cluster.x-k8s.io/green-frog-md-0 created
+    >   kubeadmcontrolplane.controlplane.cluster.x-k8s.io/green-frog-control-plane created
+    >   openstackcluster.infrastructure.cluster.x-k8s.io/green-frog created
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/green-frog-control-plane created
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/green-frog-md-0 created
+
+
+    kubectl get cluster
+
+    >   NAME         PHASE          AGE   VERSION
+    >   green-frog   Provisioning   56s
+
+
+    clusterctl describe cluster "${CLUSTER_NAME:?}"
+
+    >   NAME                                                           READY  SEVERITY  REASON                           SINCE  MESSAGE
+    >   Cluster/green-frog                                             False  Warning   ScalingUp                        37s    Scaling up control plane to 3 replicas (actual 0)
+    >   ├─ClusterInfrastructure - OpenStackCluster/green-frog
+    >   ├─ControlPlane - KubeadmControlPlane/green-frog-control-plane  False  Warning   ScalingUp                        37s    Scaling up control plane to 3 replicas (actual 0)
+    >   └─Workers
+    >     └─MachineDeployment/green-frog-md-0                          False  Warning   WaitingForAvailableMachines      67s    Minimum availability requires 3 replicas, current 0 available
+    >       └─3 Machines...                                            False  Info      WaitingForClusterInfrastructure  67s    See green-frog-md-0-7b8fd887b6xq9qjg-kbphl, green-frog-md-0-7b8fd887b6xq9qjg-m2qwv, ...
+
+
+    kubectl \
+        -n capo-system \
+        logs \
+        -l control-plane=capo-controller-manager \
+        -c manager
+
+    >   ....
+    >   ....
+    >   I0411 17:27:10.084553       1 openstackmachine_controller.go:311] "Cluster infrastructure is not ready yet, requeuing machine" controller="openstackmachine" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackMachine" OpenStackMachine="default/green-frog-md-0-g8q9l" namespace="default" name="green-frog-md-0-g8q9l" reconcileID=0ca23f49-66d7-48be-9478-8da06956e671 openStackMachine="green-frog-md-0-g8q9l" machine="green-frog-md-0-7b8fd887b6xq9qjg-kbphl" cluster="green-frog" openStackCluster="green-frog"
+    >   I0411 17:27:25.144008       1 openstackmachine_controller.go:311] "Cluster infrastructure is not ready yet, requeuing machine" controller="openstackmachine" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackMachine" OpenStackMachine="default/green-frog-md-0-pc7h8" namespace="default" name="green-frog-md-0-pc7h8" reconcileID=9a29b036-f6e2-4ddb-9669-713fc243a7dc openStackMachine="green-frog-md-0-pc7h8" machine="green-frog-md-0-7b8fd887b6xq9qjg-m2qwv" cluster="green-frog" openStackCluster="green-frog"
+    >   I0411 17:27:25.230895       1 openstackmachine_controller.go:311] "Cluster infrastructure is not ready yet, requeuing machine" controller="openstackmachine" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackMachine" OpenStackMachine="default/green-frog-md-0-h6zds" namespace="default" name="green-frog-md-0-h6zds" reconcileID=88ab0e9b-419c-414c-aa8b-62129da8d3a6 openStackMachine="green-frog-md-0-h6zds" machine="green-frog-md-0-7b8fd887b6xq9qjg-zjjnd" cluster="green-frog" openStackCluster="green-frog"
+    >   I0411 17:27:25.534010       1 openstackmachine_controller.go:311] "Cluster infrastructure is not ready yet, requeuing machine" controller="openstackmachine" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackMachine" OpenStackMachine="default/green-frog-md-0-g8q9l" namespace="default" name="green-frog-md-0-g8q9l" reconcileID=df8fad2b-7a8b-48e8-adba-f0c404030f7a openStackMachine="green-frog-md-0-g8q9l" machine="green-frog-md-0-7b8fd887b6xq9qjg-kbphl" cluster="green-frog" openStackCluster="green-frog"
+    >   I0411 17:27:28.172182       1 openstackcluster_controller.go:255] "Reconciling Cluster" controller="openstackcluster" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackCluster" OpenStackCluster="default/green-frog" namespace="default" name="green-frog" reconcileID=e9b808af-302e-4b20-8c9b-a3367db5ce33 cluster="green-frog"
+    >   I0411 17:27:28.173921       1 openstackcluster_controller.go:427] "Reconciling network components" controller="openstackcluster" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackCluster" OpenStackCluster="default/green-frog" namespace="default" name="green-frog" reconcileID=e9b808af-302e-4b20-8c9b-a3367db5ce33 cluster="green-frog"
+    >   I0411 17:27:28.715128       1 network.go:93] "Reconciling network" controller="openstackcluster" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackCluster" OpenStackCluster="default/green-frog" namespace="default" reconcileID=e9b808af-302e-4b20-8c9b-a3367db5ce33 cluster="green-frog" name="k8s-clusterapi-cluster-default-green-frog"
+    >   I0411 17:27:28.828696       1 network.go:177] "Reconciling subnet" controller="openstackcluster" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackCluster" OpenStackCluster="default/green-frog" namespace="default" reconcileID=e9b808af-302e-4b20-8c9b-a3367db5ce33 cluster="green-frog" name="k8s-clusterapi-cluster-default-green-frog"
+    >   I0411 17:27:28.877210       1 recorder.go:103] "events: Failed to create subnet k8s-clusterapi-cluster-default-green-frog: Bad request with: [POST https://arcus.openstack.hpc.cam.ac.uk:9696/v2.0/subnets], error message: {\"NeutronError\": {\"type\": \"HTTPBadRequest\", \"message\": \"Invalid input for dns_nameservers. Reason: '131.111.8.42,131.111.12.20' is not a valid nameserver. '131.111.8.42,131.111.12.20' is not a valid IP address.\", \"detail\": \"\"}}" type="Warning" object={Kind:OpenStackCluster Namespace:default Name:green-frog UID:19326a1f-18c6-4783-b6b5-e3e170ab5663 APIVersion:infrastructure.cluster.x-k8s.io/v1alpha6 ResourceVersion:671782 FieldPath:} reason="Failedcreatesubnet"
+    >   E0411 17:27:28.883039       1 controller.go:326] "Reconciler error" err="failed to reconcile subnets: Bad request with: [POST https://arcus.openstack.hpc.cam.ac.uk:9696/v2.0/subnets], error message: {\"NeutronError\": {\"type\": \"HTTPBadRequest\", \"message\": \"Invalid input for dns_nameservers. Reason: '131.111.8.42,131.111.12.20' is not a valid nameserver. '131.111.8.42,131.111.12.20' is not a valid IP address.\", \"detail\": \"\"}}" controller="openstackcluster" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackCluster" OpenStackCluster="default/green-frog" namespace="default" name="green-frog" reconcileID=e9b808af-302e-4b20-8c9b-a3367db5ce33
+
+
+    error message: {
+        "NeutronError": {
+            "type": "HTTPBadRequest",
+            "message": "Invalid input for dns_nameservers. Reason: '131.111.8.42,131.111.12.20' is not a valid nameserver. '131.111.8.42,131.111.12.20' is not a valid IP address.",
+            "detail": ""
+            }
+        }"
+
+
+# -----------------------------------------------------
+# Use a single DNS server address.
+#[root@bootstrap]
+
+    #
+    # Use pne of the Cambridge DNS servers.
+    # https://www.dns.cam.ac.uk/servers/rec.html
+
+    export OPENSTACK_DNS_NAMESERVERS=131.111.8.42
+
+
+# -----------------------------------------------------
+# Generate our basic cluster config.
+# https://cluster-api.sigs.k8s.io/clusterctl/commands/generate-cluster.html
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#generating-the-cluster-configuration
+#[root@bootstrap]
+
+    CLUSTER_NAME=green-frog
+
+    clusterctl generate cluster \
+        "${CLUSTER_NAME:?}" \
+        --kubernetes-version "${KUBERNETES_VERSION:?}" \
+        --control-plane-machine-count 3 \
+        --worker-machine-count 3 \
+    | tee "/tmp/${CLUSTER_NAME:?}.yaml"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete our cluster.
+#[root@bootstrap]
+
+    kubectl delete cluster "${CLUSTER_NAME:?}"
+
+    >   cluster.cluster.x-k8s.io "green-frog" deleted
+
+
+# -----------------------------------------------------
+# Apply the basic cluster config.
+# https://cluster-api.sigs.k8s.io/user/quick-start.html#apply-the-workload-cluster
+#[root@bootstrap]
+
+    kubectl apply \
+        -f "/tmp/${CLUSTER_NAME:?}.yaml"
+
+    >   secret/green-frog-cloud-config unchanged
+    >   kubeadmconfigtemplate.bootstrap.cluster.x-k8s.io/green-frog-md-0 unchanged
+    >   Warning: Detected changes to resource green-frog which is currently being deleted.
+    >   cluster.cluster.x-k8s.io/green-frog unchanged
+    >   machinedeployment.cluster.x-k8s.io/green-frog-md-0 created
+    >   kubeadmcontrolplane.controlplane.cluster.x-k8s.io/green-frog-control-plane created
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/green-frog-control-plane unchanged
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/green-frog-md-0 unchanged
+    >   The OpenStackCluster "green-frog" is invalid: spec: Forbidden: cannot be modified
+
+    #
+    # Bugger ... broken.
+    #
+
+
+# -----------------------------------------------------
+
+
+
+

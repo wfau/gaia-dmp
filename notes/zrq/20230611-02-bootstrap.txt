@@ -1,0 +1,1213 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 5,"units": "%"}}]
+#
+
+
+    Target:
+
+        Customising the StackHPC capi-helm-charts.
+        https://github.com/stackhpc/capi-helm-charts
+
+        Going the long way round to lean how it works.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# ....
+#[root@bootstrap]
+
+    kubectl get events --field-selector type=Error
+
+    >   LAST SEEN   TYPE    REASON    OBJECT                                             MESSAGE
+    >   38m         Error   Logging   helmrelease/aglais-one-csi-cinder                  Handler 'handle_addon_updated' failed with an exception. Will retry....
+    >   2m16s       Error   Logging   helmrelease/aglais-one-cni-calico                  Handler 'handle_addon_updated' failed with an exception. Will retry....
+    >   ....
+    >   ....
+    >   34m         Error   Logging   helmrelease/aglais-one-cni-calico                  Handler 'handle_addon_updated' failed with an exception. Will retry....
+    >   58m         Error   Logging   helmrelease/aglais-one-cni-calico                  Handler 'handle_addon_updated' failed with an exception. Will retry....
+
+    #
+    # Primary suspect is Calico, but we can't find further details.
+    #
+    # Seeing as we have an option, lets try the other CNI provider.
+    # https://github.com/stackhpc/capi-helm-charts/blob/1cd905bde6ecdd5c35fceb23dd13ee9edfac2081/charts/cluster-addons/values.yaml#L41-L66
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit /deployments/cluster-api/bootstrap/ansible/templates/clusterapi-config.j2 &
+
+        +
+        +   # Settings for the CNI addon
+        +   cni:
+        +     # Indicates if a CNI should be deployed
+        +     enabled: true
+        +     # The CNI to deploy - supported values are calico or cilium
+        +     type: cilium
+
+    popd
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Sun 11 Jun 05:54:43 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting red for development.
+    # Using the 'admin' credentials to allow access to loadbalancers etc.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}-admin
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    3m29.911s
+    >   user    1m33.543s
+    >   sys     0m9.982s
+
+
+# -----------------------------------------------------
+# Add YAML editor role to our client container.
+# TODO Add this to the Ansible client.
+# https://github.com/wfau/atolmis/issues/30
+#[root@ansibler]
+
+    ansible-galaxy install kwoodson.yedit
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Issue a short term token to get the current user ID and project ID.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        token issue \
+            --format json \
+    | tee /tmp/ostoken.json   \
+    | jq '.'
+
+    >   {
+    >     "expires": "2023-06-11T07:00:27+0000",
+    >     "id": "################################",
+    >     "project_id": "0dd8cc5ee5a7455c8748cc06d04c93c3",
+    >     "user_id": "########"
+    >   }
+
+
+    export osuserid=$(
+        jq -r '.user_id' '/tmp/ostoken.json'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        user show \
+            --format json \
+            "${osuserid}" \
+    | tee '/tmp/osuser.json'
+
+    export osusername=$(
+        jq -r '.name' '/tmp/osuser.json'
+        )
+
+    >   ....
+    >   ....
+
+
+    export osprojectid=$(
+        jq -r '.project_id' '/tmp/ostoken.json'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        project show \
+            --format json \
+            "${osprojectid}" \
+    | tee '/tmp/osproject.json'
+
+    export osprojectname=$(
+        jq -r '.name' '/tmp/osproject.json'
+        )
+
+    >   {
+    >     "description": "IRIS@Cambridge Gaia-Red",
+    >     "domain_id": "default",
+    >     "enabled": true,
+    >     "id": "0dd8cc5ee5a7455c8748cc06d04c93c3",
+    >     "is_domain": false,
+    >     "name": "iris-gaia-red",
+    >     "options": {},
+    >     "parent_id": "default",
+    >     "tags": []
+    >   }
+
+
+# -----------------------------------------------------
+# Create our deployment settings.
+#[root@ansibler]
+
+    export deployname=${cloudname:?}-$(date '+%Y%m%d')
+    export deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    rm -f "${statusyml}"
+    touch "${statusyml}"
+
+    yq --null-input '{
+        "aglais": {
+            "deployment": {
+                "type": "cluster-api",
+                "name": strenv(deployname),
+                "date": strenv(deploydate)
+                },
+            "openstack": {
+                "cloud": {
+                    "name": strenv(cloudname)
+                    },
+                "user": {
+                    "id": strenv(osuserid),
+                    "name": strenv(osusername)
+                    },
+                "project": {
+                    "id": strenv(osprojectid),
+                    "name": strenv(osprojectname)
+                    }
+                }
+            }
+        }' \
+     | tee "${statusyml}"
+
+    >   aglais:
+    >     deployment:
+    >       type: cluster-api
+    >       name: iris-gaia-red-admin-20230611
+    >       date: 20230611T141713
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-red-admin
+    >       user:
+    >         id: 5fa0c97a6dd14e01a3c7d91dad5c6b17
+    >         name: dmorris_gaia
+    >       project:
+    >         id: 0dd8cc5ee5a7455c8748cc06d04c93c3
+    >         name: iris-gaia-red
+
+
+# -----------------------------------------------------
+# Create our bootstrap components.
+#[root@ansibler]
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/config/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    yq '.' /opt/aglais/aglais-status.yml
+
+    >   aglais:
+    >     deployment:
+    >       date: 20230611T141713
+    >       name: iris-gaia-red-admin-20230611
+    >       type: cluster-api
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-red-admin
+    >       keypairs:
+    >         team:
+    >           fingerprint: 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16
+    >           id: iris-gaia-red-admin-20230611-keypair
+    >           name: iris-gaia-red-admin-20230611-keypair
+    >       networks:
+    >         external:
+    >           network:
+    >             id: 57add367-d205-4030-a929-d75617a7c63e
+    >             name: CUDN-Internet
+    >         internal:
+    >           network:
+    >             id: 34e90041-7ac7-47ef-bd28-700b38ecb4c2
+    >             name: iris-gaia-red-admin-20230611-internal-network
+    >           router:
+    >             id: 6da639be-ab25-4ff5-9c4a-904f607f2314
+    >             name: iris-gaia-red-admin-20230611-internal-router
+    >           subnet:
+    >             cidr: 10.10.0.0/16
+    >             id: 86019528-b9b1-4a66-ab78-721ab5fc0cc1
+    >             name: iris-gaia-red-admin-20230611-internal-subnet
+    >       project:
+    >         id: 0dd8cc5ee5a7455c8748cc06d04c93c3
+    >         name: iris-gaia-red
+    >       servers:
+    >         bootstrap:
+    >           float:
+    >             external: 128.232.226.67
+    >             id: ea7ff0e4-15bc-4c8e-a799-46941f9b856f
+    >             internal: 10.10.3.179
+    >           server:
+    >             address:
+    >               ipv4: 10.10.3.179
+    >             flavor:
+    >               name: gaia.vm.cclake.2vcpu
+    >             hostname: bootstrap
+    >             id: e52d1819-2826-4555-8191-9729037a6596
+    >             image:
+    >               id: e5c23082-cc34-4213-ad31-ff4684657691
+    >               name: Fedora-34.1.2
+    >             name: iris-gaia-red-admin-20230611-bootstrap
+    >       user:
+    >         id: 5fa0c97a6dd14e01a3c7d91dad5c6b17
+    >         name: dmorris_gaia
+
+
+# -----------------------------------------------------
+# Create a clouds.yaml file for the current cloud.
+# Add our project ID and disable TLS certificate checks.
+# TODO Create and transfer using an Ansible template ..
+#[root@ansibler]
+
+    yq '
+        {
+        "clouds":
+          {
+          strenv(cloudname):
+          .clouds.[strenv(cloudname)]
+          | .auth.project_id = strenv(osprojectid)
+          | .verify = false
+          }
+        }
+        ' \
+        /etc/openstack/clouds.yaml \
+        | tee /tmp/openstack-clouds.yaml
+
+    >   clouds:
+    >     iris-gaia-red-admin:
+    >       auth:
+    >         auth_url: https://arcus.openstack.hpc.cam.ac.uk:5000
+    >         application_credential_id: "################"
+    >         application_credential_secret: "################"
+    >         project_id: 0dd8cc5ee5a7455c8748cc06d04c93c3
+    >       region_name: "RegionOne"
+    >       interface: "public"
+    >       identity_api_version: 3
+    >       auth_type: "v3applicationcredential"
+    >       verify: false
+
+
+# -----------------------------------------------------
+# Transfer our clouds.yaml file to our bootstrap node.
+# TODO Create and transfer using an Ansible template ..
+#[root@ansibler]
+
+    scp \
+        /tmp/openstack-clouds.yaml \
+        bootstrap:/tmp/openstack-clouds.yaml
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p \
+            /etc/aglais
+        sudo install \
+            /tmp/openstack-clouds.yaml \
+            /etc/aglais/openstack-clouds.yaml
+        '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the bootstrap node as root.
+#[user@desktop]
+
+    podman exec \
+        -it \
+        ansibler-red \
+            bash
+
+        ssh bootstrap
+
+            sudo su -
+
+    #
+    # We could prefix everything with sudo, but it gets very boring.
+    #
+
+
+# -----------------------------------------------------
+# Create our initial Kind cluster.
+# https://github.com/kubernetes-sigs/kind/pull/2478#issuecomment-1214656908
+#[root@bootstrap]
+
+    kind create cluster --retain
+
+    >   Creating cluster "kind" ...
+    >    ✓ Ensuring node image (kindest/node:v1.25.3) 🖼
+    >    ✓ Preparing nodes 📦
+    >    ✓ Writing configuration 📜
+    >    ✓ Starting control-plane 🕹️
+    >    ✓ Installing CNI 🔌
+    >    ✓ Installing StorageClass 💾
+    >   ....
+    >   ....
+
+
+    kubectl cluster-info
+
+    >   Kubernetes control plane is running at https://127.0.0.1:38895
+    >   CoreDNS is running at https://127.0.0.1:38895/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the installed pods.
+#[root@bootstrap]
+
+    kubectl get pods --all-namespaces
+
+    >   NAMESPACE            NAME                                         READY   STATUS    RESTARTS   AGE
+    >   kube-system          coredns-565d847f94-fbs7f                     1/1     Running   0          12s
+    >   kube-system          coredns-565d847f94-qbgkc                     1/1     Running   0          12s
+    >   kube-system          etcd-kind-control-plane                      1/1     Running   0          26s
+    >   kube-system          kindnet-qgw66                                1/1     Running   0          12s
+    >   kube-system          kube-apiserver-kind-control-plane            1/1     Running   0          26s
+    >   kube-system          kube-controller-manager-kind-control-plane   1/1     Running   0          26s
+    >   kube-system          kube-proxy-zpfxp                             1/1     Running   0          12s
+    >   kube-system          kube-scheduler-kind-control-plane            1/1     Running   0          27s
+    >   local-path-storage   local-path-provisioner-684f458cdd-rg7bz      1/1     Running   0          12s
+
+
+# -----------------------------------------------------
+# Install the Openstack Cluster API Provider
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#initialization-for-common-providers
+# https://github.com/stackhpc/capi-helm-charts/tree/main/charts/openstack-cluster#prerequisites
+#[root@bootstrap]
+
+    clusterctl init --infrastructure openstack
+
+    >   Fetching providers
+    >   Installing cert-manager Version="v1.12.1"
+    >   Waiting for cert-manager to be available...
+    >   Installing Provider="cluster-api" Version="v1.4.3" TargetNamespace="capi-system"
+    >   Installing Provider="bootstrap-kubeadm" Version="v1.4.3" TargetNamespace="capi-kubeadm-bootstrap-system"
+    >   Installing Provider="control-plane-kubeadm" Version="v1.4.3" TargetNamespace="capi-kubeadm-control-plane-system"
+    >   Installing Provider="infrastructure-openstack" Version="v0.7.3" TargetNamespace="capo-system"
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the installed pods.
+#[root@bootstrap]
+
+    kubectl get pods --all-namespaces
+
+    >   NAMESPACE                           NAME                                                             READY   STATUS    RESTARTS   AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-59577cccbd-w5mkz       1/1     Running   0          80s
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-7c56c6785f-9l5qx   1/1     Running   0          78s
+    >   capi-system                         capi-controller-manager-685bf79b6-k6fhv                          1/1     Running   0          83s
+    >   capo-system                         capo-controller-manager-6cb6565fd9-xk64s                         1/1     Running   0          74s
+    >   cert-manager                        cert-manager-cainjector-f548684c8-sz97s                          1/1     Running   0          106s
+    >   cert-manager                        cert-manager-d8d7674f9-2fss9                                     1/1     Running   0          106s
+    >   cert-manager                        cert-manager-webhook-5dc56cbb4-zztkr                             1/1     Running   0          106s
+    >   kube-system                         coredns-565d847f94-fbs7f                                         1/1     Running   0          2m21s
+    >   kube-system                         coredns-565d847f94-qbgkc                                         1/1     Running   0          2m21s
+    >   kube-system                         etcd-kind-control-plane                                          1/1     Running   0          2m35s
+    >   kube-system                         kindnet-qgw66                                                    1/1     Running   0          2m21s
+    >   kube-system                         kube-apiserver-kind-control-plane                                1/1     Running   0          2m35s
+    >   kube-system                         kube-controller-manager-kind-control-plane                       1/1     Running   0          2m35s
+    >   kube-system                         kube-proxy-zpfxp                                                 1/1     Running   0          2m21s
+    >   kube-system                         kube-scheduler-kind-control-plane                                1/1     Running   0          2m36s
+    >   local-path-storage                  local-path-provisioner-684f458cdd-rg7bz                          1/1     Running   0          2m21s
+
+
+# -----------------------------------------------------
+# Check our cluster config.
+# https://github.com/stackhpc/capi-helm-charts/tree/main/charts/openstack-cluster#managing-a-workload-cluster
+#[root@bootstrap]
+
+    yq '.' '/opt/aglais/clusterapi-config.yml'
+
+    >   ....
+    >   ....
+    >   # Settings for the CNI addon
+    >   cni:
+    >     # Indicates if a CNI should be deployed
+    >     enabled: true
+    >     # The CNI to deploy - supported values are calico or cilium
+    >     type: cilium
+
+
+# -----------------------------------------------------
+# Add the StackHPC Helm repos.
+#[root@bootstrap]
+
+    helm repo add \
+        capi \
+        https://stackhpc.github.io/capi-helm-charts
+
+    >   "capi" has been added to your repositories
+
+
+    helm repo add \
+        capi-addons \
+        https://stackhpc.github.io/cluster-api-addon-provider
+
+    >   "capi-addons" has been added to your repositories
+
+
+# -----------------------------------------------------
+# Install the cluster-api-addon-provider.
+#[root@bootstrap]
+
+    # As a guess ... pass the config files to this too.
+    # Reason - this includes the tools for CNI depolyment.
+    # Theory, if the addon-provider uses the config values, it should get the right ones.
+    # Theory, if the addon-provider doesn't use the config values, this should have no effect.
+
+    helm install \
+        cluster-api-addon-provider \
+        capi-addons/cluster-api-addon-provider \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/etc/aglais/openstack-clouds.yaml'
+
+    >   NAME: cluster-api-addon-provider
+    >   LAST DEPLOYED: Sun Jun 11 14:28:13 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+
+
+# -----------------------------------------------------
+# Initialise our cluster ...
+#[root@bootstrap]
+
+    CLUSTER_NAME=aglais-one
+
+    helm install \
+        "${CLUSTER_NAME:?}" \
+        capi/openstack-cluster \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/etc/aglais/openstack-clouds.yaml'
+
+    >   Error: INSTALLATION FAILED: unable to build kubernetes objects from release manifest: [
+    >       resource mapping not found for name: "aglais-one-cni-calico" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-mellanox-network-operator" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-metrics-server" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-node-feature-discovery" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-nvidia-gpu-operator" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-ccm-openstack" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-csi-cinder" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-cloud-config" namespace: "" from "": no matches for kind "Manifests" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-csi-cinder-storageclass" namespace: "" from "": no matches for kind "Manifests" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first
+    >       ]
+
+    #
+    # OK, not what we expected ...
+    #
+
+    #
+    # The cluster install is looking for the 'calico' CNI provider.
+    # When we have modified the config to use 'cillium'.
+    #
+    # Try again without the modification ..
+    #
+
+# -----------------------------------------------------
+# Edit our cluster config ...
+#[root@bootstrap]
+
+    vi '/opt/aglais/clusterapi-config.yml' \
+
+        # Settings for the CNI addon
+        cni:
+          # Indicates if a CNI should be deployed
+          enabled: true
+          # The CNI to deploy - supported values are calico or cilium
+    -     type: cilium
+    +     type: calico
+
+
+# -----------------------------------------------------
+# Install the cluster-api-addon-provider.
+#[root@bootstrap]
+
+    helm uninstall \
+        cluster-api-addon-provider
+
+    >   release "cluster-api-addon-provider" uninstalled
+
+    helm install \
+        cluster-api-addon-provider \
+        capi-addons/cluster-api-addon-provider \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/etc/aglais/openstack-clouds.yaml'
+
+    >   NAME: cluster-api-addon-provider
+    >   LAST DEPLOYED: Sun Jun 11 15:14:40 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+
+
+# -----------------------------------------------------
+# Initialise our cluster ...
+#[root@bootstrap]
+
+    CLUSTER_NAME=aglais-two
+
+    helm install \
+        "${CLUSTER_NAME:?}" \
+        capi/openstack-cluster \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/etc/aglais/openstack-clouds.yaml'
+
+    >   NAME: aglais-two
+    >   LAST DEPLOYED: Sun Jun 11 15:15:11 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+
+
+    clusterctl describe cluster "${CLUSTER_NAME:?}"
+
+    >   NAME                                                           READY  SEVERITY  REASON                           SINCE  MESSAGE
+    >   Cluster/aglais-two                                             False  Warning   ScalingUp                        22s    Scaling up control plane to 3 replicas (actual 0)
+    >   ├─ClusterInfrastructure - OpenStackCluster/aglais-two
+    >   ├─ControlPlane - KubeadmControlPlane/aglais-two-control-plane  False  Warning   ScalingUp                        22s    Scaling up control plane to 3 replicas (actual 0)
+    >   └─Workers
+    >     └─MachineDeployment/aglais-two-md-0                          False  Warning   WaitingForAvailableMachines      22s    Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                            False  Info      WaitingForClusterInfrastructure  21s    See aglais-two-md-0-55567c84fxjl9fn-hkvg7, aglais-two-md-0-55567c84fxjl9fn-rtq6d, ...
+
+
+# -----------------------------------------------------
+# Get the kubeconfig for our cluster.
+#[root@bootstrap]
+
+    clusterctl get \
+        kubeconfig "${CLUSTER_NAME:?}" \
+    | tee "${HOME}/.kube/${CLUSTER_NAME:?}-kubeconfig"
+
+    >   apiVersion: v1
+    >   clusters:
+    >   - cluster:
+    >       certificate-authority-data: LS0tLS1C .... tLS0tLQo=
+    >       server: https://128.232.227.49:6443
+    >     name: aglais-two
+    >   contexts:
+    >   - context:
+    >       cluster: aglais-two
+    >       user: aglais-two-admin
+    >     name: aglais-two-admin@aglais-two
+    >   current-context: aglais-two-admin@aglais-two
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >   - name: aglais-two-admin
+    >     user:
+    >       client-certificate-data: LS0tLS1C .... tLS0tLQo=
+    >       client-key-data: LS0tLS1C .... 0tLS0tCg==
+
+
+# -----------------------------------------------------
+# Use the kubeconfig to get our cluster info.
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${CLUSTER_NAME:?}-kubeconfig" \
+        cluster-info
+
+    >   E0611 15:20:50.479555   17561 memcache.go:287] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0611 15:20:50.485855   17561 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0611 15:20:50.492067   17561 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0611 15:20:50.495222   17561 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   Kubernetes control plane is running at https://128.232.227.49:6443
+    >   CoreDNS is running at https://128.232.227.49:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+    kubectl \
+        get events \
+        --field-selector type=Error
+
+    >   ....
+    >   53s         Error   Logging   helmrelease/aglais-two-cni-calico                  Handler 'handle_addon_updated' failed with an exception. Will retry....
+    >   ....
+    >   116s        Error   Logging   helmrelease/aglais-two-cni-calico                  Handler 'handle_addon_updated' failed with an exception. Will retry....
+    >   ....
+    >   3m          Error   Logging   helmrelease/aglais-two-cni-calico                  Handler 'handle_addon_updated' failed with an exception. Will retry....
+    >   ....
+
+
+    kubectl get cluster-api
+
+    >   NAME                                                                                        CLUSTER      BOOTSTRAP   TARGET NAMESPACE   RELEASE NAME              PHASE      REVISION   AGE
+    >   manifests.addons.stackhpc.com/aglais-two-cloud-config                                       aglais-two   true        openstack-system   cloud-config              Deployed   1          8m10s
+    >   manifests.addons.stackhpc.com/aglais-two-csi-cinder-storageclass                            aglais-two   true        openstack-system   csi-cinder-storageclass   Deployed   1          8m10s
+    >
+    >   NAME                                                                                        CLUSTER      BOOTSTRAP   TARGET NAMESPACE         RELEASE NAME                PHASE        REVISION   CHART NAME                           CHART VERSION   AGE
+    >   helmrelease.addons.stackhpc.com/aglais-two-ccm-openstack                                    aglais-two   true        openstack-system         ccm-openstack               Deployed     1          openstack-cloud-controller-manager   1.3.0           8m10s
+    >   helmrelease.addons.stackhpc.com/aglais-two-cni-calico                                       aglais-two   true        tigera-operator          cni-calico                  Installing              tigera-operator                      v3.23.3         8m10s
+    >   helmrelease.addons.stackhpc.com/aglais-two-csi-cinder                                       aglais-two   true        openstack-system         csi-cinder                  Installing              openstack-cinder-csi                 2.2.0           8m10s
+    >   helmrelease.addons.stackhpc.com/aglais-two-mellanox-network-operator                        aglais-two   true        network-operator         mellanox-network-operator   Installing              network-operator                     1.3.0           8m10s
+    >   helmrelease.addons.stackhpc.com/aglais-two-metrics-server                                   aglais-two   true        kube-system              metrics-server              Installing              metrics-server                       3.8.2           8m10s
+    >   helmrelease.addons.stackhpc.com/aglais-two-node-feature-discovery                           aglais-two   true        node-feature-discovery   node-feature-discovery      Installing              node-feature-discovery               0.11.2          8m10s
+    >   helmrelease.addons.stackhpc.com/aglais-two-nvidia-gpu-operator                              aglais-two   true        gpu-operator             nvidia-gpu-operator         Installing              gpu-operator                         v1.11.1         8m10s
+    >
+    >   NAME                                                                                        AGE
+    >   kubeadmconfigtemplate.bootstrap.cluster.x-k8s.io/aglais-two-md-0-99910806                   8m10s
+    >
+    >   NAME                                                                                        CLUSTER      AGE
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/aglais-two-control-plane-bbwx4                     aglais-two   6m32s
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/aglais-two-md-0-99910806-5k46l                     aglais-two   8m9s
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/aglais-two-md-0-99910806-s74d4                     aglais-two   8m9s
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/aglais-two-md-0-99910806-wdwfj                     aglais-two   8m9s
+    >
+    >   NAME                                                                                        PHASE         AGE     VERSION
+    >   cluster.cluster.x-k8s.io/aglais-two                                                         Provisioned   8m10s
+    >
+    >   NAME                                                                                        CLUSTER      REPLICAS   READY   AVAILABLE   AGE    VERSION
+    >   machineset.cluster.x-k8s.io/aglais-two-md-0-55567c84fxjl9fn                                 aglais-two   3                              8m9s   v1.25.4
+    >
+    >   NAME                                                                                        CLUSTER      REPLICAS   READY   UPDATED   UNAVAILABLE   PHASE       AGE     VERSION
+    >   machinedeployment.cluster.x-k8s.io/aglais-two-md-0                                          aglais-two   3                  3         3             ScalingUp   8m10s   v1.25.4
+    >
+    >   NAME                                                                                        CLUSTER      EXPECTEDMACHINES   MAXUNHEALTHY   CURRENTHEALTHY   AGE
+    >   machinehealthcheck.cluster.x-k8s.io/aglais-two-control-plane                                aglais-two   1                  100%                            8m10s
+    >   machinehealthcheck.cluster.x-k8s.io/aglais-two-md-0                                         aglais-two   3                  100%                            8m10s
+    >
+    >   NAME                                                                                        CLUSTER      NODENAME   PROVIDERID                                          PHASE         AGE     VERSION
+    >   machine.cluster.x-k8s.io/aglais-two-control-plane-tjctr                                     aglais-two              openstack:///746ad846-6c58-433b-b772-d4290052a9c0   Provisioned   6m31s   v1.25.4
+    >   machine.cluster.x-k8s.io/aglais-two-md-0-55567c84fxjl9fn-hkvg7                              aglais-two              openstack:///028b5266-af92-46af-af6d-a76b6fc34ae2   Provisioned   8m9s    v1.25.4
+    >   machine.cluster.x-k8s.io/aglais-two-md-0-55567c84fxjl9fn-rtq6d                              aglais-two              openstack:///774dbeb8-6138-4da8-95f6-f9afa811f3ba   Provisioned   8m9s    v1.25.4
+    >   machine.cluster.x-k8s.io/aglais-two-md-0-55567c84fxjl9fn-vjhnn                              aglais-two              openstack:///298e90c2-3bd5-49d7-9c30-ef6361664a30   Provisioned   8m9s    v1.25.4
+    >
+    >   NAME                                                                                        CLUSTER      INITIALIZED   API SERVER AVAILABLE   REPLICAS   READY   UPDATED   UNAVAILABLE   AGE     VERSION
+    >   kubeadmcontrolplane.controlplane.cluster.x-k8s.io/aglais-two-control-plane                  aglais-two   true                                 1                  1         1             8m10s   v1.25.4
+    >
+    >   NAME                                                                                        AGE
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/aglais-two-control-plane-4c0006f5  8m10s
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/aglais-two-md-0-4c0006f5           8m10s
+    >
+    >   NAME                                                                                        CLUSTER      READY   NETWORK                                SUBNET                                 BASTION IP   AGE
+    >   openstackcluster.infrastructure.cluster.x-k8s.io/aglais-two                                 aglais-two   true    7f4be70c-155a-4377-bb89-fa711683d9ee   a114d70e-05a8-4dcf-a62e-65ba13520f3b                8m10s
+    >
+    >   NAME                                                                                        CLUSTER      INSTANCESTATE   READY   PROVIDERID                                          MACHINE                                 AGE
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/aglais-two-control-plane-4c0006f5-h5pmg    aglais-two   ACTIVE          true    openstack:///746ad846-6c58-433b-b772-d4290052a9c0   aglais-two-control-plane-tjctr          6m32s
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/aglais-two-md-0-4c0006f5-2p64v             aglais-two   ACTIVE          true    openstack:///298e90c2-3bd5-49d7-9c30-ef6361664a30   aglais-two-md-0-55567c84fxjl9fn-vjhnn   8m9s
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/aglais-two-md-0-4c0006f5-jfbf2             aglais-two   ACTIVE          true    openstack:///774dbeb8-6138-4da8-95f6-f9afa811f3ba   aglais-two-md-0-55567c84fxjl9fn-rtq6d   8m9s
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/aglais-two-md-0-4c0006f5-xwxx5             aglais-two   ACTIVE          true    openstack:///028b5266-af92-46af-af6d-a76b6fc34ae2   aglais-two-md-0-55567c84fxjl9fn-hkvg7   8m9s
+
+
+# -----------------------------------------------------
+# Summary of our results so far ....
+#[root@bootstrap]
+
+
+    aglais-one
+
+        Config edited to use cillium (modification)
+
+            # Settings for the CNI addon
+            cni:
+              # Indicates if a CNI should be deployed
+              enabled: true
+              # The CNI to deploy - supported values are calico or cilium
+              type: cilium
+
+
+        cluster-api-addon-provider installed with custom values
+
+            --values '/opt/aglais/clusterapi-config.yml'
+            --values '/etc/aglais/openstack-clouds.yaml'
+
+        Installing the cluster fails
+
+            resource mapping not found for name: "aglais-one-cni-calico" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+
+            Why is it looking for 'aglais-one-cni-calico' when the CNI type has been set to 'cilium' ?
+
+
+
+    aglais-two
+
+        Config edited to use calico (default)
+
+            # Settings for the CNI addon
+            cni:
+              # Indicates if a CNI should be deployed
+              enabled: true
+              # The CNI to deploy - supported values are calico or cilium
+              type: calico
+
+        cluster-api-addon-provider uninstalled and installed with custom values
+
+            --values '/opt/aglais/clusterapi-config.yml'
+            --values '/etc/aglais/openstack-clouds.yaml'
+
+
+        Cluster installed, but unhealthy.
+
+        kubectl get events shows errors
+
+            53s  Error  Logging  helmrelease/aglais-two-cni-calico  Handler 'handle_addon_updated' failed with an exception. Will retry....
+
+        This is the same error we had in previous tests.
+        So in this case, it looks like we are back to the default setting.
+
+
+
+
+# -----------------------------------------------------
+# More exploring ....
+#[root@bootstrap]
+
+    kubectl get nodes \
+        --kubeconfig "${HOME}/.kube/${CLUSTER_NAME:?}-kubeconfig"
+
+    >   E0611 16:03:38.100025   19161 memcache.go:287] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0611 16:03:38.113742   19161 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0611 16:03:38.116906   19161 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0611 16:03:38.119958   19161 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   NAME                                      STATUS     ROLES           AGE     VERSION
+    >   aglais-two-control-plane-4c0006f5-h5pmg   NotReady   control-plane   45m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-2p64v            NotReady   <none>          44m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-5kmk7            NotReady   <none>          34m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-bc62n            NotReady   <none>          24m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-bdpzl            NotReady   <none>          34m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-cfqc7            NotReady   <none>          34m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-dz85d            NotReady   <none>          3m47s   v1.25.4
+    >   aglais-two-md-0-4c0006f5-h75v2            NotReady   <none>          14m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-jfbf2            NotReady   <none>          44m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-pqfxb            NotReady   <none>          24m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-r5sv2            NotReady   <none>          4m      v1.25.4
+    >   aglais-two-md-0-4c0006f5-r7szm            NotReady   <none>          24m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-sxpnj            NotReady   <none>          14m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-wrlmn            NotReady   <none>          14m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-wtk66            NotReady   <none>          3m46s   v1.25.4
+    >   aglais-two-md-0-4c0006f5-xwxx5            NotReady   <none>          44m     v1.25.4
+
+    #
+    # Sort by age and it looks like it keeps spawning three new nodes every 10 min.
+    #
+
+    >   aglais-two-control-plane-4c0006f5-h5pmg   NotReady   control-plane   45m     v1.25.4
+    >
+    >   aglais-two-md-0-4c0006f5-2p64v            NotReady   <none>          44m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-xwxx5            NotReady   <none>          44m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-jfbf2            NotReady   <none>          44m     v1.25.4
+    >
+    >   aglais-two-md-0-4c0006f5-5kmk7            NotReady   <none>          34m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-bdpzl            NotReady   <none>          34m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-cfqc7            NotReady   <none>          34m     v1.25.4
+    >
+    >   aglais-two-md-0-4c0006f5-bc62n            NotReady   <none>          24m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-pqfxb            NotReady   <none>          24m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-r7szm            NotReady   <none>          24m     v1.25.4
+    >
+    >   aglais-two-md-0-4c0006f5-h75v2            NotReady   <none>          14m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-sxpnj            NotReady   <none>          14m     v1.25.4
+    >   aglais-two-md-0-4c0006f5-wrlmn            NotReady   <none>          14m     v1.25.4
+    >
+    >   aglais-two-md-0-4c0006f5-r5sv2            NotReady   <none>          4m      v1.25.4
+    >   aglais-two-md-0-4c0006f5-dz85d            NotReady   <none>          3m47s   v1.25.4
+    >   aglais-two-md-0-4c0006f5-wtk66            NotReady   <none>          3m46s   v1.25.4
+
+    #
+    #
+
+
+
+openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
++--------------------------------------+-----------------------------------------+--------+---------------------------------------------------------------------------+-----------------------------------+----------------------+
+| ID                                   | Name                                    | Status | Networks                                                                  | Image                             | Flavor               |
++--------------------------------------+-----------------------------------------+--------+---------------------------------------------------------------------------+-----------------------------------+----------------------+
+| 450ccf0e-0d5f-4b06-a373-e3947abc30cb | aglais-two-md-0-4c0006f5-r5896          | ACTIVE | k8s-clusterapi-cluster-default-aglais-two=192.168.3.196                   | gaia-dmp-ubuntu-2004-kube-v1.25.4 | gaia.vm.cclake.4vcpu |
+| f1ce877b-aa76-4b31-9bea-b1d1d9db180e | aglais-two-md-0-4c0006f5-ps4b2          | ACTIVE | k8s-clusterapi-cluster-default-aglais-two=192.168.3.229                   | gaia-dmp-ubuntu-2004-kube-v1.25.4 | gaia.vm.cclake.4vcpu |
+| 74a67ee6-a6be-4487-a602-a56e1e9b176e | aglais-two-md-0-4c0006f5-27bgb          | ACTIVE | k8s-clusterapi-cluster-default-aglais-two=192.168.3.201                   | gaia-dmp-ubuntu-2004-kube-v1.25.4 | gaia.vm.cclake.4vcpu |
+| 746ad846-6c58-433b-b772-d4290052a9c0 | aglais-two-control-plane-4c0006f5-h5pmg | ACTIVE | k8s-clusterapi-cluster-default-aglais-two=192.168.3.180                   | gaia-dmp-ubuntu-2004-kube-v1.25.4 | gaia.vm.cclake.4vcpu |
+| e52d1819-2826-4555-8191-9729037a6596 | iris-gaia-red-admin-20230611-bootstrap  | ACTIVE | iris-gaia-red-admin-20230611-internal-network=10.10.3.179, 128.232.226.67 | Fedora-34.1.2                     | gaia.vm.cclake.2vcpu |
++--------------------------------------+-----------------------------------------+--------+---------------------------------------------------------------------------+-----------------------------------+----------------------+
+
+
+
+
+    Can we login to the VMs to see what is happening inside ?
+
+
+    Does the machine image contain all the required tools ?
+    gaia-dmp-ubuntu-2004-kube-v1.25.4
+
+        We are assuming that the image provided by Cambridge admins has all the tools.
+        but we haven't checked ..
+
+        Can we get documentation on what this image containes ?
+
+
+# -----------------------------------------------------
+# More exploring ....
+#[root@bootstrap]
+
+    kubectl get pods
+
+    >   NAME                                          READY   STATUS    RESTARTS     AGE
+    >   aglais-two-autoscaler-6fbdf8dbf9-8j2qc        1/1     Running   2 (8h ago)   9h
+    >   cluster-api-addon-provider-5cb78d8945-chgdj   1/1     Running   0            9h
+
+
+    kubectl logs cluster-api-addon-provider-5cb78d8945-chgdj
+
+    >   ....
+    >   ....
+    >   [2023-06-12 00:15:01,789] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/cluster.x-k8s.io/v1beta1/namespaces/default/clusters/aglais-two" 200
+    >   [2023-06-12 00:15:01,797] easykube.rest.client [INFO    ] API request: "PATCH https://10.96.0.1/apis/addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/aglais-two-cni-calico" 200
+    >   [2023-06-12 00:15:01,802] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/infrastructure.cluster.x-k8s.io/v1alpha6/namespaces/default/openstackclusters/aglais-two" 200
+    >   [2023-06-12 00:15:01,806] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/api/v1/namespaces/default/secrets/aglais-two-cloud-credentials" 200
+    >   [2023-06-12 00:15:01,810] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/api/v1/namespaces/default/secrets/aglais-two-kubeconfig" 200
+    >   [2023-06-12 00:15:01,818] pyhelm3.command      [INFO    ] running command: helm status cni-calico --output json --namespace tigera-operator --kubeconfig /tmp/tmppua0eor6
+    >   [2023-06-12 00:15:01,828] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases?fieldSelector=metadata.name%3Daglais-two-cni-calico" 200
+    >   [2023-06-12 00:15:01,832] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases?fieldSelector=metadata.name%3Daglais-two-cni-calico&watch=1&resourceVersion=125918&allowWatchBookmarks=true" 200
+    >   [2023-06-12 00:15:01,875] pyhelm3.command      [WARNING ] command failed: helm status cni-calico --output json --namespace tigera-operator --kubeconfig /tmp/tmppua0eor6
+    >   [2023-06-12 00:15:01,876] pyhelm3.command      [INFO    ] running command: helm pull tigera-operator --destination /tmp/helm.jxdwj1th --untar --repo https://projectcalico.docs.tigera.io/charts --version v3.23.3 --kubeconfig /tmp/tmppua0eor6
+    >   [2023-06-12 00:15:02,914] pyhelm3.command      [INFO    ] command succeeded: helm pull tigera-operator --destination /tmp/helm.jxdwj1th --untar --repo https://projectcalico.docs.tigera.io/charts --version v3.23.3 --kubeconfig /tmp/tmppua0eor6
+    >   [2023-06-12 00:15:02,927] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/api/v1/namespaces/default/secrets/aglais-two-cni-calico-config" 200
+    >   [2023-06-12 00:15:02,933] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/api/v1/namespaces/default/secrets/aglais-two-cni-calico-config" 200
+    >   [2023-06-12 00:15:02,942] easykube.rest.client [INFO    ] API request: "PUT https://10.96.0.1/apis/addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/aglais-two-cni-calico/status" 200
+    >   [2023-06-12 00:15:03,650] easykube.rest.client [INFO    ] API request: "GET https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1" 200
+    >   [2023-06-12 00:15:03,657] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/apiservers.operator.tigera.io?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,666] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/tigerastatuses.operator.tigera.io?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,672] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/imagesets.operator.tigera.io?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,706] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/installations.operator.tigera.io?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,714] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/ipamblocks.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,735] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/networkpolicies.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,741] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/globalnetworksets.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,748] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/bgppeers.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,769] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/globalnetworkpolicies.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,775] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/ipamconfigs.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,791] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/felixconfigurations.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,798] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/clusterinformations.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,805] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/hostendpoints.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,817] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/caliconodestatuses.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,824] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/ippools.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,831] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/networksets.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,837] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/ipamhandles.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,849] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/kubecontrollersconfigurations.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,859] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/bgpconfigurations.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,867] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/ipreservations.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,874] easykube.rest.client [INFO    ] API request: "PATCH https://128.232.227.49:6443/apis/apiextensions.k8s.io/v1/customresourcedefinitions/blockaffinities.crd.projectcalico.org?fieldManager=cluster-api-addon-provider&force=true" 200
+    >   [2023-06-12 00:15:03,874] pyhelm3.command      [INFO    ] running command: helm upgrade cni-calico /tmp/helm.jxdwj1th/tigera-operator --history-max 10 --install --output json --timeout 1h --values '<stdin>' --cleanup-on-fail --create-namespace --namespace tigera-operator --version v3.23.3 --wait --wait-for-jobs --kubeconfig /tmp/tmppua0eor6
+    >   [2023-06-12 00:15:04,740] pyhelm3.command      [WARNING ] command failed: helm upgrade cni-calico /tmp/helm.jxdwj1th/tigera-operator --history-max 10 --install --output json --timeout 1h --values '<stdin>' --cleanup-on-fail --create-namespace --namespace tigera-operator --version v3.23.3 --wait --wait-for-jobs --kubeconfig /tmp/tmppua0eor6
+    >   [2023-06-12 00:15:04,743] kopf.objects         [ERROR   ] [default/aglais-two-cni-calico] Handler 'handle_addon_updated' failed with an exception. Will retry.
+    >   Traceback (most recent call last):
+    >     File "/usr/local/lib/python3.9/site-packages/kopf/_core/actions/execution.py", line 279, in execute_handler_once
+    >       result = await invoke_handler(
+    >     File "/usr/local/lib/python3.9/site-packages/kopf/_core/actions/execution.py", line 374, in invoke_handler
+    >       result = await invocation.invoke(
+    >     File "/usr/local/lib/python3.9/site-packages/kopf/_core/actions/invocation.py", line 116, in invoke
+    >       result = await fn(**kwargs)  # type: ignore
+    >     File "/app/capi_addons/operator.py", line 86, in handler
+    >       return await func(**handler_kwargs)
+    >     File "/app/capi_addons/operator.py", line 86, in handler
+    >       return await func(**handler_kwargs)
+    >     File "/app/capi_addons/operator.py", line 86, in handler
+    >       return await func(**handler_kwargs)
+    >     File "/app/capi_addons/operator.py", line 245, in handle_addon_updated
+    >       _ = await task
+    >     File "/app/capi_addons/models/v1alpha1/base.py", line 594, in install_or_upgrade
+    >       current_revision = await helm_client.install_or_upgrade_release(
+    >     File "/usr/local/lib/python3.9/site-packages/pyhelm3/client.py", line 234, in install_or_upgrade_release
+    >       await self._command.install_or_upgrade(
+    >     File "/usr/local/lib/python3.9/site-packages/pyhelm3/command.py", line 550, in install_or_upgrade
+    >       return json.loads(await self.run(command, json.dumps(values or {}).encode()))
+    >     File "/usr/local/lib/python3.9/site-packages/pyhelm3/command.py", line 219, in run
+    >       raise error_cls(proc.returncode, stdout, stderr)
+    >   pyhelm3.errors.Error: Error: unable to build kubernetes objects from release manifest: resource mapping not found for name: "tigera-operator" namespace: "" from "": no matches for kind "PodSecurityPolicy" in version "policy/v1beta1"
+    >   ensure CRDs are installed first
+
+
+    #
+    # We found the exception stack trace !!
+    # Been looking for that for a day now.
+    #
+
+    >   ....
+    >   ....
+    >   [2023-06-12 00:15:03,874] pyhelm3.command      [INFO    ] running command: helm upgrade cni-calico /tmp/helm.jxdwj1th/tigera-operator --history-max 10 --install --output json --timeout 1h --values '<stdin>' --cleanup-on-fail --create-namespace --namespace tigera-operator --version v3.23.3 --wait --wait-for-jobs --kubeconfig /tmp/tmppua0eor6
+    >   [2023-06-12 00:15:04,740] pyhelm3.command      [WARNING ] command failed: helm upgrade cni-calico /tmp/helm.jxdwj1th/tigera-operator --history-max 10 --install --output json --timeout 1h --values '<stdin>' --cleanup-on-fail --create-namespace --namespace tigera-operator --version v3.23.3 --wait --wait-for-jobs --kubeconfig /tmp/tmppua0eor6
+    >   [2023-06-12 00:15:04,743] kopf.objects         [ERROR   ] [default/aglais-two-cni-calico] Handler 'handle_addon_updated' failed with an exception. Will retry.
+    >   Traceback (most recent call last):
+    >     ....
+    >     ....
+    >     File "/app/capi_addons/operator.py", line 86, in handler
+    >       return await func(**handler_kwargs)
+    >     File "/app/capi_addons/operator.py", line 86, in handler
+    >       return await func(**handler_kwargs)
+    >     File "/app/capi_addons/operator.py", line 86, in handler
+    >       return await func(**handler_kwargs)
+    >     File "/app/capi_addons/operator.py", line 245, in handle_addon_updated
+    >       _ = await task
+    >     File "/app/capi_addons/models/v1alpha1/base.py", line 594, in install_or_upgrade
+    >       current_revision = await helm_client.install_or_upgrade_release(
+    >     ....
+    >     ....
+    >   pyhelm3.errors.Error: Error: unable to build kubernetes objects from release manifest: resource mapping not found for name: "tigera-operator" namespace: "" from "": no matches for kind "PodSecurityPolicy" in version "policy/v1beta1"
+    >   ensure CRDs are installed first
+
+
+
+
+    https://github.com/stackhpc/cluster-api-addon-provider/blob/07153a3cf367049997c28a9c1a7abce850b29218/capi_addons/operator.py#L86
+
+    >   ....
+    >     File "/app/capi_addons/operator.py", line 86, in handler
+    >       return await func(**handler_kwargs)
+    >   ....
+
+
+    https://github.com/stackhpc/cluster-api-addon-provider/blob/07153a3cf367049997c28a9c1a7abce850b29218/capi_addons/operator.py#L245
+
+    >   ....
+    >     File "/app/capi_addons/operator.py", line 245, in handle_addon_updated
+    >       _ = await task
+    >   ....
+
+
+    https://github.com/stackhpc/cluster-api-addon-provider/blob/07153a3cf367049997c28a9c1a7abce850b29218/capi_addons/models/v1alpha1/base.py#L594
+
+    >   ....
+    >     File "/app/capi_addons/models/v1alpha1/base.py", line 594, in install_or_upgrade
+    >       current_revision = await helm_client.install_or_upgrade_release(
+    >   ....
+
+
+
+    >   ....
+    >   pyhelm3.errors.Error:
+    >       Error: unable to build kubernetes objects from release manifest:
+    >           resource mapping not found for name: "tigera-operator" namespace: "" from "":
+    >               no matches for kind "PodSecurityPolicy" in version "policy/v1beta1"
+    >               ensure CRDs are installed first
+    >   ....
+
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# ChatGPT
+
+    >   Can you explain this error message
+    >   Error: unable to build kubernetes objects from release manifest: resource mapping not found for name:
+    >   "tigera-operator" namespace: "" from "": no matches for kind "PodSecurityPolicy" in version "policy/v1beta1"
+    >   ensure CRDs are installed first
+
+    >   The error message you provided indicates a problem with building Kubernetes objects from a release manifest.
+    >   Specifically, it states that there is a resource mapping issue for the "tigera-operator" in an unspecified namespace.
+    >   It mentions that there are no matches for the kind "PodSecurityPolicy" in version "policy/v1beta1" and suggests
+    >   ensuring that CRDs (Custom Resource Definitions) are installed first.
+    >
+    >   Let's break down the error message to understand its meaning:
+    >
+    >   1. **Error**: The statement indicates that an error occurred while attempting to build Kubernetes objects
+    >   from the release manifest.
+    >
+    >   2. **Unable to build Kubernetes objects from release manifest**: This phrase points out that the process of
+    >   creating Kubernetes objects (such as Pods, Deployments, Services, etc.) failed.
+    >
+    >   3. **Resource mapping not found for name "tigera-operator" namespace "" from "": no matches for kind "PodSecurityPolicy"
+    >   in version "policy/v1beta1"**: This part of the error message provides more specific details. It states that there is
+    >   a resource mapping issue for the "tigera-operator" object in an unspecified namespace. Additionally, it states that
+    >   there are no matches found for the "PodSecurityPolicy" kind in the "policy/v1beta1" version.
+    >
+    >   4. **Ensure CRDs are installed first**: The error message concludes by suggesting that you ensure the installation
+    >   of CRDs (Custom Resource Definitions) before attempting to build the Kubernetes objects.
+    >
+    >   Based on this error message, here are a few possible explanations and steps to resolve the issue:
+    >
+    >   1. **Missing CRDs**: The error suggests that the necessary CRDs are not installed in the cluster.
+    >   CRDs define custom resources and their schemas in Kubernetes. Make sure to install the required CRDs
+    >   (in this case, the PodSecurityPolicy CRD) before deploying the "tigera-operator".
+    >   Check the documentation or installation instructions of the Tigera Operator to ensure all prerequisites,
+    >   including CRDs, are properly installed.
+    >
+    >   2. **Version mismatch**: The error mentions that there are no matches for the "PodSecurityPolicy"
+    >   kind in version "policy/v1beta1". Verify that the version specified in the release manifest matches
+    >   the available versions in your Kubernetes cluster. It's possible that the version specified in the
+    >   manifest is outdated or not supported by your cluster. Update the version accordingly or check for
+    >   compatibility issues.
+    >
+    >   3. **Namespace mismatch**: The error mentions that the resource mapping is not found for the "tigera-operator"
+    >   in an unspecified namespace. Ensure that the correct namespace is specified for the "tigera-operator" in the
+    >   release manifest. Verify that the namespace exists in your cluster and that the operator is intended to be
+    >   deployed in that namespace.
+    >
+    >   By addressing these potential causes and ensuring the installation of necessary CRDs, resolving version mismatches,
+    >   and confirming the correct namespace, you should be able to resolve the error and successfully build the Kubernetes
+    >   objects from the release manifest.
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Google search
+
+    search for "tigera-operator PodSecurityPolicy"
+
+    1st item in the list
+
+    #
+    # tigera-operator docs for EKS contains deprecated API versions #6491
+    # https://github.com/projectcalico/calico/issues/6491
+
+        tigera-operator installation as mentioned in the EKS documentation of project calico installs old API versions which are deprecated in k8s v1.22+
+
+    #
+    # https://github.com/projectcalico/calico/issues/6491#issuecomment-1224335875
+
+        This is deliberate. By continuing to use deprecated k8s APIs, we can ensure that the compatibility
+        of Calico with multiple versions of k8s. (arguably this is the point of deprecation)
+
+        We typically switch to the new API just before the removal of the API from k8s
+        - e.g. in this case Calico v3.24 was the last Calico release before k8s 1.25 came out and removed this API,
+        so that is the release we switched from PodSecurityPolicies to PodSecurityStandards.
+
+    #
+    # This sounds like the issue we are seeing.
+    # However .. the GitHub comment says the change was made in Calico v3.24 to match k8s 1.25.
+    # and the StackHPC Helm chart uses v3.24.5, so it should already be fixed ?
+    #
+
+    >   ....
+    >     calico:
+    >       chart:
+    >         repo: https://projectcalico.docs.tigera.io/charts
+    >         name: tigera-operator
+    >         version: v3.24.5
+    >       release:
+    >         namespace: tigera-operator
+    >         values: {}
+    >   ....
+
+
+    #
+    # The fix is here.
+    # Remove remaining PodSecurityPolicies (removed in k8s 1.25)
+    # https://github.com/projectcalico/calico/pull/6270
+    #
+
+    #
+    # Simple test - modify our config to use the latest version of Calico.
+    #
+
+
+    >   ....
+    >   # Settings for the CNI addon
+    >   cni:
+    >
+    >     # Indicates if a CNI should be deployed
+    >     enabled: true
+    >
+    >     # The CNI to deploy - supported values are calico or cilium
+    >     type: calico
+    >
+    >     # Settings for the calico CNI
+    >     # See https://projectcalico.docs.tigera.io/getting-started/kubernetes/helm
+    >     calico:
+    >       chart:
+    >         repo: https://projectcalico.docs.tigera.io/charts
+    >         name: tigera-operator
+    >         version: v3.24.5
+
+
+
+    >   ....
+    >   # Settings for the CNI addon
+    >   cni:
+    >     calico:
+    >       chart:
+    >         version: v3.26.0
+

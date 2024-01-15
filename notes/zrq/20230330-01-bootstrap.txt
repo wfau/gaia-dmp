@@ -1,0 +1,300 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Success
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Thu 30 Mar 01:10:09 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting red for the deployment.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Add YAML editor role.
+#[root@ansibler]
+
+    ansible-galaxy install kwoodson.yedit
+
+    >   Starting galaxy role install process
+    >   - downloading role 'yedit', owned by kwoodson
+    >   - downloading role from https://github.com/kwoodson/ansible-role-yedit/archive/master.tar.gz
+    >   - extracting kwoodson.yedit to /root/.ansible/roles/kwoodson.yedit
+    >   - kwoodson.yedit (master) was installed successfully
+
+
+# -----------------------------------------------------
+# Settings ...
+#[root@ansibler]
+
+    deployname=${cloudname:?}-$(date '+%Y%m%d')
+    deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    rm -f "${statusyml}"
+    touch "${statusyml}"
+
+    yq eval \
+        --inplace \
+        "
+        .aglais.deployment.type = \"cluster-api\"   |
+        .aglais.deployment.name = \"${deployname}\" |
+        .aglais.deployment.date = \"${deploydate}\" |
+        .aglais.openstack.cloud.name = \"${cloudname}\"
+        " "${statusyml}"
+
+
+# -----------------------------------------------------
+# Create our bootstrap components.
+#[root@ansibler]
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/config/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/01-create-keypair.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/02-create-network.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/03-create-bootstrap.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/04-local-config.yml'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check our local config.
+#[root@ansibler]
+
+    cat /opt/aglais/aglais-status.yml
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# SSH test.
+#[root@ansibler]
+
+    ssh bootstrap
+
+        date
+        hostname
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install Docker.
+# https://docs.docker.com/engine/install/fedora/#install-using-the-repository
+#[fedora@bootstrap]
+
+    sudo dnf -y install dnf-plugins-core
+
+    sudo dnf config-manager \
+        --add-repo \
+        https://download.docker.com/linux/fedora/docker-ce.repo
+
+    >   Adding repo from: https://download.docker.com/linux/fedora/docker-ce.repo
+
+
+    sudo dnf install \
+        -y \
+        docker-ce \
+        docker-ce-cli \
+        containerd.io \
+        docker-compose-plugin
+
+#       docker-buildx-plugin \
+
+    >   ....
+    >   ....
+    >   Installed:
+    >     ....
+    >     ....
+    >     docker-ce-3:20.10.17-3.fc34.x86_64
+
+
+# -----------------------------------------------------
+# Start the Docker service.
+#[fedora@bootstrap]
+
+    sudo systemctl start docker
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Install kubectl.
+# https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/#install-using-native-package-management
+#[fedora@bootstrap]
+
+cat > '/tmp/kubernetes.repo' << EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-\$basearch
+enabled=1
+gpgcheck=1
+gpgkey=https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+EOF
+
+    sudo chown 'root:root' '/tmp/kubernetes.repo'
+    sudo mv '/tmp/kubernetes.repo' '/etc/yum.repos.d/kubernetes.repo'
+
+    sudo dnf install -y 'kubectl'
+
+    >   Installed:
+    >     kubectl-1.26.3-0.x86_64
+
+
+# -----------------------------------------------------
+# Install kind.
+# https://kind.sigs.k8s.io/docs/user/quick-start/#installing-from-release-binaries
+#[fedora@bootstrap]
+
+    kversion=0.17.0
+    kfile=kind-${kversion:?}
+    ktemp=/tmp/${kfile:?}
+
+    curl --location --output "${ktemp:?}" "https://kind.sigs.k8s.io/dl/v${kversion:?}/kind-linux-amd64"
+    pushd /usr/local/bin
+        sudo mv "${ktemp:?}" .
+        sudo chown 'root:root' "${kfile:?}"
+        sudo chmod 'u=rwx,g=rx,o=rx' "${kfile:?}"
+        sudo ln -s "${kfile:?}" 'kind'
+    popd
+
+
+# -----------------------------------------------------
+# Create a cluster, with logs.
+# https://github.com/kubernetes-sigs/kind/pull/2478#issuecomment-1214656908
+#[fedora@bootstrap]
+
+    kind create cluster --retain
+
+    >   ERROR: failed to create cluster: failed to list nodes: command "docker ps -a --filter label=io.x-k8s.kind.cluster=kind --format '{{.Names}}'" failed with error: exit status 1
+    >   Command Output: Got permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.24/containers/json?all=1&filters=%7B%22label%22%3A%7B%22io.x-k8s.kind.cluster%3Dkind%22%3Atrue%7D%7D": dial unix /var/run/docker.sock: connect: permission denied
+
+
+    sudo kind create cluster --retain
+
+    >   Creating cluster "kind" ...
+    >    ✓ Ensuring node image (kindest/node:v1.25.3) 🖼
+    >    ✓ Preparing nodes 📦
+    >    ✓ Writing configuration 📜
+    >    ✓ Starting control-plane 🕹️
+    >    ✓ Installing CNI 🔌
+    >    ✓ Installing StorageClass 💾
+    >   Set kubectl context to "kind-kind"
+    >   You can now use your cluster with:
+    >   
+    >   kubectl cluster-info --context kind-kind
+
+
+# -----------------------------------------------------
+# ....
+#[fedora@bootstrap]
+
+    sudo kubectl cluster-info --context kind-kind
+
+    >   Kubernetes control plane is running at https://127.0.0.1:34089
+    >   CoreDNS is running at https://127.0.0.1:34089/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+

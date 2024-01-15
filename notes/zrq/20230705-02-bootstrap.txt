@@ -1,0 +1,267 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
+#
+
+
+    Target:
+
+        Experiment with scaling our Kubernetes cluster.
+
+    Result:
+
+        Work in progress ....
+
+# -----------------------------------------------------
+# Create our client container.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}-admin
+
+    containername=kubernetes-client:2023.06.15
+    containerrepo=ghcr.io/wfau/atolmis
+    containerfull=ghcr.io/wfau/atolmis/${containername:?}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        "${containerfull:?}" \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    #
+    # Our normal account isn't allowed to manipulate load balancers ..
+    #
+
+    >   ....
+    >   ....
+    >   ---- ----
+    >   Deleting load balancer listeners
+    >   Policy does not allow this request to be performed. (HTTP 403) (Request-ID: req-1e042981-6caf-42cd-b22b-125f32a18a1a)
+    >   
+    >   ---- ----
+    >   Deleting load balancer pools
+    >   Policy does not allow this request to be performed. (HTTP 403) (Request-ID: req-6e3759ad-6ada-4235-bd25-534b14ae448e)
+    >   
+    >   ---- ----
+    >   Deleting load balancers
+    >   Policy does not allow this request to be performed. (HTTP 403) (Request-ID: req-e69294e5-dd78-46a0-bd68-ed4a9e3c2164)
+    >   ....
+    >   ....
+
+
+    >   ....
+    >   ....
+    >   ---- ----
+    >   List load balancers
+    >   Policy does not allow this request to be performed. (HTTP 403) (Request-ID: req-ff9f0bd8-38b5-42fe-9b29-d7fc9b38ca3a)
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Initialise our status file.
+# TODO Move this into an Ansible task.
+#[root@ansibler]
+
+    /deployments/cluster-api/bootstrap/bin/init-status.sh \
+        "${cloudname:?}"
+
+# -----------------------------------------------------
+# Deploy our bootstrap node.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory \
+        '/deployments/cluster-api/bootstrap/ansible/config/inventory.yml' \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+
+# -----------------------------------------------------
+# Login to our bootstrap node as root.
+#[root@ansibler]
+
+    ssh root@bootstrap
+
+
+# -----------------------------------------------------
+# Create the initial Kubernetes in Docker (KinD) cluster.
+#[root@bootstrap]
+
+    kindclustername=bootstrap
+    kindclusterfull=${kindclustername:?}-$(date '+%Y%m%d')
+    kindclusterpath=/opt/aglais/${kindclustername:?}
+    kindclusterconf=${kindclusterpath:?}/${kindclusterfull:?}-kubeconfig.yml
+
+    mkdir -p "${kindclusterpath}"
+
+    kind create cluster \
+        --name "${kindclusterfull:?}" \
+        --kubeconfig "${kindclusterconf:?}"
+
+
+# -----------------------------------------------------
+# Install the Openstack ClusterAPI components.
+#[root@bootstrap]
+
+    clusterctl init \
+        --kubeconfig "${kindclusterconf:?}" \
+        --infrastructure openstack
+
+
+# -----------------------------------------------------
+# Install the StackHPC Helm charts.
+#[root@bootstrap]
+
+    helm repo add \
+        capi \
+        https://stackhpc.github.io/capi-helm-charts
+
+    helm repo add \
+        capi-addons \
+        https://stackhpc.github.io/cluster-api-addon-provider
+
+    helm upgrade \
+        --kubeconfig "${kindclusterconf:?}" \
+        cluster-api-addon-provider \
+        capi-addons/cluster-api-addon-provider \
+            --install \
+            --version "0.1.0"
+
+# -----------------------------------------------------
+# Wait for the StackHPC components to be ready.
+#[root@bootstrap]
+
+    api_resources_check()
+        {
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            api-resources \
+                --api-group addons.stackhpc.com \
+        | awk '
+            BEGIN {
+                found = 0
+                }
+            {
+            if ($1 == "helmreleases" || $1 == "manifests") {
+                found++
+                }
+            }
+            END {
+                if (found == 2) {
+                    print "match"
+                    }
+                else {
+                    print "no match"
+                    }
+                }
+            '
+        }
+
+    loop=120
+    while [[ ${loop} > 0 ]]
+    do
+        result=$(
+            api_resources_check
+            )
+
+        echo "Loop [${loop}] [${result}]"
+
+        if [[ "${result}" == "match" ]]
+        then
+            break
+        else
+            sleep 1
+            ((loop--))
+        fi
+    done
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        api-resources \
+            --api-group addons.stackhpc.com
+
+
+# -----------------------------------------------------
+# Deploy our target cluster.
+#[root@bootstrap]
+
+    workclustername=gaia-dmp-one
+    workclusterfull=${workclustername:?}-$(date '+%Y%m%d')
+
+    workclusterpath=/opt/aglais/${workclustername:?}
+    workclustertext=${workclusterpath:?}/${workclusterfull:?}.txt
+    workclusterconf=${workclusterpath:?}/${workclusterfull:?}-kubeconfig.yml
+
+    helm upgrade \
+        --kubeconfig "${kindclusterconf:?}" \
+        "${workclusterfull:?}" \
+        capi/openstack-cluster \
+            --install \
+            --version "0.1.0" \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/opt/aglais/openstack-clouds.yaml'
+
+# -----------------------------------------------------
+# Watch the events log.
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get events \
+            --watch
+
+    >   ....
+    >   ....
+
+
+

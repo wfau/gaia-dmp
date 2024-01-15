@@ -1,0 +1,312 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+
+    Target:
+
+        Install K8s on O7k
+        Prerequisites - bootstrap VM with public network access.
+
+    Result:
+
+        Success ...
+        Ansible scripts to create bootstrap node with public network access.
+        Including a number of updated patterns that can be applied to the hadoop-yarn deployment.
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is red, selecting green for experimenting.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=green
+    configname=zeppelin-54.86-spark-6.26.43
+
+    agproxymap=3000:3000
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --publish  "${agproxymap:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "configname=${configname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Add YAML editor role.
+#[root@ansibler]
+
+    ansible-galaxy install kwoodson.yedit
+
+    >   Starting galaxy role install process
+    >   - downloading role 'yedit', owned by kwoodson
+    >   - downloading role from https://github.com/kwoodson/ansible-role-yedit/archive/master.tar.gz
+    >   - extracting kwoodson.yedit to /root/.ansible/roles/kwoodson.yedit
+    >   - kwoodson.yedit (master) was installed successfully
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    2m59.542s
+    >   user    1m24.069s
+    >   sys     0m9.347s
+
+
+# -----------------------------------------------------
+# Settings ...
+#[root@ansibler]
+
+    deployname=${cloudname:?}-$(date '+%Y%m%d')
+    deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    rm -f "${statusyml}"
+    touch "${statusyml}"
+
+    yq eval \
+        --inplace \
+        ".aglais.deployment.type = \"cluster-api\"" \
+        "${statusyml}"
+
+    yq eval \
+        --inplace \
+        ".aglais.deployment.name = \"${deployname}\"" \
+        "${statusyml}"
+
+    yq eval \
+        --inplace \
+        ".aglais.deployment.date = \"${deploydate}\"" \
+        "${statusyml}"
+
+    yq eval \
+        --inplace \
+        ".aglais.openstack.cloud.name = \"${cloudname}\"" \
+        "${statusyml}"
+
+
+# -----------------------------------------------------
+# Create our controller network, subnet and router.
+#[root@ansibler]
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/01-create-keypair.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/01-create-network.yml'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our bootstrap node.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/02-create-bootstrap.yml'
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/03-local-config.yml'
+
+    >   ....
+    >   An exception occurred during task execution. To see the full traceback, use -vvv.
+    >   The error was: OSError: [Errno 16] Device or resource busy: b'/etc/.ansible_tmpmx4xu_s7hosts' -> b'/etc/hosts'
+    >   fatal: [localhost]: FAILED! => {
+    >       "changed": false,
+    >       "checksum": "1cab0e81e7bdd0366fdd0a7891319012774b793b",
+    >       "msg": "
+    >           Unable to make b'/root/.ansible/tmp/ansible-tmp-1675149035.6373813-2488-255036495299149/source' into to /etc/hosts,
+    >           failed final rename from b'/etc/.ansible_tmpmx4xu_s7hosts':
+    >           [Errno 16] Device or resource busy: b'/etc/.ansible_tmpmx4xu_s7hosts' -> b'/etc/hosts'
+    >           "
+    >       }
+    >   ....
+
+    #
+    # Issue with writing to (or renaming to) `/etc/hosts` in a container.
+    # https://github.com/ansible-community/molecule/issues/2060
+    #
+
+
+
+# -----------------------------------------------------
+# Check our local config.
+#[root@ansibler]
+
+    cat /opt/aglais/aglais-status.yml
+
+    >   aglais:
+    >     deployment:
+    >       date: 20230131T171716
+    >       name: iris-gaia-green-20230131
+    >       type: cluster-api
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-green
+    >       keypairs:
+    >         team:
+    >           fingerprint: 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16
+    >           id: iris-gaia-green-20230131-keypair
+    >           name: iris-gaia-green-20230131-keypair
+    >       networks:
+    >         internal:
+    >           network:
+    >             id: a0dd4d02-b0cf-4cdd-bf89-d28889c21f09
+    >             name: iris-gaia-green-20230131-internal-network
+    >           router:
+    >             id: a0a65fed-a8b4-478e-b985-da2167dbe5fe
+    >             name: iris-gaia-green-20230131-internal-router
+    >           subnet:
+    >             cidr: 10.10.0.0/16
+    >             id: cf32a4de-95f3-4039-8378-942296b168b6
+    >             name: iris-gaia-green-20230131-internal-subnet
+    >       servers:
+    >         bootstrap:
+    >           float:
+    >             external: 128.232.222.199
+    >             id: fbd4f3e6-4655-4d00-92d9-03f1eefdd60e
+    >             internal: 10.10.1.219
+    >           server:
+    >             address:
+    >               ipv4: 10.10.1.219
+    >             flavor:
+    >               name: gaia.vm.cclake.2vcpu
+    >             hostname: bootstrap
+    >             id: dd157f98-c19d-4090-a27a-1df7cbd6854c
+    >             image:
+    >               id: 1779f380-780d-40d8-8052-b3acb91ed530
+    >               name: Fedora-31-1.9
+    >             name: iris-gaia-green-20230131-bootstrap
+
+
+    cat /etc/hosts
+
+    >   # Loopback entries; do not change.
+    >   # For historical reasons, localhost precedes localhost.localdomain:
+    >   127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+    >   ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+    >   # See hosts(5) for proper format and other examples:
+    >   # 192.168.1.10 foo.mydomain.org foo
+    >   # 192.168.1.13 bar.mydomain.org bar
+    >   # used by slirp4netns
+    >   10.0.2.100	ansibler-green ansibler-green
+    >   10.0.2.2 host.containers.internal
+    >   # Bootstrap node
+    >   128.232.222.199 bootstrap
+
+
+    cat "${HOME}/.ssh/config"
+
+    >   ....
+    >   ....
+    >   
+    >   # Global settings
+    >   ForwardAgent yes
+    >   ForwardX11   no
+    >   PasswordAuthentication no
+    >   ServerAliveInterval 60
+    >   ServerAliveCountMax 5
+    >   
+    >   # Primary gateway via our bootstrap node.
+    >   Host bootstrap
+    >       User fedora
+    >       HostName bootstrap
+    >       ControlPath ~/.ssh/%r@%h:%p
+    >       ControlMaster auto
+    >       ControlPersist 5m
+
+
+# -----------------------------------------------------
+# SSH into our bootstrap node.
+#[root@ansibler]
+
+    ssh -v bootstrap 'date ; hostname'
+
+    >   OpenSSH_8.8p1, OpenSSL 3.0.2 15 Mar 2022
+    >   debug1: Reading configuration data /root/.ssh/config
+    >   debug1: /root/.ssh/config line 31: Applying options for bootstrap
+    >   ....
+    >   ....
+    >   debug1: /root/.ssh/config line 31: Applying options for bootstrap
+    >   ....
+    >   ....
+    >   debug1: Control socket "/root/.ssh/fedora@bootstrap:22" does not exist
+    >   debug1: Connecting to bootstrap [128.232.222.199] port 22.
+    >   debug1: Connection established.
+    >   ....
+    >   ....
+    >   debug1: Authenticating to bootstrap:22 as 'fedora'
+    >   debug1: Next authentication method: publickey
+    >   ....
+    >   ....
+    >   debug1: Offering public key: Cambridge HPC OpenStack RSA SHA256:n5J+DL1a4Ly6YPxUGo+f68Gcuhy8IPepFe6vPcX6Q7o agent
+    >   debug1: Server accepts key: Cambridge HPC OpenStack RSA SHA256:n5J+DL1a4Ly6YPxUGo+f68Gcuhy8IPepFe6vPcX6Q7o agent
+    >   Authenticated to bootstrap ([128.232.222.199]:22) using "publickey".
+    >   ....
+    >   ....
+
+    >   Wed Feb  1 02:59:35 UTC 2023
+    >   iris-gaia-green-20230131-bootstrap
+
+
+
+

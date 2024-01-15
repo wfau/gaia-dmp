@@ -1,0 +1,132 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+# AIMetrics: []
+# Create our bootstrap node in Openstack.
+#
+
+---
+- name: "Create our bootstrap node"
+  gather_facts: false
+  become: true
+  hosts: localhost
+  roles:
+    - kwoodson.yedit
+  vars_files:
+    - config/aglais.yml
+    - config/ansible.yml
+    - config/deployments.yml
+    - /opt/aglais/aglais-status.yml
+  vars:
+    hostname: "bootstrap"
+    nodename: "{{ aglais.deployment.name }}-bootstrap"
+
+  tasks:
+
+    - name: "Create a security group for our bootstrap node"
+      openstack.cloud.security_group:
+        cloud: "{{ aglais.openstack.cloud.name }}"
+        state: present
+        name: "{{ nodename }}-security"
+      register:
+        bootstrap_security
+
+    - name: "Add a security rule for IPv4 SSH"
+      openstack.cloud.security_group_rule:
+        cloud: "{{ aglais.openstack.cloud.name }}"
+        state: present
+        security_group: "{{ bootstrap_security.id }}"
+        direction: 'ingress'
+        protocol:  'tcp'
+        ethertype: 'IPv4'
+        port_range_min: 22
+        port_range_max: 22
+        remote_ip_prefix: '0.0.0.0/0'
+
+    - name: "Add a security rule for IPv6 SSH"
+      openstack.cloud.security_group_rule:
+        cloud: "{{ aglais.openstack.cloud.name }}"
+        state: present
+        security_group: "{{ bootstrap_security.id }}"
+        direction: 'ingress'
+        protocol:  'tcp'
+        ethertype: 'IPv6'
+        port_range_min: 22
+        port_range_max: 22
+        remote_ip_prefix: '::/0'
+
+    - name: "Create our bootstrap node"
+      openstack.cloud.server:
+        cloud: "{{ aglais.openstack.cloud.name }}"
+        state: present
+        name:     "{{ nodename }}-node"
+        image:    "{{ deployments[aglais.openstack.cloud.site].machines.bootstrap.image  }}"
+        flavor:   "{{ deployments[aglais.openstack.cloud.site].machines.bootstrap.flavor }}"
+        network:  "{{ deployments[aglais.openstack.cloud.site].networks.bootstrap.name }}"
+        key_name: "{{ aglais.openstack.keypair.id }}"
+        auto_ip: false
+        meta:
+          hostname: "{{ hostname }}"
+        security_groups:
+          - "{{ bootstrap_security.id }}"
+      register:
+        bootstrap_node
+
+    - name: "Assign a floating IP address to our bootstrap node"
+      openstack.cloud.floating_ip:
+        cloud: "{{ aglais.openstack.cloud.name }}"
+        state: present
+        server:  '{{ bootstrap_node.id }}'
+        network: "{{ deployments[aglais.openstack.cloud.site].networks.external.name }}"
+        nat_destination: "{{ deployments[aglais.openstack.cloud.site].networks.bootstrap.name }}"
+      register:
+        bootstrap_float
+
+    - name: "Apply the security group to our floating IP address"
+      openstack.cloud.port:
+        cloud: "{{ aglais.openstack.cloud.name }}"
+        state: present
+        name: '{{ bootstrap_float.floating_ip.port }}'
+        security_groups:
+          - "{{ bootstrap_security.id }}"
+
+    - name: "Update [{{ agstatusfile }}]"
+      yedit:
+        src: "{{ agstatuspath }}"
+        key: "aglais.openstack.servers.bootstrap"
+        value:
+          server:
+            id:   "{{ bootstrap_node.server.id }}"
+            name: "{{ bootstrap_node.server.name }}"
+            hostname: "{{ bootstrap_node.server.metadata.hostname }}"
+            address:
+              ipv4: "{{ bootstrap_node.server.private_v4 }}"
+            flavor:
+              name: "{{ bootstrap_node.server.flavor.name }}"
+            image:
+              id:   "{{ bootstrap_node.server.image.id }}"
+              name: "{{ bootstrap_node.server.image.name }}"
+          float:
+            id:       "{{ bootstrap_float.floating_ip.id }}"
+            internal: "{{ bootstrap_float.floating_ip.fixed_ip_address }}"
+            external: "{{ bootstrap_float.floating_ip.floating_ip_address }}"
+
+
+

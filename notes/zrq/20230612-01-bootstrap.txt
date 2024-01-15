@@ -1,0 +1,1235 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
+#
+
+
+    Target:
+
+        Customising the StackHPC capi-helm-charts.
+        https://github.com/stackhpc/capi-helm-charts
+
+        Going the long way round to lean how it works.
+
+        New deployment using latest version of Calico CNI.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Mon 12 Jun 01:26:17 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting red for development.
+    # Using the 'admin' credentials to allow access to loadbalancers etc.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}-admin
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    4m0.521s
+    >   user    1m47.891s
+    >   sys     0m12.154s
+
+
+# -----------------------------------------------------
+# Add YAML editor role to our client container.
+# TODO Add this to the Ansible client.
+# https://github.com/wfau/atolmis/issues/30
+#[root@ansibler]
+
+    ansible-galaxy install kwoodson.yedit
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Issue a short term token to get the current user ID and project ID.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        token issue \
+            --format json \
+    | tee /tmp/ostoken.json   \
+    | jq '.'
+
+    >   ....
+    >   ....
+
+
+    export osuserid=$(
+        jq -r '.user_id' '/tmp/ostoken.json'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        user show \
+            --format json \
+            "${osuserid}" \
+    | tee '/tmp/osuser.json'
+
+    export osusername=$(
+        jq -r '.name' '/tmp/osuser.json'
+        )
+
+    >   ....
+    >   ....
+
+
+    export osprojectid=$(
+        jq -r '.project_id' '/tmp/ostoken.json'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        project show \
+            --format json \
+            "${osprojectid}" \
+    | tee '/tmp/osproject.json'
+
+    export osprojectname=$(
+        jq -r '.name' '/tmp/osproject.json'
+        )
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Create our deployment settings.
+#[root@ansibler]
+
+    export deployname=${cloudname:?}-$(date '+%Y%m%d')
+    export deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    rm -f "${statusyml}"
+    touch "${statusyml}"
+
+    yq --null-input '{
+        "aglais": {
+            "deployment": {
+                "type": "cluster-api",
+                "name": strenv(deployname),
+                "date": strenv(deploydate)
+                },
+            "openstack": {
+                "cloud": {
+                    "name": strenv(cloudname)
+                    },
+                "user": {
+                    "id": strenv(osuserid),
+                    "name": strenv(osusername)
+                    },
+                "project": {
+                    "id": strenv(osprojectid),
+                    "name": strenv(osprojectname)
+                    }
+                }
+            }
+        }' \
+     | tee "${statusyml}"
+
+    >   aglais:
+    >     deployment:
+    >       type: cluster-api
+    >       name: iris-gaia-red-admin-20230612
+    >       date: 20230612T014226
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-red-admin
+    >       user:
+    >         id: 5fa0c97a6dd14e01a3c7d91dad5c6b17
+    >         name: dmorris_gaia
+    >       project:
+    >         id: 0dd8cc5ee5a7455c8748cc06d04c93c3
+    >         name: iris-gaia-red
+
+
+# -----------------------------------------------------
+# Create our bootstrap components.
+#[root@ansibler]
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/config/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    yq '.' /opt/aglais/aglais-status.yml
+
+    >   aglais:
+    >     deployment:
+    >       date: 20230612T014226
+    >       name: iris-gaia-red-admin-20230612
+    >       type: cluster-api
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-red-admin
+    >       keypairs:
+    >         team:
+    >           fingerprint: 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16
+    >           id: iris-gaia-red-admin-20230612-keypair
+    >           name: iris-gaia-red-admin-20230612-keypair
+    >       networks:
+    >         external:
+    >           network:
+    >             id: 57add367-d205-4030-a929-d75617a7c63e
+    >             name: CUDN-Internet
+    >         internal:
+    >           network:
+    >             id: 057979aa-6373-4bc4-959a-bb97e8346de3
+    >             name: iris-gaia-red-admin-20230612-internal-network
+    >           router:
+    >             id: 60e81ab8-b46b-4258-9be0-7010e95bcfd6
+    >             name: iris-gaia-red-admin-20230612-internal-router
+    >           subnet:
+    >             cidr: 10.10.0.0/16
+    >             id: 6d7af11a-85d0-4544-a485-094ca7a0b195
+    >             name: iris-gaia-red-admin-20230612-internal-subnet
+    >       project:
+    >         id: 0dd8cc5ee5a7455c8748cc06d04c93c3
+    >         name: iris-gaia-red
+    >       servers:
+    >         bootstrap:
+    >           float:
+    >             external: 128.232.226.111
+    >             id: 7e73e027-180a-4582-a564-0de600e2a992
+    >             internal: 10.10.0.44
+    >           server:
+    >             address:
+    >               ipv4: 10.10.0.44
+    >             flavor:
+    >               name: gaia.vm.cclake.2vcpu
+    >             hostname: bootstrap
+    >             id: 826649b9-c87c-4771-94a7-2be33e8ee721
+    >             image:
+    >               id: e5c23082-cc34-4213-ad31-ff4684657691
+    >               name: Fedora-34.1.2
+    >             name: iris-gaia-red-admin-20230612-bootstrap
+    >       user:
+    >         id: 5fa0c97a6dd14e01a3c7d91dad5c6b17
+    >         name: dmorris_gaia
+
+
+# -----------------------------------------------------
+# Create a clouds.yaml file for the current cloud.
+# Add our project ID and disable TLS certificate checks.
+# TODO Create and transfer using an Ansible template ..
+#[root@ansibler]
+
+    yq '
+        {
+        "clouds":
+          {
+          strenv(cloudname):
+          .clouds.[strenv(cloudname)]
+          | .auth.project_id = strenv(osprojectid)
+          | .verify = false
+          }
+        }
+        ' \
+        /etc/openstack/clouds.yaml \
+        | tee /tmp/openstack-clouds.yaml
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Transfer our clouds.yaml file to our bootstrap node.
+# TODO Create and transfer using an Ansible template ..
+#[root@ansibler]
+
+    scp \
+        /tmp/openstack-clouds.yaml \
+        bootstrap:/tmp/openstack-clouds.yaml
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p \
+            /etc/aglais
+        sudo install \
+            /tmp/openstack-clouds.yaml \
+            /etc/aglais/openstack-clouds.yaml
+        '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the bootstrap node as root.
+#[user@desktop]
+
+    podman exec \
+        -it \
+        ansibler-red \
+            bash
+
+        ssh bootstrap
+
+            sudo su -
+
+    #
+    # We could prefix everything with sudo, but it gets very boring.
+    #
+
+
+# -----------------------------------------------------
+# Create our initial Kind cluster.
+# https://github.com/kubernetes-sigs/kind/pull/2478#issuecomment-1214656908
+#[root@bootstrap]
+
+    kind create cluster --retain
+
+    >   Creating cluster "kind" ...
+    >    ✓ Ensuring node image (kindest/node:v1.25.3) 🖼
+    >    ✓ Preparing nodes 📦
+    >    ✓ Writing configuration 📜
+    >    ✓ Starting control-plane 🕹️
+    >    ✓ Installing CNI 🔌
+    >    ✓ Installing StorageClass 💾
+    >   ....
+    >   ....
+
+
+    kubectl cluster-info
+
+    >   Kubernetes control plane is running at https://127.0.0.1:43847
+    >   CoreDNS is running at https://127.0.0.1:43847/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check the installed pods.
+#[root@bootstrap]
+
+    kubectl get pods --all-namespaces
+
+    >   NAMESPACE            NAME                                         READY   STATUS    RESTARTS   AGE
+    >   kube-system          coredns-565d847f94-m5zgc                     1/1     Running   0          38s
+    >   kube-system          coredns-565d847f94-mf8x2                     1/1     Running   0          38s
+    >   kube-system          etcd-kind-control-plane                      1/1     Running   0          54s
+    >   kube-system          kindnet-67bqq                                1/1     Running   0          38s
+    >   kube-system          kube-apiserver-kind-control-plane            1/1     Running   0          54s
+    >   kube-system          kube-controller-manager-kind-control-plane   1/1     Running   0          53s
+    >   kube-system          kube-proxy-d4cp4                             1/1     Running   0          38s
+    >   kube-system          kube-scheduler-kind-control-plane            1/1     Running   0          53s
+    >   local-path-storage   local-path-provisioner-684f458cdd-j4j94      1/1     Running   0          38s
+
+
+# -----------------------------------------------------
+# Install the Openstack Cluster API Provider
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#initialization-for-common-providers
+# https://github.com/stackhpc/capi-helm-charts/tree/main/charts/openstack-cluster#prerequisites
+#[root@bootstrap]
+
+    clusterctl init --infrastructure openstack
+
+    >   Fetching providers
+    >   Installing cert-manager Version="v1.12.1"
+    >   Waiting for cert-manager to be available...
+    >   Installing Provider="cluster-api" Version="v1.4.3" TargetNamespace="capi-system"
+    >   Installing Provider="bootstrap-kubeadm" Version="v1.4.3" TargetNamespace="capi-kubeadm-bootstrap-system"
+    >   Installing Provider="control-plane-kubeadm" Version="v1.4.3" TargetNamespace="capi-kubeadm-control-plane-system"
+    >   Installing Provider="infrastructure-openstack" Version="v0.7.3" TargetNamespace="capo-system"
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check our cluster config.
+# https://github.com/stackhpc/capi-helm-charts/tree/main/charts/openstack-cluster#managing-a-workload-cluster
+#[root@bootstrap]
+
+    yq '.' '/opt/aglais/clusterapi-config.yml'
+
+    >   ....
+    >   ....
+    >   # Settings for the CNI addon
+    >   cni:
+    >     # Indicates if a CNI should be deployed
+    >     enabled: true
+    >     # The CNI to deploy - supported values are calico or cilium
+    >     type: calico
+    >     # Settings for the calico CNI
+    >     # See https://projectcalico.docs.tigera.io/getting-started/kubernetes/helm
+    >     calico:
+    >       chart:
+    >         repo: https://projectcalico.docs.tigera.io/charts
+    >         name: tigera-operator
+    >         version: v3.26.0
+
+
+# -----------------------------------------------------
+# Add the StackHPC Helm repos.
+#[root@bootstrap]
+
+    helm repo add \
+        capi \
+        https://stackhpc.github.io/capi-helm-charts
+
+    >   "capi" has been added to your repositories
+
+
+    helm repo add \
+        capi-addons \
+        https://stackhpc.github.io/cluster-api-addon-provider
+
+    >   "capi-addons" has been added to your repositories
+
+
+# -----------------------------------------------------
+# Install the cluster-api-addon-provider.
+#[root@bootstrap]
+
+    helm install \
+        cluster-api-addon-provider \
+        capi-addons/cluster-api-addon-provider
+
+    >   NAME: cluster-api-addon-provider
+    >   LAST DEPLOYED: Mon Jun 12 01:59:59 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+
+
+# -----------------------------------------------------
+# Initialise our cluster ...
+#[root@bootstrap]
+
+    CLUSTER_NAME=aglais-one
+
+    helm install \
+        "${CLUSTER_NAME:?}" \
+        capi/openstack-cluster \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/etc/aglais/openstack-clouds.yaml'
+
+    >   Error: INSTALLATION FAILED: unable to build kubernetes objects from release manifest: [
+    >       resource mapping not found for name: "aglais-one-cni-calico" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-mellanox-network-operator" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-metrics-server" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-node-feature-discovery" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-nvidia-gpu-operator" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-ccm-openstack" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-csi-cinder" namespace: "" from "": no matches for kind "HelmRelease" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-cloud-config" namespace: "" from "": no matches for kind "Manifests" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first, resource mapping not found for name: "aglais-one-csi-cinder-storageclass" namespace: "" from "": no matches for kind "Manifests" in version "addons.stackhpc.com/v1alpha1"
+    >       ensure CRDs are installed first
+    >       ]
+
+
+    kubectl get pods
+
+    >   NAME                                          READY   STATUS    RESTARTS   AGE
+    >   cluster-api-addon-provider-5cb78d8945-w7t2b   1/1     Running   0          2m20s
+
+
+    podname=$(
+        kubectl get pods \
+            --output json \
+        | jq -r '.items[0].metadata.name'
+        )
+
+    kubectl logs "${podname:?}"
+
+    >   [2023-06-12 02:00:22,490] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/apiextensions.k8s.io/v1" 200
+    >   [2023-06-12 02:00:22,519] easykube.rest.client [INFO    ] API request: "PATCH https://10.96.0.1/apis/apiextensions.k8s.io/v1/customresourcedefinitions/helmreleases.addons.stackhpc.com?fieldManager=cluster-api-addon-provider" 201
+    >   [2023-06-12 02:00:22,557] easykube.rest.client [INFO    ] API request: "PATCH https://10.96.0.1/apis/apiextensions.k8s.io/v1/customresourcedefinitions/manifests.addons.stackhpc.com?fieldManager=cluster-api-addon-provider" 201
+    >   [2023-06-12 02:00:22,558] kopf.activities.star [INFO    ] Activity 'apply_settings' succeeded.
+    >   [2023-06-12 02:00:22,562] kopf._core.engines.a [INFO    ] Initial authentication has been initiated.
+    >   [2023-06-12 02:00:22,568] kopf.activities.auth [INFO    ] Activity 'login_with_service_account' succeeded.
+    >   [2023-06-12 02:00:22,568] kopf._core.engines.a [INFO    ] Initial authentication has finished.
+
+
+    kubectl api-resources
+
+    >   NAME                              SHORTNAMES   APIVERSION                                 NAMESPACED   KIND
+    >   bindings                                       v1                                         true         Binding
+    >   componentstatuses                 cs           v1                                         false        ComponentStatus
+    >   configmaps                        cm           v1                                         true         ConfigMap
+    >   endpoints                         ep           v1                                         true         Endpoints
+    >   events                            ev           v1                                         true         Event
+    >   limitranges                       limits       v1                                         true         LimitRange
+    >   namespaces                        ns           v1                                         false        Namespace
+    >   nodes                             no           v1                                         false        Node
+    >   persistentvolumeclaims            pvc          v1                                         true         PersistentVolumeClaim
+    >   persistentvolumes                 pv           v1                                         false        PersistentVolume
+    >   pods                              po           v1                                         true         Pod
+    >   podtemplates                                   v1                                         true         PodTemplate
+    >   replicationcontrollers            rc           v1                                         true         ReplicationController
+    >   resourcequotas                    quota        v1                                         true         ResourceQuota
+    >   secrets                                        v1                                         true         Secret
+    >   serviceaccounts                   sa           v1                                         true         ServiceAccount
+    >   services                          svc          v1                                         true         Service
+    >   challenges                                     acme.cert-manager.io/v1                    true         Challenge
+    >   orders                                         acme.cert-manager.io/v1                    true         Order
+    >   clusterresourcesetbindings                     addons.cluster.x-k8s.io/v1beta1            true         ClusterResourceSetBinding
+    >   clusterresourcesets                            addons.cluster.x-k8s.io/v1beta1            true         ClusterResourceSet
+    >   helmreleases                                   addons.stackhpc.com/v1alpha1               true         HelmRelease
+    >   manifests                                      addons.stackhpc.com/v1alpha1               true         Manifests
+    >   mutatingwebhookconfigurations                  admissionregistration.k8s.io/v1            false        MutatingWebhookConfiguration
+    >   validatingwebhookconfigurations                admissionregistration.k8s.io/v1            false        ValidatingWebhookConfiguration
+    >   customresourcedefinitions         crd,crds     apiextensions.k8s.io/v1                    false        CustomResourceDefinition
+    >   apiservices                                    apiregistration.k8s.io/v1                  false        APIService
+    >   controllerrevisions                            apps/v1                                    true         ControllerRevision
+    >   daemonsets                        ds           apps/v1                                    true         DaemonSet
+    >   deployments                       deploy       apps/v1                                    true         Deployment
+    >   replicasets                       rs           apps/v1                                    true         ReplicaSet
+    >   statefulsets                      sts          apps/v1                                    true         StatefulSet
+    >   tokenreviews                                   authentication.k8s.io/v1                   false        TokenReview
+    >   localsubjectaccessreviews                      authorization.k8s.io/v1                    true         LocalSubjectAccessReview
+    >   selfsubjectaccessreviews                       authorization.k8s.io/v1                    false        SelfSubjectAccessReview
+    >   selfsubjectrulesreviews                        authorization.k8s.io/v1                    false        SelfSubjectRulesReview
+    >   subjectaccessreviews                           authorization.k8s.io/v1                    false        SubjectAccessReview
+    >   horizontalpodautoscalers          hpa          autoscaling/v2                             true         HorizontalPodAutoscaler
+    >   cronjobs                          cj           batch/v1                                   true         CronJob
+    >   jobs                                           batch/v1                                   true         Job
+    >   kubeadmconfigs                                 bootstrap.cluster.x-k8s.io/v1beta1         true         KubeadmConfig
+    >   kubeadmconfigtemplates                         bootstrap.cluster.x-k8s.io/v1beta1         true         KubeadmConfigTemplate
+    >   certificaterequests               cr,crs       cert-manager.io/v1                         true         CertificateRequest
+    >   certificates                      cert,certs   cert-manager.io/v1                         true         Certificate
+    >   clusterissuers                                 cert-manager.io/v1                         false        ClusterIssuer
+    >   issuers                                        cert-manager.io/v1                         true         Issuer
+    >   certificatesigningrequests        csr          certificates.k8s.io/v1                     false        CertificateSigningRequest
+    >   clusterclasses                    cc           cluster.x-k8s.io/v1beta1                   true         ClusterClass
+    >   clusters                          cl           cluster.x-k8s.io/v1beta1                   true         Cluster
+    >   machinedeployments                md           cluster.x-k8s.io/v1beta1                   true         MachineDeployment
+    >   machinehealthchecks               mhc,mhcs     cluster.x-k8s.io/v1beta1                   true         MachineHealthCheck
+    >   machinepools                      mp           cluster.x-k8s.io/v1beta1                   true         MachinePool
+    >   machines                          ma           cluster.x-k8s.io/v1beta1                   true         Machine
+    >   machinesets                       ms           cluster.x-k8s.io/v1beta1                   true         MachineSet
+    >   providers                                      clusterctl.cluster.x-k8s.io/v1alpha3       true         Provider
+    >   kubeadmcontrolplanes              kcp          controlplane.cluster.x-k8s.io/v1beta1      true         KubeadmControlPlane
+    >   kubeadmcontrolplanetemplates                   controlplane.cluster.x-k8s.io/v1beta1      true         KubeadmControlPlaneTemplate
+    >   leases                                         coordination.k8s.io/v1                     true         Lease
+    >   endpointslices                                 discovery.k8s.io/v1                        true         EndpointSlice
+    >   events                            ev           events.k8s.io/v1                           true         Event
+    >   flowschemas                                    flowcontrol.apiserver.k8s.io/v1beta2       false        FlowSchema
+    >   prioritylevelconfigurations                    flowcontrol.apiserver.k8s.io/v1beta2       false        PriorityLevelConfiguration
+    >   openstackclusters                 osc          infrastructure.cluster.x-k8s.io/v1alpha6   true         OpenStackCluster
+    >   openstackclustertemplates         osct         infrastructure.cluster.x-k8s.io/v1alpha6   true         OpenStackClusterTemplate
+    >   openstackmachines                 osm          infrastructure.cluster.x-k8s.io/v1alpha6   true         OpenStackMachine
+    >   openstackmachinetemplates         osmt         infrastructure.cluster.x-k8s.io/v1alpha6   true         OpenStackMachineTemplate
+    >   ipaddressclaims                                ipam.cluster.x-k8s.io/v1alpha1             true         IPAddressClaim
+    >   ipaddresses                                    ipam.cluster.x-k8s.io/v1alpha1             true         IPAddress
+    >   ingressclasses                                 networking.k8s.io/v1                       false        IngressClass
+    >   ingresses                         ing          networking.k8s.io/v1                       true         Ingress
+    >   networkpolicies                   netpol       networking.k8s.io/v1                       true         NetworkPolicy
+    >   runtimeclasses                                 node.k8s.io/v1                             false        RuntimeClass
+    >   poddisruptionbudgets              pdb          policy/v1                                  true         PodDisruptionBudget
+    >   clusterrolebindings                            rbac.authorization.k8s.io/v1               false        ClusterRoleBinding
+    >   clusterroles                                   rbac.authorization.k8s.io/v1               false        ClusterRole
+    >   rolebindings                                   rbac.authorization.k8s.io/v1               true         RoleBinding
+    >   roles                                          rbac.authorization.k8s.io/v1               true         Role
+    >   extensionconfigs                  ext          runtime.cluster.x-k8s.io/v1alpha1          false        ExtensionConfig
+    >   priorityclasses                   pc           scheduling.k8s.io/v1                       false        PriorityClass
+    >   csidrivers                                     storage.k8s.io/v1                          false        CSIDriver
+    >   csinodes                                       storage.k8s.io/v1                          false        CSINode
+    >   csistoragecapacities                           storage.k8s.io/v1                          true         CSIStorageCapacity
+    >   storageclasses                    sc           storage.k8s.io/v1                          false        StorageClass
+    >   volumeattachments                              storage.k8s.io/v1                          false        VolumeAttachment
+
+
+# -----------------------------------------------------
+# Exploring ...
+#[root@bootstrap]
+
+    helm install \
+         --debug \
+         --dry-run \
+        "${CLUSTER_NAME:?}" \
+        capi/openstack-cluster \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/etc/aglais/openstack-clouds.yaml'
+
+    >   ....
+    >   Waaay too much detail to include here.
+    >   ....
+
+
+    #
+    # How do we end up with this ?
+    #
+
+    >   ---
+    >   # Source: openstack-cluster/charts/addons/templates/cni/calico.yaml
+    >   apiVersion: addons.stackhpc.com/v1alpha1
+    >   kind: HelmRelease
+    >   metadata:
+    >     name: aglais-one-cni-calico
+    >     labels:
+    >       helm.sh/chart: addons-0.1.0
+    >       capi.stackhpc.com/managed-by: Helm
+    >       capi.stackhpc.com/cluster: aglais-one
+    >       capi.stackhpc.com/component: cni-calico
+    >   spec:
+    >     clusterName: aglais-one
+    >     bootstrap: true
+    >     chart:
+    >       name: tigera-operator
+    >       repo: https://projectcalico.docs.tigera.io/charts
+    >       version: v3.23.3
+    >     targetNamespace: tigera-operator
+    >     releaseName: cni-calico
+    >     valuesSources:
+    >       - secret:
+    >           name: aglais-one-cni-calico-config
+    >           key: defaults
+    >       - secret:
+    >           name: aglais-one-cni-calico-config
+    >           key: overrides
+    >   ---
+
+
+    #
+    # In particular this part ....
+    #
+
+    >   ---
+    >   # Source: openstack-cluster/charts/addons/templates/cni/calico.yaml
+    >   apiVersion: addons.stackhpc.com/v1alpha1
+    >   kind: HelmRelease
+    >   metadata:
+    >     name: aglais-one-cni-calico
+    >     ....
+    >     ....
+    >   spec:
+    >     clusterName: aglais-one
+    >     bootstrap: true
+    >     chart:
+    >       name: tigera-operator
+    >       repo: https://projectcalico.docs.tigera.io/charts
+    >       version: v3.23.3
+    >     ....
+    >     ....
+    >   ---
+
+
+    #
+    # Unless one of these has an override ?
+    #
+
+    >   ....
+    >   spec:
+    >     ....
+    >     valuesSources:
+    >       - secret:
+    >           name: aglais-one-cni-calico-config
+    >           key: defaults
+    >       - secret:
+    >           name: aglais-one-cni-calico-config
+    >           key: overrides
+
+
+    #
+    # Nope, no override for the version.
+    #
+
+    >   ---
+    >   # Source: openstack-cluster/charts/addons/templates/cni/calico.yaml
+    >   apiVersion: v1
+    >   kind: Secret
+    >   metadata:
+    >     name: aglais-one-cni-calico-config
+    >     labels:
+    >       helm.sh/chart: addons-0.1.0
+    >       capi.stackhpc.com/managed-by: Helm
+    >       capi.stackhpc.com/cluster: aglais-one
+    >       capi.stackhpc.com/component: cni-calico
+    >       addons.stackhpc.com/watch: ""
+    >   stringData:
+    >     defaults: |
+    >       installation:
+    >         calicoNetwork:
+    >           bgp: Disabled
+    >           nodeAddressAutodetectionV4:
+    >             kubernetes: NodeInternalIP
+    >           ipPools:
+    >       {% for cidr in cluster.spec.clusterNetwork.pods.cidrBlocks %}
+    >             - cidr: {{ cidr }}
+    >               encapsulation: VXLAN
+    >       {% endfor %}
+    >     overrides: |
+    >       {}
+    >   ---
+
+
+# -----------------------------------------------------
+# Exploring ...
+#[root@bootstrap]
+
+    The current (master) branch in GitHuib has [version: v3.24.5]
+    https://github.com/stackhpc/capi-helm-charts/blame/1cd905bde6ecdd5c35fceb23dd13ee9edfac2081/charts/cluster-addons/values.yaml#L53
+
+    The previous commit () has [version: v3.23.3]
+    https://github.com/stackhpc/capi-helm-charts/blame/75676de042f5b2fe9271829eee8591c334d6a717/charts/cluster-addons/values.yaml#L39
+
+    The commit for the change was made on  Nov 15, 2022.
+    https://github.com/stackhpc/capi-helm-charts/commit/1a2150b7f5e65599a7c6b7b24f77860ed4edb41e
+
+    The pull request was merged on Nov 15, 2022.
+    https://github.com/stackhpc/capi-helm-charts/pull/13
+
+    Looks like the Helm chart is defaulting to the older version and ignoring any override.
+
+    #
+    # We haven't been using the 'special' version limits for the install.
+    # https://github.com/stackhpc/cluster-api-addon-provider/pkgs/container/cluster-api-addon-provider#installation
+
+    >   # Use the latest version from the main branch
+    >   helm upgrade \
+    >     cluster-api-addon-provider \
+    >     capi-addons/cluster-api-addon-provider \
+    >     --install \
+    >     --version ">=0.1.0-dev.0.main.0,<0.1.0-dev.0.main.9999999999"
+
+
+# -----------------------------------------------------
+# Update the cluster-api-addon-provider.
+#[root@bootstrap]
+
+    helm upgrade \
+      cluster-api-addon-provider \
+      capi-addons/cluster-api-addon-provider \
+      --install \
+      --version ">=0.1.0-dev.0.main.0,<0.1.0-dev.0.main.9999999999"
+
+
+    >   Release "cluster-api-addon-provider" has been upgraded. Happy Helming!
+    >   NAME: cluster-api-addon-provider
+    >   LAST DEPLOYED: Mon Jun 12 02:57:11 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 2
+    >   TEST SUITE: None
+
+
+# -----------------------------------------------------
+# Initialise our cluster ...
+#[root@bootstrap]
+
+    CLUSTER_NAME=aglais-one
+
+    helm install \
+        "${CLUSTER_NAME:?}" \
+        capi/openstack-cluster \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/etc/aglais/openstack-clouds.yaml'
+
+
+    >   NAME: aglais-one
+    >   LAST DEPLOYED: Mon Jun 12 02:57:48 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+
+
+# -----------------------------------------------------
+# Get the kubeconfig for our cluster.
+#[root@bootstrap]
+
+    clusterctl get \
+        kubeconfig "${CLUSTER_NAME:?}" \
+    | tee "${HOME}/.kube/${CLUSTER_NAME:?}-kubeconfig"
+
+        kubeconfig "${CLUSTER_NAME:?}" \
+    | tee "${HOME}/.kube/${CLUSTER_NAME:?}-kubeconfig"
+
+    >   apiVersion: v1
+    >   clusters:
+    >   - cluster:
+    >       certificate-authority-data: LS0tLS1C .... tLS0tLQo=
+    >       server: https://128.232.226.128:6443
+    >     name: aglais-one
+    >   contexts:
+    >   - context:
+    >       cluster: aglais-one
+    >       user: aglais-one-admin
+    >     name: aglais-one-admin@aglais-one
+    >   current-context: aglais-one-admin@aglais-one
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >   - name: aglais-one-admin
+    >     user:
+    >       client-certificate-data: LS0tLS1C .... tLS0tLQo=
+    >       client-key-data: LS0tLS1C .... tLS0tLQo=
+
+
+# -----------------------------------------------------
+# Use the kubeconfig to get our cluster info.
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${HOME}/.kube/${CLUSTER_NAME:?}-kubeconfig" \
+        cluster-info
+
+    >   E0612 03:02:43.703951   18028 memcache.go:287] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0612 03:02:43.716592   18028 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0612 03:02:43.723541   18028 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0612 03:02:43.726652   18028 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   Kubernetes control plane is running at https://128.232.226.128:6443
+    >   CoreDNS is running at https://128.232.226.128:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+    kubectl \
+        get events \
+        --field-selector type=Error
+
+    >   ....
+    >   62s         Error   Logging   helmrelease/aglais-one-cni-calico                  Handler 'handle_addon_updated' failed with an exception. Will retry....
+    >   ....
+
+
+    kubectl get pods
+
+    >   NAME                                          READY   STATUS    RESTARTS        AGE
+    >   aglais-one-autoscaler-85678468d5-jj5cj        1/1     Running   3 (4m52s ago)   7m59s
+    >   cluster-api-addon-provider-67f44fc5b8-dbk5z   1/1     Running   0               8m35s
+
+
+    podname=$(
+        kubectl get pods \
+            --output json \
+        | jq -r '.items[1].metadata.name'
+        )
+
+    kubectl logs "${podname:?}"
+
+    >   ....
+    >   [2023-06-12 03:05:40,736] pyhelm3.command      [INFO    ] running command: helm upgrade cni-calico /tmp/helm.6wjxwegp/tigera-operator --history-max 10 --install --output json --timeout 1h --values '<stdin>' --cleanup-on-fail --create-namespace --namespace tigera-operator --version v3.23.3 --wait --wait-for-jobs --kubeconfig /tmp/tmpr0u2k1fm
+    >   [2023-06-12 03:05:41,595] pyhelm3.command      [WARNING ] command failed: helm upgrade cni-calico /tmp/helm.6wjxwegp/tigera-operator --history-max 10 --install --output json --timeout 1h --values '<stdin>' --cleanup-on-fail --create-namespace --namespace tigera-operator --version v3.23.3 --wait --wait-for-jobs --kubeconfig /tmp/tmpr0u2k1fm
+    >   [2023-06-12 03:05:41,598] kopf.objects         [ERROR   ] [default/aglais-one-cni-calico] Handler 'handle_addon_updated' failed with an exception. Will retry.
+    >   Traceback (most recent call last):
+    >     File "/usr/local/lib/python3.9/site-packages/kopf/_core/actions/execution.py", line 279, in execute_handler_once
+    >       result = await invoke_handler(
+    >     ....
+    >     ....
+    >     File "/usr/local/lib/python3.9/site-packages/pyhelm3/command.py", line 219, in run
+    >       raise error_cls(proc.returncode, stdout, stderr)
+    >   pyhelm3.errors.Error:
+    >       Error: unable to build kubernetes objects from release manifest:
+    >           resource mapping not found for name:
+    >               "tigera-operator" namespace: "" from "":
+    >                   no matches for kind "PodSecurityPolicy" in version "policy/v1beta1"
+    >                   ensure CRDs are installed first
+    >   ....
+
+
+# -----------------------------------------------------
+# Exploring ...
+#[root@bootstrap]
+
+    helm install \
+         --debug \
+         --dry-run \
+        "${CLUSTER_NAME:?}" \
+        capi/openstack-cluster \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/etc/aglais/openstack-clouds.yaml' \
+    | yq '. | select(.metadata.name == "aglais-one-cni-calico")'
+
+    >   # Source: openstack-cluster/charts/addons/templates/cni/calico.yaml
+    >   apiVersion: addons.stackhpc.com/v1alpha1
+    >   kind: HelmRelease
+    >   metadata:
+    >     name: aglais-one-cni-calico
+    >     labels:
+    >       helm.sh/chart: addons-0.1.0
+    >       capi.stackhpc.com/managed-by: Helm
+    >       capi.stackhpc.com/cluster: aglais-one
+    >       capi.stackhpc.com/component: cni-calico
+    >   spec:
+    >     clusterName: aglais-one
+    >     bootstrap: true
+    >     chart:
+    >       name: tigera-operator
+    >       repo: https://projectcalico.docs.tigera.io/charts
+    >       version: v3.23.3
+    >     targetNamespace: tigera-operator
+    >     releaseName: cni-calico
+    >     valuesSources:
+    >       - secret:
+    >           name: aglais-one-cni-calico-config
+    >           key: defaults
+    >       - secret:
+    >           name: aglais-one-cni-calico-config
+    >           key: overrides
+
+    #
+    # Still getting the old version.
+    # Still ignoring the values override.
+    #
+
+
+# -----------------------------------------------------
+# Update the cluster-api-addon-provider.
+#[root@bootstrap]
+
+    helm upgrade \
+        --debug \
+        --install \
+        cluster-api-addon-provider \
+        capi-addons/cluster-api-addon-provider
+
+    >   history.go:56: [debug] getting history for release cluster-api-addon-provider
+    >   upgrade.go:144: [debug] preparing upgrade for cluster-api-addon-provider
+    >   upgrade.go:152: [debug] performing update for cluster-api-addon-provider
+    >   upgrade.go:324: [debug] creating upgraded release for cluster-api-addon-provider
+    >   client.go:396: [debug] checking 5 resources for changes
+    >   client.go:684: [debug] Patch ServiceAccount "cluster-api-addon-provider" in namespace default
+    >   client.go:684: [debug] Patch ConfigMap "cluster-api-addon-provider" in namespace default
+    >   client.go:684: [debug] Patch ClusterRole "cluster-api-addon-provider" in namespace
+    >   client.go:684: [debug] Patch ClusterRoleBinding "cluster-api-addon-provider" in namespace
+    >   client.go:684: [debug] Patch Deployment "cluster-api-addon-provider" in namespace default
+    >   upgrade.go:159: [debug] updating status for upgraded release for cluster-api-addon-provider
+    >   Release "cluster-api-addon-provider" has been upgraded. Happy Helming!
+    >   NAME: cluster-api-addon-provider
+    >   LAST DEPLOYED: Mon Jun 12 03:29:05 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 3
+    >   TEST SUITE: None
+    >   USER-SUPPLIED VALUES:
+    >   {}
+    >
+    >   COMPUTED VALUES:
+    >   affinity: {}
+    >   config: {}
+    >   image:
+    >     pullPolicy: IfNotPresent
+    >     repository: ghcr.io/stackhpc/cluster-api-addon-provider
+    >     tag: ""
+    >   imagePullSecrets: []
+    >   nodeSelector: {}
+    >   podSecurityContext:
+    >     runAsNonRoot: true
+    >   resources: {}
+    >   securityContext:
+    >     allowPrivilegeEscalation: false
+    >     capabilities:
+    >       drop:
+    >       - ALL
+    >     readOnlyRootFilesystem: true
+    >   tolerations: []
+    >
+    >   HOOKS:
+    >   MANIFEST:
+    >   ---
+    >   # Source: cluster-api-addon-provider/templates/serviceaccount.yaml
+    >   apiVersion: v1
+    >   kind: ServiceAccount
+    >   metadata:
+    >     name: cluster-api-addon-provider
+    >     labels:
+    >       helm.sh/chart: cluster-api-addon-provider-0.1.0
+    >       app.kubernetes.io/name: cluster-api-addon-provider
+    >       app.kubernetes.io/instance: cluster-api-addon-provider
+    >       app.kubernetes.io/version: "07153a3"
+    >       app.kubernetes.io/managed-by: Helm
+    >   ---
+    >   # Source: cluster-api-addon-provider/templates/configmap.yaml
+    >   apiVersion: v1
+    >   kind: ConfigMap
+    >   metadata:
+    >     name: cluster-api-addon-provider
+    >     labels:
+    >       helm.sh/chart: cluster-api-addon-provider-0.1.0
+    >       app.kubernetes.io/name: cluster-api-addon-provider
+    >       app.kubernetes.io/instance: cluster-api-addon-provider
+    >       app.kubernetes.io/version: "07153a3"
+    >       app.kubernetes.io/managed-by: Helm
+    >   data:
+    >     config.yaml: |
+    >       !include "/etc/capi-addon-provider/defaults.yaml,/etc/capi-addon-provider/user-config.yaml"
+    >     defaults.yaml: |
+    >       easykubeFieldManager: cluster-api-addon-provider
+    >     user-config.yaml: |
+    >       {}
+    >   ---
+    >   # Source: cluster-api-addon-provider/templates/clusterrole.yaml
+    >   apiVersion: rbac.authorization.k8s.io/v1
+    >   kind: ClusterRole
+    >   metadata:
+    >     name: cluster-api-addon-provider
+    >     labels:
+    >       helm.sh/chart: cluster-api-addon-provider-0.1.0
+    >       app.kubernetes.io/name: cluster-api-addon-provider
+    >       app.kubernetes.io/instance: cluster-api-addon-provider
+    >       app.kubernetes.io/version: "07153a3"
+    >       app.kubernetes.io/managed-by: Helm
+    >   rules:
+    >     # Manipulating CRDs (only allow patching of our own CRDs)
+    >     - apiGroups:
+    >         - apiextensions.k8s.io
+    >       resources:
+    >         - customresourcedefinitions
+    >       verbs:
+    >         - list
+    >         - get
+    >         - watch
+    >         - create
+    >     - apiGroups:
+    >         - apiextensions.k8s.io
+    >       resources:
+    >         - customresourcedefinitions
+    >       resourceNames:
+    >         - helmreleases.addons.stackhpc.com
+    >         - manifests.addons.stackhpc.com
+    >       verbs:
+    >         - update
+    >         - patch
+    >     # Required for kopf to watch resources properly
+    >     - apiGroups:
+    >         - ""
+    >       resources:
+    >         - namespaces
+    >       verbs:
+    >         - list
+    >         - watch
+    >     # Required for kopf to produce events properly
+    >     - apiGroups:
+    >         - ""
+    >         - events.k8s.io
+    >       resources:
+    >         - events
+    >       verbs:
+    >         - create
+    >     # We can manipulate our own objects
+    >     - apiGroups:
+    >         - addons.stackhpc.com
+    >       resources:
+    >         - "*"
+    >       verbs:
+    >         - "*"
+    >     # We need to be able to read Cluster API clusters
+    >     - apiGroups:
+    >         - cluster.x-k8s.io
+    >       resources:
+    >         - clusters
+    >       verbs:
+    >         - list
+    >         - watch
+    >         - get
+    >     # We need to be able to watch infrastructure clusters
+    >     - apiGroups:
+    >         - infrastructure.cluster.x-k8s.io
+    >       resources:
+    >         - "*"
+    >       verbs:
+    >         - list
+    >         - watch
+    >         - get
+    >     # We need to be able to read configmaps and secrets
+    >     - apiGroups:
+    >         - ""
+    >       resources:
+    >         - configmaps
+    >         - secrets
+    >       verbs:
+    >         - list
+    >         - watch
+    >         - get
+    >   ---
+    >   # Source: cluster-api-addon-provider/templates/clusterrolebinding.yaml
+    >   apiVersion: rbac.authorization.k8s.io/v1
+    >   kind: ClusterRoleBinding
+    >   metadata:
+    >     name: cluster-api-addon-provider
+    >     labels:
+    >       helm.sh/chart: cluster-api-addon-provider-0.1.0
+    >       app.kubernetes.io/name: cluster-api-addon-provider
+    >       app.kubernetes.io/instance: cluster-api-addon-provider
+    >       app.kubernetes.io/version: "07153a3"
+    >       app.kubernetes.io/managed-by: Helm
+    >   subjects:
+    >     - kind: ServiceAccount
+    >       namespace: default
+    >       name: cluster-api-addon-provider
+    >   roleRef:
+    >     apiGroup: rbac.authorization.k8s.io
+    >     kind: ClusterRole
+    >     name: cluster-api-addon-provider
+    >   ---
+    >   # Source: cluster-api-addon-provider/templates/deployment.yaml
+    >   apiVersion: apps/v1
+    >   kind: Deployment
+    >   metadata:
+    >     name: cluster-api-addon-provider
+    >     labels:
+    >       helm.sh/chart: cluster-api-addon-provider-0.1.0
+    >       app.kubernetes.io/name: cluster-api-addon-provider
+    >       app.kubernetes.io/instance: cluster-api-addon-provider
+    >       app.kubernetes.io/version: "07153a3"
+    >       app.kubernetes.io/managed-by: Helm
+    >   spec:
+    >     # Allow only one replica at once with the recreate strategy in order to avoid races
+    >     replicas: 1
+    >     strategy:
+    >       type: Recreate
+    >     selector:
+    >       matchLabels:
+    >         app.kubernetes.io/name: cluster-api-addon-provider
+    >         app.kubernetes.io/instance: cluster-api-addon-provider
+    >     template:
+    >       metadata:
+    >         labels:
+    >           app.kubernetes.io/name: cluster-api-addon-provider
+    >           app.kubernetes.io/instance: cluster-api-addon-provider
+    >         annotations:
+    >           # Force the deployment to roll when the config changes
+    >           addons.stackhpc.com/config-hash: e979d8b000ad8aa218e995842641d63f9cc626c9cb1ace9e892bde03e574c6cf
+    >       spec:
+    >         serviceAccountName: cluster-api-addon-provider
+    >         securityContext:
+    >           runAsNonRoot: true
+    >         containers:
+    >           - name: cluster-api-addon-provider
+    >             image: "ghcr.io/stackhpc/cluster-api-addon-provider:07153a3"
+    >             imagePullPolicy: IfNotPresent
+    >             securityContext:
+    >               allowPrivilegeEscalation: false
+    >               capabilities:
+    >                 drop:
+    >                 - ALL
+    >               readOnlyRootFilesystem: true
+    >             resources:
+    >               {}
+    >             volumeMounts:
+    >               - name: etc-capi-addon-provider
+    >                 mountPath: /etc/capi-addon-provider
+    >                 readOnly: true
+    >               - name: tmp
+    >                 mountPath: /tmp
+    >         volumes:
+    >           - name: etc-capi-addon-provider
+    >             configMap:
+    >               name: cluster-api-addon-provider
+    >           # Mount a writable directory at /tmp
+    >           - name: tmp
+    >             emptyDir: {}
+
+
+    helm upgrade \
+         --debug \
+        "${CLUSTER_NAME:?}" \
+        capi/openstack-cluster \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/etc/aglais/openstack-clouds.yaml'
+    | yq '. | select(.metadata.name == "aglais-one-cni-calico")'
+
+    >   ---
+    >   # Source: openstack-cluster/charts/addons/templates/cni/calico.yaml
+    >   apiVersion: addons.stackhpc.com/v1alpha1
+    >   kind: HelmRelease
+    >   metadata:
+    >     name: aglais-one-cni-calico
+    >     labels:
+    >       helm.sh/chart: addons-0.1.0
+    >       capi.stackhpc.com/managed-by: Helm
+    >       capi.stackhpc.com/cluster: aglais-one
+    >       capi.stackhpc.com/component: cni-calico
+    >   spec:
+    >     clusterName: aglais-one
+    >     bootstrap: true
+    >     chart:
+    >       name: tigera-operator
+    >       repo: https://projectcalico.docs.tigera.io/charts
+    >       version: v3.23.3
+    >     targetNamespace: tigera-operator
+    >     releaseName: cni-calico
+    >     valuesSources:
+    >       - secret:
+    >           name: aglais-one-cni-calico-config
+    >           key: defaults
+    >       - secret:
+    >           name: aglais-one-cni-calico-config
+    >           key: overrides
+    >   ---
+
+
+
+
+
+

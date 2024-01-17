@@ -1,0 +1,354 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2024, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Try re-create the same error without the custom DNS server address.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Comment out the custom DNS addresses.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE:?}"
+
+        vi deployments/cluster-api/ansible/templates/clusterapi-config.j2
+
+        ~   # # Custom nameservers to use for the hosts
+        ~   # dnsNameservers:
+        ~   #   - "{{ deployments[aglais.openstack.cloud.site].dnsservers }}"
+
+    popd
+
+# -----------------------------------------------------
+# Delete and create everything on jade.
+#[user@desktop]
+
+    agclient jade
+
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to our bootstrap node and check the work cluster status.
+#[root@ansibler]
+
+    ssh -t bootstrap \
+        '
+        source loadconfig
+        watch \
+            clusterctl \
+                --kubeconfig ${kindclusterconf:?} \
+                describe cluster \
+                    ${workclustername:?}
+        '
+
+    >   NAME                                                                              READY  SEVERITY  REASON                                                                   SINCE  MESSAGE
+    >   Cluster/somerville-jade-20240116-work                                             False  Warning   NodeStartupTimeout @ /somerville-jade-20240116-work-control-plane-8nscq  4h7m   Node failed to report startup in 10m0s
+    >   ├─ClusterInfrastructure - OpenStackCluster/somerville-jade-20240116-work
+    >   ├─ControlPlane - KubeadmControlPlane/somerville-jade-20240116-work-control-plane  False  Warning   NodeStartupTimeout @ /somerville-jade-20240116-work-control-plane-8nscq  4h7m   Node failed to report startup in 10m0s
+    >   │ └─Machine/somerville-jade-20240116-work-control-plane-8nscq                     False  Warning   NodeStartupTimeout                                                       4h7m   Node failed to report startup in 10m0s
+    >   └─Workers
+    >     └─MachineDeployment/somerville-jade-20240116-work-md-0                          False  Warning   WaitingForAvailableMachines                                              13h    Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                                               True                                                                                      4m59s  See somerville-jade-20240116-work-md-0-kdbhf-djwbn, somerville-jade-20240116-work-md-0-kdbhf-gt8nb, ...
+
+
+# -----------------------------------------------------
+# Grab a dump of the logs from all the Pods.
+#[root@ansibler]
+
+    ssh bootstrap
+
+        source loadconfig
+
+        mkdir /tmp/logs
+
+        for podnamespace in $(
+            kubectl \
+                --kubeconfig "${kindclusterconf:?}" \
+                get pods \
+                    --output json \
+                    --all-namespaces \
+            | jq -r '.items[].metadata | {namespace, name} | tojson'
+            )
+        do
+            echo ""
+            echo "----"
+
+            namespace=$(echo ${podnamespace} | jq -r '.namespace')
+            name=$(echo  ${podnamespace} | jq -r '.name')
+
+            echo "Space   [${namespace}]"
+            echo "Name    [${name}]"
+
+            kubectl \
+                --kubeconfig "${kindclusterconf:?}" \
+                logs \
+                    --namespace "${namespace:?}"  \
+                    "${name:?}" \
+            > "/tmp/logs/${name:?}.log"
+
+        done
+
+    >   ----
+    >   Space   [capi-kubeadm-bootstrap-system]
+    >   Name    [capi-kubeadm-bootstrap-controller-manager-55d5767547-29fbd]
+    >   
+    >   ----
+    >   Space   [capi-kubeadm-control-plane-system]
+    >   Name    [capi-kubeadm-control-plane-controller-manager-85fd48fb9b-crsn7]
+    >   
+    >   ----
+    >   Space   [capi-system]
+    >   Name    [capi-controller-manager-7cb6bcd4db-7cnjz]
+    >   
+    >   ----
+    >   Space   [capo-system]
+    >   Name    [capo-controller-manager-544cb69b9d-r48b6]
+    >   
+    >   ----
+    >   Space   [cert-manager]
+    >   Name    [cert-manager-66d9545484-drtjq]
+    >   
+    >   ----
+    >   Space   [cert-manager]
+    >   Name    [cert-manager-cainjector-7d8b6bd6fb-hwlgz]
+    >   
+    >   ----
+    >   Space   [cert-manager]
+    >   Name    [cert-manager-webhook-669b96dcfd-dlrqg]
+    >   
+    >   ----
+    >   Space   [default]
+    >   Name    [cluster-api-addon-provider-66cc76bbbf-kg4s9]
+    >   
+    >   ----
+    >   Space   [default]
+    >   Name    [somerville-jade-20240116-work-autoscaler-54b7596566-pbxzq]
+    >   
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [coredns-5d78c9869d-c4zcj]
+    >   
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [coredns-5d78c9869d-kj622]
+    >   
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [etcd-somerville-jade-20240116-kind-control-plane]
+    >   
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [kindnet-9nph8]
+    >   
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [kube-apiserver-somerville-jade-20240116-kind-control-plane]
+    >   
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [kube-controller-manager-somerville-jade-20240116-kind-control-plane]
+    >   
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [kube-proxy-jnphm]
+    >   
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [kube-scheduler-somerville-jade-20240116-kind-control-plane]
+    >   
+    >   ----
+    >   Space   [local-path-storage]
+    >   Name    [local-path-provisioner-6bc4bddd6b-qdntf]
+
+
+# -----------------------------------------------------
+# Fold the logs into an archive.
+#[user@bootstrap]
+
+    pushd /tmp
+
+        tar -cvzf 202401160520-arcus-jade-logs.tar.gz logs
+
+    >   logs/local-path-provisioner-6bc4bddd6b-qdntf.log
+    >   logs/kube-scheduler-somerville-jade-20240116-kind-control-plane.log
+    >   logs/kube-proxy-jnphm.log
+    >   logs/kube-controller-manager-somerville-jade-20240116-kind-control-plane.log
+    >   logs/kube-apiserver-somerville-jade-20240116-kind-control-plane.log
+    >   logs/kindnet-9nph8.log
+    >   logs/etcd-somerville-jade-20240116-kind-control-plane.log
+    >   logs/coredns-5d78c9869d-kj622.log
+    >   logs/coredns-5d78c9869d-c4zcj.log
+    >   logs/somerville-jade-20240116-work-autoscaler-54b7596566-pbxzq.log
+    >   logs/cluster-api-addon-provider-66cc76bbbf-kg4s9.log
+    >   logs/cert-manager-webhook-669b96dcfd-dlrqg.log
+    >   logs/cert-manager-cainjector-7d8b6bd6fb-hwlgz.log
+    >   logs/cert-manager-66d9545484-drtjq.log
+    >   logs/capo-controller-manager-544cb69b9d-r48b6.log
+    >   logs/capi-controller-manager-7cb6bcd4db-7cnjz.log
+    >   logs/capi-kubeadm-control-plane-controller-manager-85fd48fb9b-crsn7.log
+    >   logs/capi-kubeadm-bootstrap-controller-manager-55d5767547-29fbd.log
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Copy the logs from our bootstrap node to our client container.
+#[root@ansibler]
+
+    scp bootstrap:/tmp/202401160520-arcus-jade-logs.tar.gz .
+
+    >   202401160520-arcus-jade-logs.tar.gz     100% 1101KB   2.6MB/s   00:00
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Transfer the logs from our client container to our desktop.
+#[user@desktop]
+
+    pushd /var/local/backups
+        pushd aglais/2024
+            pushd 20240116
+
+                mkdir 202401160520
+                pushd 202401160520
+
+                    podman cp ansibler-jade:/202401160520-arcus-jade-logs.tar.gz .
+
+                    tar -xvzf 202401160520-arcus-jade-logs.tar.gz
+
+
+    #
+    # Search through the logs manually.
+    #
+
+/var/local/backups/aglais/2024/20240116/202401160520/logs/capi-controller-manager-7cb6bcd4db-7cnjz.log
+
+    >   ....
+    >   E0116 04:27:27.396318       1 machinehealthcheck_controller.go:206] "error creating remote cluster cache" err="failed to create cluster accessor: failed to get lock for cluster: cluster is locked already" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="92165295-f67e-4c07-88c2-549e6b5b0bd4" Cluster="default/somerville-jade-20240116-work"
+    >   E0116 04:27:27.430625       1 machinehealthcheck_controller.go:206] "error creating remote cluster cache" err="failed to create cluster accessor: failed to get lock for cluster: cluster is locked already" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="577d75a5-171b-47c5-9ac0-df22e4fc3884" Cluster="default/somerville-jade-20240116-work"
+    >   E0116 04:27:27.441783       1 machinehealthcheck_controller.go:206] "error creating remote cluster cache" err="failed to create cluster accessor: failed to get lock for cluster: cluster is locked already" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="b3af9c4d-9c49-4cca-98ba-dece22bb4ee1" Cluster="default/somerville-jade-20240116-work"
+    >   E0116 04:27:27.463361       1 machinehealthcheck_controller.go:206] "error creating remote cluster cache" err="failed to create cluster accessor: failed to get lock for cluster: cluster is locked already" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="3bfecd44-8420-464d-b401-4ea5f5195f46" Cluster="default/somerville-jade-20240116-work"
+    >   E0116 04:27:27.506196       1 machinehealthcheck_controller.go:206] "error creating remote cluster cache" err="failed to create cluster accessor: failed to get lock for cluster: cluster is locked already" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="9b4d3df3-7d1f-41c6-a388-d997b46bd75c" Cluster="default/somerville-jade-20240116-work"
+    >   I0116 04:27:27.506960       1 controller.go:220] "Starting workers" controller="machineset" controllerGroup="cluster.x-k8s.io" controllerKind="MachineSet" worker count=10
+    >   E0116 04:27:27.591878       1 machinehealthcheck_controller.go:206] "error creating remote cluster cache" err="failed to create cluster accessor: failed to get lock for cluster: cluster is locked already" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="a4d7c9a1-a4e6-43b6-af02-d0a44a5f6319" Cluster="default/somerville-jade-20240116-work"
+    >   I0116 04:27:27.617542       1 controller.go:220] "Starting workers" controller="machinedeployment" controllerGroup="cluster.x-k8s.io" controllerKind="MachineDeployment" worker count=10
+    >   ....
+
+
+    >   ....
+    >   I0116 04:34:04.852342       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-7gth7/ has been marked as unhealthy" type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-7gth7","uid":"43f5c2af-5fcc-4bf9-994e-cc504b64bb34","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6775"} reason="MachineMarkedUnhealthy"
+    >   I0116 04:34:04.852525       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-gq9v4/ has been marked as unhealthy" type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-gq9v4","uid":"1a82ba58-96cf-4ea1-ba7d-5296e00cfa0d","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6673"} reason="MachineMarkedUnhealthy"
+    >   I0116 04:34:04.974927       1 machinehealthcheck_controller.go:433] "Target has failed health check, marking for remediation" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="3b54bdb6-e14c-45d2-a808-98ff3691a99a" Cluster="default/somerville-jade-20240116-work" target="default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-pvn2b/" reason="NodeStartupTimeout" message="Node failed to report startup in 10m0s"
+    >   I0116 04:34:04.975903       1 machinehealthcheck_controller.go:433] "Target has failed health check, marking for remediation" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="3b54bdb6-e14c-45d2-a808-98ff3691a99a" Cluster="default/somerville-jade-20240116-work" target="default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-gq9v4/" reason="NodeStartupTimeout" message="Node failed to report startup in 10m0s"
+    >   I0116 04:34:04.977835       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-pvn2b/ has been marked as unhealthy" type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-pvn2b","uid":"ae6e4ce2-a88d-4a78-b51e-532be4feaf8b","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6725"} reason="MachineMarkedUnhealthy"
+    >   I0116 04:34:04.979738       1 machineset_controller.go:439] "MachineSet is scaling up to 3 replicas by creating 1 machines" controller="machineset" controllerGroup="cluster.x-k8s.io" controllerKind="MachineSet" MachineSet="default/somerville-jade-20240116-work-md-0-kdbhf" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf" reconcileID="3283a07a-11e6-4f0f-b40b-8bcdb7482aeb" MachineDeployment="default/somerville-jade-20240116-work-md-0" Cluster="default/somerville-jade-20240116-work" replicas=3 machineCount=2
+    >   I0116 04:34:04.986656       1 machine_controller.go:340] "Deleting Kubernetes Node associated with Machine is not allowed" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-gq9v4" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf-gq9v4" reconcileID="757d909a-fda9-4b7d-87cc-4d95cc2e4c0b" MachineSet="default/somerville-jade-20240116-work-md-0-kdbhf" MachineDeployment="default/somerville-jade-20240116-work-md-0" Cluster="default/somerville-jade-20240116-work" Node="" cause="noderef is nil"
+    >   E0116 04:34:04.990185       1 controller.go:329] "Reconciler error" err="machines.cluster.x-k8s.io \"somerville-jade-20240116-work-md-0-kdbhf-7gth7\" not found" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-7gth7" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf-7gth7" reconcileID="7b964351-7704-4723-b7f2-cb97e1dd1f1a"
+    >   I0116 04:34:04.990971       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-gq9v4/ has been marked as unhealthy" type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-gq9v4","uid":"1a82ba58-96cf-4ea1-ba7d-5296e00cfa0d","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6673"} reason="MachineMarkedUnhealthy"
+    >   I0116 04:34:05.026278       1 machine_controller.go:444] "Waiting for bootstrap to be deleted" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-gq9v4" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf-gq9v4" reconcileID="757d909a-fda9-4b7d-87cc-4d95cc2e4c0b" MachineSet="default/somerville-jade-20240116-work-md-0-kdbhf" MachineDeployment="default/somerville-jade-20240116-work-md-0" Cluster="default/somerville-jade-20240116-work" KubeadmConfig="default/somerville-jade-20240116-work-md-0-99910806-hqmt7"
+    >   I0116 04:34:05.141125       1 machinehealthcheck_controller.go:433] "Target has failed health check, marking for remediation" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="d1a165fb-9759-49f6-8eb1-68783b2ff1a7" Cluster="default/somerville-jade-20240116-work" target="default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-gq9v4/" reason="NodeStartupTimeout" message="Node failed to report startup in 10m0s"
+    >   I0116 04:34:05.142190       1 machinehealthcheck_controller.go:433] "Target has failed health check, marking for remediation" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="d1a165fb-9759-49f6-8eb1-68783b2ff1a7" Cluster="default/somerville-jade-20240116-work" target="default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-pvn2b/" reason="NodeStartupTimeout" message="Node failed to report startup in 10m0s"
+    >   ....
+
+    >   ....
+    >   I0116 04:34:05.553129       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-gq9v4/ has been marked as unhealthy" type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-gq9v4","uid":"1a82ba58-96cf-4ea1-ba7d-5296e00cfa0d","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6792"} reason="MachineMarkedUnhealthy"
+    >   I0116 04:34:05.553146       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-pvn2b/ has been marked as unhealthy" type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-pvn2b","uid":"ae6e4ce2-a88d-4a78-b51e-532be4feaf8b","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6725"} reason="MachineMarkedUnhealthy"
+    >   I0116 04:34:05.555837       1 machinehealthcheck_controller.go:433] "Target has failed health check, marking for remediation" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="7b04d41c-ee34-4eb7-9cd1-465588e3a1c2" Cluster="default/somerville-jade-20240116-work" target="default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-pvn2b/" reason="NodeStartupTimeout" message="Node failed to report startup in 10m0s"
+    >   I0116 04:34:05.573990       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-6krzn/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-6krzn","uid":"7a9cb5e4-2fdf-4a78-af61-d7c9f6f6a598","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6793"} reason="DetectedUnhealthy"
+    >   I0116 04:34:05.574025       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-pvn2b/ has been marked as unhealthy" type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-pvn2b","uid":"ae6e4ce2-a88d-4a78-b51e-532be4feaf8b","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6725"} reason="MachineMarkedUnhealthy"
+    >   I0116 04:34:05.838323       1 machine_controller_phases.go:292] "Waiting for infrastructure provider to create machine infrastructure and report status.ready" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-6krzn" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf-6krzn" reconcileID="b8f6cb8d-8585-4697-a248-44ecd2dcbe75" MachineSet="default/somerville-jade-20240116-work-md-0-kdbhf" MachineDeployment="default/somerville-jade-20240116-work-md-0" Cluster="default/somerville-jade-20240116-work" OpenStackMachine="default/somerville-jade-20240116-work-md-0-22a7f74c-jvrhd"
+    >   I0116 04:34:05.838869       1 machine_controller_noderef.go:58] "Waiting for infrastructure provider to report spec.providerID" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-6krzn" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf-6krzn" reconcileID="b8f6cb8d-8585-4697-a248-44ecd2dcbe75" MachineSet="default/somerville-jade-20240116-work-md-0-kdbhf" MachineDeployment="default/somerville-jade-20240116-work-md-0" Cluster="default/somerville-jade-20240116-work" OpenStackMachine="default/somerville-jade-20240116-work-md-0-22a7f74c-jvrhd"
+    >   E0116 04:34:05.840745       1 controller.go:329] "Reconciler error" err="machines.cluster.x-k8s.io \"somerville-jade-20240116-work-md-0-kdbhf-gq9v4\" not found" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-gq9v4" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf-gq9v4" reconcileID="b66666f3-39c3-468c-a4bf-ea4f396e0d7e"
+    >   I0116 04:34:05.841955       1 machinehealthcheck_controller.go:433] "Target has failed health check, marking for remediation" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="e383f0a8-f3a8-48a8-b410-6614550fa10b" Cluster="default/somerville-jade-20240116-work" target="default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-pvn2b/" reason="NodeStartupTimeout" message="Node failed to report startup in 10m0s"
+    >   I0116 04:34:05.845507       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-6krzn/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-6krzn","uid":"7a9cb5e4-2fdf-4a78-af61-d7c9f6f6a598","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6793"} reason="DetectedUnhealthy"
+    >   I0116 04:34:05.861829       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-pvn2b/ has been marked as unhealthy" type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-pvn2b","uid":"ae6e4ce2-a88d-4a78-b51e-532be4feaf8b","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6725"} reason="MachineMarkedUnhealthy"
+    >   I0116 04:34:05.989741       1 machinehealthcheck_controller.go:433] "Target has failed health check, marking for remediation" controller="machinehealthcheck" controllerGroup="cluster.x-k8s.io" controllerKind="MachineHealthCheck" MachineHealthCheck="default/somerville-jade-20240116-work-md-0" namespace="default" name="somerville-jade-20240116-work-md-0" reconcileID="16eb0954-8cce-4a63-a6c1-3f14f2431c58" Cluster="default/somerville-jade-20240116-work" target="default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-pvn2b/" reason="NodeStartupTimeout" message="Node failed to report startup in 10m0s"
+    >   I0116 04:34:05.993686       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-6krzn/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-6krzn","uid":"7a9cb5e4-2fdf-4a78-af61-d7c9f6f6a598","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6807"} reason="DetectedUnhealthy"
+    >   I0116 04:34:05.993926       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-pvn2b/ has been marked as unhealthy" type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-pvn2b","uid":"ae6e4ce2-a88d-4a78-b51e-532be4feaf8b","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"6725"} reason="MachineMarkedUnhealthy"
+    >   ....
+
+    >   ....
+    >   I0116 05:15:24.501861       1 machine_controller_noderef.go:58] "Waiting for infrastructure provider to report spec.providerID" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-vl72q" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf-vl72q" reconcileID="d557e4f4-9aeb-4795-bd11-30d0a84b9bb8" MachineSet="default/somerville-jade-20240116-work-md-0-kdbhf" MachineDeployment="default/somerville-jade-20240116-work-md-0" Cluster="default/somerville-jade-20240116-work" OpenStackMachine="default/somerville-jade-20240116-work-md-0-22a7f74c-kg68c"
+    >   I0116 05:15:24.509731       1 machine_controller_phases.go:292] "Waiting for infrastructure provider to create machine infrastructure and report status.ready" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-vl72q" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf-vl72q" reconcileID="ec57a72e-4b2f-493b-8d01-59eda88b3bd2" MachineSet="default/somerville-jade-20240116-work-md-0-kdbhf" MachineDeployment="default/somerville-jade-20240116-work-md-0" Cluster="default/somerville-jade-20240116-work" OpenStackMachine="default/somerville-jade-20240116-work-md-0-22a7f74c-kg68c"
+    >   I0116 05:15:24.509780       1 machine_controller_noderef.go:58] "Waiting for infrastructure provider to report spec.providerID" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-vl72q" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf-vl72q" reconcileID="ec57a72e-4b2f-493b-8d01-59eda88b3bd2" MachineSet="default/somerville-jade-20240116-work-md-0-kdbhf" MachineDeployment="default/somerville-jade-20240116-work-md-0" Cluster="default/somerville-jade-20240116-work" OpenStackMachine="default/somerville-jade-20240116-work-md-0-22a7f74c-kg68c"
+    >   I0116 05:15:24.558148       1 machine_controller_phases.go:280] "Infrastructure provider has completed machine infrastructure provisioning and reports status.ready" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-vl72q" namespace="default" name="somerville-jade-20240116-work-md-0-kdbhf-vl72q" reconcileID="7a5ab40e-605e-44a4-90fc-4cfa13726d5d" MachineSet="default/somerville-jade-20240116-work-md-0-kdbhf" MachineDeployment="default/somerville-jade-20240116-work-md-0" Cluster="default/somerville-jade-20240116-work" OpenStackMachine="default/somerville-jade-20240116-work-md-0-22a7f74c-kg68c"
+    >   I0116 05:15:24.690314       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-lmdl6/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-lmdl6","uid":"4c3107a6-c782-4e23-8bda-b0fb65d0d99a","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"15293"} reason="DetectedUnhealthy"
+    >   I0116 05:15:24.691728       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-h4jd8/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-h4jd8","uid":"7c6c0652-6541-41d4-9f10-52cfbfc64602","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"15345"} reason="DetectedUnhealthy"
+    >   I0116 05:15:24.691806       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-vl72q/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-vl72q","uid":"db0381ee-c25e-4b95-9047-c07f247174f7","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"15366"} reason="DetectedUnhealthy"
+    >   2024/01/16 05:15:24 http: TLS handshake error from 10.244.0.1:36275: EOF
+    >   I0116 05:15:24.773993       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-h4jd8/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-h4jd8","uid":"7c6c0652-6541-41d4-9f10-52cfbfc64602","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"15345"} reason="DetectedUnhealthy"
+    >   I0116 05:15:24.774033       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-vl72q/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-vl72q","uid":"db0381ee-c25e-4b95-9047-c07f247174f7","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"15369"} reason="DetectedUnhealthy"
+    >   I0116 05:15:24.774050       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-lmdl6/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-lmdl6","uid":"4c3107a6-c782-4e23-8bda-b0fb65d0d99a","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"15293"} reason="DetectedUnhealthy"
+    >   I0116 05:15:25.124415       1 recorder.go:104] "events: Machine default/somerville-jade-20240116-work-md-0/somerville-jade-20240116-work-md-0-kdbhf-vl72q/ has unhealthy node " type="Normal" object={"kind":"Machine","namespace":"default","name":"somerville-jade-20240116-work-md-0-kdbhf-vl72q","uid":"db0381ee-c25e-4b95-9047-c07f247174f7","apiVersion":"cluster.x-k8s.io/v1beta1","resourceVersion":"15371"} reason="DetectedUnhealthy"
+    >   ....
+
+
+/var/local/backups/aglais/2024/20240116/202401160520/logs/capi-kubeadm-bootstrap-controller-manager-55d5767547-29fbd.log
+
+    >   ....
+    >   I0116 05:15:01.443044       1 kubeadmconfig_controller.go:321] "Refreshing token until the infrastructure has a chance to consume it" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" KubeadmConfig="default/somerville-jade-20240116-work-md-0-99910806-w6krr" namespace="default" name="somerville-jade-20240116-work-md-0-99910806-w6krr" reconcileID="14209cfb-bb35-4dd9-8655-c8f01a151feb" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-ztzrz" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-ztzrz" resourceVersion="15087" Cluster="default/somerville-jade-20240116-work"
+    >   I0116 05:15:01.658609       1 kubeadmconfig_controller.go:321] "Refreshing token until the infrastructure has a chance to consume it" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" KubeadmConfig="default/somerville-jade-20240116-work-md-0-99910806-w6krr" namespace="default" name="somerville-jade-20240116-work-md-0-99910806-w6krr" reconcileID="dc605520-984e-47b3-be9e-be0c4e7dbfeb" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-ztzrz" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-ztzrz" resourceVersion="15090" Cluster="default/somerville-jade-20240116-work"
+    >   I0116 05:15:06.595506       1 control_plane_init_mutex.go:123] "Control plane init lock not found, it may have been released already" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" KubeadmConfig="default/somerville-jade-20240116-work-md-0-99910806-v5sjz" namespace="default" name="somerville-jade-20240116-work-md-0-99910806-v5sjz" reconcileID="3fd5bf52-0acd-4d4a-ab56-7eb4d0147c3d" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-h4jd8" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-h4jd8" resourceVersion="15120" Cluster="default/somerville-jade-20240116-work" ConfigMap="default/somerville-jade-20240116-work-lock"
+    >   I0116 05:15:06.595905       1 kubeadmconfig_controller.go:531] "Creating BootstrapData for the worker node" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" KubeadmConfig="default/somerville-jade-20240116-work-md-0-99910806-v5sjz" namespace="default" name="somerville-jade-20240116-work-md-0-99910806-v5sjz" reconcileID="3fd5bf52-0acd-4d4a-ab56-7eb4d0147c3d" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-h4jd8" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-h4jd8" resourceVersion="15120" Cluster="default/somerville-jade-20240116-work"
+    >   2024/01/16 05:15:07 http: TLS handshake error from 10.244.0.1:44665: EOF
+    >   I0116 05:15:07.446980       1 kubeadmconfig_controller.go:321] "Refreshing token until the infrastructure has a chance to consume it" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" KubeadmConfig="default/somerville-jade-20240116-work-md-0-99910806-v5sjz" namespace="default" name="somerville-jade-20240116-work-md-0-99910806-v5sjz" reconcileID="c7d7265e-24d9-4612-b3fc-3399149f270b" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-h4jd8" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-h4jd8" resourceVersion="15146" Cluster="default/somerville-jade-20240116-work"
+    >   I0116 05:15:07.632484       1 kubeadmconfig_controller.go:321] "Refreshing token until the infrastructure has a chance to consume it" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" KubeadmConfig="default/somerville-jade-20240116-work-md-0-99910806-v5sjz" namespace="default" name="somerville-jade-20240116-work-md-0-99910806-v5sjz" reconcileID="687dc46c-790a-4bd7-b499-de4919cc178b" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-h4jd8" Machine="default/somerville-jade-20240116-work-md-0-kdbhf-h4jd8" resourceVersion="15146" Cluster="default/somerville-jade-20240116-work"
+    >   ....
+
+
+/var/local/backups/aglais/2024/20240116/202401160520/logs/capi-kubeadm-control-plane-controller-manager-85fd48fb9b-crsn7.log
+
+    >   ....
+    >   I0116 05:09:46.096752       1 controller.go:340] "Reconcile KubeadmControlPlane" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/somerville-jade-20240116-work-control-plane" namespace="default" name="somerville-jade-20240116-work-control-plane" reconcileID="93af291d-3bda-4eba-b2b7-1761507028d6" Cluster="default/somerville-jade-20240116-work"
+    >   I0116 05:09:46.263190       1 remediation.go:144] "A control plane machine needs remediation, but the number of current replicas is less or equal to 1. Skipping remediation" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/somerville-jade-20240116-work-control-plane" namespace="default" name="somerville-jade-20240116-work-control-plane" reconcileID="93af291d-3bda-4eba-b2b7-1761507028d6" Cluster="default/somerville-jade-20240116-work" Machine="default/somerville-jade-20240116-work-control-plane-8nscq" initialized=true Replicas=1
+    >   I0116 05:12:05.582028       1 controller.go:340] "Reconcile KubeadmControlPlane" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/somerville-jade-20240116-work-control-plane" namespace="default" name="somerville-jade-20240116-work-control-plane" reconcileID="96e532d9-7ab4-46dc-b125-926ea568cb7a" Cluster="default/somerville-jade-20240116-work"
+    >   I0116 05:12:05.594529       1 remediation.go:144] "A control plane machine needs remediation, but the number of current replicas is less or equal to 1. Skipping remediation" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/somerville-jade-20240116-work-control-plane" namespace="default" name="somerville-jade-20240116-work-control-plane" reconcileID="96e532d9-7ab4-46dc-b125-926ea568cb7a" Cluster="default/somerville-jade-20240116-work" Machine="default/somerville-jade-20240116-work-control-plane-8nscq" initialized=true Replicas=1
+    >   ....
+
+
+    #
+    # I don't know which of these, if any, have any relevance to the problems we are seeing.
+    # Nothing stands out as the smoking gun.
+    #
+

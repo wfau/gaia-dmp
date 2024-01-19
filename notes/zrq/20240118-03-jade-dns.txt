@@ -1,0 +1,1010 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2024, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Try again with no special DNS address and larger flavors.
+        - fails
+        Try again with special DNS address and larger flavors.
+        - success
+
+    Result:
+
+        After all that - success !!
+        We have a Kubernetes deployment script that works for both Cambridge Arcus and Somerville.
+        We have (partial) Zeppelin deployed in Kubernetes.
+
+
+# -----------------------------------------------------
+# Checkout the current dev branch.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        git branch
+
+    >   * (HEAD detached at c90884c)
+    >     20240117-zrq-k8s-fix
+    >     master
+
+        git checkout 20240117-zrq-k8s-fix
+
+    >   Previous HEAD position was c90884c Got Somerville to work :-)
+    >   Switched to branch '20240117-zrq-k8s-fix'
+    >   Your branch is up to date with 'origin/20240117-zrq-k8s-fix'.
+
+    popd
+
+
+# -----------------------------------------------------
+# Comment out the DNS entry, increase the number of workers, and update them to a larger flavor.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit deployments/cluster-api/ansible/templates/clusterapi-config.j2 &
+
+        ~   # # Custom nameservers to use for the hosts
+        ~   # dnsNameservers:
+        ~   #   - "{{ deployments[aglais.openstack.cloud.site].dnsservers }}"
+
+
+        gedit deployments/cluster-api/ansible/config/deployments.yml &
+
+            deployments:
+              somerville-jade:
+                machines:
+                  clusternode:
+        ~           flavor: "qserv-worker-v2"
+        ~           count:  6
+
+    popd
+
+
+# -----------------------------------------------------
+# Run our local client.
+#[user@laptop]
+
+    source "${HOME:?}/aglais.env"
+    export PATH=${PATH}:${AGLAIS_CODE}/bin
+
+    agclient jade
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete and create everything.
+#[root@ansibler]
+
+    export cloudsite=somerville-jade
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/ansible/00-create-all.yml'
+
+    >   PLAY RECAP **************************************************************************************************************************
+    >   bootstrap                  : ok=58   changed=45   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   localhost                  : ok=35   changed=26   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Check the cluster status.
+#[root@ansibler]
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        watch \
+            clusterctl \
+                --kubeconfig "${kindclusterconf:?}" \
+                describe cluster \
+                    "${workclustername:?}"
+        '
+
+    >   NAME                                                                              READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/somerville-jade-20240118-work                                             True                                          2m21s
+    >   ├─ClusterInfrastructure - OpenStackCluster/somerville-jade-20240118-work
+    >   ├─ControlPlane - KubeadmControlPlane/somerville-jade-20240118-work-control-plane  True                                          2m22s
+    >   │ └─3 Machines...                                                                 True                                          11m    See somerville-jade-20240118-work-control-plane-2td5b, somerville-jade-20240118-work-control-plane-cc88f, ...
+    >   └─Workers
+    >     └─MachineDeployment/somerville-jade-20240118-work-md-0                          False  Warning   WaitingForAvailableMachines  4m5s   Minimum availability requires 5 replicas, current 4 available
+    >       ├─2 Machines...                                                               False  Error     InstanceCreateFailed         9m17s  See somerville-jade-20240118-work-md-0-tcvsg-l5xpn, somerville-jade-20240118-work-md-0-tcvsg-wgb2m
+    >       └─4 Machines...                                                               True                                          9m29s  See somerville-jade-20240118-work-md-0-tcvsg-jnfvg, somerville-jade-20240118-work-md-0-tcvsg-pzj6h, ...
+
+    #
+    # InstanceCreateFailed .. are we over quota ?
+    # Checked on Horizon and we are at the limit, no space for more VMs.
+    # Used 272GB of 312.5GB
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Set the number of workers back down to 3.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit deployments/cluster-api/ansible/config/deployments.yml &
+
+            deployments:
+              somerville-jade:
+                machines:
+                  clusternode:
+        ~           flavor: "qserv-worker-v2"
+        ~           count:  3
+
+    popd
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Delete and create everything.
+#[root@ansibler]
+
+    export cloudsite=somerville-jade
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP **************************************************************************************************************************
+    >   bootstrap                  : ok=58   changed=45   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   localhost                  : ok=35   changed=23   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Check the cluster status.
+#[root@ansibler]
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        watch \
+            clusterctl \
+                --kubeconfig "${kindclusterconf:?}" \
+                describe cluster \
+                    "${workclustername:?}"
+        '
+
+    >   NAME                                                                              READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/somerville-jade-20240118-work                                             True                                          4m41s
+    >   ├─ClusterInfrastructure - OpenStackCluster/somerville-jade-20240118-work
+    >   ├─ControlPlane - KubeadmControlPlane/somerville-jade-20240118-work-control-plane  True                                          4m41s
+    >   │ └─Machine/somerville-jade-20240118-work-control-plane-246p5                     True                                          6m31s
+    >   └─Workers
+    >     └─MachineDeployment/somerville-jade-20240118-work-md-0                          False  Warning   WaitingForAvailableMachines  8m28s  Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                                               True                                          4m8s   See somerville-jade-20240118-work-md-0-wmdpv-2gdzg, somerville-jade-20240118-work-md-0-wmdpv-qsd9d, ...
+
+    >   NAME                                                                              READY  SEVERITY  REASON                                                                   SINCE  MESSAGE
+    >   Cluster/somerville-jade-20240118-work                                             False  Warning   NodeStartupTimeout @ /somerville-jade-20240118-work-control-plane-246p5  49s    Node failed to report startup in 10m0s
+    >   ├─ClusterInfrastructure - OpenStackCluster/somerville-jade-20240118-work
+    >   ├─ControlPlane - KubeadmControlPlane/somerville-jade-20240118-work-control-plane  False  Warning   NodeStartupTimeout @ /somerville-jade-20240118-work-control-plane-246p5  50s    Node failed to report startup in 10m0s
+    >   │ └─Machine/somerville-jade-20240118-work-control-plane-246p5                     False  Warning   NodeStartupTimeout                                                       50s    Node failed to report startup in 10m0s
+    >   └─Workers
+    >     └─MachineDeployment/somerville-jade-20240118-work-md-0                          False  Warning   WaitingForAvailableMachines                                              14m    Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                                               True                                                                                      24s    See somerville-jade-20240118-work-md-0-wmdpv-fl72l, somerville-jade-20240118-work-md-0-wmdpv-gt8h6, ...
+
+
+# -----------------------------------------------------
+# List the releases in Helm.
+#[root@ansibler]
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get helmrelease -A
+        '
+
+    >   NAMESPACE   NAME                                                      CLUSTER                         BOOTSTRAP   TARGET NAMESPACE         RELEASE NAME                PHASE        REVISION   CHART NAME                           CHART VERSION   AGE
+    >   default     somerville-jade-20240118-work-ccm-openstack               somerville-jade-20240118-work   true        openstack-system         ccm-openstack               Deployed     1          openstack-cloud-controller-manager   1.3.0           8m52s
+    >   default     somerville-jade-20240118-work-cni-calico                  somerville-jade-20240118-work   true        tigera-operator          cni-calico                  Deployed     1          tigera-operator                      v3.26.0         8m52s
+    >   default     somerville-jade-20240118-work-csi-cinder                  somerville-jade-20240118-work   true        openstack-system         csi-cinder                  Installing              openstack-cinder-csi                 2.2.0           8m52s
+    >   default     somerville-jade-20240118-work-kubernetes-dashboard        somerville-jade-20240118-work   true        kubernetes-dashboard     kubernetes-dashboard        Deployed     1          kubernetes-dashboard                 5.10.0          8m52s
+    >   default     somerville-jade-20240118-work-mellanox-network-operator   somerville-jade-20240118-work   true        network-operator         mellanox-network-operator   Installing              network-operator                     1.3.0           8m52s
+    >   default     somerville-jade-20240118-work-metrics-server              somerville-jade-20240118-work   true        kube-system              metrics-server              Installing              metrics-server                       3.8.2           8m52s
+    >   default     somerville-jade-20240118-work-node-feature-discovery      somerville-jade-20240118-work   true        node-feature-discovery   node-feature-discovery      Installing              node-feature-discovery               0.11.2          8m52s
+    >   default     somerville-jade-20240118-work-nvidia-gpu-operator         somerville-jade-20240118-work   true        gpu-operator             nvidia-gpu-operator         Installing              gpu-operator                         v1.11.1         8m52s
+    >   Connection to bootstrap closed.
+
+    >   NAMESPACE   NAME                                                      CLUSTER                         BOOTSTRAP   TARGET NAMESPACE         RELEASE NAME                PHASE        REVISION   CHART NAME                           CHART VERSION   AGE
+    >   default     somerville-jade-20240118-work-ccm-openstack               somerville-jade-20240118-work   true        openstack-system         ccm-openstack               Deployed     1          openstack-cloud-controller-manager   1.3.0           13m
+    >   default     somerville-jade-20240118-work-cni-calico                  somerville-jade-20240118-work   true        tigera-operator          cni-calico                  Deployed     1          tigera-operator                      v3.26.0         13m
+    >   default     somerville-jade-20240118-work-csi-cinder                  somerville-jade-20240118-work   true        openstack-system         csi-cinder                  Installing              openstack-cinder-csi                 2.2.0           13m
+    >   default     somerville-jade-20240118-work-kubernetes-dashboard        somerville-jade-20240118-work   true        kubernetes-dashboard     kubernetes-dashboard        Deployed     1          kubernetes-dashboard                 5.10.0          13m
+    >   default     somerville-jade-20240118-work-mellanox-network-operator   somerville-jade-20240118-work   true        network-operator         mellanox-network-operator   Installing              network-operator                     1.3.0           13m
+    >   default     somerville-jade-20240118-work-metrics-server              somerville-jade-20240118-work   true        kube-system              metrics-server              Installing              metrics-server                       3.8.2           13m
+    >   default     somerville-jade-20240118-work-node-feature-discovery      somerville-jade-20240118-work   true        node-feature-discovery   node-feature-discovery      Installing              node-feature-discovery               0.11.2          13m
+    >   default     somerville-jade-20240118-work-nvidia-gpu-operator         somerville-jade-20240118-work   true        gpu-operator             nvidia-gpu-operator         Installing              gpu-operator                         v1.11.1         13m
+    >   Connection to bootstrap closed.
+
+
+# -----------------------------------------------------
+# ....
+#[root@ansibler]
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get pods \
+                --all-namespaces
+        '
+
+    >   NAMESPACE                           NAME                                                                  READY   STATUS             RESTARTS        AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-7db568c844-7c747            1/1     Running            0               26m
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-7f9b558f5c-mfpnk        1/1     Running            0               26m
+    >   capi-system                         capi-controller-manager-76955c46b9-zhh7j                              1/1     Running            0               26m
+    >   capo-system                         capo-controller-manager-544cb69b9d-5cqrm                              1/1     Running            0               26m
+    >   cert-manager                        cert-manager-66d9545484-x2xld                                         1/1     Running            0               28m
+    >   cert-manager                        cert-manager-cainjector-7d8b6bd6fb-dkxtq                              1/1     Running            0               28m
+    >   cert-manager                        cert-manager-webhook-669b96dcfd-zhgv9                                 1/1     Running            0               28m
+    >   default                             cluster-api-addon-provider-66cc76bbbf-5mlrs                           1/1     Running            0               26m
+    >   default                             somerville-jade-20240118-work-autoscaler-7dc8d6d744-fwx2h             0/1     CrashLoopBackOff   8 (3m28s ago)   23m
+    >   kube-system                         coredns-5d78c9869d-22xm7                                              1/1     Running            0               28m
+    >   kube-system                         coredns-5d78c9869d-7bmjs                                              1/1     Running            0               28m
+    >   kube-system                         etcd-somerville-jade-20240118-kind-control-plane                      1/1     Running            0               28m
+    >   kube-system                         kindnet-q9s7t                                                         1/1     Running            0               28m
+    >   kube-system                         kube-apiserver-somerville-jade-20240118-kind-control-plane            1/1     Running            0               28m
+    >   kube-system                         kube-controller-manager-somerville-jade-20240118-kind-control-plane   1/1     Running            0               28m
+    >   kube-system                         kube-proxy-cssrg                                                      1/1     Running            0               28m
+    >   kube-system                         kube-scheduler-somerville-jade-20240118-kind-control-plane            1/1     Running            0               28m
+    >   local-path-storage                  local-path-provisioner-6bc4bddd6b-dtvvs                               1/1     Running            0               28m
+
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        kubectl \
+            --kubeconfig "${workclusterconf:?}" \
+            get pods \
+                --all-namespaces
+        '
+
+    >   E0118 18:08:27.424081   13772 memcache.go:287] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0118 18:08:27.431043   13772 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0118 18:08:27.440149   13772 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0118 18:08:27.443991   13772 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   NAMESPACE                NAME                                                                                 READY   STATUS              RESTARTS        AGE
+    >   calico-system            calico-kube-controllers-5cbcc847d9-4rdjz                                             0/1     Pending             0               20m
+    >   calico-system            calico-node-27mhf                                                                    1/1     Running             0               19m
+    >   calico-system            calico-node-hcfjc                                                                    1/1     Running             0               9m38s
+    >   calico-system            calico-node-hx7jd                                                                    1/1     Running             0               9m39s
+    >   calico-system            calico-node-nmnjc                                                                    1/1     Running             0               19m
+    >   calico-system            calico-node-nxszm                                                                    1/1     Running             0               18m
+    >   calico-system            calico-node-v8lkl                                                                    1/1     Running             0               10m
+    >   calico-system            calico-node-vqc58                                                                    1/1     Running             0               20m
+    >   calico-system            calico-typha-5b6777f8fc-4hqnm                                                        0/1     Pending             0               10m
+    >   calico-system            calico-typha-5b6777f8fc-mk6xk                                                        1/1     Running             0               20m
+    >   calico-system            calico-typha-5b6777f8fc-tsmj6                                                        1/1     Running             0               19m
+    >   calico-system            csi-node-driver-2q6sb                                                                2/2     Running             0               19m
+    >   calico-system            csi-node-driver-82lmz                                                                2/2     Running             0               19m
+    >   calico-system            csi-node-driver-ch9w9                                                                2/2     Running             0               20m
+    >   calico-system            csi-node-driver-df4pv                                                                2/2     Running             0               10m
+    >   calico-system            csi-node-driver-tfgvg                                                                2/2     Running             0               9m39s
+    >   calico-system            csi-node-driver-twc9j                                                                2/2     Running             0               18m
+    >   calico-system            csi-node-driver-twnlq                                                                2/2     Running             0               9m38s
+    >   gpu-operator             gpu-operator-6c8649c88c-c5qds                                                        0/1     Pending             0               20m
+    >   kube-system              coredns-787d4945fb-9nw8q                                                             0/1     Pending             0               21m
+    >   kube-system              coredns-787d4945fb-m9df8                                                             0/1     Pending             0               21m
+    >   kube-system              etcd-somerville-jade-20240118-work-control-plane-d980a92e-mxfc6                      1/1     Running             0               21m
+    >   kube-system              kube-apiserver-somerville-jade-20240118-work-control-plane-d980a92e-mxfc6            1/1     Running             0               21m
+    >   kube-system              kube-controller-manager-somerville-jade-20240118-work-control-plane-d980a92e-mxfc6   1/1     Running             0               21m
+    >   kube-system              kube-proxy-76t5l                                                                     1/1     Running             0               19m
+    >   kube-system              kube-proxy-7mlzg                                                                     1/1     Running             0               10m
+    >   kube-system              kube-proxy-g57zw                                                                     1/1     Running             0               19m
+    >   kube-system              kube-proxy-gdht2                                                                     1/1     Running             0               9m39s
+    >   kube-system              kube-proxy-jgpdj                                                                     1/1     Running             0               9m38s
+    >   kube-system              kube-proxy-z8fgs                                                                     1/1     Running             0               18m
+    >   kube-system              kube-proxy-zj62k                                                                     1/1     Running             0               21m
+    >   kube-system              kube-scheduler-somerville-jade-20240118-work-control-plane-d980a92e-mxfc6            1/1     Running             0               21m
+    >   kube-system              metrics-server-65cccfc7bb-mx2b7                                                      0/1     Pending             0               20m
+    >   kubernetes-dashboard     kubernetes-dashboard-85d67585b8-hwjvm                                                0/2     Pending             0               20m
+    >   network-operator         mellanox-network-operator-5f7b6b766c-jbspv                                           0/1     Pending             0               20m
+    >   node-feature-discovery   node-feature-discovery-master-75c9d78d5f-l9dgc                                       0/1     Pending             0               20m
+    >   node-feature-discovery   node-feature-discovery-worker-4jbjc                                                  1/1     Running             4 (2m35s ago)   9m39s
+    >   node-feature-discovery   node-feature-discovery-worker-cmzvg                                                  1/1     Running             5 (2m46s ago)   10m
+    >   node-feature-discovery   node-feature-discovery-worker-ffkgv                                                  0/1     CrashLoopBackOff    2 (11m ago)     19m
+    >   node-feature-discovery   node-feature-discovery-worker-kxlqf                                                  0/1     CrashLoopBackOff    3 (11m ago)     19m
+    >   node-feature-discovery   node-feature-discovery-worker-w42qq                                                  0/1     CrashLoopBackOff    3 (11m ago)     18m
+    >   node-feature-discovery   node-feature-discovery-worker-wtgc7                                                  0/1     CrashLoopBackOff    6 (3m49s ago)   20m
+    >   node-feature-discovery   node-feature-discovery-worker-x6nj4                                                  1/1     Running             4 (2m33s ago)   9m38s
+    >   openstack-system         openstack-cinder-csi-controllerplugin-58dc769d76-pcz94                               0/6     Pending             0               20m
+    >   openstack-system         openstack-cinder-csi-nodeplugin-46v6t                                                0/3     ContainerCreating   0               10m
+    >   openstack-system         openstack-cinder-csi-nodeplugin-4xrgz                                                0/3     ContainerCreating   0               20m
+    >   openstack-system         openstack-cinder-csi-nodeplugin-6c8fm                                                0/3     ContainerCreating   0               19m
+    >   openstack-system         openstack-cinder-csi-nodeplugin-bqp8m                                                0/3     ContainerCreating   0               9m39s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-j4jgc                                                0/3     ContainerCreating   0               18m
+    >   openstack-system         openstack-cinder-csi-nodeplugin-pwnfz                                                0/3     ContainerCreating   0               19m
+    >   openstack-system         openstack-cinder-csi-nodeplugin-w6zfc                                                0/3     ContainerCreating   0               9m39s
+    >   openstack-system         openstack-cloud-controller-manager-f4n75                                             0/1     ContainerCreating   0               18m
+    >   tigera-operator          tigera-operator-7d4cfffc6-b8f2l                                                      1/1     Running             0               20m
+
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        kubectl \
+            --kubeconfig "${workclusterconf:?}" \
+            describe \
+                --namespace calico-system \
+                'calico-kube-controllers-5cbcc847d9-4rdjz'
+        '
+
+    >   E0118 18:12:19.645395   14045 memcache.go:287] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0118 18:12:19.670211   14045 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0118 18:12:19.674405   14045 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   Name:                 calico-kube-controllers-5cbcc847d9-4rdjz
+    >   Namespace:            calico-system
+    >   Priority:             2000000000
+    >   Priority Class Name:  system-cluster-critical
+    >   Service Account:      calico-kube-controllers
+    >   Node:                 <none>
+    >   Labels:               app.kubernetes.io/name=calico-kube-controllers
+    >                         k8s-app=calico-kube-controllers
+    >                         pod-template-hash=5cbcc847d9
+    >   Annotations:          hash.operator.tigera.io/system: bb4746872201725da2dea19756c475aa67d9c1e9
+    >                         hash.operator.tigera.io/tigera-ca-private: 08d0e40ca66920987a4330898447b811d3711273
+    >   Status:               Pending
+    >   IP:
+    >   IPs:                  <none>
+    >   Controlled By:        ReplicaSet/calico-kube-controllers-5cbcc847d9
+    >   Containers:
+    >     calico-kube-controllers:
+    >       Image:           docker.io/calico/kube-controllers:v3.26.0
+    >       Port:            <none>
+    >       Host Port:       <none>
+    >       SeccompProfile:  RuntimeDefault
+    >       Liveness:        exec [/usr/bin/check-status -l] delay=10s timeout=10s period=10s #success=1 #failure=6
+    >       Readiness:       exec [/usr/bin/check-status -r] delay=0s timeout=10s period=10s #success=1 #failure=3
+    >       Environment:
+    >         KUBE_CONTROLLERS_CONFIG_NAME:  default
+    >         DATASTORE_TYPE:                kubernetes
+    >         ENABLED_CONTROLLERS:           node
+    >         FIPS_MODE_ENABLED:             false
+    >         KUBERNETES_SERVICE_HOST:       172.24.0.1
+    >         KUBERNETES_SERVICE_PORT:       443
+    >         CA_CRT_PATH:                   /etc/pki/tls/certs/tigera-ca-bundle.crt
+    >       Mounts:
+    >         /etc/pki/tls/cert.pem from tigera-ca-bundle (ro,path="ca-bundle.crt")
+    >         /etc/pki/tls/certs from tigera-ca-bundle (ro)
+    >         /var/run/secrets/kubernetes.io/serviceaccount from kube-api-access-xtd5r (ro)
+    >   Conditions:
+    >     Type           Status
+    >     PodScheduled   False
+    >   Volumes:
+    >     tigera-ca-bundle:
+    >       Type:      ConfigMap (a volume populated by a ConfigMap)
+    >       Name:      tigera-ca-bundle
+    >       Optional:  false
+    >     kube-api-access-xtd5r:
+    >       Type:                    Projected (a volume that contains injected data from multiple sources)
+    >       TokenExpirationSeconds:  3607
+    >       ConfigMapName:           kube-root-ca.crt
+    >       ConfigMapOptional:       <nil>
+    >       DownwardAPI:             true
+    >   QoS Class:                   BestEffort
+    >   Node-Selectors:              kubernetes.io/os=linux
+    >   Tolerations:                 CriticalAddonsOnly op=Exists
+    >                                node-role.kubernetes.io/control-plane:NoSchedule
+    >                                node-role.kubernetes.io/master:NoSchedule
+    >                                node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+    >                                node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+    >   Events:
+    >     Type     Reason            Age    From               Message
+    >     ----     ------            ----   ----               -------
+    >     Warning  FailedScheduling  24m    default-scheduler  0/1 nodes are available: 1 node(s) had untolerated taint {node.cloudprovider.kubernetes.io/uninitialized: true}. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling..
+    >     Warning  FailedScheduling  18m    default-scheduler  0/4 nodes are available: 1 node(s) had untolerated taint {node.cloudprovider.kubernetes.io/uninitialized: true}, 3 node(s) had untolerated taint {node.cluster.x-k8s.io/uninitialized: }. preemption: 0/4 nodes are available: 4 Preemption is not helpful for scheduling..
+    >     Warning  FailedScheduling  13m    default-scheduler  0/5 nodes are available: 1 node(s) had untolerated taint {node.cloudprovider.kubernetes.io/uninitialized: true}, 4 node(s) had untolerated taint {node.cluster.x-k8s.io/uninitialized: }. preemption: 0/5 nodes are available: 5 Preemption is not helpful for scheduling..
+    >     Warning  FailedScheduling  8m38s  default-scheduler  0/7 nodes are available: 1 node(s) had untolerated taint {node.cloudprovider.kubernetes.io/uninitialized: true}, 6 node(s) had untolerated taint {node.cluster.x-k8s.io/uninitialized: }. preemption: 0/7 nodes are available: 7 Preemption is not helpful for scheduling..
+    >     Warning  FailedScheduling  3m37s  default-scheduler  0/9 nodes are available: 1 node(s) had untolerated taint {node.cloudprovider.kubernetes.io/uninitialized: true}, 8 node(s) had untolerated taint {node.cluster.x-k8s.io/uninitialized: }. preemption: 0/9 nodes are available: 9 Preemption is not helpful for scheduling..
+
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Restore the DNS entry, see if that works
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        gedit deployments/cluster-api/ansible/templates/clusterapi-config.j2 &
+
+        ~     # Custom nameservers to use for the hosts
+        ~     dnsNameservers:
+        ~       - "{{ deployments[aglais.openstack.cloud.site].dnsservers }}"
+
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Delete and create everything.
+#[root@ansibler]
+
+    export cloudsite=somerville-jade
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP **************************************************************************************************************************
+    >   bootstrap                  : ok=58   changed=45   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   localhost                  : ok=35   changed=23   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Check the cluster status.
+#[root@ansibler]
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        watch \
+            clusterctl \
+                --kubeconfig "${kindclusterconf:?}" \
+                describe cluster \
+                    "${workclustername:?}"
+        '
+
+    >   NAME                                                                              READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/somerville-jade-20240118-work                                             True                                          2m42s
+    >   ├─ClusterInfrastructure - OpenStackCluster/somerville-jade-20240118-work
+    >   ├─ControlPlane - KubeadmControlPlane/somerville-jade-20240118-work-control-plane  True                                          2m43s
+    >   │ └─Machine/somerville-jade-20240118-work-control-plane-6xg2w                     True                                          4m24s
+    >   └─Workers
+    >     └─MachineDeployment/somerville-jade-20240118-work-md-0                          False  Warning   WaitingForAvailableMachines  6m21s  Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                                               True                                          2m28s  See somerville-jade-20240118-work-md-0-wq8bv-bx8hp, somerville-jade-20240118-work-md-0-wq8bv-ssklq, ...
+
+
+# -----------------------------------------------------
+# ...
+#[root@ansibler]
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get helmrelease -A
+        '
+
+    >   NAMESPACE   NAME                                                      CLUSTER                         BOOTSTRAP   TARGET NAMESPACE         RELEASE NAME                PHASE        REVISION   CHART NAME                           CHART VERSION   AGE
+    >   default     somerville-jade-20240118-work-ccm-openstack               somerville-jade-20240118-work   true        openstack-system         ccm-openstack               Deployed     1          openstack-cloud-controller-manager   1.3.0           7m9s
+    >   default     somerville-jade-20240118-work-cni-calico                  somerville-jade-20240118-work   true        tigera-operator          cni-calico                  Deployed     1          tigera-operator                      v3.26.0         7m9s
+    >   default     somerville-jade-20240118-work-csi-cinder                  somerville-jade-20240118-work   true        openstack-system         csi-cinder                  Installing              openstack-cinder-csi                 2.2.0           7m9s
+    >   default     somerville-jade-20240118-work-kubernetes-dashboard        somerville-jade-20240118-work   true        kubernetes-dashboard     kubernetes-dashboard        Deployed     1          kubernetes-dashboard                 5.10.0          7m9s
+    >   default     somerville-jade-20240118-work-mellanox-network-operator   somerville-jade-20240118-work   true        network-operator         mellanox-network-operator   Installing              network-operator                     1.3.0           7m9s
+    >   default     somerville-jade-20240118-work-metrics-server              somerville-jade-20240118-work   true        kube-system              metrics-server              Installing              metrics-server                       3.8.2           7m9s
+    >   default     somerville-jade-20240118-work-node-feature-discovery      somerville-jade-20240118-work   true        node-feature-discovery   node-feature-discovery      Installing              node-feature-discovery               0.11.2          7m9s
+    >   default     somerville-jade-20240118-work-nvidia-gpu-operator         somerville-jade-20240118-work   true        gpu-operator             nvidia-gpu-operator         Installing              gpu-operator                         v1.11.1         7m9s
+
+
+# -----------------------------------------------------
+# ...
+#[root@ansibler]
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        kubectl \
+            --kubeconfig "${workclusterconf:?}" \
+            get pods \
+                --all-namespaces
+        '
+
+    >   E0118 18:39:46.209146   12870 memcache.go:287] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0118 18:39:46.229084   12870 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0118 18:39:46.241282   12870 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   E0118 18:39:46.247048   12870 memcache.go:121] couldn't get resource list for metrics.k8s.io/v1beta1: the server is currently unable to handle the request
+    >   NAMESPACE                NAME                                                                                 READY   STATUS              RESTARTS   AGE
+    >   calico-system            calico-kube-controllers-7f77d8b584-rvmqn                                             0/1     Pending             0          2m26s
+    >   calico-system            calico-node-566pn                                                                    0/1     PodInitializing     0          2m33s
+    >   calico-system            calico-node-5zbqk                                                                    1/1     Running             0          2m33s
+    >   calico-system            calico-node-fz2km                                                                    0/1     Init:1/2            0          2m33s
+    >   calico-system            calico-node-rcbsm                                                                    0/1     Init:1/2            0          2m31s
+    >   calico-system            calico-typha-8499f6b8b9-24dmp                                                        1/1     Running             0          2m27s
+    >   calico-system            calico-typha-8499f6b8b9-zhq75                                                        1/1     Running             0          2m37s
+    >   calico-system            csi-node-driver-5xgs2                                                                0/2     ContainerCreating   0          2m29s
+    >   calico-system            csi-node-driver-fvgdj                                                                0/2     ContainerCreating   0          2m29s
+    >   calico-system            csi-node-driver-gcbbz                                                                0/2     ContainerCreating   0          2m29s
+    >   calico-system            csi-node-driver-mwqp4                                                                0/2     ContainerCreating   0          2m30s
+    >   gpu-operator             gpu-operator-6c8649c88c-b42xz                                                        0/1     Pending             0          3m46s
+    >   kube-system              coredns-787d4945fb-fm2l4                                                             0/1     Pending             0          4m19s
+    >   kube-system              coredns-787d4945fb-sc28l                                                             0/1     Pending             0          4m19s
+    >   kube-system              etcd-somerville-jade-20240118-work-control-plane-d980a92e-vggm5                      1/1     Running             0          4m20s
+    >   kube-system              kube-apiserver-somerville-jade-20240118-work-control-plane-d980a92e-vggm5            1/1     Running             0          4m20s
+    >   kube-system              kube-controller-manager-somerville-jade-20240118-work-control-plane-d980a92e-vggm5   1/1     Running             0          4m20s
+    >   kube-system              kube-proxy-7zsrh                                                                     1/1     Running             0          2m38s
+    >   kube-system              kube-proxy-9njlk                                                                     1/1     Running             0          4m19s
+    >   kube-system              kube-proxy-bpdm2                                                                     1/1     Running             0          2m39s
+    >   kube-system              kube-proxy-qch54                                                                     1/1     Running             0          2m38s
+    >   kube-system              kube-scheduler-somerville-jade-20240118-work-control-plane-d980a92e-vggm5            1/1     Running             0          4m20s
+    >   kube-system              metrics-server-65cccfc7bb-d9zff                                                      0/1     Pending             0          3m52s
+    >   kubernetes-dashboard     kubernetes-dashboard-85d67585b8-pqs5m                                                0/2     Pending             0          3m43s
+    >   network-operator         mellanox-network-operator-5f7b6b766c-f5mc5                                           0/1     Pending             0          3m41s
+    >   node-feature-discovery   node-feature-discovery-master-75c9d78d5f-mqqdn                                       0/1     Pending             0          3m44s
+    >   node-feature-discovery   node-feature-discovery-worker-59www                                                  0/1     ContainerCreating   0          2m39s
+    >   node-feature-discovery   node-feature-discovery-worker-v5v5c                                                  0/1     ContainerCreating   0          2m39s
+    >   node-feature-discovery   node-feature-discovery-worker-vt5mp                                                  0/1     ContainerCreating   0          3m44s
+    >   node-feature-discovery   node-feature-discovery-worker-xklxv                                                  0/1     ContainerCreating   0          2m40s
+    >   openstack-system         openstack-cinder-csi-controllerplugin-58dc769d76-vkcdj                               0/6     Pending             0          4m
+    >   openstack-system         openstack-cinder-csi-nodeplugin-74rrx                                                3/3     Running             0          2m38s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-d6www                                                0/3     ContainerCreating   0          2m38s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-gd8gh                                                0/3     ContainerCreating   0          2m40s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-j4l4q                                                3/3     Running             0          4m
+    >   openstack-system         openstack-cloud-controller-manager-rzhdw                                             1/1     Running             0          28s
+    >   tigera-operator          tigera-operator-7d4cfffc6-gvx42                                                      1/1     Running             0          3m30s
+
+
+    >   NAMESPACE                NAME                                                                                 READY   STATUS             RESTARTS      AGE
+    >   calico-apiserver         calico-apiserver-6fb646b498-bbvz8                                                    1/1     Running            0             3m44s
+    >   calico-apiserver         calico-apiserver-6fb646b498-nqwth                                                    1/1     Running            0             3m44s
+    >   calico-system            calico-kube-controllers-7f77d8b584-rvmqn                                             1/1     Running            0             7m49s
+    >   calico-system            calico-node-566pn                                                                    1/1     Running            0             7m56s
+    >   calico-system            calico-node-5zbqk                                                                    1/1     Running            0             7m56s
+    >   calico-system            calico-node-fz2km                                                                    1/1     Running            0             7m56s
+    >   calico-system            calico-node-rcbsm                                                                    1/1     Running            0             7m54s
+    >   calico-system            calico-typha-8499f6b8b9-24dmp                                                        1/1     Running            0             7m50s
+    >   calico-system            calico-typha-8499f6b8b9-zhq75                                                        1/1     Running            0             8m
+    >   calico-system            csi-node-driver-5xgs2                                                                2/2     Running            0             7m52s
+    >   calico-system            csi-node-driver-fvgdj                                                                2/2     Running            0             7m52s
+    >   calico-system            csi-node-driver-gcbbz                                                                2/2     Running            0             7m52s
+    >   calico-system            csi-node-driver-mwqp4                                                                2/2     Running            0             7m53s
+    >   gpu-operator             gpu-operator-6c8649c88c-b42xz                                                        1/1     Running            0             9m9s
+    >   kube-system              coredns-787d4945fb-fm2l4                                                             1/1     Running            0             9m42s
+    >   kube-system              coredns-787d4945fb-sc28l                                                             1/1     Running            0             9m42s
+    >   kube-system              etcd-somerville-jade-20240118-work-control-plane-d980a92e-vggm5                      1/1     Running            0             9m43s
+    >   kube-system              kube-apiserver-somerville-jade-20240118-work-control-plane-d980a92e-vggm5            1/1     Running            0             9m43s
+    >   kube-system              kube-controller-manager-somerville-jade-20240118-work-control-plane-d980a92e-vggm5   1/1     Running            0             9m43s
+    >   kube-system              kube-proxy-7zsrh                                                                     1/1     Running            0             8m1s
+    >   kube-system              kube-proxy-9njlk                                                                     1/1     Running            0             9m42s
+    >   kube-system              kube-proxy-bpdm2                                                                     1/1     Running            0             8m2s
+    >   kube-system              kube-proxy-qch54                                                                     1/1     Running            0             8m1s
+    >   kube-system              kube-scheduler-somerville-jade-20240118-work-control-plane-d980a92e-vggm5            1/1     Running            0             9m43s
+    >   kube-system              metrics-server-65cccfc7bb-d9zff                                                      1/1     Running            0             9m15s
+    >   kubernetes-dashboard     kubernetes-dashboard-85d67585b8-pqs5m                                                2/2     Running            0             9m6s
+    >   network-operator         mellanox-network-operator-5f7b6b766c-f5mc5                                           0/1     CrashLoopBackOff   5 (52s ago)   9m4s
+    >   node-feature-discovery   node-feature-discovery-master-75c9d78d5f-mqqdn                                       1/1     Running            0             9m7s
+    >   node-feature-discovery   node-feature-discovery-worker-59www                                                  1/1     Running            0             8m2s
+    >   node-feature-discovery   node-feature-discovery-worker-v5v5c                                                  1/1     Running            0             8m2s
+    >   node-feature-discovery   node-feature-discovery-worker-vt5mp                                                  1/1     Running            0             9m7s
+    >   node-feature-discovery   node-feature-discovery-worker-xklxv                                                  1/1     Running            0             8m3s
+    >   openstack-system         openstack-cinder-csi-controllerplugin-58dc769d76-vkcdj                               6/6     Running            0             9m23s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-74rrx                                                3/3     Running            0             8m1s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-d6www                                                3/3     Running            0             8m1s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-gd8gh                                                3/3     Running            0             8m3s
+    >   openstack-system         openstack-cinder-csi-nodeplugin-j4l4q                                                3/3     Running            0             9m23s
+    >   openstack-system         openstack-cloud-controller-manager-rzhdw                                             1/1     Running            0             5m51s
+    >   tigera-operator          tigera-operator-7d4cfffc6-gvx42                                                      1/1     Running            0             8m53s
+
+
+# -----------------------------------------------------
+# ...
+#[root@ansibler]
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get helmrelease -A
+        '
+
+    >   NAMESPACE   NAME                                                      CLUSTER                         BOOTSTRAP   TARGET NAMESPACE         RELEASE NAME                PHASE      REVISION   CHART NAME                           CHART VERSION   AGE
+    >   default     somerville-jade-20240118-work-ccm-openstack               somerville-jade-20240118-work   true        openstack-system         ccm-openstack               Deployed   1          openstack-cloud-controller-manager   1.3.0           14m
+    >   default     somerville-jade-20240118-work-cni-calico                  somerville-jade-20240118-work   true        tigera-operator          cni-calico                  Deployed   1          tigera-operator                      v3.26.0         14m
+    >   default     somerville-jade-20240118-work-csi-cinder                  somerville-jade-20240118-work   true        openstack-system         csi-cinder                  Deployed   1          openstack-cinder-csi                 2.2.0           14m
+    >   default     somerville-jade-20240118-work-kubernetes-dashboard        somerville-jade-20240118-work   true        kubernetes-dashboard     kubernetes-dashboard        Deployed   1          kubernetes-dashboard                 5.10.0          14m
+    >   default     somerville-jade-20240118-work-mellanox-network-operator   somerville-jade-20240118-work   true        network-operator         mellanox-network-operator   Deployed   1          network-operator                     1.3.0           14m
+    >   default     somerville-jade-20240118-work-metrics-server              somerville-jade-20240118-work   true        kube-system              metrics-server              Deployed   1          metrics-server                       3.8.2           14m
+    >   default     somerville-jade-20240118-work-node-feature-discovery      somerville-jade-20240118-work   true        node-feature-discovery   node-feature-discovery      Deployed   1          node-feature-discovery               0.11.2          14m
+    >   default     somerville-jade-20240118-work-nvidia-gpu-operator         somerville-jade-20240118-work   true        gpu-operator             nvidia-gpu-operator         Deployed   1          gpu-operator                         v1.11.1         14m
+
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        clusterctl \
+            --kubeconfig "${kindclusterconf:?}" \
+            describe cluster \
+                "${workclustername:?}"
+        '
+
+    >   NAME                                                                              READY  SEVERITY  REASON  SINCE  MESSAGE
+    >   Cluster/somerville-jade-20240118-work                                             True                     11m
+    >   ├─ClusterInfrastructure - OpenStackCluster/somerville-jade-20240118-work
+    >   ├─ControlPlane - KubeadmControlPlane/somerville-jade-20240118-work-control-plane  True                     11m
+    >   │ └─Machine/somerville-jade-20240118-work-control-plane-6xg2w                     True                     12m
+    >   └─Workers
+    >     └─MachineDeployment/somerville-jade-20240118-work-md-0                          True                     6m38s
+    >       └─3 Machines...                                                               True                     10m    See somerville-jade-20240118-work-md-0-wq8bv-bx8hp, somerville-jade-20240118-work-md-0-wq8bv-ssklq, ...
+
+    #
+    # OMG .. it looks healthy.
+    #
+
+
+# -----------------------------------------------------
+# Deploy our gaia-dmp Helm chart.
+#[root@ansibler]
+
+    # TODO something to put this into the PATH
+    export PATH=${PATH}:/deployments/cluster-api/ansible/files/aglais/bin
+    source loadconfig
+
+    helm dependency build \
+        --kubeconfig "${workclusterconf:?}" \
+        '/deployments/cluster-api/helm/gaia-dmp'
+
+    >   Saving 2 charts
+    >   Deleting outdated charts
+
+
+    helm upgrade \
+        --wait \
+        --debug \
+        --kubeconfig "${workclusterconf:?}" \
+        'gaia-dmp' \
+        '/deployments/cluster-api/helm/gaia-dmp' \
+        --install
+
+    >   Error: Kubernetes cluster unreachable: Get "https://192.41.122.195:6443/version?timeout=32s": dial tcp 192.41.122.195:6443: i/o timeout
+    >   helm.go:84: [debug] Get "https://192.41.122.195:6443/version?timeout=32s": dial tcp 192.41.122.195:6443: i/o timeout
+    >   Kubernetes cluster unreachable
+    >   helm.sh/helm/v3/pkg/kube.(*Client).IsReachable
+    >   	/builddir/build/BUILD/helm-3.11.1/_build/src/helm.sh/helm/v3/pkg/kube/client.go:126
+    >   helm.sh/helm/v3/pkg/action.(*History).Run
+    >   	/builddir/build/BUILD/helm-3.11.1/_build/src/helm.sh/helm/v3/pkg/action/history.go:48
+    >   main.newUpgradeCmd.func2
+    >   	/builddir/build/BUILD/helm-3.11.1/_build/src/helm.sh/helm/v3/cmd/helm/upgrade.go:99
+    >   github.com/spf13/cobra.(*Command).execute
+    >   	/usr/share/gocode/src/github.com/spf13/cobra/command.go:916
+    >   github.com/spf13/cobra.(*Command).ExecuteC
+    >   	/usr/share/gocode/src/github.com/spf13/cobra/command.go:1044
+    >   github.com/spf13/cobra.(*Command).Execute
+    >   	/usr/share/gocode/src/github.com/spf13/cobra/command.go:968
+    >   main.main
+    >   	/builddir/build/BUILD/helm-3.11.1/_build/src/helm.sh/helm/v3/cmd/helm/helm.go:83
+    >   runtime.main
+    >   	/usr/lib/golang/src/runtime/proc.go:250
+    >   runtime.goexit
+    >   	/usr/lib/golang/src/runtime/asm_amd64.s:1594
+
+    #
+    # I'm doing this direct from desktop, so perhaps they have allowed ssh on port 22, but not https on port 6443.
+    # ....
+
+
+# -----------------------------------------------------
+# Run a SOCKS proxy from our client container to our bootstrap node.
+#[root@ansibler]
+
+        ssh \
+            -n \
+            -f \
+            -N \
+            -D '*:3000' \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=12 \
+            bootstrap
+
+
+# -----------------------------------------------------
+# Modify our kubectl config to add a SOCKS proxy.
+#[root@ansibler]
+
+        vi "${workclusterconf:?}"
+
+            apiVersion: v1
+            kind: Config
+            clusters:
+            - cluster:
+              name: somerville-jade-20240118-work
+                ....
+                server: https://192.41.122.195:6443
+        +       proxy-url: socks5://localhost:3000/
+
+
+
+        source loadconfig
+        kubectl \
+            --kubeconfig "${workclusterconf:?}" \
+            cluster-info
+
+    >   Kubernetes control plane is running at https://192.41.122.195:6443
+    >   CoreDNS is running at https://192.41.122.195:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+        kubectl \
+            --kubeconfig "${workclusterconf:?}" \
+            get pods \
+                --all-namespaces
+
+    >   NAMESPACE                NAME                                                                                 READY   STATUS             RESTARTS          AGE
+    >   calico-apiserver         calico-apiserver-6fb646b498-bbvz8                                                    1/1     Running            0                 10h
+    >   calico-apiserver         calico-apiserver-6fb646b498-nqwth                                                    1/1     Running            0                 10h
+    >   ....
+    >   openstack-system         openstack-cloud-controller-manager-rzhdw                                             1/1     Running            0                 10h
+    >   tigera-operator          tigera-operator-7d4cfffc6-gvx42                                                      1/1     Running            0                 10h
+
+    #
+    # Hopefully, Helm should use the proxy defined in the kubectl config.
+    # As far as I can tell, Helm uses kubectl, directly or indirectly, so it should just work.
+    #
+
+
+# -----------------------------------------------------
+# Deploy our gaia-dmp Helm chart.
+#[root@ansibler]
+
+    helm dependency build \
+        --kubeconfig "${workclusterconf:?}" \
+        '/deployments/cluster-api/helm/gaia-dmp'
+
+    >   Saving 2 charts
+    >   Deleting outdated charts
+
+
+    helm upgrade \
+        --wait \
+        --debug \
+        --kubeconfig "${workclusterconf:?}" \
+        'gaia-dmp' \
+        '/deployments/cluster-api/helm/gaia-dmp' \
+        --install
+
+    >   history.go:56: [debug] getting history for release gaia-dmp
+    >   Release "gaia-dmp" does not exist. Installing it now.
+    >   install.go:194: [debug] Original chart version: ""
+    >   install.go:211: [debug] CHART PATH: /deployments/cluster-api/helm/gaia-dmp
+    >   ....
+    >   ....
+    >   client.go:133: [debug] creating 10 resource(s)
+    >   wait.go:48: [debug] beginning wait for 10 resources with timeout of 5m0s
+    >   ready.go:277: [debug] Deployment is not ready: default/zeppelin-server. 0 out of 1 expected pods are ready
+    >   ready.go:277: [debug] Deployment is not ready: default/zeppelin-server. 0 out of 1 expected pods are ready
+    >   ....
+    >   ....
+    >   ready.go:277: [debug] Deployment is not ready: default/zeppelin-server. 0 out of 1 expected pods are ready
+    >   ready.go:277: [debug] Deployment is not ready: default/zeppelin-server. 0 out of 1 expected pods are ready
+    >   Error: timed out waiting for the condition
+    >   helm.go:84: [debug] timed out waiting for the condition
+
+    #
+    # Oh great, somethinbg else going pear shaped.
+    # If it is just container image pull timeouts, then try again.
+    #
+
+    helm upgrade \
+        --wait \
+        --debug \
+        --kubeconfig "${workclusterconf:?}" \
+        'gaia-dmp' \
+        '/deployments/cluster-api/helm/gaia-dmp' \
+        --install
+
+
+    >       --install
+    >   history.go:56: [debug] getting history for release gaia-dmp
+    >   upgrade.go:144: [debug] preparing upgrade for gaia-dmp
+    >   upgrade.go:152: [debug] performing update for gaia-dmp
+    >   upgrade.go:324: [debug] creating upgraded release for gaia-dmp
+    >   client.go:338: [debug] checking 10 resources for changes
+    >   client.go:617: [debug] Looks like there are no changes for Namespace "gaia-dmp"
+    >   client.go:617: [debug] Looks like there are no changes for ServiceAccount "dashboard-admin-account"
+    >   client.go:617: [debug] Looks like there are no changes for ServiceAccount "zeppelin-server"
+    >   client.go:617: [debug] Looks like there are no changes for ConfigMap "zeppelin-server-conf-map"
+    >   client.go:617: [debug] Looks like there are no changes for ConfigMap "zeppelin-server-conf"
+    >   client.go:617: [debug] Looks like there are no changes for ClusterRole "zeppelin-server-role"
+    >   client.go:617: [debug] Looks like there are no changes for ClusterRoleBinding "dashboard-admin-binding"
+    >   client.go:617: [debug] Looks like there are no changes for RoleBinding "zeppelin-server-role-binding"
+    >   client.go:617: [debug] Looks like there are no changes for Service "zeppelin-server"
+    >   client.go:626: [debug] Patch Deployment "zeppelin-server" in namespace default
+    >   upgrade.go:396: [debug] waiting for release gaia-dmp resources (created: 0 updated: 10  deleted: 0)
+    >   wait.go:48: [debug] beginning wait for 10 resources with timeout of 5m0s
+    >   upgrade.go:159: [debug] updating status for upgraded release for gaia-dmp
+    >   Release "gaia-dmp" has been upgraded. Happy Helming!
+    >   NAME: gaia-dmp
+    >   LAST DEPLOYED: Fri Jan 19 05:13:23 2024
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 2
+    >   TEST SUITE: None
+    >   USER-SUPPLIED VALUES:
+    >   {}
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Generate a dashboard token.
+#[root@ansibler]
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        --namespace "gaia-dmp" \
+        create token \
+            "dashboard-admin-account"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Launch a kubectl proxy.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler-jade \
+            bash -c \
+                '
+                source /deployments/cluster-api/ansible/files/aglais/bin/loadconfig ;\
+                kubectl \
+                    --kubeconfig "${workclusterconf:?}" \
+                    --address 0.0.0.0 \
+                    proxy
+                '
+
+    >   Starting to serve on [::]:8001
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Get the published port number for our agclient.
+#[user@desktop]
+
+    agcolour=jade
+
+    podman container \
+        inspect \
+            "ansibler-${agcolour:?}" \
+            --format json \
+    | jq -r '
+        .[0]
+        | .HostConfig.PortBindings
+        '
+
+    >   {
+    >     "8001/tcp": [
+    >       {
+    >         "HostIp": "127.0.0.1",
+    >         "HostPort": "34283"
+    >       }
+    >     ]
+    >   }
+
+    kubeport=$(
+        podman container \
+            inspect \
+                "ansibler-${agcolour:?}" \
+                --format json \
+        | jq -r '
+            .[0]
+            | .HostConfig.PortBindings
+            | ."8001/tcp"
+            | .[0].HostPort
+            '
+        )
+
+    echo "kubeport [${kubeport}]"
+
+    >   kubeport [34283]
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Launch browser pointed at the dashboard.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        "http://localhost:${kubeport:?}/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:https/proxy/#/login" \
+        &
+
+    >   ....
+    >   ....
+
+    #
+    # Dashboard works OK.
+    #
+
+# -----------------------------------------------------
+# Launch browser pointed at Zeppelin.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        "http://localhost:${kubeport:?}/api/v1/namespaces/default/services/http:zeppelin-server:http/proxy/#/" \
+        &
+
+    >   ....
+    >   ....
+
+    #
+    # Zeppelin is there .. but only part of the front page is displayed.
+    # No example notebooks.
+    # Can't create new notenbooks.
+    # Suspect that multiple proxies ontop of proxies is mangling the 'clever' JS UI app.
+    #
+
+    #
+    # In earlier tests we used to access Zeppelin via a proxy that goes direct to the zeppelin node.
+    # Might have to wrap that in a second ssh jump for that to work.
+    # http over [socks over [ssh to zeppelin over [ssh to bootstrap]]]
+    #
+
+    #
+    # After all that - success !!
+    # We have a Kubernetes deployment script that works for both Cambridge Arcus and Somerville.
+    # We have (partial) Zeppelin deployed in Kubernetes.
+    #
+
+    #
+    # Kubernetes deployment on Somerville needs the DNS server address set.
+    # Kubernetes deployment on Somerville needs a proxy via proxy to access a HTTP(S) service.
+    # Kubernetes deployment on Somerville has issues with container image pulls timing out.
+    #
+
+    #
+    # Next steps will be getting csi-cinder and csi-manila storage classes to work.
+    # Oh, and then finally the new one getting Longhorn ephemeral storage clusters to work.
+    #
+
+    #
+    # One final test would be to start with the working deployment and make one change to see if it still needs the extra DNS address.
+    # If it does, then we need to request the address of a DNS server inside Somerville that we can use.
+    # Using 8.8.8.8 is more than a bit lame.
+    #

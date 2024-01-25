@@ -1,0 +1,367 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2024, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Continuing our journey, figuring out why our deployment fails on Somerville.
+
+        Original plan:
+
+            Add public key for Scott Davidson to enable hiom to access our VMs.
+            Add security rukles to allow ssh connections between our nodes.
+            Create a gateway VM inside the cluster network.
+
+        Original plan skipped because it seems to work now.
+
+    Result:
+
+        Now it works !?
+        Unknown cause.
+        Do we trust it ?
+
+        History:
+
+            Jan 10th pass
+            Jan 12th fail
+            Jan 16th fail
+            Jan 17th fail
+            Jan 18th pass
+            Jan 19th pass
+            Jan 23rd fail
+            Jan 24th pass
+
+
+# -----------------------------------------------------
+# Start a new branch.
+#[user@desktop]
+
+    branchname=jade-debug
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        newbranch=$(date '+%Y%m%d')-zrq-${branchname:?}
+
+        git checkout master
+
+        git checkout -b "${newbranch:?}"
+
+    popd
+
+
+# -----------------------------------------------------
+# Add Scott's public key.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE}"
+
+        vi deployments/common/ssh/aglais-team-keys
+
+    popd
+
+
+# -----------------------------------------------------
+# Run our local client.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    export PATH=${PATH}:${AGLAIS_CODE}/bin
+
+    agclient jade
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete and create everything.
+#[root@ansibler]
+
+    export cloudsite=somerville-jade
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP ******************************************************************************************************************************************
+    >   bootstrap                  : ok=58   changed=45   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   localhost                  : ok=35   changed=26   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Check the cluster status.
+#[root@ansibler]
+
+    ssh bootstrap -t \
+        '
+        source loadconfig
+        watch \
+            clusterctl \
+                --kubeconfig "${kindclusterconf:?}" \
+                describe cluster \
+                    "${workclustername:?}"
+        '
+
+    >   NAME                                                                              READY  SEVERITY  REASON  SINCE  MESSAGE
+    >   Cluster/somerville-jade-20240124-work                                             True                     5m55s
+    >   ├─ClusterInfrastructure - OpenStackCluster/somerville-jade-20240124-work
+    >   ├─ControlPlane - KubeadmControlPlane/somerville-jade-20240124-work-control-plane  True                     5m55s
+    >   │ └─Machine/somerville-jade-20240124-work-control-plane-sm8rh                     True                     7m11s
+    >   └─Workers
+    >     └─MachineDeployment/somerville-jade-20240124-work-md-0                          True                     2m5s
+    >       └─3 Machines...                                                               True                     5m18s  See somerville-jade-20240124-work-md-0-jdjp8-s2clm, somerville-jade-20240124-work-md-0-jdjp8-stqxj, ...
+
+    #
+    # Now it works ...
+    # Not sure if I trust it though.
+    #
+
+
+# -----------------------------------------------------
+# Get the location of our cluster config files.
+#[root@ansibler]
+
+    # TODO something to put this into the PATH
+    export PATH=${PATH}:/deployments/cluster-api/ansible/files/aglais/bin
+    source loadconfig
+
+
+# -----------------------------------------------------
+# Run a SOCKS proxy linking our client container to our bootstrap node.
+# https://unix.stackexchange.com/questions/34004/how-does-tcp-keepalive-work-in-ssh
+# https://unix.stackexchange.com/a/34201
+#[root@ansibler]
+
+    ssh \
+        -n \
+        -f \
+        -N \
+        -D '*:3000' \
+        -o ServerAliveInterval=10 \
+        -o ServerAliveCountMax=12 \
+        bootstrap
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Modify our kubectl config to add a SOCKS proxy.
+#[root@ansibler]
+
+    source loadconfig
+    vi "${workclusterconf:?}"
+
+        apiVersion: v1
+        kind: Config
+        clusters:
+        - cluster:
+          name: somerville-jade-20240118-work
+            ....
+            server: https://192.41.122.195:6443
+    +       proxy-url: socks5://localhost:3000/
+
+
+# -----------------------------------------------------
+# Check we can access the cluster-info.
+#[root@ansibler]
+
+    source loadconfig
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        cluster-info
+
+    >   Kubernetes control plane is running at https://192.41.122.223:6443
+    >   CoreDNS is running at https://192.41.122.223:6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Deploy our gaia-dmp Helm chart.
+#[root@ansibler]
+
+    source loadconfig
+
+    helm dependency build \
+        --kubeconfig "${workclusterconf:?}" \
+        '/deployments/cluster-api/helm/gaia-dmp'
+
+    >   Saving 2 charts
+    >   Deleting outdated charts
+
+
+    helm upgrade \
+        --wait \
+        --debug \
+        --kubeconfig "${workclusterconf:?}" \
+        'gaia-dmp' \
+        '/deployments/cluster-api/helm/gaia-dmp' \
+        --install
+
+    >   history.go:56: [debug] getting history for release gaia-dmp
+    >   Release "gaia-dmp" does not exist. Installing it now.
+    >   install.go:194: [debug] Original chart version: ""
+    >   install.go:211: [debug] CHART PATH: /deployments/cluster-api/helm/gaia-dmp
+    >   ....
+    >   ....
+    >   ready.go:277: [debug] Deployment is not ready: default/zeppelin-server. 0 out of 1 expected pods are ready
+    >   ready.go:277: [debug] Deployment is not ready: default/zeppelin-server. 0 out of 1 expected pods are ready
+    >   Error: timed out waiting for the condition
+    >   helm.go:84: [debug] timed out waiting for the condition
+
+
+    helm upgrade \
+        --wait \
+        --debug \
+        --kubeconfig "${workclusterconf:?}" \
+        'gaia-dmp' \
+        '/deployments/cluster-api/helm/gaia-dmp' \
+        --install
+
+    >   history.go:56: [debug] getting history for release gaia-dmp
+    >   upgrade.go:144: [debug] preparing upgrade for gaia-dmp
+    >   upgrade.go:152: [debug] performing update for gaia-dmp
+    >   upgrade.go:324: [debug] creating upgraded release for gaia-dmp
+    >   client.go:338: [debug] checking 10 resources for changes
+    >   client.go:617: [debug] Looks like there are no changes for Namespace "gaia-dmp"
+    >   client.go:617: [debug] Looks like there are no changes for ServiceAccount "dashboard-admin-account"
+    >   client.go:617: [debug] Looks like there are no changes for ServiceAccount "zeppelin-server"
+    >   client.go:617: [debug] Looks like there are no changes for ConfigMap "zeppelin-server-conf-map"
+    >   client.go:617: [debug] Looks like there are no changes for ConfigMap "zeppelin-server-conf"
+    >   client.go:617: [debug] Looks like there are no changes for ClusterRole "zeppelin-server-role"
+    >   client.go:617: [debug] Looks like there are no changes for ClusterRoleBinding "dashboard-admin-binding"
+    >   client.go:617: [debug] Looks like there are no changes for RoleBinding "zeppelin-server-role-binding"
+    >   client.go:617: [debug] Looks like there are no changes for Service "zeppelin-server"
+    >   client.go:626: [debug] Patch Deployment "zeppelin-server" in namespace default
+    >   upgrade.go:396: [debug] waiting for release gaia-dmp resources (created: 0 updated: 10  deleted: 0)
+    >   wait.go:48: [debug] beginning wait for 10 resources with timeout of 5m0s
+    >   ready.go:277: [debug] Deployment is not ready: default/zeppelin-server. 0 out of 1 expected pods are ready
+    >   ready.go:277: [debug] Deployment is not ready: default/zeppelin-server. 0 out of 1 expected pods are ready
+    >   ....
+    >   ....
+    >   ready.go:277: [debug] Deployment is not ready: default/zeppelin-server. 0 out of 1 expected pods are ready
+    >   ready.go:277: [debug] Deployment is not ready: default/zeppelin-server. 0 out of 1 expected pods are ready
+    >   upgrade.go:159: [debug] updating status for upgraded release for gaia-dmp
+    >   Release "gaia-dmp" has been upgraded. Happy Helming!
+    >   NAME: gaia-dmp
+    >   LAST DEPLOYED: Wed Jan 24 15:28:29 2024
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 2
+    >   TEST SUITE: None
+    >   ....
+    >   ....
+
+# -----------------------------------------------------
+# Generate a dashboard token.
+#[root@ansibler]
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        --namespace "gaia-dmp" \
+        create token \
+            "dashboard-admin-account"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Launch a kubectl proxy.
+#[root@ansibler]
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        --address 0.0.0.0 \
+        proxy \
+        &
+
+    >   Starting to serve on [::]:8001
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Get the published port number for our agclient.
+#[user@desktop]
+
+    agcolour=jade
+
+    kubeport=$(
+        podman container \
+            inspect \
+                "ansibler-${agcolour:?}" \
+                --format json \
+        | jq -r '
+            .[0]
+            | .HostConfig.PortBindings
+            | ."8001/tcp"
+            | .[0].HostPort
+            '
+        )
+
+    echo "kubeport [${kubeport}]"
+
+    >   kubeport [42159]
+
+
+# -----------------------------------------------------
+# Launch browser pointed at the dashboard.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        "http://localhost:${kubeport:?}/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:https/proxy/#/login" \
+        &
+
+    #
+    # Dashboard works :-)
+    #
+
+
+# -----------------------------------------------------
+# Launch browser pointed at Zeppelin.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        "http://localhost:${kubeport:?}/api/v1/namespaces/default/services/http:zeppelin-server:http/proxy/#/" \
+        &
+
+    #
+    # Zeppelin responds .. but only part of the front page is displayed.
+    # Suspect that multiple proxies ontop of proxies is mangling the 'clever' JS UI app.
+    #
+
+

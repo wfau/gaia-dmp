@@ -1,0 +1,834 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+
+    Target:
+
+        Figure out why the Kubernetes cluster deployment is failing.
+        Need to track down where to look for error messages.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+
+    #
+    # Ran another deployment with cluster name set to 'albert'.
+    # Distinctive name to look for in the logs.
+    #
+
+# -----------------------------------------------------
+# Exploring the kubeadm-control-plane logs ..
+#[user@bootstrap]
+
+    controlpod=$(
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get pods \
+                --output json \
+                --namespace capi-kubeadm-control-plane-system \
+        | jq -r '.items[0] | .metadata.name'
+        )
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace capi-kubeadm-control-plane-system  \
+            "${controlpod:?}" \
+    | tee /tmp/control-plane-system.log
+
+
+    >   ....
+    >   E0810 14:39:34.526626       1 controller.go:324]
+    >       "Reconciler error"
+    >       err="
+    >           failed to create remote cluster client:
+    >           failed to create cluster accessor:
+    >           error fetching REST client config for remote cluster \"default/albert\":
+    >           failed to retrieve kubeconfig secret for Cluster default/albert:
+    >           Secret \"albert-kubeconfig\" not found
+    >           "
+    >       controller="kubeadmcontrolplane"
+    >       controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/albert-control-plane" namespace="default" name="albert-control-plane" reconcileID=76402490-7c28-4d3a-b2bd-4c77a85f0d2b
+    >   ....
+
+
+    #
+    # Missing Kubernetes components :
+    # Secret "albert-kubeconfig"
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Exploring the Helm templates
+#[root@ansibler]
+
+    helm \
+        --kubeconfig "${kindclusterconf:?}" \
+        get all \
+            'albert' \
+    | tee /tmp/helm-all.yml
+
+    >   NAME: albert
+    >   LAST DEPLOYED: Thu Aug 10 16:02:49 2023
+    >   NAMESPACE: default
+    >   STATUS: failed
+    >   REVISION: 1
+    >   TEST SUITE: None
+    >   USER-SUPPLIED VALUES:
+    >   ....
+    >   ....
+    >   COMPUTED VALUES:
+    >   ....
+    >   apiServer:
+    >     associateFloatingIP: true
+    >     enableLoadBalancer: true
+    >     fixedIP: null
+    >     floatingIP: null
+    >     port: 6443
+    >   ....
+    >   ....
+    >   HOOKS:
+    >   MANIFEST:
+    >   ....
+    >   ....
+    >   ---
+    >   # Source: openstack-cluster/templates/autoscaler/deployment.yaml
+    >   apiVersion: apps/v1
+    >   kind: Deployment
+    >   metadata:
+    >     name: albert-autoscaler
+    >     ...
+    >   spec:
+    >     ...
+    >     template:
+    >       metadata:
+    >         ...
+    >       spec:
+    >         ...
+    >         containers:
+    >           - name: autoscaler
+    >             ....
+    >             image: k8s.gcr.io/autoscaling/cluster-autoscaler:v1.25.0
+    >             imagePullPolicy: IfNotPresent
+    >             command:
+    >               - /cluster-autoscaler
+    >             args:
+    >               - --cloud-provider=clusterapi
+    >               - --kubeconfig=/mnt/kubeconfig/value
+    >               - --clusterapi-cloud-config-authoritative
+    >               - --node-group-auto-discovery=clusterapi:namespace=default,clusterName=albert
+    >             resources:
+    >               {}
+    >             volumeMounts:
+    >               - name: kubeconfig
+    >                 mountPath: /mnt/kubeconfig
+    >                 readOnly: true
+    >         volumes:
+    >           # Mount the kubeconfig for the workload cluster from the secret
+    >           - name: kubeconfig
+    >             secret:
+    >               secretName: albert-kubeconfig
+    >   ---
+    >   ....
+    >   ....
+
+    #
+    # The 'albert-autoscaler' Deployment refers to 'albert-kubeconfig' Secret,
+    # but no listing for the 'albert-kubeconfig' Secret itself.
+    #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Exploring the Openstack components
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+    >   +--------------------------------------+----------------------------------------+--------+------------------------------------------------------------------------+---------------+----------------------+
+    >   | ID                                   | Name                                   | Status | Networks                                                               | Image         | Flavor               |
+    >   +--------------------------------------+----------------------------------------+--------+------------------------------------------------------------------------+---------------+----------------------+
+    >   | 0574aa73-be7a-46cc-a897-a02353e68e8d | iris-gaia-blue-20230810-bootstrap-node | ACTIVE | iris-gaia-blue-20230810-bootstrap-network=10.10.1.149, 128.232.226.115 | Fedora-34.1.2 | gaia.vm.cclake.2vcpu |
+    >   +--------------------------------------+----------------------------------------+--------+------------------------------------------------------------------------+---------------+----------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer list
+
+    >   +--------------------------------------+-----------------------------------------------+----------------------------------+-------------+---------------------+------------------+----------+
+    >   | id                                   | name                                          | project_id                       | vip_address | provisioning_status | operating_status | provider |
+    >   +--------------------------------------+-----------------------------------------------+----------------------------------+-------------+---------------------+------------------+----------+
+    >   | 39416be0-4969-4f7a-a9de-5b215f797c60 | k8s-clusterapi-cluster-default-albert-kubeapi | e918a13fed2648758175a15fac083569 | 192.168.3.6 | ERROR               | OFFLINE          | amphora  |
+    >   +--------------------------------------+-----------------------------------------------+----------------------------------+-------------+---------------------+------------------+----------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer show \
+            '39416be0-4969-4f7a-a9de-5b215f797c60'
+
+    >   +---------------------+------------------------------------------------------------------+
+    >   | Field               | Value                                                            |
+    >   +---------------------+------------------------------------------------------------------+
+    >   | admin_state_up      | True                                                             |
+    >   | availability_zone   | None                                                             |
+    >   | created_at          | 2023-08-10T16:03:15                                              |
+    >   | description         | Created by cluster-api-provider-openstack cluster default-albert |
+    >   | flavor_id           | None                                                             |
+    >   | id                  | 39416be0-4969-4f7a-a9de-5b215f797c60                             |
+    >   | listeners           |                                                                  |
+    >   | name                | k8s-clusterapi-cluster-default-albert-kubeapi                    |
+    >   | operating_status    | OFFLINE                                                          |
+    >   | pools               |                                                                  |
+    >   | project_id          | e918a13fed2648758175a15fac083569                                 |
+    >   | provider            | amphora                                                          |
+    >   | provisioning_status | ERROR                                                            |
+    >   | updated_at          | 2023-08-10T16:03:32                                              |
+    >   | vip_address         | 192.168.3.6                                                      |
+    >   | vip_network_id      | 0b27a32a-9a1a-44c0-bf23-968dd033af0e                             |
+    >   | vip_port_id         | 0a224184-2586-4c61-bdc1-37c9aa31d547                             |
+    >   | vip_qos_policy_id   | None                                                             |
+    >   | vip_subnet_id       | d8e31d82-ad38-4876-b615-456103cccd68                             |
+    >   | tags                |                                                                  |
+    >   +---------------------+------------------------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router list
+
+    >   +--------------------------------------+--------------------------------------------------+--------+-------+----------------------------------+
+    >   | ID                                   | Name                                             | Status | State | Project                          |
+    >   +--------------------------------------+--------------------------------------------------+--------+-------+----------------------------------+
+    >   | 54ed70da-6d52-42ab-a6f8-0512cbc56606 | k8s-clusterapi-cluster-default-albert            | ACTIVE | UP    | e918a13fed2648758175a15fac083569 |
+    >   | 5ee65ffd-8206-4c72-ad29-359c8e5566b2 | iris-gaia-blue-20230810-bootstrap-network-router | ACTIVE | UP    | e918a13fed2648758175a15fac083569 |
+    >   +--------------------------------------+--------------------------------------------------+--------+-------+----------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        router show \
+            '54ed70da-6d52-42ab-a6f8-0512cbc56606'
+
+    >   +-------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | Field                   | Value                                                                                                                                                                                       |
+    >   +-------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | admin_state_up          | UP                                                                                                                                                                                          |
+    >   | availability_zone_hints |                                                                                                                                                                                             |
+    >   | availability_zones      | nova                                                                                                                                                                                        |
+    >   | created_at              | 2023-08-10T16:02:55Z                                                                                                                                                                        |
+    >   | description             | Created by cluster-api-provider-openstack cluster default-albert                                                                                                                            |
+    >   | external_gateway_info   | {"network_id": "57add367-d205-4030-a929-d75617a7c63e", "external_fixed_ips": [{"subnet_id": "1847b14d-b974-4f78-959d-44d18d4485b8", "ip_address": "128.232.226.213"}], "enable_snat": true} |
+    >   | flavor_id               | None                                                                                                                                                                                        |
+    >   | id                      | 54ed70da-6d52-42ab-a6f8-0512cbc56606                                                                                                                                                        |
+    >   | interfaces_info         | [{"port_id": "36ab7cde-4826-485e-b9f6-4cacde040309", "ip_address": "192.168.3.1", "subnet_id": "d8e31d82-ad38-4876-b615-456103cccd68"}]                                                     |
+    >   | name                    | k8s-clusterapi-cluster-default-albert                                                                                                                                                       |
+    >   | project_id              | e918a13fed2648758175a15fac083569                                                                                                                                                            |
+    >   | revision_number         | 8                                                                                                                                                                                           |
+    >   | routes                  |                                                                                                                                                                                             |
+    >   | status                  | ACTIVE                                                                                                                                                                                      |
+    >   | tags                    |                                                                                                                                                                                             |
+    >   | updated_at              | 2023-08-10T16:03:06Z                                                                                                                                                                        |
+    >   +-------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        floating ip list
+
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | ID                                   | Floating IP Address | Fixed IP Address | Port                                 | Floating Network                     | Project                          |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+    >   | 0622ca86-1acf-4675-819f-1778c87bc4f2 | 128.232.226.115     | 10.10.1.149      | 78263422-809d-4a0b-9f42-7f1bceddb41c | 57add367-d205-4030-a929-d75617a7c63e | e918a13fed2648758175a15fac083569 |
+    >   +--------------------------------------+---------------------+------------------+--------------------------------------+--------------------------------------+----------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | ID                                   | Name                                      | Subnets                                                                                                                                                |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | 0b27a32a-9a1a-44c0-bf23-968dd033af0e | k8s-clusterapi-cluster-default-albert     | d8e31d82-ad38-4876-b615-456103cccd68                                                                                                                   |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                                    | 5699fb5d-8316-4b88-b889-b05c8a1ec975                                                                                                                   |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet                             | 1847b14d-b974-4f78-959d-44d18d4485b8, 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42, 5f1388b3-a0c7-463e-bb58-5532c38e4b40, a79eb610-eca3-4ee8-aaf1-88f4fef5a4e7 |
+    >   | 7a043b69-4613-48d6-8b02-aec72bae3c25 | iris-gaia-blue-20230810-bootstrap-network | cc820f2e-4de0-4fc1-845f-aac6fa1812b3                                                                                                                   |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network show \
+            '0b27a32a-9a1a-44c0-bf23-968dd033af0e'
+
+    >   +---------------------------+---------------------------------------+
+    >   | Field                     | Value                                 |
+    >   +---------------------------+---------------------------------------+
+    >   | admin_state_up            | UP                                    |
+    >   | availability_zone_hints   |                                       |
+    >   | availability_zones        | nova                                  |
+    >   | created_at                | 2023-08-10T16:02:53Z                  |
+    >   | description               |                                       |
+    >   | dns_domain                |                                       |
+    >   | id                        | 0b27a32a-9a1a-44c0-bf23-968dd033af0e  |
+    >   | ipv4_address_scope        | None                                  |
+    >   | ipv6_address_scope        | None                                  |
+    >   | is_default                | None                                  |
+    >   | is_vlan_transparent       | None                                  |
+    >   | mtu                       | 1450                                  |
+    >   | name                      | k8s-clusterapi-cluster-default-albert |
+    >   | port_security_enabled     | True                                  |
+    >   | project_id                | e918a13fed2648758175a15fac083569      |
+    >   | provider:network_type     | None                                  |
+    >   | provider:physical_network | None                                  |
+    >   | provider:segmentation_id  | None                                  |
+    >   | qos_policy_id             | None                                  |
+    >   | revision_number           | 2                                     |
+    >   | router:external           | Internal                              |
+    >   | segments                  | None                                  |
+    >   | shared                    | False                                 |
+    >   | status                    | ACTIVE                                |
+    >   | subnets                   | d8e31d82-ad38-4876-b615-456103cccd68  |
+    >   | tags                      |                                       |
+    >   | updated_at                | 2023-08-10T16:02:54Z                  |
+    >   +---------------------------+---------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet list
+
+    >   +--------------------------------------+--------------------------------------------------+--------------------------------------+----------------+
+    >   | ID                                   | Name                                             | Network                              | Subnet         |
+    >   +--------------------------------------+--------------------------------------------------+--------------------------------------+----------------+
+    >   | 5699fb5d-8316-4b88-b889-b05c8a1ec975 | cephfs                                           | 410920fb-5714-4447-b26a-e7b06092fc62 | 10.9.0.0/16    |
+    >   | cc820f2e-4de0-4fc1-845f-aac6fa1812b3 | iris-gaia-blue-20230810-bootstrap-network-subnet | 7a043b69-4613-48d6-8b02-aec72bae3c25 | 10.10.0.0/16   |
+    >   | d8e31d82-ad38-4876-b615-456103cccd68 | k8s-clusterapi-cluster-default-albert            | 0b27a32a-9a1a-44c0-bf23-968dd033af0e | 192.168.3.0/24 |
+    >   +--------------------------------------+--------------------------------------------------+--------------------------------------+----------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        subnet show \
+            'd8e31d82-ad38-4876-b615-456103cccd68'
+
+    >   +----------------------+------------------------------------------------------------------+
+    >   | Field                | Value                                                            |
+    >   +----------------------+------------------------------------------------------------------+
+    >   | allocation_pools     | 192.168.3.2-192.168.3.254                                        |
+    >   | cidr                 | 192.168.3.0/24                                                   |
+    >   | created_at           | 2023-08-10T16:02:54Z                                             |
+    >   | description          | Created by cluster-api-provider-openstack cluster default-albert |
+    >   | dns_nameservers      | 131.111.8.42                                                     |
+    >   | dns_publish_fixed_ip | None                                                             |
+    >   | enable_dhcp          | True                                                             |
+    >   | gateway_ip           | 192.168.3.1                                                      |
+    >   | host_routes          |                                                                  |
+    >   | id                   | d8e31d82-ad38-4876-b615-456103cccd68                             |
+    >   | ip_version           | 4                                                                |
+    >   | ipv6_address_mode    | None                                                             |
+    >   | ipv6_ra_mode         | None                                                             |
+    >   | name                 | k8s-clusterapi-cluster-default-albert                            |
+    >   | network_id           | 0b27a32a-9a1a-44c0-bf23-968dd033af0e                             |
+    >   | project_id           | e918a13fed2648758175a15fac083569                                 |
+    >   | revision_number      | 0                                                                |
+    >   | segment_id           | None                                                             |
+    >   | service_types        |                                                                  |
+    >   | subnetpool_id        | None                                                             |
+    >   | tags                 |                                                                  |
+    >   | updated_at           | 2023-08-10T16:02:54Z                                             |
+    >   +----------------------+------------------------------------------------------------------+
+
+    #
+    # Openstack status:
+    # Network, subnet and router look OK.
+    #
+    # No VMs allocated.
+    #
+    # Loadbalancer
+    #   operating_status: OFFLINE
+    #   provisioning_status: ERROR                                                            |
+    #
+    # Floating IP address not assigned
+    #
+
+    #
+    # Complete guess .. what if we manually add a floating IP address to the load balancer ?
+    #
+
+
+# -----------------------------------------------------
+# Exploring all the Pod logs, just in case ..
+#[user@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get pods \
+            --all-namespaces
+
+    >   NAMESPACE                           NAME                                                             READY   STATUS              RESTARTS   AGE
+    >   capi-kubeadm-bootstrap-system       capi-kubeadm-bootstrap-controller-manager-59c54786d5-5kqlz       1/1     Running             0          11h
+    >   capi-kubeadm-control-plane-system   capi-kubeadm-control-plane-controller-manager-845544c868-vjmld   1/1     Running             0          11h
+    >   capi-system                         capi-controller-manager-c7bc68d54-5grf5                          1/1     Running             0          11h
+    >   capo-system                         capo-controller-manager-6d9f44548f-9p8d7                         1/1     Running             0          11h
+    >   cert-manager                        cert-manager-66d9545484-mq925                                    1/1     Running             0          11h
+    >   cert-manager                        cert-manager-cainjector-7d8b6bd6fb-2v8l5                         1/1     Running             0          11h
+    >   cert-manager                        cert-manager-webhook-669b96dcfd-m7kcd                            1/1     Running             0          11h
+    >   default                             albert-autoscaler-54c9c7b6df-fgkwv                               0/1     ContainerCreating   0          11h
+    >   default                             cluster-api-addon-provider-66cc76bbbf-px62r                      1/1     Running             0          11h
+    >   kube-system                         coredns-5d78c9869d-xbjfs                                         1/1     Running             0          11h
+    >   kube-system                         coredns-5d78c9869d-zfsm2                                         1/1     Running             0          11h
+    >   kube-system                         etcd-victoria-control-plane                                      1/1     Running             0          11h
+    >   kube-system                         kindnet-mlw5p                                                    1/1     Running             0          11h
+    >   kube-system                         kube-apiserver-victoria-control-plane                            1/1     Running             0          11h
+    >   kube-system                         kube-controller-manager-victoria-control-plane                   1/1     Running             0          11h
+    >   kube-system                         kube-proxy-5jcs5                                                 1/1     Running             0          11h
+    >   kube-system                         kube-scheduler-victoria-control-plane                            1/1     Running             0          11h
+    >   local-path-storage                  local-path-provisioner-6bc4bddd6b-cxghf                          1/1     Running             0          11h
+
+
+    namespace=capi-kubeadm-bootstrap-system
+    podname=capi-kubeadm-bootstrap-controller-manager-59c54786d5-5kqlz
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   I0810 16:02:16.206548       1 controller.go:177] "Starting EventSource" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" source="kind source: *v1beta1.KubeadmConfig"
+    >   I0810 16:02:16.206571       1 controller.go:177] "Starting EventSource" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" source="kind source: *v1beta1.Machine"
+    >   I0810 16:02:16.206580       1 controller.go:177] "Starting EventSource" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" source="kind source: *v1beta1.Cluster"
+    >   I0810 16:02:16.206588       1 controller.go:185] "Starting Controller" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig"
+    >   I0810 16:02:16.309232       1 controller.go:219] "Starting workers" controller="remote/clustercache" controllerGroup="cluster.x-k8s.io" controllerKind="Cluster" worker count=10
+    >   I0810 16:02:16.310446       1 controller.go:219] "Starting workers" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" worker count=10
+    >   I0810 16:02:53.071164       1 kubeadmconfig_controller.go:260] "Cluster infrastructure is not ready, waiting" controller="kubeadmconfig" controllerGroup="bootstrap.cluster.x-k8s.io" controllerKind="KubeadmConfig" KubeadmConfig="default/albert-md-0-99910806-w8cxl" namespace="default" name="albert-md-0-99910806-w8cxl" reconcileID=09e36865-7d27-43b4-9336-c48125df3275 Machine="default/albert-md-0-646976d8f4x8bnq9-knbcm" Machine="default/albert-md-0-646976d8f4x8bnq9-knbcm" resourceVersion="1355" Cluster="default/albert"
+    >   ....
+
+
+    namespace=capi-kubeadm-control-plane-system
+    podname=capi-kubeadm-control-plane-controller-manager-845544c868-vjmld
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   E0810 16:02:52.953495       1 controller.go:214] "Failed to update KubeadmControlPlane Status" err="failed to create remote cluster client: failed to create cluster accessor: error fetching REST client config for remote cluster \"default/albert\": failed to retrieve kubeconfig secret for Cluster default/albert: Secret \"albert-kubeconfig\" not found" controller="kubeadmcontrolplane" controllerGroup="controlplane.cluster.x-k8s.io" controllerKind="KubeadmControlPlane" KubeadmControlPlane="default/albert-control-plane" namespace="default" name="albert-control-plane" reconcileID=d8ee9da8-ec95-4066-b441-325573b51564 Cluster="default/albert"
+    >   ....
+
+
+    namespace=capi-system
+    podname=capi-controller-manager-c7bc68d54-5grf5
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   I0810 16:02:53.026573       1 machine_controller_phases.go:222] "Waiting for bootstrap provider to generate data secret and report status.ready" controller="machine" controllerGroup="cluster.x-k8s.io" controllerKind="Machine" Machine="default/albert-md-0-646976d8f4x8bnq9-qx9t9" namespace="default" name="albert-md-0-646976d8f4x8bnq9-qx9t9" reconcileID=f2b69b16-5325-4ef1-b68a-bb1503e9153e MachineSet="default/albert-md-0-646976d8f4x8bnq9" MachineDeployment="default/albert-md-0" Cluster="default/albert" KubeadmConfig="default/albert-md-0-99910806-6fv7v"
+    >   ....
+
+    reset
+    namespace=capo-system
+    podname=capo-controller-manager-6d9f44548f-9p8d7
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   I0810 16:02:53.971013       1 recorder.go:103] "events: Created network k8s-clusterapi-cluster-default-albert with id 0b27a32a-9a1a-44c0-bf23-968dd033af0e" type="Normal" object={Kind:OpenStackCluster Namespace:default Name:albert UID:d5772aab-beeb-4aa1-bef8-adfe74390182 APIVersion:infrastructure.cluster.x-k8s.io/v1alpha6 ResourceVersion:1313 FieldPath:} reason="Successfulcreatenetwork"
+    >   ....
+    >   I0810 16:02:55.680517       1 recorder.go:103] "events: Created subnet k8s-clusterapi-cluster-default-albert with id d8e31d82-ad38-4876-b615-456103cccd68" type="Normal" object={Kind:OpenStackCluster Namespace:default Name:albert UID:d5772aab-beeb-4aa1-bef8-adfe74390182 APIVersion:infrastructure.cluster.x-k8s.io/v1alpha6 ResourceVersion:1313 FieldPath:} reason="Successfulcreatesubnet"
+    >   I0810 16:03:03.737644       1 recorder.go:103] "events: Created router k8s-clusterapi-cluster-default-albert with id 54ed70da-6d52-42ab-a6f8-0512cbc56606" type="Normal" object={Kind:OpenStackCluster Namespace:default Name:albert UID:d5772aab-beeb-4aa1-bef8-adfe74390182 APIVersion:infrastructure.cluster.x-k8s.io/v1alpha6 ResourceVersion:1313 FieldPath:} reason="Successfulcreaterouter"
+    >   I0810 16:03:08.486374       1 securitygroups.go:40] "Reconciling security groups" controller="openstackcluster" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackCluster" OpenStackCluster="default/albert" namespace="default" name="albert" reconcileID=ba9e9554-c024-4bde-a7e8-4942362d87fb cluster="default-albert"
+    >   I0810 16:03:08.690320       1 recorder.go:103] "events: Created security group k8s-cluster-default-albert-secgroup-controlplane with id 8e14d699-3317-4d2c-aca5-259606769deb" type="Normal" object={Kind:OpenStackCluster Namespace:default Name:albert UID:d5772aab-beeb-4aa1-bef8-adfe74390182 APIVersion:infrastructure.cluster.x-k8s.io/v1alpha6 ResourceVersion:1313 FieldPath:} reason="Successfulcreatesecuritygroup"
+    >   I0810 16:03:08.879660       1 recorder.go:103] "events: Created security group k8s-cluster-default-albert-secgroup-worker with id a3f710f1-f5b1-47ae-a7c3-3dc123e896de" type="Normal" object={Kind:OpenStackCluster Namespace:default Name:albert UID:d5772aab-beeb-4aa1-bef8-adfe74390182 APIVersion:infrastructure.cluster.x-k8s.io/v1alpha6 ResourceVersion:1313 FieldPath:} reason="Successfulcreatesecuritygroup"
+    >   ....
+    >   I0810 16:03:13.984558       1 loadbalancer.go:51] "Reconciling load balancer" controller="openstackcluster" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackCluster" OpenStackCluster="default/albert" namespace="default" reconcileID=ba9e9554-c024-4bde-a7e8-4942362d87fb cluster="albert" name="k8s-clusterapi-cluster-default-albert-kubeapi"
+    >   I0810 16:03:14.042457       1 loadbalancer.go:171] "Creating load balancer in subnet: \"d8e31d82-ad38-4876-b615-456103cccd68\"" controller="openstackcluster" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackCluster" OpenStackCluster="default/albert" namespace="default" reconcileID=ba9e9554-c024-4bde-a7e8-4942362d87fb cluster="albert" name="k8s-clusterapi-cluster-default-albert-kubeapi"
+    >   I0810 16:03:15.863176       1 loadbalancer.go:630] "Waiting for load balancer" controller="openstackcluster" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="OpenStackCluster" OpenStackCluster="default/albert" namespace="default" name="albert" reconcileID=ba9e9554-c024-4bde-a7e8-4942362d87fb cluster="albert" id="39416be0-4969-4f7a-a9de-5b215f797c60" targetStatus="ACTIVE"
+    >   I0810 16:03:15.863324       1 recorder.go:103] "events: Created load balancer k8s-clusterapi-cluster-default-albert-kubeapi with id 39416be0-4969-4f7a-a9de-5b215f797c60" type="Normal" object={Kind:OpenStackCluster Namespace:default Name:albert UID:d5772aab-beeb-4aa1-bef8-adfe74390182 APIVersion:infrastructure.cluster.x-k8s.io/v1alpha6 ResourceVersion:1313 FieldPath:} reason="Successfulcreateloadbalancer"
+    >   ....
+
+    #
+    # Nothing about creating or assigning a floating IP address ?
+    #
+
+    reset
+    namespace=cert-manager
+    podname=cert-manager-66d9545484-mq925
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+
+
+    reset
+    namespace=cert-manager
+    podname=cert-manager-cainjector-7d8b6bd6fb-2v8l5
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+
+    reset
+    namespace=cert-manager
+    podname=cert-manager-webhook-669b96dcfd-m7kcd
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+
+
+    reset
+    namespace=default
+    podname=albert-autoscaler-54c9c7b6df-fgkwv
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   Error from server (BadRequest): container "autoscaler" in pod "albert-autoscaler-54c9c7b6df-fgkwv" is waiting to start: ContainerCreating
+
+
+    reset
+    namespace=default
+    podname=cluster-api-addon-provider-66cc76bbbf-px62r
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    vi "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+    >   E486: Pattern not found: kubeconfig
+
+
+    reset
+    namespace=kube-system
+    podname=coredns-5d78c9869d-xbjfs
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   .:53
+    >   [INFO] plugin/reload: Running configuration SHA512 = 591cf328cccc12bc490481273e738df59329c62c0b729d94e8b61db9961c2fa5f046dd37f1cf888b953814040d180f52594972691cd6ff41be96639138a43908
+    >   CoreDNS-1.10.1
+    >   linux/amd64, go1.20, 055b2c3
+
+
+    reset
+    namespace=kube-system
+    podname=coredns-5d78c9869d-zfsm2
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   .:53
+    >   [INFO] plugin/reload: Running configuration SHA512 = 591cf328cccc12bc490481273e738df59329c62c0b729d94e8b61db9961c2fa5f046dd37f1cf888b953814040d180f52594972691cd6ff41be96639138a43908
+    >   CoreDNS-1.10.1
+    >   linux/amd64, go1.20, 055b2c3
+
+
+    reset
+    namespace=kube-system
+    podname=etcd-victoria-control-plane
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+
+
+    reset
+    namespace=kube-system
+    podname=kindnet-mlw5p
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   I0810 16:01:47.309136       1 main.go:316] probe TCP address victoria-control-plane:6443
+    >   I0810 16:01:47.310287       1 main.go:102] connected to apiserver: https://victoria-control-plane:6443
+    >   I0810 16:01:47.310450       1 main.go:107] hostIP = 172.18.0.2
+    >   podIP = 172.18.0.2
+    >   I0810 16:01:47.310581       1 main.go:116] setting mtu 1500 for CNI
+    >   I0810 16:01:47.310630       1 main.go:146] kindnetd IP family: "ipv4"
+    >   I0810 16:01:47.310672       1 main.go:150] noMask IPv4 subnets: [10.244.0.0/16]
+    >   I0810 16:01:47.612867       1 main.go:223] Handling node with IPs: map[172.18.0.2:{}]
+    >   I0810 16:01:47.707128       1 main.go:227] handling current node
+    >   ....
+    >   ....
+
+    reset
+    namespace=kube-system
+    podname=kube-apiserver-victoria-control-plane
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+
+
+    reset
+    namespace=kube-system
+    podname=kube-controller-manager-victoria-control-plane
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+
+
+    reset
+    namespace=kube-system
+    podname=kube-proxy-5jcs5
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+
+
+    reset
+    namespace=kube-system
+    podname=kube-scheduler-victoria-control-plane
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+
+
+    reset
+    namespace=local-path-storage
+    podname=local-path-provisioner-6bc4bddd6b-cxghf
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs \
+            --namespace "${namespace:?}"  \
+            "${podname:?}" \
+    | tee "/tmp/${podname:?}.log"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Experiment ....
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer show \
+            '39416be0-4969-4f7a-a9de-5b215f797c60'
+
+    >   +---------------------+------------------------------------------------------------------+
+    >   | Field               | Value                                                            |
+    >   +---------------------+------------------------------------------------------------------+
+    >   | admin_state_up      | True                                                             |
+    >   | availability_zone   | None                                                             |
+    >   | created_at          | 2023-08-10T16:03:15                                              |
+    >   | description         | Created by cluster-api-provider-openstack cluster default-albert |
+    >   | flavor_id           | None                                                             |
+    >   | id                  | 39416be0-4969-4f7a-a9de-5b215f797c60                             |
+    >   | listeners           |                                                                  |
+    >   | name                | k8s-clusterapi-cluster-default-albert-kubeapi                    |
+    >   | operating_status    | OFFLINE                                                          |
+    >   | pools               |                                                                  |
+    >   | project_id          | e918a13fed2648758175a15fac083569                                 |
+    >   | provider            | amphora                                                          |
+    >   | provisioning_status | ERROR                                                            |
+    >   | updated_at          | 2023-08-10T16:03:32                                              |
+    >   | vip_address         | 192.168.3.6                                                      |
+    >   | vip_network_id      | 0b27a32a-9a1a-44c0-bf23-968dd033af0e                             |
+    >   | vip_port_id         | 0a224184-2586-4c61-bdc1-37c9aa31d547                             |
+    >   | vip_qos_policy_id   | None                                                             |
+    >   | vip_subnet_id       | d8e31d82-ad38-4876-b615-456103cccd68                             |
+    >   | tags                |                                                                  |
+    >   +---------------------+------------------------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer listener list
+
+    >   -
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer pool list
+
+    >   -
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        network list
+
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | ID                                   | Name                                      | Subnets                                                                                                                                                |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+    >   | 0b27a32a-9a1a-44c0-bf23-968dd033af0e | k8s-clusterapi-cluster-default-albert     | d8e31d82-ad38-4876-b615-456103cccd68                                                                                                                   |
+    >   | 410920fb-5714-4447-b26a-e7b06092fc62 | cephfs                                    | 5699fb5d-8316-4b88-b889-b05c8a1ec975                                                                                                                   |
+    >   | 57add367-d205-4030-a929-d75617a7c63e | CUDN-Internet                             | 1847b14d-b974-4f78-959d-44d18d4485b8, 3fcaa5a5-ba8e-49a9-bf94-d87fbb0afc42, 5f1388b3-a0c7-463e-bb58-5532c38e4b40, a79eb610-eca3-4ee8-aaf1-88f4fef5a4e7 |
+    >   | 7a043b69-4613-48d6-8b02-aec72bae3c25 | iris-gaia-blue-20230810-bootstrap-network | cc820f2e-4de0-4fc1-845f-aac6fa1812b3                                                                                                                   |
+    >   +--------------------------------------+-------------------------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------+
+
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        floating ip create \
+        '57add367-d205-4030-a929-d75617a7c63e'
+
+    >   +---------------------+--------------------------------------+
+    >   | Field               | Value                                |
+    >   +---------------------+--------------------------------------+
+    >   | created_at          | 2023-08-11T04:27:25Z                 |
+    >   | description         |                                      |
+    >   | dns_domain          |                                      |
+    >   | dns_name            |                                      |
+    >   | fixed_ip_address    | None                                 |
+    >   | floating_ip_address | 128.232.227.106                      |
+    >   | floating_network_id | 57add367-d205-4030-a929-d75617a7c63e |
+    >   | id                  | 05f8ed1a-361e-4084-bc52-037dc156b0bd |
+    >   | name                | 128.232.227.106                      |
+    >   | port_details        | None                                 |
+    >   | port_id             | None                                 |
+    >   | project_id          | e918a13fed2648758175a15fac083569     |
+    >   | qos_policy_id       | None                                 |
+    >   | revision_number     | 0                                    |
+    >   | router_id           | None                                 |
+    >   | status              | DOWN                                 |
+    >   | subnet_id           | None                                 |
+    >   | tags                | []                                   |
+    >   | updated_at          | 2023-08-11T04:27:25Z                 |
+    >   +---------------------+--------------------------------------+
+
+    #
+    # https://docs.openstack.org/octavia/stein/user/guides/basic-cookbook.html#deploy-a-basic-http-load-balancer-using-a-floating-ip
+    #   openstack floating ip set --port <load_balancer_vip_port_id> <floating_ip_id>
+    #
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        floating ip set \
+            --port '0a224184-2586-4c61-bdc1-37c9aa31d547' \
+            '05f8ed1a-361e-4084-bc52-037dc156b0bd'
+
+    >   No Port found for 0a224184-2586-4c61-bdc1-37c9aa31d547
+
+    #
+    # Worth a try ....
+    #
+
+

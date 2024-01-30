@@ -1,0 +1,119 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+# AIMetrics: []
+# Initialise our deployment status file.
+# https://ttl255.com/ansible-getting-date-and-timestamp/
+# https://stackoverflow.com/questions/53671030/replace-character-in-a-string-with-ansible
+#
+
+---
+- name: "Initialise deployment status"
+  gather_facts: true
+  become: true
+  hosts: localhost
+  vars_files:
+    - config/aglais.yml
+    - config/ansible.yml
+    - config/deployments.yml
+  vars:
+    cloudname: "{{ lookup('ansible.builtin.env', 'cloudname') }}"
+    cloudsite: "{{ lookup('ansible.builtin.env', 'cloudsite') }}"
+
+    deployname: "{{ cloudname }}-{{ datestamp.stdout }}"
+    deploydate: "{{ datestamp.stdout }}"
+
+    tokenjson: "{{ tokenreply.stdout | from_json }}"
+
+    userjson: "{{ userreply.stdout | from_json }}"
+    userid:   "{{ userjson | json_query('id') }}"
+    username: "{{ userjson | json_query('name') }}"
+
+    projectjson: "{{ projectreply.stdout | from_json }}"
+    projectid:   "{{ projectjson | json_query('id') }}"
+    projectname: "{{ projectjson | json_query('name') }}"
+
+  tasks:
+
+    - name: Get system timestamp
+      shell: "date --utc +%Y-%m-%dT%H:%M:%SZ"
+      register: timestamp
+
+    - name: Get system datestamp
+      shell: "date --utc +%Y%m%d"
+      register: datestamp
+
+    - name: "Get an auth token"
+      ansible.builtin.shell: |
+        openstack \
+          --os-cloud "{{ cloudname }}" \
+          token issue \
+            --format json
+      register: tokenreply
+
+    - name: "Auth token"
+      debug:
+        var: tokenjson
+
+    - name: "Get the current user info"
+      ansible.builtin.shell: |
+        openstack \
+          --os-cloud "{{ cloudname }}" \
+          user show \
+            --format json \
+            "{{ tokenjson | json_query('user_id') }}"
+      register: userreply
+
+    - name: "User info"
+      debug:
+        var: userjson
+
+    - name: "Get the current project info"
+      ansible.builtin.shell: |
+        openstack \
+          --os-cloud "{{ cloudname }}" \
+          project show \
+            --format json \
+            "{{ tokenjson | json_query('project_id') }}"
+      register: projectreply
+
+    - name: "Project info"
+      debug:
+        var: projectjson
+
+    - name: "Create [{{ aghome }}]"
+      ansible.builtin.file:
+        path: "{{ aghome }}"
+        mode: 'u=rwx,g=rx,o=rx'
+        state: directory
+
+    - name: "Delete [{{ agstatuspath }}]"
+      ansible.builtin.file:
+        path: "{{ agstatuspath }}"
+        state: absent
+
+    - name: "Create [{{ agstatuspath }}]"
+      ansible.builtin.template:
+        src:  "templates/init-status.j2"
+        dest: "{{ agstatuspath }}"
+        mode: 'u=rw,g=r,o=r'
+        force: true
+
+

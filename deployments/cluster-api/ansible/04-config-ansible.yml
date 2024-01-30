@@ -1,0 +1,103 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+# AIMetrics: []
+# Configure Ansible in our client container.
+#
+
+---
+- name: "Create local config for our Ansible client"
+  gather_facts: false
+  become: true
+  hosts: localhost
+  vars_files:
+    - config/aglais.yml
+    - config/ansible.yml
+    - config/deployments.yml
+    - /opt/aglais/aglais-status.yml
+  vars:
+    sshdir: "{{ lookup('env','HOME') }}/.ssh"
+    hostsmark: "# Bootstrap node"
+    hostsline: "{{ '%-15s' | format(aglais.openstack.servers.bootstrap.float.external) }} bootstrap"
+
+  tasks:
+
+#   # Unable to write to `/etc/hosts` in a container.
+#   # https://github.com/ansible-community/molecule/issues/2060
+#   - name: "Update our local DNS config"
+#     become: true
+#     template:
+#       src:  "templates/local-dns.j2"
+#       dest: "/etc/hosts"
+#       owner: 'root'
+#       group: 'root'
+#       mode: 'u=rw,g=,o='
+#       force: true
+
+#   # Unable to write to `/etc/hosts` in a container.
+#   # https://github.com/ansible-community/molecule/issues/2060
+#   - name: "Update our local DNS config"
+#     become: true
+#     ansible.builtin.blockinfile:
+#       path: "/etc/hosts"
+#       insertafter: "EOF"
+#       block: |
+#         # Bootstrap node.
+#         {{ "%-15s" | format(aglais.openstack.servers.bootstrap.server.address.ipv4) }} bootstrap
+
+    # Keep it simple.
+    # https://stackoverflow.com/a/3557165
+    # https://stackoverflow.com/questions/3557037/appending-a-line-to-a-file-only-if-it-does-not-already-exist
+    - name: "Update our local DNS config"
+      ansible.builtin.shell: |
+        sed '
+        /^{{ hostsmark }}/,$ {d}
+        ' /etc/hosts > /tmp/hosts
+        echo -e "{{ hostsmark }}\n{{ hostsline }}" >> /tmp/hosts
+        cat /tmp/hosts > /etc/hosts
+
+    - name: "Create our local SSH directory"
+      ansible.builtin.file:
+        path: "{{ lookup('env','HOME') }}/.ssh"
+        mode: 'u=rwx,g=rx,o=rx'
+        state: directory
+
+    - name: "Create our local SSH config"
+      ansible.builtin.template:
+        src:  "templates/local-ssh.j2"
+        dest: "{{ sshdir }}/ansible-config"
+        mode: 'u=rw,g=,o='
+        force: true
+
+    - name: "Wait for port 22 to become open"
+      ansible.builtin.wait_for:
+        port: 22
+        host: 'bootstrap'
+        search_regex: OpenSSH
+        delay: 10
+
+    - name: "Update SSH fingerprints"
+      ansible.builtin.shell: |
+        touch "{{ sshdir }}/known_hosts"
+        sed --in-place '/^bootstrap/ d' "{{ sshdir }}/known_hosts"
+        ssh-keyscan 'bootstrap' >> "{{ sshdir }}/known_hosts"
+
+
+

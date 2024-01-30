@@ -1,0 +1,425 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
+#
+
+
+    Target:
+
+        Access to the Kubernetes dashboard.
+
+    Result:
+
+        Success, access to the dashboard using kubectl proxy and ServiceAccount token.
+
+
+# -----------------------------------------------------
+
+    #
+    # Delete everything and create everything, up to the target cluster.
+    #
+
+# -----------------------------------------------------
+# Modify our Helm values to enable the dashboard.
+#[root@bootstrap]
+
+    yq eval \
+        --inplace \
+        "
+        .addons.kubernetesDashboard.enabled = true
+        " \
+        /opt/aglais/clusterapi-config.yml
+
+
+# -----------------------------------------------------
+# Deploy our work cluster.
+#[root@bootstrap]
+
+    workclustername=workcluster-$(date '+%Y%m%d')
+    workclusterconf=/opt/aglais/${workclustername:?}-kubeconfig.yml
+
+    yq eval \
+        --inplace \
+        "
+        .aglais.kubernetes.work.name = \"${workclustername}\",
+        .aglais.kubernetes.work.conf = \"${workclusterconf}\"
+        " \
+        "${statusyml:?}"
+
+    helm upgrade \
+        --wait \
+        --kubeconfig "${kindclusterconf:?}" \
+        "${workclustername:?}" \
+        capi/openstack-cluster \
+            --install \
+            --version "0.1.0" \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/opt/aglais/openstack-clouds.yaml'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Fetch the work cluster config.
+#[root@bootstrap]
+
+    mkdir -p $(dirname "${workclusterconf}")
+
+    clusterctl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get \
+            kubeconfig "${workclustername:?}" \
+    | tee "${workclusterconf}" \
+    | yq '.'
+
+    >   apiVersion: v1
+    >   clusters:
+    >     - cluster:
+    >         certificate-authority-data: ........
+    >         server: https://128.232.226.97:6443
+    >       name: workcluster-20230728
+    >   contexts:
+    >     - context:
+    >         cluster: workcluster-20230728
+    >         user: workcluster-20230728-admin
+    >       name: workcluster-20230728-admin@workcluster-20230728
+    >   current-context: workcluster-20230728-admin@workcluster-20230728
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >     - name: workcluster-20230728-admin
+    >       user:
+    >         client-certificate-data: ........
+    >         client-key-data: ........
+
+
+# -----------------------------------------------------
+# Watch the cluster status.
+#[root@bootstrap]
+
+    watch clusterctl \
+        --kubeconfig "${kindclusterconf:?}" \
+        describe cluster \
+            "${workclustername:?}"
+
+    >   NAME                                                                     READY  SEVERITY  REASON  SINCE  MESSAGE
+    >   Cluster/workcluster-20230728                                             True                     10s
+    >   ├─ClusterInfrastructure - OpenStackCluster/workcluster-20230728
+    >   ├─ControlPlane - KubeadmControlPlane/workcluster-20230728-control-plane  True                     10s
+    >   │  └─3 Machines...                                                        True                     78s    See workcluster-20230728-control-plane-b52rs, workcluster-20230728-control-plane-ctc7s, ...
+    >   └─Workers
+    >       └─MachineDeployment/workcluster-20230728-md-0                          True                     68s
+    >           └─3 Machines...                                                      True                     117s   See workcluster-20230728-md-0-fd9764959xkbcn8-gr2qs, workcluster-20230728-md-0-fd9764959xkbcn8-h9n6g, ...
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Connect to the client container.
+#[user@desktop]
+
+    podman exec \
+        --tty \
+        --interactive \
+        ansibler-blue \
+            bash
+
+# -----------------------------------------------------
+# Copy the status and config files from the bootstrap node to the client.
+#[root@ansibler]
+
+    statusyml=/opt/aglais/aglais-status.yml
+
+    scp "root@bootstrap:${statusyml:?}" \
+        "${statusyml:?}"
+
+    kindclusterconf=$(
+        yq '
+           .aglais.kubernetes.kind.conf
+           ' "${statusyml:?}"
+        )
+
+    scp "root@bootstrap:${kindclusterconf:?}" \
+        "${kindclusterconf:?}"
+
+    workclusterconf=$(
+        yq '
+           .aglais.kubernetes.work.conf
+           ' "${statusyml:?}"
+        )
+
+    scp "root@bootstrap:${workclusterconf:?}" \
+        "${workclusterconf:?}"
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Copy the kubectl config files from the client to the desktop.
+#[user@desktop]
+
+    statusyml=/opt/aglais/aglais-status.yml
+
+    sudo mkdir -p  $(dirname ${statusyml:?})
+    sudo chmod a+w $(dirname ${statusyml:?})
+
+    podman cp "ansibler-blue:${statusyml:?}" \
+        "${statusyml:?}"
+
+    kindclusterconf=$(
+        yq '
+           .aglais.kubernetes.kind.conf
+           ' "${statusyml:?}"
+        )
+
+    podman cp "ansibler-blue:${kindclusterconf:?}" \
+        "${kindclusterconf:?}"
+
+    workclusterconf=$(
+        yq '
+           .aglais.kubernetes.work.conf
+           ' "${statusyml:?}"
+        )
+
+    podman cp "ansibler-blue:${workclusterconf:?}" \
+        "${workclusterconf:?}"
+
+
+# -----------------------------------------------------
+# List the available services.
+#[user@desktop]
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        get services \
+            --all-namespaces
+
+    >   NAMESPACE                NAME                              TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)                  AGE
+    >   calico-apiserver         calico-api                        ClusterIP   172.31.162.242   <none>        443/TCP                  3m55s
+    >   calico-system            calico-kube-controllers-metrics   ClusterIP   None             <none>        9094/TCP                 5m13s
+    >   calico-system            calico-typha                      ClusterIP   172.30.141.26    <none>        5473/TCP                 5m47s
+    >   default                  kubernetes                        ClusterIP   172.24.0.1       <none>        443/TCP                  6m57s
+    >   kube-system              kube-dns                          ClusterIP   172.24.0.10      <none>        53/UDP,53/TCP,9153/TCP   6m10s
+    >   kube-system              metrics-server                    ClusterIP   172.31.43.223    <none>        443/TCP                  6m6s
+    >   kubernetes-dashboard     kubernetes-dashboard              ClusterIP   172.28.71.132    <none>        443/TCP                  6m7s
+    >   node-feature-discovery   node-feature-discovery-master     ClusterIP   172.26.174.130   <none>        8080/TCP                 6m1s
+
+
+# -----------------------------------------------------
+# Start the kubectl proxy on our desktop.
+#[user@desktop]
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        proxy
+
+    >   Starting to serve on 127.0.0.1:8001
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Access the kubernetes-dashboard service via the proxy.
+#[user@desktop]
+
+    curl --insecure \
+        http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:https/proxy/
+
+    >   <!DOCTYPE html><html lang="en" dir="ltr"><head>
+    >     <meta charset="utf-8">
+    >     <title>Kubernetes Dashboard</title>
+    >     <link rel="icon" type="image/png" href="assets/images/kubernetes-logo.png">
+    >     <meta name="viewport" content="width=device-width">
+    >     ....
+    >     ....
+
+
+    firefox \
+        --new-window \
+        'http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:https/proxy/#/login' \
+        &
+
+        #
+        # Dashboard asking for token ....
+        #
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Create a service account and role binding for dashboard-admin.
+# https://github.com/kubernetes/dashboard/blob/master/docs/user/access-control/creating-sample-user.md#creating-a-service-account
+# https://github.com/kubernetes/dashboard/blob/master/docs/user/access-control/creating-sample-user.md#creating-a-clusterrolebinding
+#[root@bootstrap]
+
+    cat > /tmp/dashboard-admin.yaml << EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dashboard-admin
+  namespace: kubernetes-dashboard
+EOF
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        apply \
+            --filename /tmp/dashboard-admin.yaml
+
+    >   serviceaccount/dashboard-admin created
+
+
+    cat > /tmp/dashboard-admin-role-binding.yaml << EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dashboard-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+- kind: ServiceAccount
+  name: dashboard-admin
+  namespace: kubernetes-dashboard
+EOF
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        apply \
+            --filename /tmp/dashboard-admin-role-binding.yaml
+
+    >   clusterrolebinding.rbac.authorization.k8s.io/dashboard-admin created
+
+
+# -----------------------------------------------------
+# Create a token for the dashboard-admin user.
+# https://github.com/kubernetes/dashboard/blob/master/docs/user/access-control/creating-sample-user.md#getting-a-bearer-token-for-serviceaccount
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        --namespace kubernetes-dashboard \
+        create token \
+            dashboard-admin
+
+    >   ....
+    >   ....
+
+    #
+    # Use the token to login to the dashboard.
+    # http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:https/proxy/
+    # Yay - works :-)
+    #
+
+
+# -----------------------------------------------------
+# Create a secret with the token for the dashboard-admin user.
+# https://github.com/kubernetes/dashboard/blob/master/docs/user/access-control/creating-sample-user.md#getting-a-long-lived-bearer-token-for-serviceaccount
+#[root@bootstrap]
+
+    cat > /tmp/dashboard-admin-token-secret.yaml << EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dashboard-admin
+  namespace: kubernetes-dashboard
+  annotations:
+    kubernetes.io/service-account.name: "dashboard-admin"
+type: kubernetes.io/service-account-token
+EOF
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        apply \
+            --filename /tmp/dashboard-admin-token-secret.yaml
+
+    >   secret/dashboard-admin created
+
+
+# -----------------------------------------------------
+# Extract the token from the secret.
+# https://github.com/kubernetes/dashboard/blob/master/docs/user/access-control/creating-sample-user.md#getting-a-long-lived-bearer-token-for-serviceaccount
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        --namespace kubernetes-dashboard \
+        get secret \
+            dashboard-admin \
+            --output json \
+    | jq '.'
+
+    >   {
+    >     "apiVersion": "v1",
+    >     "data": {
+    >       "ca.crt": "........",
+    >       "namespace": "........",
+    >       "token": "........"
+    >     },
+    >     "kind": "Secret",
+    >     "metadata": {
+    >       "annotations": {
+    >         "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"v1\",\"kind\":\"Secret\",\"metadata\":{\"annotations\":{\"kubernetes.io/service-account.name\":\"dashboard-admin\"},\"name\":\"dashboard-admin\",\"namespace\":\"kubernetes-dashboard\"},\"type\":\"kubernetes.io/service-account-token\"}\n",
+    >         "kubernetes.io/service-account.name": "dashboard-admin",
+    >         "kubernetes.io/service-account.uid": "........"
+    >       },
+    >       "creationTimestamp": "2023-07-28T04:49:44Z",
+    >       "name": "dashboard-admin",
+    >       "namespace": "kubernetes-dashboard",
+    >       "resourceVersion": "11859",
+    >       "uid": "e434351b-7bae-4d7f-8093-d0ccd1a8d33c"
+    >     },
+    >     "type": "kubernetes.io/service-account-token"
+    >   }
+
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        --namespace kubernetes-dashboard \
+        get secret \
+            dashboard-admin \
+            --output json \
+    | jq -r '.data.token'
+
+    >   ........
+
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        --namespace kubernetes-dashboard \
+        get secret \
+            dashboard-admin \
+            --output json \
+    | jq -r '.data.token' \
+    | base64 -d
+
+    >   ........
+
+    #
+    # Use the token to login to the dashboard.
+    # http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:https/proxy/
+    # Yay - works :-)
+    #
+

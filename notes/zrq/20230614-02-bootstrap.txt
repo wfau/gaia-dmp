@@ -1,0 +1,341 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
+#
+
+
+    Target:
+
+        Full sequence to test Atolmis build.
+
+    Result:
+
+        Success:
+            Kubernetes deployment works using FC37 version of Atolmis.
+
+        Caveats:
+            FC38 installs a major version change of Ansible,
+            which causes problems for our Ansible playbooks.
+
+
+# -----------------------------------------------------
+
+    source "${HOME:?}/atolmis.env"
+    pushd "${ATOLMIS_CODE}"
+
+        bin/clean.sh
+
+        bin/build.sh
+
+        bin/push.sh
+
+        podman images
+
+    popd
+
+# -----------------------------------------------------
+
+    source "${HOME:?}/atolmis.env"
+    pushd "${ATOLMIS_CODE}"
+
+        bin/clean.sh
+
+        podman images
+
+    popd
+
+# -----------------------------------------------------
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}-admin
+
+    buildtag=$(date '+%Y.%m.%d')
+
+    containername=kubernetes-client:${buildtag:?}
+    containerrepo=ghcr.io/wfau/atolmis
+    containerfull=${containerrepo:?}/${containername:?}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        "${containerfull:?}" \
+        bash
+
+# -----------------------------------------------------
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+# -----------------------------------------------------
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        token issue \
+            --format json \
+    | tee /tmp/ostoken.json   \
+    | jq '.'
+
+    export osuserid=$(
+        jq -r '.user_id' '/tmp/ostoken.json'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        user show \
+            --format json \
+            "${osuserid}" \
+    | tee '/tmp/osuser.json' \
+    | jq '.'
+
+    export osusername=$(
+        jq -r '.name' '/tmp/osuser.json'
+        )
+
+    export osprojectid=$(
+        jq -r '.project_id' '/tmp/ostoken.json'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        project show \
+            --format json \
+            "${osprojectid}" \
+    | tee '/tmp/osproject.json' \
+    | jq '.'
+
+    export osprojectname=$(
+        jq -r '.name' '/tmp/osproject.json'
+        )
+
+    export deployname=${cloudname:?}-$(date '+%Y%m%d')
+    export deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    rm -f "${statusyml}"
+    touch "${statusyml}"
+
+    yq --null-input '{
+        "aglais": {
+            "deployment": {
+                "type": "cluster-api",
+                "name": strenv(deployname),
+                "date": strenv(deploydate)
+                },
+            "openstack": {
+                "cloud": {
+                    "name": strenv(cloudname)
+                    },
+                "user": {
+                    "id": strenv(osuserid),
+                    "name": strenv(osusername)
+                    },
+                "project": {
+                    "id": strenv(osprojectid),
+                    "name": strenv(osprojectname)
+                    }
+                }
+            }
+        }' \
+    | tee "${statusyml}" \
+    | yq '.'
+
+
+# -----------------------------------------------------
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/config/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+# -----------------------------------------------------
+
+    yq '
+        {
+        "clouds":
+          {
+          strenv(cloudname):
+          .clouds.[strenv(cloudname)]
+          | .auth.project_id = strenv(osprojectid)
+          | .verify = false
+          }
+        }
+        ' \
+        /etc/openstack/clouds.yaml \
+        | tee /tmp/openstack-clouds.yaml \
+        | yq '.'
+
+    scp \
+        /tmp/openstack-clouds.yaml \
+        bootstrap:/tmp/openstack-clouds.yaml
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p \
+            /etc/aglais
+        sudo install \
+            /tmp/openstack-clouds.yaml \
+            /etc/aglais/openstack-clouds.yaml
+        '
+
+# -----------------------------------------------------
+
+    ssh bootstrap
+
+        sudo su -
+
+# -----------------------------------------------------
+
+        kindclustername=bootstrap
+        kindclusterfull=${kindclustername:?}-$(date '+%Y%m%d')
+        kindclusterpath=/opt/aglais/${kindclustername:?}
+        kindclusterconf=${kindclusterpath:?}/${kindclusterfull:?}-kubeconfig.yml
+
+        mkdir -p "${kindclusterpath}"
+
+        kind create cluster \
+            --name "${kindclusterfull:?}" \
+            --kubeconfig "${kindclusterconf:?}"
+
+        kubectl cluster-info \
+            --kubeconfig "${kindclusterconf:?}"
+
+
+    # -----------------------------------------------------
+
+        clusterctl init \
+            --kubeconfig "${kindclusterconf:?}" \
+            --infrastructure openstack
+
+
+    # -----------------------------------------------------
+
+        helm repo add \
+            capi \
+            https://stackhpc.github.io/capi-helm-charts
+
+        helm repo add \
+            capi-addons \
+            https://stackhpc.github.io/cluster-api-addon-provider
+
+        helm upgrade \
+            --kubeconfig "${kindclusterconf:?}" \
+            cluster-api-addon-provider \
+            capi-addons/cluster-api-addon-provider \
+                --install \
+                --version "0.1.0"
+
+    # -----------------------------------------------------
+
+        Wait for Calico provider ..
+
+    # -----------------------------------------------------
+
+        deployclustername=gaia-dmp-one
+        deployclusterfull=${deployclustername:?}-$(date '+%Y%m%d')
+
+        deployclusterpath=/opt/aglais/${deployclustername:?}
+        deployclustertext=${deployclusterpath:?}/${deployclusterfull:?}.txt
+        deployclusterconf=${deployclusterpath:?}/${deployclusterfull:?}-kubeconfig.yml
+
+        helm upgrade \
+            --kubeconfig "${kindclusterconf:?}" \
+            "${deployclusterfull:?}" \
+            capi/openstack-cluster \
+                --install \
+                --version "0.1.0" \
+                --values '/opt/aglais/clusterapi-config.yml' \
+                --values '/etc/aglais/openstack-clouds.yaml'
+
+
+    # -----------------------------------------------------
+
+        watch clusterctl \
+            --kubeconfig "${kindclusterconf:?}" \
+            describe cluster \
+                "${deployclusterfull:?}"
+
+
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get cluster-api
+
+
+
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get events \
+                --watch
+
+    # -----------------------------------------------------
+
+        clusterctl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get \
+                kubeconfig "${deployclusterfull:?}" \
+        | tee "${deployclusterconf}" \
+        | yq '.'
+
+    >   apiVersion: v1
+    >   clusters:
+    >     - cluster:
+    >         certificate-authority-data: LS0tLS1C ........ LS0tLQo=
+    >         server: https://128.232.226.181:6443
+    >       name: gaia-dmp-one-20230615
+    >   contexts:
+    >     - context:
+    >         cluster: gaia-dmp-one-20230615
+    >         user: gaia-dmp-one-20230615-admin
+    >       name: gaia-dmp-one-20230615-admin@gaia-dmp-one-20230615
+    >   current-context: gaia-dmp-one-20230615-admin@gaia-dmp-one-20230615
+    >   kind: Config
+    >   preferences: {}
+    >   users:
+    >     - name: gaia-dmp-one-20230615-admin
+    >       user:
+    >         client-certificate-data: LS0tLS1C ........ tLS0tLQo=
+    >         client-key-data: LS0tLS1C ........ tLS0tLQo=
+
+

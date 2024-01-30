@@ -1,0 +1,213 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2024, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Try the deployment without LoadBalancer.
+        I don't think this has been tried before, so just a guess to see what happens.
+        We don't have a working example.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Deploy without LoadBalancer.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+    pushd "${AGLAIS_CODE:?}"
+
+        gedit deployments/cluster-api/bootstrap/ansible/templates/clusterapi-config.j2 &
+
+            ....
+            apiServer:
+              # API server load balancer
+        ~     enableLoadBalancer: false
+
+        gedit deployments/cluster-api/bootstrap/ansible/00-create-all.yml
+
+            ....
+        ~   # import_playbook: 26-secure-work-cluster.yml
+
+
+# -----------------------------------------------------
+# Check the live service.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Tue  2 Jan 12:31:17 UTC 2024
+    >   iris-gaia-green-20231027-zeppelin
+
+
+# -----------------------------------------------------
+# Run our deployment client.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    agclient blue
+
+    >   ---- ---- ----
+    >   File [agclient]
+    >   Path [/var/local/projects/WFAU/gaia-dmp/github-zrq/bin]
+    >   ---- ---- ----
+    >   Cloud name  [iris-gaia-blue]
+    >   Client name [ansibler-blue]
+    >   ---- ---- ----
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete and create everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP **********************************************************************************************************************************
+    >   bootstrap                  : ok=53   changed=42   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   localhost                  : ok=33   changed=24   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+# -----------------------------------------------------
+# List our servers.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        server list
+
+    >   +--------------------------------------+-----------------------------------------------------------+--------+--------------------------------------------------------------------------------------------+-----------------------------------+----------------------+
+    >   | ID                                   | Name                                                      | Status | Networks                                                                                   | Image                             | Flavor               |
+    >   +--------------------------------------+-----------------------------------------------------------+--------+--------------------------------------------------------------------------------------------+-----------------------------------+----------------------+
+    >   | e0c6ee83-2afc-47b3-85c5-4e2c569a73c9 | iris-gaia-blue-20240102-work-control-plane-5d9ad642-4k5w2 | ACTIVE | k8s-clusterapi-cluster-default-iris-gaia-blue-20240102-work=128.232.226.175, 192.168.3.223 | gaia-dmp-ubuntu-2204-kube-v1.26.7 | gaia.vm.cclake.4vcpu |
+    >   | 444c4b28-4354-4229-8d97-65dbd24dd285 | iris-gaia-blue-20240102-bootstrap-node                    | ACTIVE | iris-gaia-blue-20240102-bootstrap-network=10.10.3.85, 128.232.226.188                      | gaia-dmp-fedora-cloud-38-1.6      | gaia.vm.cclake.2vcpu |
+    >   +--------------------------------------+-----------------------------------------------------------+--------+--------------------------------------------------------------------------------------------+-----------------------------------+----------------------+
+
+    #
+    # Same as before.
+    # Only one control plane node and no workers.
+    #
+
+# -----------------------------------------------------
+# Check our deployment logs.
+#[root@ansibler]
+
+    kindclusterconf=$(
+        yq '.aglais.kubernetes.cluster.kind.conf' \
+            /opt/aglais/aglais-status.yml
+        )
+
+    ssh bootstrap \
+        "
+        kubectl \
+            --kubeconfig '${kindclusterconf:?}' \
+            get deployments
+        "
+
+    >   NAME                                      READY   UP-TO-DATE   AVAILABLE   AGE
+    >   cluster-api-addon-provider                1/1     1            1           12m
+    >   iris-gaia-blue-20240102-work-autoscaler   0/1     1            0           11m
+
+
+    ssh bootstrap \
+        "
+        kubectl \
+            --kubeconfig '${kindclusterconf:?}' \
+            logs \
+                deployment/cluster-api-addon-provider \
+        | grep '\[ERROR'
+        "
+
+
+    >   [2024-01-02 12:41:53,073] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20240102-work-metrics-server] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20240102-work' is not ready
+    >   [2024-01-02 12:41:53,109] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20240102-work-cni-calico] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20240102-work' is not ready
+    >   [2024-01-02 12:41:53,144] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20240102-work-csi-cinder] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20240102-work' is not ready
+    >   [2024-01-02 12:41:53,181] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20240102-work-ccm-openstack] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20240102-work' is not ready
+    >   [2024-01-02 12:41:53,188] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20240102-work-nvidia-gpu-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20240102-work' is not ready
+    >   [2024-01-02 12:41:53,190] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20240102-work-kubernetes-dashboard] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20240102-work' is not ready
+    >   [2024-01-02 12:41:53,192] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20240102-work-mellanox-network-operator] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20240102-work' is not ready
+    >   [2024-01-02 12:41:53,195] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20240102-work-node-feature-discovery] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20240102-work' is not ready
+    >   [2024-01-02 12:41:53,347] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20240102-work-csi-cinder-storageclass] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20240102-work' is not ready
+    >   [2024-01-02 12:41:53,349] kopf.objects         [ERROR   ] [default/iris-gaia-blue-20240102-work-cloud-config] Handler 'handle_addon_updated' failed temporarily: cluster 'iris-gaia-blue-20240102-work' is not ready
+    >   ....
+    >   ....
+
+    #
+    # Lots of not ready ...
+    #
+
+
+# -----------------------------------------------------
+# Check the cluster status.
+#[root@ansibler]
+
+    ssh root@bootstrap
+
+        source loadconfig
+
+        clusterctl \
+            --kubeconfig "${kindclusterconf:?}" \
+            describe cluster \
+                "${workclustername:?}"
+
+    >   NAME                                                                             READY  SEVERITY  REASON                                                               SINCE  MESSAGE
+    >   Cluster/iris-gaia-blue-20240102-work                                             False  Error     FloatingIPError @ /iris-gaia-blue-20240102-work-control-plane-wl8gn  2m13s  Floating IP cannot be obtained or created: Request forbidden: [POST https://arcus.openstack.hpc.cam. ...
+    >   ├─ClusterInfrastructure - OpenStackCluster/iris-gaia-blue-20240102-work
+    >   ├─ControlPlane - KubeadmControlPlane/iris-gaia-blue-20240102-work-control-plane  False  Error     FloatingIPError @ /iris-gaia-blue-20240102-work-control-plane-wl8gn  2m13s  Floating IP cannot be obtained or created: Request forbidden: [POST https://arcus.openstack.hpc.cam. ...
+    >   │ └─Machine/iris-gaia-blue-20240102-work-control-plane-wl8gn                     False  Error     FloatingIPError                                                      2m17s  Floating IP cannot be obtained or created: Request forbidden: [POST https://arcus.openstack.hpc.cam. ...
+    >   └─Workers
+    >     └─MachineDeployment/iris-gaia-blue-20240102-work-md-0                          False  Warning   WaitingForAvailableMachines                                          13m    Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                                              False  Info      WaitingForBootstrapData                                              12m    See iris-gaia-blue-20240102-work-md-0-mgxtv-8kxjd, iris-gaia-blue-20240102-work-md-0-mgxtv-fmjcm,--END--
+    >
+    >
+    >       #
+    >       # OK, this is a different error.
+    >       # Floating IP cannot be obtained or created: Request forbidden:
+    >       #
+    >
+    >       #
+    >       # Is this because Openstack networking is broken,
+    >       # or is it because the deploy would never have worked without a LoadBalancer.
+    >       #
+    >
+    >

@@ -1,0 +1,216 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2024, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Deploy a K8s cluster on Arcus without the custom DNS server address.
+
+    Result:
+
+        Success.
+        Working Kubernetes cluster with Dashboard and Zeppelin.
+
+
+# -----------------------------------------------------
+# Comment out the custom DNS addresses.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE:?}"
+
+        vi deployments/cluster-api/ansible/templates/clusterapi-config.j2
+
+        ~   # # Custom nameservers to use for the hosts
+        ~   # dnsNameservers:
+        ~   #   - "{{ deployments[aglais.openstack.cloud.site].dnsservers }}"
+
+    popd
+
+# -----------------------------------------------------
+# Delete and create everything on blue.
+#[user@desktop]
+
+    agclient blue
+
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Login to our bootstrap node and check the work cluster status.
+#[root@ansibler]
+
+    ssh -t bootstrap \
+        '
+        source loadconfig
+        watch \
+            clusterctl \
+                --kubeconfig ${kindclusterconf:?} \
+                describe cluster \
+                    ${workclustername:?}
+        '
+
+    >   NAME                                                                             READY  SEVERITY  REASON  SINCE  MESSAGE
+    >   Cluster/iris-gaia-blue-20240116-work                                             True                     2m8s
+    >   ├─ClusterInfrastructure - OpenStackCluster/iris-gaia-blue-20240116-work
+    >   ├─ControlPlane - KubeadmControlPlane/iris-gaia-blue-20240116-work-control-plane  True                     2m8s
+    >   │ └─3 Machines...                                                                True                     6m29s  See iris-gaia-blue-20240116-work-control-plane-bvzzv, iris-gaia-blue-20240116-work-control-plane-lb8dr, ...
+    >   └─Workers
+    >     └─MachineDeployment/iris-gaia-blue-20240116-work-md-0                          True                     3m21s
+    >       └─6 Machines...                                                              True                     4m22s  See iris-gaia-blue-20240116-work-md-0-5ww6s-28k4q, iris-gaia-blue-20240116-work-md-0-5ww6s-4k6d6, ...
+
+    #
+    # OK, so it works now ..
+    #
+
+
+# -----------------------------------------------------
+# Deploy our gaia-dmp Helm chart.
+#[root@ansibler]
+
+    # TODO something to put this into the PATH
+    export PATH=${PATH}:/deployments/cluster-api/ansible/files/aglais/bin
+    source loadconfig
+
+    helm dependency build \
+        --kubeconfig "${workclusterconf:?}" \
+        '/deployments/cluster-api/helm/gaia-dmp'
+
+    helm upgrade \
+        --wait \
+        --debug \
+        --kubeconfig "${workclusterconf:?}" \
+        'gaia-dmp' \
+        '/deployments/cluster-api/helm/gaia-dmp' \
+        --install
+
+    >   history.go:56: [debug] getting history for release gaia-dmp
+    >   Release "gaia-dmp" does not exist. Installing it now.
+    >   install.go:194: [debug] Original chart version: ""
+    >   install.go:211: [debug] CHART PATH: /deployments/cluster-api/helm/gaia-dmp
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Generate a dashboard token.
+#[root@ansibler]
+
+    kubectl \
+        --kubeconfig "${workclusterconf:?}" \
+        --namespace "gaia-dmp" \
+        create token \
+            "dashboard-admin-account"
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Launch a kubectl proxy.
+#[user@desktop]
+
+    agcolour=blue
+
+    podman exec \
+        --tty \
+        --interactive \
+        "ansibler-${agcolour:?}" \
+            bash -c \
+                '
+                source /deployments/cluster-api/ansible/files/aglais/bin/loadconfig ;\
+                kubectl \
+                    --kubeconfig "${workclusterconf:?}" \
+                    --address 0.0.0.0 \
+                    proxy
+                '
+
+    >   Starting to serve on [::]:8001
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Get the published port address.
+#[user@desktop]
+
+    agcolour=blue
+
+    proxyport=$(
+        podman container \
+            inspect \
+                "ansibler-${agcolour:?}" \
+                --format json \
+        | jq -r '
+            .[0]
+            | .HostConfig.PortBindings
+            | ."8001/tcp"
+            | .[0].HostPort
+            '
+        )
+
+echo "Proxy port [${proxyport}]"
+
+    >   Proxy port [44411]
+
+
+# -----------------------------------------------------
+# Launch browser pointed at the dashboard.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        "http://localhost:${proxyport:?}/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:https/proxy/#/login" \
+        &
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Launch browser pointed at Zeppelin.
+#[user@desktop]
+
+    firefox \
+        --new-window \
+        "http://localhost:${proxyport:?}/api/v1/namespaces/default/services/http:zeppelin-server:http/proxy/#/" \
+        &
+
+    >   ....
+    >   ....
+
+

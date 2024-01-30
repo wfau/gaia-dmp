@@ -1,0 +1,330 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2024, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Deploy on Somerville Jade with the custom DNS server address.
+
+    Result:
+
+        Work in progress ...
+
+
+# -----------------------------------------------------
+# Comment out the custom DNS addresses.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+    pushd "${AGLAIS_CODE:?}"
+
+        vi deployments/cluster-api/ansible/templates/clusterapi-config.j2
+
+        ~     # Custom nameservers to use for the hosts
+        ~     dnsNameservers:
+        ~       - "{{ deployments[aglais.openstack.cloud.site].dnsservers }}"
+
+    popd
+
+# -----------------------------------------------------
+# Delete and create everything on jade.
+#[user@desktop]
+
+    agclient jade
+
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+        ansible-playbook \
+            --inventory 'bootstrap,' \
+            '/deployments/cluster-api/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP *******************************************************************************************************
+    >   bootstrap                  : ok=58   changed=45   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   localhost                  : ok=35   changed=26   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Login to our bootstrap node and check the work cluster status.
+#[root@ansibler]
+
+    ssh -t bootstrap \
+        '
+        source loadconfig
+        watch \
+            clusterctl \
+                --kubeconfig ${kindclusterconf:?} \
+                describe cluster \
+                    ${workclustername:?}
+        '
+
+    >   NAME                                                                              READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/somerville-jade-20240116-work                                             True                                          100s
+    >   ├─ClusterInfrastructure - OpenStackCluster/somerville-jade-20240116-work
+    >   ├─ControlPlane - KubeadmControlPlane/somerville-jade-20240116-work-control-plane  True                                          101s
+    >   │ └─Machine/somerville-jade-20240116-work-control-plane-kl4jv                     True                                          3m
+    >   └─Workers
+    >     └─MachineDeployment/somerville-jade-20240116-work-md-0                          False  Warning   WaitingForAvailableMachines  4m43s  Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                                               True                                          65s    See somerville-jade-20240116-work-md-0-ntqx4-4k26g, somerville-jade-20240116-work-md-0-ntqx4-7ff8k, ...
+
+
+# -----------------------------------------------------
+# Login to our bootstrap node and check the deployment logs.
+#[root@ansibler]
+
+    ssh -t bootstrap \
+        '
+        source loadconfig
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            logs --follow \
+                deployments/cluster-api-addon-provider
+        '
+
+    >   ....
+    >   ....
+
+    #
+    # Nothing to indicate _why_.
+    #
+
+
+
+# -----------------------------------------------------
+# Grab a dump of the logs from all the Pods.
+#[root@ansibler]
+
+    ssh bootstrap
+
+        source loadconfig
+
+        mkdir /tmp/logs
+
+        for podnamespace in $(
+            kubectl \
+                --kubeconfig "${kindclusterconf:?}" \
+                get pods \
+                    --output json \
+                    --all-namespaces \
+            | jq -r '.items[].metadata | {namespace, name} | tojson'
+            )
+        do
+            echo ""
+            echo "----"
+
+            namespace=$(echo ${podnamespace} | jq -r '.namespace')
+            name=$(echo  ${podnamespace} | jq -r '.name')
+
+            echo "Space   [${namespace}]"
+            echo "Name    [${name}]"
+
+            kubectl \
+                --kubeconfig "${kindclusterconf:?}" \
+                logs \
+                    --namespace "${namespace:?}"  \
+                    "${name:?}" \
+            > "/tmp/logs/${name:?}.log"
+
+        done
+
+    >
+    >   ----
+    >   Space   [capi-kubeadm-bootstrap-system]
+    >   Name    [capi-kubeadm-bootstrap-controller-manager-55d5767547-7bjz8]
+    >
+    >   ----
+    >   Space   [capi-kubeadm-control-plane-system]
+    >   Name    [capi-kubeadm-control-plane-controller-manager-85fd48fb9b-ldgbc]
+    >
+    >   ----
+    >   Space   [capi-system]
+    >   Name    [capi-controller-manager-7cb6bcd4db-6x9gn]
+    >
+    >   ----
+    >   Space   [capo-system]
+    >   Name    [capo-controller-manager-544cb69b9d-gn7wj]
+    >
+    >   ----
+    >   Space   [cert-manager]
+    >   Name    [cert-manager-66d9545484-j22jh]
+    >
+    >   ----
+    >   Space   [cert-manager]
+    >   Name    [cert-manager-cainjector-7d8b6bd6fb-zvtpp]
+    >
+    >   ----
+    >   Space   [cert-manager]
+    >   Name    [cert-manager-webhook-669b96dcfd-bk5cl]
+    >
+    >   ----
+    >   Space   [default]
+    >   Name    [cluster-api-addon-provider-66cc76bbbf-4wp7r]
+    >
+    >   ----
+    >   Space   [default]
+    >   Name    [somerville-jade-20240116-work-autoscaler-54b7596566-jz8kp]
+    >
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [coredns-5d78c9869d-dwg8j]
+    >
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [coredns-5d78c9869d-zqpqw]
+    >
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [etcd-somerville-jade-20240116-kind-control-plane]
+    >
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [kindnet-86zbk]
+    >
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [kube-apiserver-somerville-jade-20240116-kind-control-plane]
+    >
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [kube-controller-manager-somerville-jade-20240116-kind-control-plane]
+    >
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [kube-proxy-w5j2p]
+    >
+    >   ----
+    >   Space   [kube-system]
+    >   Name    [kube-scheduler-somerville-jade-20240116-kind-control-plane]
+    >
+    >   ----
+    >   Space   [local-path-storage]
+    >   Name    [local-path-provisioner-6bc4bddd6b-z675c]
+
+
+# -----------------------------------------------------
+# Fold the logs into an archive.
+#[user@bootstrap]
+
+    pushd /tmp
+
+        tar -cvzf 202401160300-arcus-jade-logs.tar.gz logs
+
+    >   logs/local-path-provisioner-6bc4bddd6b-z675c.log
+    >   logs/kube-scheduler-somerville-jade-20240116-kind-control-plane.log
+    >   logs/kube-proxy-w5j2p.log
+    >   logs/kube-controller-manager-somerville-jade-20240116-kind-control-plane.log
+    >   logs/kube-apiserver-somerville-jade-20240116-kind-control-plane.log
+    >   logs/kindnet-86zbk.log
+    >   logs/etcd-somerville-jade-20240116-kind-control-plane.log
+    >   logs/coredns-5d78c9869d-zqpqw.log
+    >   logs/coredns-5d78c9869d-dwg8j.log
+    >   logs/somerville-jade-20240116-work-autoscaler-54b7596566-jz8kp.log
+    >   logs/cluster-api-addon-provider-66cc76bbbf-4wp7r.log
+    >   logs/cert-manager-webhook-669b96dcfd-bk5cl.log
+    >   logs/cert-manager-cainjector-7d8b6bd6fb-zvtpp.log
+    >   logs/cert-manager-66d9545484-j22jh.log
+    >   logs/capo-controller-manager-544cb69b9d-gn7wj.log
+    >   logs/capi-controller-manager-7cb6bcd4db-6x9gn.log
+    >   logs/capi-kubeadm-control-plane-controller-manager-85fd48fb9b-ldgbc.log
+    >   logs/capi-kubeadm-bootstrap-controller-manager-55d5767547-7bjz8.log
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Copy the logs from our bootstrap node to our client container.
+#[root@ansibler]
+
+    scp bootstrap:/tmp/202401160300-arcus-jade-logs.tar.gz .
+
+    >   20240116-arcus-jad-logs.tar.gz     100%  338KB   2.4MB/s   00:00
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Transfer the logs from our client container to our desktop.
+#[user@desktop]
+
+    pushd /var/local/backups
+        pushd aglais/2024
+
+            mkdir 20240116
+            pushd 20240116
+
+                mkdir 202401160300
+                pushd 202401160300
+
+                    podman cp ansibler-jade:/202401160300-arcus-jade-logs.tar.gz .
+
+                    tar -xvzf 202401160300-arcus-jade-logs.tar.gz
+
+
+    #
+    # Search through the logs manually.
+    #
+    # According to the logs, the autoscaler fails.
+    # /logs/somerville-jade-20240116-work-autoscaler-54b7596566-jz8kp.log
+    #
+
+    >   I0116 02:57:44.889523       1 leaderelection.go:248] attempting to acquire leader lease kube-system/cluster-autoscaler...
+    >   I0116 02:57:44.906437       1 leaderelection.go:258] successfully acquired lease kube-system/cluster-autoscaler
+    >   W0116 02:57:45.022772       1 client_config.go:618] Neither --kubeconfig nor --master was specified.  Using the inClusterConfig.  This might not work.
+    >   I0116 02:57:45.043504       1 clusterapi_controller.go:351] Using version "v1beta1" for API group "cluster.x-k8s.io"
+    >   I0116 02:57:45.046680       1 clusterapi_controller.go:429] Resource "machinepools" available
+    >   I0116 02:57:45.046700       1 clusterapi_controller.go:429] Resource "machinepools/status" available
+    >   I0116 02:57:45.046707       1 clusterapi_controller.go:429] Resource "machinepools/scale" available
+    >   I0116 02:57:45.046712       1 clusterapi_controller.go:429] Resource "clusterclasses" available
+    >   I0116 02:57:45.046717       1 clusterapi_controller.go:429] Resource "clusterclasses/status" available
+    >   I0116 02:57:45.046722       1 clusterapi_controller.go:429] Resource "machinedeployments" available
+    >   I0116 02:57:45.149898       1 node_instances_cache.go:156] Start refreshing cloud provider node instances cache
+    >   I0116 02:57:45.150339       1 node_instances_cache.go:168] Refresh cloud provider node instances cache finished, refresh took 362.939µs
+    >   panic: runtime error: invalid memory address or nil pointer dereference
+    >   [signal SIGSEGV: segmentation violation code=0x1 addr=0x28 pc=0x3cfca79]
+    >
+    >   goroutine 75 [running]:
+    >   k8s.io/autoscaler/cluster-autoscaler/simulator/scheduling.(*HintingSimulator).findNode(0xc000c30390, 0x5a2fdc0?, {0x5a2fdc0, 0xc0002e9d50}, 0xc000164048, 0x0?)
+    >   	/gopath/src/k8s.io/autoscaler/cluster-autoscaler/simulator/scheduling/hinting_simulator.go:114 +0x159
+    >   k8s.io/autoscaler/cluster-autoscaler/simulator/scheduling.(*HintingSimulator).TrySchedulePods(0x40a5c00?, {0x5a2fdc0, 0xc0002e9d50}, {0xc001469500, 0x9, 0xc0009a5488?}, 0x451932?, 0x0)
+    >   	/gopath/src/k8s.io/autoscaler/cluster-autoscaler/simulator/scheduling/hinting_simulator.go:70 +0x2cf
+    >   k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor.(*filterOutSchedulablePodListProcessor).filterOutSchedulableByPacking(0xc0002e9d60, {0xc001469500, 0x9, 0x10}, {0x5a2fdc0, 0xc0002e9d50})
+    >   	/gopath/src/k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor/filter_out_schedulable.go:101 +0x111
+    >   k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor.(*filterOutSchedulablePodListProcessor).Process(0x0?, 0xc00105bc00, {0xc001469500?, 0x9, 0x10})
+    >   	/gopath/src/k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor/filter_out_schedulable.go:66 +0xd5
+    >   k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor.(*defaultPodListProcessor).Process(0xc000b6dc10, 0xc000d91280?, {0xc001469500?, 0x4?, 0x4?})
+    >   	/gopath/src/k8s.io/autoscaler/cluster-autoscaler/core/podlistprocessor/pod_list_processor.go:45 +0x65
+    >   k8s.io/autoscaler/cluster-autoscaler/core.(*StaticAutoscaler).RunOnce(0xc0007ba780, {0x4?, 0x0?, 0x87e1e20?})
+    >   	/gopath/src/k8s.io/autoscaler/cluster-autoscaler/core/static_autoscaler.go:477 +0x1ca3
+    >   main.run(0xc000115c00?, {0x5a277b8, 0xc0008c86c0})
+    >   	/gopath/src/k8s.io/autoscaler/cluster-autoscaler/main.go:442 +0x2cd
+    >   main.main.func2({0x0?, 0x0?})
+    >   	/gopath/src/k8s.io/autoscaler/cluster-autoscaler/main.go:529 +0x25
+    >   created by k8s.io/client-go/tools/leaderelection.(*LeaderElector).Run
+    >   	/gopath/src/k8s.io/autoscaler/cluster-autoscaler/vendor/k8s.io/client-go/tools/leaderelection/leaderelection.go:211 +0x11b
+

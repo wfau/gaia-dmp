@@ -49,17 +49,48 @@
 
 # ----------------------------------------------------------------
 # Check if we are deleting live, confirm before continuing if yes
+# TODO remove the debug logging when we are happy with it
 
+    echo ""
+    echo "---- ----"
+    echo "Checking live host"
 
-    live_hostname=$(ssh  -o "StrictHostKeyChecking no" fedora@live.gaia-dmp.uk 'hostname')
+    livehost=live.gaia-dmp.uk
 
-    if [[ "$live_hostname" == *"$cloudname"* ]]; then
+    echo "Checking [\${HOME}/.ssh]"
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        echo "Creating [\${HOME}/.ssh]"
+        mkdir -p "${HOME}/.ssh"
+    fi
+
+    echo "Checking [\${HOME}/.ssh/known_hosts]"
+    if [ ! -e "${HOME}/.ssh/known_hosts" ]
+    then
+        echo "Touching [\${HOME}/.ssh/known_hosts]"
+        touch "${HOME}/.ssh/known_hosts"
+    fi
+
+    echo "Checking [${livehost}][ssh-ed25519] fingerprint"
+    if [ $(grep -c "^${livehost:?} ssh-ed25519" ~/.ssh/known_hosts) -eq 0 ]
+    then
+        echo "Scanning [${livehost}][ssh-ed25519] fingerprint"
+        ssh-keyscan -t 'ssh-ed25519' "${livehost:?}" 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+    fi
+
+    echo "Checking [${livehost}] hostname"
+    livename=$(ssh "fedora@${livehost:?}" 'hostname')
+
+    if [[ "${livename}" == *"${cloudname}"* ]]; then
+        echo "Live check [FAIL]"
         read -p "You are deleting the current live system!! Do you want to proceed? (y/N) " -n 1 -r
         echo
         if [[ $REPLY != "y" ]];
         then
             exit
         fi
+    else
+        echo "Live check [PASS]"
     fi
 
 
@@ -247,6 +278,71 @@
 
 
 # -----------------------------------------------------
+# Delete any load balancers.
+
+    echo ""
+    echo "---- ----"
+    echo "Deleting load balancer listeners"
+
+    for listenerid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer listener \
+                list \
+                    --format json \
+        | jq -r '.[] | .id'
+        )
+    do
+        echo "- Deleting listener [${listenerid}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer listener \
+                delete \
+                    "${listenerid:?}"
+    done
+
+    echo ""
+    echo "---- ----"
+    echo "Deleting load balancer pools"
+
+    for poolid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer pool \
+                list \
+                    --format json \
+        | jq -r '.[] | .id'
+        )
+    do
+        echo "- Deleting pool [${poolid}]"
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer pool \
+                delete \
+                    "${poolid:?}"
+    done
+
+    echo ""
+    echo "---- ----"
+    echo "Deleting load balancers"
+
+    for balancerid in $(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer list \
+                --format json \
+        | jq -r '.[] | .id'
+        )
+        do
+            echo "- Deleting load balancer [${balancerid}]"
+            openstack \
+                --os-cloud "${cloudname:?}" \
+                loadbalancer delete \
+                    "${balancerid}"
+        done
+
+
+# -----------------------------------------------------
 # Delete any routers.
 
     echo ""
@@ -324,6 +420,12 @@
             (.Name != "CUDN-Internet")
             and
             (.Name != "cephfs")
+            and
+            (.Name != "external")
+            and
+            (.Name != "cephfs-subnet")
+            and
+            (.Name != "test-subnet")
             ) | .ID'
         )
     do
@@ -374,6 +476,10 @@
             (.Name != "CUDN-Internet")
             and
             (.Name != "cephfs")
+            and
+            (.Name != "external")
+            and
+            (.Name != "test")
             ) | .ID'
         )
     do
@@ -527,6 +633,13 @@
     openstack \
         --os-cloud "${cloudname:?}" \
         floating ip list
+
+    echo ""
+    echo "---- ----"
+    echo "List load balancers"
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer list
 
     echo ""
     echo "---- ----"

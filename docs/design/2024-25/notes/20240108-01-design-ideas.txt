@@ -1,0 +1,235 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2024, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Notes on design plans for 2024-25.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+
+    Micro services architecture.
+    Micro deployment architecture.
+
+        Current architecture is monolithic single deployment shared by all users.
+        Current deployment is relativley high cost - Ansible build from scratch, delete-create takes xxmin.
+
+    Using Docker containers means we use pre-built images ready to go in seconds.
+
+    Using Kubernetes allows us to manage (orchestrate) sets of containers as a deployable thing (a Kubernetes 'deployment').
+
+    Using Helm charts gives us a way to define a set of inter-connected containers as a deployable thing.
+
+    A lot of the work on current deployment is system administration:
+        Managing science data.
+        Monitoring for unexpected behaviour.
+        Managing user accounts and storage space etc.
+
+    I don't think that will change.
+    However moving to Kubernetes deployment adds a separation between the deployment and it's environment.
+
+    Inside the box expects science data to be in /data and user data in /home.
+    What storage is used how it is arranged is managed separatley.
+
+    Cross over of words.
+    A _Gaia DMP deployment_ refers to the whole thing ?
+    Kubernetes `deployment` refers to a K8s component in our Helm chart.
+
+        The data mining services, Zeppelin and Spark, are inside the Kubernetes `deployment`.
+        Defined by part of our `gaia-dmp` Helm chart.
+
+        The system administration parts are outside the box,
+        setting up the environemt so that everything
+        is in the right place.
+
+        Main part of this is setting up the Kubernetes `PersistentVolumes`
+        so that the components inside the Kubernetes `deployment`
+        can access them without needing to know the details.
+
+# -----------------------------------------------------
+
+    In the current deployment we have a single static Zeppelin instance and a static Spark 'cluster'
+    running in a set of fixed virtual machines.
+
+    The virtual machines are created by our Ansible script, and remain active for the
+    lifetime of the _Gaia DMP deployment_.
+
+    The user login is handled by Zeppelin using account data stored in a local database.
+
+    The account information in the database is managed by shell scripts installed
+    as part of our deployment.
+
+    A user logs in to the Zeppelin service using username and password,
+    and then launches notebooks from inside the Zeppelin service.
+
+    The Zeppelin service handles the notebook management side of things,
+    loading the notebook code and executing each of the paragraphs (cells) in turn.
+
+    The Zeppelin service checks the cell type, and launches the corresponding
+    interpreter for that cell type.
+    The lifetime of the interpreter instances depend on the configuration
+    for each type of interpreter.
+    PySpark interpreters are launched on a per user session basis,
+    and are persistent across calls from the same user session.
+
+    The first time a user runs a PySpark cell, the Zeppelin node will start a
+    new PySpark interpreter instance to run the code in the cell.
+    Subsequent PySpark notebook cells will be connected back to the same
+    interpreter instance, preserving the Spark context between cells.
+
+    In the current deployment, the interpreter instance is launched
+    using a ssh connection back to the local host (127.0.0.1)
+    to start a long running process using the target user's identity.
+
+        ssh ...
+
+    How is the notebook cell code passed to the instance ?
+    How do subsequent calls connect to the same instance ?
+
+    The PySpark interpreter instance maintains the PySpark context
+    including the Python variables.
+
+    The PySpark interpreter instance contains a Spark client that
+    connects to the shared Spark cluster.
+
+    Who handles the cached Spark data ?
+
+    The lifetime of the Spark 'containers' are managed by the
+    YARN scheduler.
+
+    When Spark client in our interpreter requests a data operation,
+    the YARN scheduler for the Spark cluster launches the appropriate
+    'containers' on the Spark worker nodes and passes references to the
+    'containers' back to the Spark client.
+
+    Data operations are passed between the Spark client in the interpreter
+    and the Spark 'containers' running on the Spark worker nodes.
+
+    At the end of the process, the YARN scheduler manages the end of the
+    Spark 'containers' lifecycle.
+
+    This architecture means that The Python parts of the PySpark code are
+    executed in the individual interpreter instances, using the user's Unix
+    account, whereas the Spark data operations are executed by
+    Spark 'containers' running on the Spark worker nodes using the Spark
+    cluster's Unix account.
+
+    The Spark cluster is long lived, but the Spark 'containers' running on
+    worker nodes are short lived, executing a single data operation and then
+    passing the results back to the Spark client.
+    The Spark client is responsible
+    for staging the interim results of each data operation and
+    passing them back and forth between the short lived worker 'containers'.
+
+    In our current architecture, this Spark client is part of the PySpark
+    interpreter launched via a localhost ssh connection on the Zeppelin node.
+
+
+# -----------------------------------------------------
+
+    The new archirecture moves user account management
+    and the initial user interaction to a Drupal service.
+
+    Drupal provides user account management, user login, user profiles,
+    user emails and lost password handling out of the box.
+
+    Dupal also provied us with the content management tools
+    to manage the platform welcome pages, help pages
+    and optionally user comments, blogs and help forums.
+
+    Drupal basic login is via username and password,
+    but it also supports OpenIDConnect (OIDC) authentication
+    from external identity providers.
+
+    Users can use their University accounts and/or their
+    IRIS IAM accounts to login to the Drupal platform.
+
+    To make it easier for new users to jon, we can also allow then
+    to start by using their Google, FaceBook or GitHub accounts.
+
+    Once the user is logged in to the Dupal platform,
+    the Dupal platform then acts as the OpenIDConnect (OIDC)
+    identity provider (IdP) for the rest of the GaiaDMP services.
+
+    In this architecture the Drupla platform operates as both an OIDC client,
+    accepting idntity tokens from external identity providets
+    including the user's academic institute and IRIS IAM,
+    and acting as a OIDC identity provider (IdP), providing authentication
+    tokens to authenticate access to the internal services like Zeppelin
+    and OwnCloud.
+
+    This allows users to login via a complex set of external identity providers,
+    and at the same time simplifies the authentication
+    configuration for the rest of the GaiaDMP services to just use a single
+    identity provider that we control.
+
+    Development of this architecture would be done in separate stages.
+
+    First stage is to configure Drupal to manage user accounts,
+    user sign up and lost password emails (provided out of the box).
+
+    Second stage is to configure Drupal to act as the OIDC identity provider
+    for both Zeppelin and OwnCloud instances.
+    https://www.drupal.org/docs/contributed-modules/saml-idp-20-single-sign-on-sso-saml-identity-provider/guide-for-single-sign-on-sso-in-to-owncloud-using-drupal-as-identity-provider-idp
+
+    Third stage is to configure Drupal to accept OIDC tokens
+    from external identity providers, including GitHub,
+    Google, FaceBook, Microsoft, IRIS IAM, and Edinburgh EASE
+    (in order of expected complexity).
+
+    (*) added complexity when the Microsoft login is authenticated
+    via Edinburgh EASE.
+
+# -----------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

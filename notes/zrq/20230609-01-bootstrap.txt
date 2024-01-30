@@ -1,0 +1,719 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 5,"units": "%"}}]
+#
+
+
+    Target:
+
+        Getting back up to speed after series of conferences.
+
+        Customising the StackHPC capi-helm-charts.
+        https://github.com/stackhpc/capi-helm-charts
+
+        Going the long way round to lean how it works.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Check which platform is live.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Fri  9 Jun 16:32:17 UTC 2023
+    >   iris-gaia-green-20230308-zeppelin
+
+
+# -----------------------------------------------------
+# Create a container to work with.
+#[user@desktop]
+
+    #
+    # Live is green, selecting red for development.
+    # Using the 'admin' credentials to allow access to loadbalancers etc.
+    #
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}-admin
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        ghcr.io/wfau/atolmis/ansible-client:2022.07.25 \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    time \
+        /deployments/openstack/bin/delete-all.sh \
+            "${cloudname:?}"
+
+    >   real    2m13.503s
+    >   user    1m3.502s
+    >   sys     0m6.870s
+
+
+# -----------------------------------------------------
+# Add YAML editor role to our client container.
+# TODO Add this to the Ansible client.
+# https://github.com/wfau/atolmis/issues/30
+#[root@ansibler]
+
+    ansible-galaxy install kwoodson.yedit
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Issue a short term token to get the current user ID and project ID.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        token issue \
+            --format json \
+    | tee /tmp/ostoken.json   \
+    | jq '.'
+
+    >   {
+    >     "expires": "2023-06-08T15:05:01+0000",
+    >     "id": "################################",
+    >     "project_id": "########",
+    >     "user_id": "########"
+    >   }
+
+
+    export osuserid=$(
+        jq -r '.user_id' '/tmp/ostoken.json'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        user show \
+            --format json \
+            "${osuserid}" \
+    | tee '/tmp/osuser.json'
+
+    export osusername=$(
+        jq -r '.name' '/tmp/osuser.json'
+        )
+
+    >   ....
+    >   ....
+
+
+    export osprojectid=$(
+        jq -r '.project_id' '/tmp/ostoken.json'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        project show \
+            --format json \
+            "${osprojectid}" \
+    | tee '/tmp/osproject.json'
+
+    export osprojectname=$(
+        jq -r '.name' '/tmp/osproject.json'
+        )
+
+    >   {
+    >     "description": "IRIS@Cambridge Gaia-Red",
+    >     "domain_id": "default",
+    >     "enabled": true,
+    >     "id": "0dd8cc5ee5a7455c8748cc06d04c93c3",
+    >     "is_domain": false,
+    >     "name": "iris-gaia-red",
+    >     "options": {},
+    >     "parent_id": "default",
+    >     "tags": []
+    >   }
+
+
+# -----------------------------------------------------
+# Create our deployment settings.
+#[root@ansibler]
+
+    export deployname=${cloudname:?}-$(date '+%Y%m%d')
+    export deploydate=$(date '+%Y%m%dT%H%M%S')
+
+    statusyml='/opt/aglais/aglais-status.yml'
+    if [ ! -e "$(dirname ${statusyml})" ]
+    then
+        mkdir "$(dirname ${statusyml})"
+    fi
+    rm -f "${statusyml}"
+    touch "${statusyml}"
+
+    yq --null-input '{
+        "aglais": {
+            "deployment": {
+                "type": "cluster-api",
+                "name": strenv(deployname),
+                "date": strenv(deploydate)
+                },
+            "openstack": {
+                "cloud": {
+                    "name": strenv(cloudname)
+                    },
+                "user": {
+                    "id": strenv(osuserid),
+                    "name": strenv(osusername)
+                    },
+                "project": {
+                    "id": strenv(osprojectid),
+                    "name": strenv(osprojectname)
+                    }
+                }
+            }
+        }' \
+     | tee "${statusyml}"
+
+    >   aglais:
+    >     deployment:
+    >       type: cluster-api
+    >       name: iris-gaia-red-admin-20230609
+    >       date: 20230609T163853
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-red-admin
+    >       user:
+    >         id: 5fa0c97a6dd14e01a3c7d91dad5c6b17
+    >         name: dmorris_gaia
+    >       project:
+    >         id: 0dd8cc5ee5a7455c8748cc06d04c93c3
+    >         name: iris-gaia-red
+
+
+# -----------------------------------------------------
+# Create our bootstrap components.
+#[root@ansibler]
+
+    inventory=/deployments/cluster-api/bootstrap/ansible/config/inventory.yml
+
+    ansible-playbook \
+        --inventory "${inventory:?}" \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    yq '.' /opt/aglais/aglais-status.yml
+
+    >   aglais:
+    >     deployment:
+    >       date: 20230609T163853
+    >       name: iris-gaia-red-admin-20230609
+    >       type: cluster-api
+    >     openstack:
+    >       cloud:
+    >         name: iris-gaia-red-admin
+    >       keypairs:
+    >         team:
+    >           fingerprint: 2e:84:98:98:df:70:06:0e:4c:ed:bd:d4:d6:6b:eb:16
+    >           id: iris-gaia-red-admin-20230609-keypair
+    >           name: iris-gaia-red-admin-20230609-keypair
+    >       networks:
+    >         external:
+    >           network:
+    >             id: 57add367-d205-4030-a929-d75617a7c63e
+    >             name: CUDN-Internet
+    >         internal:
+    >           network:
+    >             id: e3a53812-1261-4735-99ae-57962bf0e07c
+    >             name: iris-gaia-red-admin-20230609-internal-network
+    >           router:
+    >             id: 4e8a775a-d306-4245-ac32-50ecc42c9171
+    >             name: iris-gaia-red-admin-20230609-internal-router
+    >           subnet:
+    >             cidr: 10.10.0.0/16
+    >             id: 6b7d2e21-e7e9-488c-8987-f45c2daef230
+    >             name: iris-gaia-red-admin-20230609-internal-subnet
+    >       project:
+    >         id: 0dd8cc5ee5a7455c8748cc06d04c93c3
+    >         name: iris-gaia-red
+    >       servers:
+    >         bootstrap:
+    >           float:
+    >             external: 128.232.226.38
+    >             id: 3b60b225-8eda-405c-a89b-c345c14ade6c
+    >             internal: 10.10.2.179
+    >           server:
+    >             address:
+    >               ipv4: 10.10.2.179
+    >             flavor:
+    >               name: gaia.vm.cclake.2vcpu
+    >             hostname: bootstrap
+    >             id: 0b256c1d-e06f-4657-aa1f-73ac97b9439c
+    >             image:
+    >               id: e5c23082-cc34-4213-ad31-ff4684657691
+    >               name: Fedora-34.1.2
+    >             name: iris-gaia-red-admin-20230609-bootstrap
+    >       user:
+    >         id: 5fa0c97a6dd14e01a3c7d91dad5c6b17
+    >         name: dmorris_gaia
+
+
+# -----------------------------------------------------
+# Create a clouds.yaml file for the current cloud.
+# Add our project ID and disable TLS certificate checks.
+# TODO Create and transfer using an Ansible template ..
+#[root@ansibler]
+
+    yq '
+        {
+        "clouds":
+          {
+          strenv(cloudname):
+          .clouds.[strenv(cloudname)]
+          | .auth.project_id = strenv(osprojectid)
+          | .verify = false
+          }
+        }
+        ' \
+        /etc/openstack/clouds.yaml \
+        | tee /tmp/openstack-clouds.yaml
+
+    >   clouds:
+    >     iris-gaia-red-admin:
+    >       auth:
+    >         auth_url: https://arcus.openstack.hpc.cam.ac.uk:5000
+    >         application_credential_id: "################"
+    >         application_credential_secret: "################"
+    >         project_id: 0dd8cc5ee5a7455c8748cc06d04c93c3
+    >       region_name: "RegionOne"
+    >       interface: "public"
+    >       identity_api_version: 3
+    >       auth_type: "v3applicationcredential"
+    >       verify: false
+
+
+# -----------------------------------------------------
+# Transfer our clouds.yaml file to our bootstrap node.
+# TODO Create and transfer using an Ansible template ..
+#[root@ansibler]
+
+    scp \
+        /tmp/openstack-clouds.yaml \
+        bootstrap:/tmp/openstack-clouds.yaml
+
+    ssh bootstrap \
+        '
+        sudo mkdir -p \
+            /etc/aglais
+        sudo install \
+            /tmp/openstack-clouds.yaml \
+            /etc/aglais/openstack-clouds.yaml
+        '
+
+
+# -----------------------------------------------------
+# -----------------------------------------------------
+# Login to the bootstrap node as root.
+#[user@desktop]
+
+    podman exec \
+        -it \
+        ansibler-red \
+            bash
+
+        ssh bootstrap
+
+            sudo su -
+
+    #
+    # We could prefix everything with sudo, but it gets very boring.
+    #
+
+
+# -----------------------------------------------------
+# Create our initial Kind cluster.
+# https://github.com/kubernetes-sigs/kind/pull/2478#issuecomment-1214656908
+#[root@bootstrap]
+
+    kind create cluster --retain
+
+    >   Creating cluster "kind" ...
+    >    ✓ Ensuring node image (kindest/node:v1.25.3) 🖼
+    >    ✓ Preparing nodes 📦
+    >    ✓ Writing configuration 📜
+    >    ✓ Starting control-plane 🕹️
+    >    ✓ Installing CNI 🔌
+    >    ✓ Installing StorageClass 💾
+    >   ....
+    >   ....
+
+
+    kubectl cluster-info
+
+    >   Kubernetes control plane is running at https://127.0.0.1:43949
+    >   CoreDNS is running at https://127.0.0.1:43949/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+
+# -----------------------------------------------------
+# Check the installed pods.
+#[root@bootstrap]
+
+    kubectl get pods --all-namespaces
+
+    >   NAMESPACE            NAME                                         READY   STATUS    RESTARTS   AGE
+    >   kube-system          coredns-565d847f94-dv9tf                     0/1     Pending   0          5s
+    >   kube-system          coredns-565d847f94-ndfs7                     0/1     Pending   0          5s
+    >   kube-system          etcd-kind-control-plane                      1/1     Running   0          19s
+    >   kube-system          kindnet-lxlmh                                1/1     Running   0          6s
+    >   kube-system          kube-apiserver-kind-control-plane            1/1     Running   0          19s
+    >   kube-system          kube-controller-manager-kind-control-plane   1/1     Running   0          19s
+    >   kube-system          kube-proxy-l7zhg                             1/1     Running   0          6s
+    >   kube-system          kube-scheduler-kind-control-plane            1/1     Running   0          19s
+    >   local-path-storage   local-path-provisioner-684f458cdd-z9mhj      0/1     Pending   0          5s
+
+
+# -----------------------------------------------------
+# Install the Openstack Cluster API Provider
+# https://cluster-api-openstack.sigs.k8s.io/getting-started.html#initialization-for-common-providers
+# https://github.com/stackhpc/capi-helm-charts/tree/main/charts/openstack-cluster#prerequisites
+#[root@bootstrap]
+
+    clusterctl init --infrastructure openstack
+
+    >   Fetching providers
+    >   Installing cert-manager Version="v1.12.1"
+    >   Waiting for cert-manager to be available...
+    >   Installing Provider="cluster-api" Version="v1.4.3" TargetNamespace="capi-system"
+    >   Installing Provider="bootstrap-kubeadm" Version="v1.4.3" TargetNamespace="capi-kubeadm-bootstrap-system"
+    >   Installing Provider="control-plane-kubeadm" Version="v1.4.3" TargetNamespace="capi-kubeadm-control-plane-system"
+    >   Installing Provider="infrastructure-openstack" Version="v0.7.3" TargetNamespace="capo-system"
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Check our cluster config.
+# https://github.com/stackhpc/capi-helm-charts/tree/main/charts/openstack-cluster#managing-a-workload-cluster
+#[root@bootstrap]
+
+    yq '.' '/opt/aglais/clusterapi-config.yml'
+
+    >   # The name of the cloud to use from the specified clouds.yaml
+    >   cloudName: "iris-gaia-red-admin"
+    >   # The Kubernetes version of the cluster
+    >   # This should match the version of kubelet and kubeadm in the image
+    >   kubernetesVersion: "1.25.4"
+    >   # The name of the image to use for cluster machines
+    >   machineImage: "gaia-dmp-ubuntu-2004-kube-v1.25.4"
+    >   # The name of the SSH key to inject into cluster machines
+    >   machineSSHKeyName: "iris-gaia-red-admin-20230609-keypair"
+    >   # Settings for the OpenStack networking for the cluster
+    >   clusterNetworking:
+    >     # Custom nameservers to use for the hosts
+    >     dnsNameservers:
+    >       - "131.111.8.42"
+    >     # The ID of the external network to use
+    >     # If not given, the external network will be detected
+    >     externalNetworkId: "57add367-d205-4030-a929-d75617a7c63e"
+    >   # Settings for the control plane
+    >   controlPlane:
+    >     # The failure domains to use for control plane nodes
+    >     # If given, should be a list of availability zones
+    >     # Only used when omitFailureDomain = false
+    >     failureDomains: "nova"
+    >     # The flavor to use for control plane machines
+    >     machineFlavor: "gaia.vm.cclake.4vcpu"
+    >   # Defaults for node groups
+    >   # Each of these can be overridden in the specification for an individual node group
+    >   nodeGroupDefaults:
+    >     # The flavor to use for machines in the node group
+    >     machineFlavor: "gaia.vm.cclake.4vcpu"
+    >   # The worker node groups for the cluster
+    >   nodeGroups:
+    >     - # The name of the node group
+    >       name: md-0
+    >       # The number of machines in the node group if autoscale is false
+    >       machineCount: 3
+    >       # The minimum and maximum number of machines in the node group if autoscale is true
+    >       # machineCountMin: 3
+    >       # machineCountMax: 3
+
+
+# -----------------------------------------------------
+# Add the StackHPC Helm repos.
+#[root@bootstrap]
+
+    helm repo add \
+        capi \
+        https://stackhpc.github.io/capi-helm-charts
+
+    >   "capi" has been added to your repositories
+
+
+    helm repo add \
+        capi-addons \
+        https://stackhpc.github.io/cluster-api-addon-provider
+
+    >   "capi-addons" has been added to your repositories
+
+
+# -----------------------------------------------------
+# Install the cluster-api-addon-provider.
+#[root@bootstrap]
+
+    helm install \
+        cluster-api-addon-provider \
+        capi-addons/cluster-api-addon-provider
+
+    >   NAME: cluster-api-addon-provider
+    >   LAST DEPLOYED: Fri Jun  9 16:50:28 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+
+
+# -----------------------------------------------------
+# Initialise our cluster ...
+#[root@bootstrap]
+
+    CLUSTER_NAME=aglais-one
+
+    helm install \
+        "${CLUSTER_NAME:?}" \
+        capi/openstack-cluster \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/etc/aglais/openstack-clouds.yaml'
+
+    >   NAME: aglais-one
+    >   LAST DEPLOYED: Fri Jun  9 16:51:15 2023
+    >   NAMESPACE: default
+    >   STATUS: deployed
+    >   REVISION: 1
+    >   TEST SUITE: None
+
+
+    kubectl \
+        --namespace capo-system \
+        logs \
+            -l control-plane=capo-controller-manager \
+            -c manager \
+            --follow
+
+    >   ....
+    >   ....
+
+
+    clusterctl describe cluster ${CLUSTER_NAME:?}
+
+    >   NAME                                                           READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/aglais-one                                             False  Warning   ScalingUp                    116m   Scaling up control plane to 3 replicas (actual 1)
+    >   ├─ClusterInfrastructure - OpenStackCluster/aglais-one
+    >   ├─ControlPlane - KubeadmControlPlane/aglais-one-control-plane  False  Warning   ScalingUp                    116m   Scaling up control plane to 3 replicas (actual 1)
+    >   │ └─Machine/aglais-one-control-plane-tq5gc                     False  Warning   NodeStartupTimeout           105m   Node failed to report startup in 10m0s
+    >   └─Workers
+    >     └─MachineDeployment/aglais-one-md-0                          False  Warning   WaitingForAvailableMachines  118m   Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                            True                                          2m33s  See aglais-one-md-0-86f4d96889x9qh9z-f7hr8, aglais-one-md-0-86f4d96889x9qh9z-nxkkj, ...
+
+
+    kubectl get cluster-api
+
+    >   NAME                                                                                        CLUSTER      BOOTSTRAP   TARGET NAMESPACE         RELEASE NAME                PHASE        REVISION   CHART NAME                           CHART VERSION   AGE
+    >   helmrelease.addons.stackhpc.com/aglais-one-ccm-openstack                                    aglais-one   true        openstack-system         ccm-openstack               Deployed     1          openstack-cloud-controller-manager   1.3.0           119m
+    >   helmrelease.addons.stackhpc.com/aglais-one-cni-calico                                       aglais-one   true        tigera-operator          cni-calico                  Installing              tigera-operator                      v3.23.3         119m
+    >   helmrelease.addons.stackhpc.com/aglais-one-csi-cinder                                       aglais-one   true        openstack-system         csi-cinder                  Upgrading               openstack-cinder-csi                 2.2.0           119m
+    >   helmrelease.addons.stackhpc.com/aglais-one-mellanox-network-operator                        aglais-one   true        network-operator         mellanox-network-operator   Upgrading               network-operator                     1.3.0           119m
+    >   helmrelease.addons.stackhpc.com/aglais-one-metrics-server                                   aglais-one   true        kube-system              metrics-server              Upgrading               metrics-server                       3.8.2           119m
+    >   helmrelease.addons.stackhpc.com/aglais-one-node-feature-discovery                           aglais-one   true        node-feature-discovery   node-feature-discovery      Upgrading               node-feature-discovery               0.11.2          119m
+    >   helmrelease.addons.stackhpc.com/aglais-one-nvidia-gpu-operator                              aglais-one   true        gpu-operator             nvidia-gpu-operator         Upgrading               gpu-operator                         v1.11.1         119m
+    >
+    >   NAME                                                                                        CLUSTER      BOOTSTRAP   TARGET NAMESPACE   RELEASE NAME              PHASE      REVISION   AGE
+    >   manifests.addons.stackhpc.com/aglais-one-cloud-config                                       aglais-one   true        openstack-system   cloud-config              Deployed   1          119m
+    >   manifests.addons.stackhpc.com/aglais-one-csi-cinder-storageclass                            aglais-one   true        openstack-system   csi-cinder-storageclass   Deployed   1          119m
+    >
+    >   NAME                                                                                        CLUSTER      AGE
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/aglais-one-control-plane-7fdml                     aglais-one   117m
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/aglais-one-md-0-99910806-hwdkh                     aglais-one   3m10s
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/aglais-one-md-0-99910806-nvrll                     aglais-one   3m9s
+    >   kubeadmconfig.bootstrap.cluster.x-k8s.io/aglais-one-md-0-99910806-vjqnq                     aglais-one   3m8s
+    >
+    >   NAME                                                                                        AGE
+    >   kubeadmconfigtemplate.bootstrap.cluster.x-k8s.io/aglais-one-md-0-99910806                   119m
+    >
+    >   NAME                                                                                        CLUSTER      REPLICAS   READY   UPDATED   UNAVAILABLE   PHASE       AGE    VERSION
+    >   machinedeployment.cluster.x-k8s.io/aglais-one-md-0                                          aglais-one   3                  3         3             ScalingUp   119m   v1.25.4
+    >
+    >   NAME                                                                                        CLUSTER      REPLICAS   READY   AVAILABLE   AGE    VERSION
+    >   machineset.cluster.x-k8s.io/aglais-one-md-0-86f4d96889x9qh9z                                aglais-one   3                              119m   v1.25.4
+    >
+    >   NAME                                                                                        PHASE         AGE    VERSION
+    >   cluster.cluster.x-k8s.io/aglais-one                                                         Provisioned   119m
+    >
+    >   NAME                                                                                        CLUSTER      EXPECTEDMACHINES   MAXUNHEALTHY   CURRENTHEALTHY   AGE
+    >   machinehealthcheck.cluster.x-k8s.io/aglais-one-control-plane                                aglais-one   1                  100%                            119m
+    >   machinehealthcheck.cluster.x-k8s.io/aglais-one-md-0                                         aglais-one   3                  100%                            119m
+    >
+    >   NAME                                                                                        CLUSTER      NODENAME   PROVIDERID                                          PHASE         AGE    VERSION
+    >   machine.cluster.x-k8s.io/aglais-one-control-plane-tq5gc                                     aglais-one              openstack:///21a28eb9-4526-4e4c-82d0-601f5eadd425   Provisioned   117m   v1.25.4
+    >   machine.cluster.x-k8s.io/aglais-one-md-0-86f4d96889x9qh9z-f7hr8                             aglais-one              openstack:///37e30f16-6766-4015-984a-45c151b26ea7   Provisioned   3m8s   v1.25.4
+    >   machine.cluster.x-k8s.io/aglais-one-md-0-86f4d96889x9qh9z-nxkkj                             aglais-one              openstack:///9b075fdc-a7ad-4e85-ad70-609a4bdfa0b6   Provisioned   3m9s   v1.25.4
+    >   machine.cluster.x-k8s.io/aglais-one-md-0-86f4d96889x9qh9z-xmwsv                             aglais-one              openstack:///08b68b57-90ad-4e00-b203-9b4756fcee17   Provisioned   3m9s   v1.25.4
+    >
+    >   NAME                                                                                        CLUSTER      INITIALIZED   API SERVER AVAILABLE   REPLICAS   READY   UPDATED   UNAVAILABLE   AGE    VERSION
+    >   kubeadmcontrolplane.controlplane.cluster.x-k8s.io/aglais-one-control-plane                  aglais-one   true                                 1                  1         1             119m   v1.25.4
+    >
+    >   NAME                                                                                        AGE
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/aglais-one-control-plane-c787b906  119m
+    >   openstackmachinetemplate.infrastructure.cluster.x-k8s.io/aglais-one-md-0-c787b906           119m
+    >
+    >   NAME                                                                                        CLUSTER      INSTANCESTATE   READY   PROVIDERID                                          MACHINE                                  AGE
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/aglais-one-control-plane-c787b906-2b7qv    aglais-one   ACTIVE          true    openstack:///21a28eb9-4526-4e4c-82d0-601f5eadd425   aglais-one-control-plane-tq5gc           117m
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/aglais-one-md-0-c787b906-9pc9p             aglais-one   ACTIVE          true    openstack:///37e30f16-6766-4015-984a-45c151b26ea7   aglais-one-md-0-86f4d96889x9qh9z-f7hr8   3m8s
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/aglais-one-md-0-c787b906-d6dsz             aglais-one   ACTIVE          true    openstack:///08b68b57-90ad-4e00-b203-9b4756fcee17   aglais-one-md-0-86f4d96889x9qh9z-xmwsv   3m10s
+    >   openstackmachine.infrastructure.cluster.x-k8s.io/aglais-one-md-0-c787b906-v8pm9             aglais-one   ACTIVE          true    openstack:///9b075fdc-a7ad-4e85-ad70-609a4bdfa0b6   aglais-one-md-0-86f4d96889x9qh9z-nxkkj   3m9s
+    >
+    >   NAME                                                                                        CLUSTER      READY   NETWORK                                SUBNET                                 BASTION IP   AGE
+    >   openstackcluster.infrastructure.cluster.x-k8s.io/aglais-one                                 aglais-one   true    8576e3f4-8f28-47f3-8cfd-fff6f85653a6   1ff19481-1ddc-41a2-9465-5a3f9c584ff8                119m
+
+
+    kubectl get machinedeployment
+
+    >   NAME              CLUSTER      REPLICAS   READY   UPDATED   UNAVAILABLE   PHASE       AGE    VERSION
+    >   aglais-one-md-0   aglais-one   3                  3         3             ScalingUp   119m   v1.25.4
+
+
+    kubectl get \
+        OpenStackMachine
+
+    >   NAME                                      CLUSTER      INSTANCESTATE   READY   PROVIDERID                                          MACHINE                                  AGE
+    >   aglais-one-control-plane-c787b906-2b7qv   aglais-one   ACTIVE          true    openstack:///21a28eb9-4526-4e4c-82d0-601f5eadd425   aglais-one-control-plane-tq5gc           118m
+    >   aglais-one-md-0-c787b906-9pc9p            aglais-one   ACTIVE          true    openstack:///37e30f16-6766-4015-984a-45c151b26ea7   aglais-one-md-0-86f4d96889x9qh9z-f7hr8   3m53s
+    >   aglais-one-md-0-c787b906-d6dsz            aglais-one   ACTIVE          true    openstack:///08b68b57-90ad-4e00-b203-9b4756fcee17   aglais-one-md-0-86f4d96889x9qh9z-xmwsv   3m55s
+    >   aglais-one-md-0-c787b906-v8pm9            aglais-one   ACTIVE          true    openstack:///9b075fdc-a7ad-4e85-ad70-609a4bdfa0b6   aglais-one-md-0-86f4d96889x9qh9z-nxkkj   3m54s
+
+
+    kubectl get \
+        --output yaml \
+            OpenStackMachine \
+                'aglais-one-control-plane-c787b906-2b7qv'
+
+    >   apiVersion: infrastructure.cluster.x-k8s.io/v1alpha6
+    >   kind: OpenStackMachine
+    >   metadata:
+    >     annotations:
+    >       cluster.x-k8s.io/cloned-from-groupkind: OpenStackMachineTemplate.infrastructure.cluster.x-k8s.io
+    >       cluster.x-k8s.io/cloned-from-name: aglais-one-control-plane-c787b906
+    >     creationTimestamp: "2023-06-09T16:52:54Z"
+    >     finalizers:
+    >     - openstackmachine.infrastructure.cluster.x-k8s.io
+    >     generation: 2
+    >     labels:
+    >       capi.stackhpc.com/cluster: aglais-one
+    >       capi.stackhpc.com/component: control-plane
+    >       cluster.x-k8s.io/cluster-name: aglais-one
+    >       cluster.x-k8s.io/control-plane: ""
+    >       cluster.x-k8s.io/control-plane-name: aglais-one-control-plane
+    >     name: aglais-one-control-plane-c787b906-2b7qv
+    >     namespace: default
+    >     ownerReferences:
+    >     - apiVersion: cluster.x-k8s.io/v1beta1
+    >       blockOwnerDeletion: true
+    >       controller: true
+    >       kind: Machine
+    >       name: aglais-one-control-plane-tq5gc
+    >       uid: cf626615-88e3-4e6a-99bf-ea17ac714f7a
+    >     resourceVersion: "2248"
+    >     uid: aa13c4ab-99cb-4312-98c8-e78cbb0d70f2
+    >   spec:
+    >     cloudName: openstack
+    >     flavor: gaia.vm.cclake.4vcpu
+    >     identityRef:
+    >       kind: Secret
+    >       name: aglais-one-cloud-credentials
+    >     image: gaia-dmp-ubuntu-2004-kube-v1.25.4
+    >     instanceID: 21a28eb9-4526-4e4c-82d0-601f5eadd425
+    >     providerID: openstack:///21a28eb9-4526-4e4c-82d0-601f5eadd425
+    >     sshKeyName: iris-gaia-red-admin-20230609-keypair
+    >   status:
+    >     addresses:
+    >     - address: 192.168.3.111
+    >       type: InternalIP
+    >     conditions:
+    >     - lastTransitionTime: "2023-06-09T16:53:12Z"
+    >       status: "True"
+    >       type: Ready
+    >     - lastTransitionTime: "2023-06-09T16:53:12Z"
+    >       status: "True"
+    >       type: APIServerIngressReadyCondition
+    >     - lastTransitionTime: "2023-06-09T16:53:12Z"
+    >       status: "True"
+    >       type: InstanceReady
+    >     instanceState: ACTIVE
+    >     ready: true
+
+
+# -----------------------------------------------------
+# ...
+#[root@bootstrap]
+
+
+    clusterctl describe cluster ${CLUSTER_NAME:?}
+
+    >   NAME                                                           READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/aglais-one                                             False  Warning   ScalingUp                    22h    Scaling up control plane to 3 replicas (actual 1)
+    >   ├─ClusterInfrastructure - OpenStackCluster/aglais-one
+    >   ├─ControlPlane - KubeadmControlPlane/aglais-one-control-plane  False  Warning   ScalingUp                    22h    Scaling up control plane to 3 replicas (actual 1)
+    >   │ └─Machine/aglais-one-control-plane-tq5gc                     False  Warning   NodeStartupTimeout           22h    Node failed to report startup in 10m0s
+    >   └─Workers
+    >     └─MachineDeployment/aglais-one-md-0                          False  Warning   WaitingForAvailableMachines  22h    Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                            True                                          3m48s  See aglais-one-md-0-86f4d96889x9qh9z-gh9bx, aglais-one-md-0-86f4d96889x9qh9z-mgmp7, ...
+
+    #
+    # We have 3 machines, but they don't seem to be talking to each other ...
+    #
+
+

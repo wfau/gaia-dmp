@@ -1,0 +1,220 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2024, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Deploy with LoadBalancer and report the issue to Cambridge.
+
+    Result:
+
+        Work in progress ...
+
+# -----------------------------------------------------
+# Deploy with LoadBalancer and no security patch.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+    pushd "${AGLAIS_CODE:?}"
+
+        gedit deployments/cluster-api/bootstrap/ansible/templates/clusterapi-config.j2 &
+
+            ....
+            apiServer:
+              # API server load balancer
+        ~     enableLoadBalancer: true
+
+        gedit deployments/cluster-api/bootstrap/ansible/00-create-all.yml
+
+            ....
+        ~   # import_playbook: 26-secure-work-cluster.yml
+
+
+# -----------------------------------------------------
+# Check the live service.
+#[user@desktop]
+
+    ssh fedora@live.gaia-dmp.uk \
+        '
+        date
+        hostname
+        '
+
+    >   Tue  2 Jan 13:15:07 UTC 2024
+    >   iris-gaia-green-20231027-zeppelin
+
+
+# -----------------------------------------------------
+# Run our deployment client.
+#[user@desktop]
+
+    source "${HOME}/aglais.env"
+
+    agclient blue
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete and create everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    ansible-playbook \
+        --inventory 'bootstrap,' \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+    >   ....
+    >   ....
+    >   PLAY RECAP **********************************************************************************************************************************
+    >   bootstrap                  : ok=53   changed=42   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+    >   localhost                  : ok=33   changed=24   unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+# -----------------------------------------------------
+# Check the cluster status.
+#[root@ansibler]
+
+    ssh root@bootstrap
+
+        source loadconfig
+
+        clusterctl \
+            --kubeconfig "${kindclusterconf:?}" \
+            describe cluster \
+                "${workclustername:?}"
+
+    >   NAME                                                                             READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/iris-gaia-blue-20240102-work                                             False  Warning   ScalingUp                    8m43s  Scaling up control plane to 3 replicas (actual 1)
+    >   ├─ClusterInfrastructure - OpenStackCluster/iris-gaia-blue-20240102-work
+    >   ├─ControlPlane - KubeadmControlPlane/iris-gaia-blue-20240102-work-control-plane  False  Warning   ScalingUp                    8m43s  Scaling up control plane to 3 replicas (actual 1)
+    >   │ └─Machine/iris-gaia-blue-20240102-work-control-plane-xzsgk                     True                                          8m45s
+    >   └─Workers
+    >     └─MachineDeployment/iris-gaia-blue-20240102-work-md-0                          False  Warning   WaitingForAvailableMachines  10m    Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                                              False  Info      WaitingForBootstrapData      9m4s   See iris-gaia-blue-20240102-work-md-0-v2w95-j2h8k, iris-gaia-blue-20240102-work-md-0-v2w95-lmrlj, ...
+
+
+    >   NAME                                                                             READY  SEVERITY  REASON                       SINCE  MESSAGE
+    >   Cluster/iris-gaia-blue-20240102-work                                             False  Warning   ScalingUp                    10m    Scaling up control plane to 3 replicas (actual 1)
+    >   ├─ClusterInfrastructure - OpenStackCluster/iris-gaia-blue-20240102-work
+    >   ├─ControlPlane - KubeadmControlPlane/iris-gaia-blue-20240102-work-control-plane  False  Warning   ScalingUp                    10m    Scaling up control plane to 3 replicas (actual 1)
+    >   │ └─!! DELETED !! Machine/iris-gaia-blue-20240102-work-control-plane-xzsgk       False  Warning   NodeStartupTimeout           10s    Node failed to report startup in 10m0s
+    >   └─Workers
+    >     └─MachineDeployment/iris-gaia-blue-20240102-work-md-0                          False  Warning   WaitingForAvailableMachines  11m    Minimum availability requires 2 replicas, current 0 available
+    >       └─3 Machines...                                                              False  Info      WaitingForBootstrapData      10m    See iris-gaia-blue-20240102-work-md-0-v2w95-j2h8k, i
+
+
+# -----------------------------------------------------
+# Check our LoadBalancer status.
+#[root@ansibler]
+
+    lbident=$(
+        openstack \
+            --os-cloud "${cloudname:?}" \
+            loadbalancer list \
+                --format json \
+        | jq -r '.[0].id'
+        )
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        loadbalancer show \
+            --format json \
+            "${lbident}" \
+    | jq '.'
+
+    >   {
+    >     "admin_state_up": true,
+    >     "availability_zone": null,
+    >     "created_at": "2024-01-02T13:34:38",
+    >     "description": "Created by cluster-api-provider-openstack cluster default-iris-gaia-blue-20240102-work",
+    >     "flavor_id": null,
+    >     "id": "6f18a8ef-71fa-447d-a6a6-20d5ca773c2d",
+    >     "listeners": "3cc75ac1-c096-4d9b-b1e4-6f2387573b7c",
+    >     "name": "k8s-clusterapi-cluster-default-iris-gaia-blue-20240102-work-kubeapi",
+    >     "operating_status": "ERROR",
+    >     "pools": "af834e81-a46f-4752-a0fe-17f978af817b",
+    >     "project_id": "e918a13fed2648758175a15fac083569",
+    >     "provider": "amphora",
+    >     "provisioning_status": "ACTIVE",
+    >     "updated_at": "2024-01-02T13:46:30",
+    >     "vip_address": "192.168.3.252",
+    >     "vip_network_id": "7642f153-4768-460e-b10f-c79218231b44",
+    >     "vip_port_id": "2a6531d6-ddf0-4253-b887-72e9b146e730",
+    >     "vip_qos_policy_id": null,
+    >     "vip_subnet_id": "bf0a7a8f-491e-4e93-b08e-676886e12200",
+    >     "tags": ""
+    >   }
+
+# -----------------------------------------------------
+# Email HPC support
+
+    To: support@hpc.cam.ac.uk <support@hpc.cam.ac.uk>
+    Cc: gaiadmp-support@roe.ac.uk <gaiadmp-support@roe.ac.uk>
+
+    Subject: Load balancer issues on Arcus Openstack
+
+    Trying to create a Kubernetes deployment on the Arcus cloud using ClusterAPI, but we run into issues with the load balancer.
+
+    The load balancer is created, but operating_status is set to "ERROR".
+
+        {
+          "admin_state_up": true,
+          "availability_zone": null,
+          "created_at": "2024-01-02T13:34:38",
+          "description": "Created by cluster-api-provider-openstack cluster default-iris-gaia-blue-20240102-work",
+          "flavor_id": null,
+          "id": "6f18a8ef-71fa-447d-a6a6-20d5ca773c2d",
+          "listeners": "3cc75ac1-c096-4d9b-b1e4-6f2387573b7c",
+          "name": "k8s-clusterapi-cluster-default-iris-gaia-blue-20240102-work-kubeapi",
+          "operating_status": "ERROR",
+          "pools": "af834e81-a46f-4752-a0fe-17f978af817b",
+          "project_id": "e918a13fed2648758175a15fac083569",
+          "provider": "amphora",
+          "provisioning_status": "ACTIVE",
+          "updated_at": "2024-01-02T13:46:30",
+          "vip_address": "192.168.3.252",
+          "vip_network_id": "7642f153-4768-460e-b10f-c79218231b44",
+          "vip_port_id": "2a6531d6-ddf0-4253-b887-72e9b146e730",
+          "vip_qos_policy_id": null,
+          "vip_subnet_id": "bf0a7a8f-491e-4e93-b08e-676886e12200",
+          "tags": ""
+        }
+
+
+    #
+    # HPC support ticket
+    # https://ucam-rcs.atlassian.net/servicedesk/customer/portal/4/HPCSSUP-64999
+    #
+
+
+

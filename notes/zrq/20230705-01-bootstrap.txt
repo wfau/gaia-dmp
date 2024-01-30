@@ -1,0 +1,347 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: [{"name": "ChatGPT","contribution": {"value": 0,"units": "%"}}]
+#
+
+
+    Target:
+
+        Check if we still need the admin account ?
+
+    Result:
+
+        Yes, we still need the 'admin' cloud credentials.
+
+            Openstack calls fail with permission errors.
+            Policy does not allow this request to be performed. (HTTP 403)
+
+            The capi/openstack-cluster Helm chart fails,
+            but we don't see a clear error message.
+
+            (*) common failure of declarative systems,
+            they are harder to debug because you aren't
+            issuing the commands.
+
+
+# -----------------------------------------------------
+# Create our client container.
+#[user@desktop]
+
+    source "${HOME:?}/aglais.env"
+
+    agcolour=red
+
+    clientname=ansibler-${agcolour}
+    cloudname=iris-gaia-${agcolour}-admin
+    cloudname=iris-gaia-${agcolour}
+
+    containername=kubernetes-client:2023.06.15
+    containerrepo=ghcr.io/wfau/atolmis
+    containerfull=ghcr.io/wfau/atolmis/${containername:?}
+
+    podman run \
+        --rm \
+        --tty \
+        --interactive \
+        --name     "${clientname:?}" \
+        --hostname "${clientname:?}" \
+        --env "cloudname=${cloudname:?}" \
+        --env "SSH_AUTH_SOCK=/mnt/ssh_auth_sock" \
+        --volume "${SSH_AUTH_SOCK:?}:/mnt/ssh_auth_sock:rw,z" \
+        --volume "${HOME:?}/clouds.yaml:/etc/openstack/clouds.yaml:ro,z" \
+        --volume "${AGLAIS_CODE:?}/deployments:/deployments:ro,z" \
+        "${containerfull:?}" \
+        bash
+
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Delete everything.
+#[root@ansibler]
+
+    /deployments/openstack/bin/delete-all.sh \
+        "${cloudname:?}"
+
+    #
+    # Our normal account isn't allowed to manipulate load balancers ..
+    #
+
+    >   ....
+    >   ....
+    >   ---- ----
+    >   Deleting load balancer listeners
+    >   Policy does not allow this request to be performed. (HTTP 403) (Request-ID: req-1e042981-6caf-42cd-b22b-125f32a18a1a)
+    >   
+    >   ---- ----
+    >   Deleting load balancer pools
+    >   Policy does not allow this request to be performed. (HTTP 403) (Request-ID: req-6e3759ad-6ada-4235-bd25-534b14ae448e)
+    >   
+    >   ---- ----
+    >   Deleting load balancers
+    >   Policy does not allow this request to be performed. (HTTP 403) (Request-ID: req-e69294e5-dd78-46a0-bd68-ed4a9e3c2164)
+    >   ....
+    >   ....
+
+
+    >   ....
+    >   ....
+    >   ---- ----
+    >   List load balancers
+    >   Policy does not allow this request to be performed. (HTTP 403) (Request-ID: req-ff9f0bd8-38b5-42fe-9b29-d7fc9b38ca3a)
+    >   ....
+    >   ....
+
+
+# -----------------------------------------------------
+# Initialise our status file.
+# TODO Move this into an Ansible task.
+#[root@ansibler]
+
+    /deployments/cluster-api/bootstrap/bin/init-status.sh \
+        "${cloudname:?}"
+
+# -----------------------------------------------------
+# Deploy our bootstrap node.
+#[root@ansibler]
+
+    ansible-playbook \
+        --inventory \
+        '/deployments/cluster-api/bootstrap/ansible/config/inventory.yml' \
+        '/deployments/cluster-api/bootstrap/ansible/00-create-all.yml'
+
+
+# -----------------------------------------------------
+# Login to our bootstrap node as root.
+#[root@ansibler]
+
+    ssh root@bootstrap
+
+
+# -----------------------------------------------------
+# Create the initial Kubernetes in Docker (KinD) cluster.
+#[root@bootstrap]
+
+    kindclustername=bootstrap
+    kindclusterfull=${kindclustername:?}-$(date '+%Y%m%d')
+    kindclusterpath=/opt/aglais/${kindclustername:?}
+    kindclusterconf=${kindclusterpath:?}/${kindclusterfull:?}-kubeconfig.yml
+
+    mkdir -p "${kindclusterpath}"
+
+    kind create cluster \
+        --name "${kindclusterfull:?}" \
+        --kubeconfig "${kindclusterconf:?}"
+
+
+# -----------------------------------------------------
+# Install the Openstack ClusterAPI components.
+#[root@bootstrap]
+
+    clusterctl init \
+        --kubeconfig "${kindclusterconf:?}" \
+        --infrastructure openstack
+
+
+# -----------------------------------------------------
+# Install the StackHPC Helm charts.
+#[root@bootstrap]
+
+    helm repo add \
+        capi \
+        https://stackhpc.github.io/capi-helm-charts
+
+    helm repo add \
+        capi-addons \
+        https://stackhpc.github.io/cluster-api-addon-provider
+
+    helm upgrade \
+        --kubeconfig "${kindclusterconf:?}" \
+        cluster-api-addon-provider \
+        capi-addons/cluster-api-addon-provider \
+            --install \
+            --version "0.1.0"
+
+# -----------------------------------------------------
+# Wait for the StackHPC components to be ready.
+#[root@bootstrap]
+
+    api_resources_check()
+        {
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            api-resources \
+                --api-group addons.stackhpc.com \
+        | awk '
+            BEGIN {
+                found = 0
+                }
+            {
+            if ($1 == "helmreleases" || $1 == "manifests") {
+                found++
+                }
+            }
+            END {
+                if (found == 2) {
+                    print "match"
+                    }
+                else {
+                    print "no match"
+                    }
+                }
+            '
+        }
+
+    loop=120
+    while [[ ${loop} > 0 ]]
+    do
+        result=$(
+            api_resources_check
+            )
+
+        echo "Loop [${loop}] [${result}]"
+
+        if [[ "${result}" == "match" ]]
+        then
+            break
+        else
+            sleep 1
+            ((loop--))
+        fi
+    done
+
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        api-resources \
+            --api-group addons.stackhpc.com
+
+
+# -----------------------------------------------------
+# Deploy our target cluster.
+#[root@bootstrap]
+
+    workclustername=gaia-dmp-one
+    workclusterfull=${workclustername:?}-$(date '+%Y%m%d')
+
+    workclusterpath=/opt/aglais/${workclustername:?}
+    workclustertext=${workclusterpath:?}/${workclusterfull:?}.txt
+    workclusterconf=${workclusterpath:?}/${workclusterfull:?}-kubeconfig.yml
+
+    helm upgrade \
+        --kubeconfig "${kindclusterconf:?}" \
+        "${workclusterfull:?}" \
+        capi/openstack-cluster \
+            --install \
+            --version "0.1.0" \
+            --values '/opt/aglais/clusterapi-config.yml' \
+            --values '/opt/aglais/openstack-clouds.yaml'
+
+# -----------------------------------------------------
+# Watch the events log.
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get events \
+            --watch
+
+    >   ....
+    >   ....
+
+    #
+    # Lots of errors, but all to do with missing components.
+    # We don't see a clear error message about creating the load balancer.
+    #
+
+# -----------------------------------------------------
+# Watch the addon-provider logs.
+#[root@bootstrap]
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        get pods
+
+    >   NAME                                               READY   STATUS              RESTARTS   AGE
+    >   cluster-api-addon-provider-5cb78d8945-9dt2s        1/1     Running             0          100s
+    >   gaia-dmp-one-20230705-autoscaler-ffb94c9dd-rzzc2   0/1     ContainerCreating   0          71s
+
+
+    dnf install -y jq
+
+    podname=$(
+        kubectl \
+            --kubeconfig "${kindclusterconf:?}" \
+            get pods \
+                --output json \
+        | jq -r '.items[0].metadata.name'
+        )
+
+    kubectl \
+        --kubeconfig "${kindclusterconf:?}" \
+        logs "${podname:?}" \
+            --follow
+
+    >   [2023-07-05 05:46:43,583] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/apiextensions.k8s.io/v1" 200
+    >   [2023-07-05 05:46:43,614] easykube.rest.client [INFO    ] API request: "PATCH https://10.96.0.1/apis/apiextensions.k8s.io/v1/customresourcedefinitions/helmreleases.addons.stackhpc.com?fieldManager=cluster-api-addon-provider" 201
+    >   [2023-07-05 05:46:43,649] easykube.rest.client [INFO    ] API request: "PATCH https://10.96.0.1/apis/apiextensions.k8s.io/v1/customresourcedefinitions/manifests.addons.stackhpc.com?fieldManager=cluster-api-addon-provider" 201
+    >   [2023-07-05 05:46:43,650] kopf.activities.star [INFO    ] Activity 'apply_settings' succeeded.
+    >   [2023-07-05 05:46:43,650] kopf._core.engines.a [INFO    ] Initial authentication has been initiated.
+    >   [2023-07-05 05:46:43,652] kopf.activities.auth [INFO    ] Activity 'login_with_service_account' succeeded.
+    >   [2023-07-05 05:46:43,652] kopf._core.engines.a [INFO    ] Initial authentication has finished.
+    >   [2023-07-05 05:46:48,019] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/addons.stackhpc.com/v1alpha1" 200
+    >   ....
+    >   [2023-07-05 05:46:48,093] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases" 200
+    >   ....
+    >   [2023-07-05 05:46:48,168] easykube.rest.client [INFO    ] API request: "PATCH https://10.96.0.1/apis/addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/gaia-dmp-one-20230705-metrics-server" 200
+    >   ....
+    >   [2023-07-05 05:46:48,242] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/addons.stackhpc.com/v1alpha1/namespaces/default/manifests" 200
+    >   [2023-07-05 05:46:48,242] kopf.objects         [INFO    ] [default/gaia-dmp-one-20230705-metrics-server-config] Handler 'handle_secret_event' succeeded.
+    >   ....
+    >   [2023-07-05 05:46:48,409] easykube.rest.client [INFO    ] API request: "PUT https://10.96.0.1/apis/addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/gaia-dmp-one-20230705-node-feature-discovery/status" 200
+    >   ....
+    >   [2023-07-05 05:46:48,449] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/cluster.x-k8s.io" 200
+    >   ....
+    >   [2023-07-05 05:46:48,475] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/cluster.x-k8s.io/v1beta1" 200
+    >   ....
+    >   [2023-07-05 05:46:48,516] easykube.rest.client [INFO    ] API request: "GET https://10.96.0.1/apis/cluster.x-k8s.io/v1beta1/namespaces/default/clusters/gaia-dmp-one-20230705" 200
+    >   ....
+    >   [2023-07-05 05:46:48,572] easykube.rest.client [INFO    ] API request: "PATCH https://10.96.0.1/apis/addons.stackhpc.com/v1alpha1/namespaces/default/helmreleases/gaia-dmp-one-20230705-csi-cinder" 200
+    >   [2023-07-05 05:46:48,572] kopf.objects         [ERROR   ] [default/gaia-dmp-one-20230705-csi-cinder] Handler 'handle_addon_updated' failed temporarily: cluster 'gaia-dmp-one-20230705' is not ready
+    >   ....
+    >   ....
+    >   ....
+
+    #
+    # Lots of errors, but all linked to missing components and cluster not ready.
+    # We don't see a clear error message about not creating the load balancer.
+    #
+
+
+

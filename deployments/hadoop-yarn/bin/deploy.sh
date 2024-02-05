@@ -170,7 +170,7 @@ EOF
 
     # This should be done automatically.
     # https://github.com/wfau/aglais/issues/893
-    source /deployments/zeppelin/bin/create-user-tools.sh
+    source /deployments/admin/bin/create-user-tools.sh
 
     ducktoken=$(getsecret 'devops.duckdns.token')
 

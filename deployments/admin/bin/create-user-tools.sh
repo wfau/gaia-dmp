@@ -151,7 +151,7 @@
         #
         # Call our Openstack script to create the share.
         # Returns JSON.
-        /deployments/zeppelin/bin/create-ceph-share.sh \
+        /deployments/admin/bin/create-ceph-share.sh \
             "${sharecloud}"  \
             "${sharename}"  \
             "${mountpath}"  \

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # <meta:header>
 #   <meta:licence>

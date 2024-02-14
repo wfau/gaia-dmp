@@ -1,0 +1,164 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2024, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+#zrq-notes-time
+#zrq-notes-indent
+#zrq-notes-crypto
+#zrq-notes-ansible
+#zrq-notes-osformat
+#zrq-notes-zeppelin
+#
+# AIMetrics: []
+#
+
+    Target:
+
+        Diagnose and fix issues with stuck user shares.
+        Deployment in previous notes reported errors during the build process.
+        Initial delete-all step failed to delete _some_ of the test user shares.
+
+        See: notes/zrq/20240213-01-bash-dash.txt
+
+    Result:
+
+        Logged an issue with Cambridge HPC support.
+        https://ucam-rcs.atlassian.net/servicedesk/customer/portal/4/HPCSSUP-66755
+
+
+# -----------------------------------------------------
+# Deploy everything.
+#[root@ansibler]
+
+    source /deployments/hadoop-yarn/bin/deploy.sh
+
+    >   ....
+    >   ....
+    >   - Deleting share [iris-gaia-red-home-Thozzt]
+    >   Failed to delete share with name or ID 'iris-gaia-red-home-Thozzt': Invalid share: Share status must be one of ('available', 'error', 'inactive'). (HTTP 403) (Request-ID: req-04c83240-aff1-4afc-bcac-7ed553a0051c)
+    >   1 of 1 shares failed to delete.
+    >   ....
+    >   - Deleting share [iris-gaia-red-user-Evison]
+    >   Failed to delete share with name or ID 'iris-gaia-red-user-Evison': Invalid share: Share status must be one of ('available', 'error', 'inactive'). (HTTP 403) (Request-ID: req-db5ed273-efd8-4b12-ae9d-74e1a6b6c2df)
+    >   1 of 1 shares failed to delete.
+    >   ....
+    >   ....
+
+    #
+    # Failed to delete _some_ of the test user shares,
+    # resulting in some shares stuck with status 'deleting'.
+    # Non-trivial fix for this but it won't get in the way of testing.
+    # See supplementary notes for the fix.
+    #
+
+    >   ....
+    >   ---- ----
+    >   List shares
+    >   +--------------------------------------+---------------------------+------+-------------+----------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                      | Size | Share Proto | Status   | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+---------------------------+------+-------------+----------+-----------+-----------------+------+-------------------+
+    >   | 83c55262-46f2-44f5-9c35-f7cb3e4d07d3 | iris-gaia-red-home-Thozzt |    1 | CEPHFS      | deleting | False     | ceph01_cephfs   |      | nova              |
+    >   | 3321782f-1820-4dae-9ebe-eeb074ab512d | iris-gaia-red-user-Evison |    1 | CEPHFS      | deleting | False     | ceph01_cephfs   |      | nova              |
+    >   +--------------------------------------+---------------------------+------+-------------+----------+-----------+-----------------+------+-------------------+
+    >   ....
+
+    #
+    # The rest of the deploy should still work, but if these shares
+    # are still present when we import the test users it will cause a conflict.
+    #
+
+    >   ....
+    >   ....
+    >   aglais:
+    >     status:
+    >       deployment:
+    >         type: hadoop-yarn
+    >         conf: zeppelin-54.86-spark-6.26.43
+    >         name: iris-gaia-red-20240213
+    >         date: 20240213T134016
+    >         hostname: zeppelin.gaia-dmp.uk
+    >     spec:
+    >       openstack:
+    >         cloud:
+    >           base: arcus
+    >           name: iris-gaia-red
+
+
+# -----------------------------------------------------
+# List the Manila CephFS shares.
+#[root@ansibler]
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share list
+
+    >   +--------------------------------------+---------------------------+------+-------------+----------+-----------+-----------------+------+-------------------+
+    >   | ID                                   | Name                      | Size | Share Proto | Status   | Is Public | Share Type Name | Host | Availability Zone |
+    >   +--------------------------------------+---------------------------+------+-------------+----------+-----------+-----------------+------+-------------------+
+    >   | 83c55262-46f2-44f5-9c35-f7cb3e4d07d3 | iris-gaia-red-home-Thozzt |    1 | CEPHFS      | deleting | False     | ceph01_cephfs   |      | nova              |
+    >   | 3321782f-1820-4dae-9ebe-eeb074ab512d | iris-gaia-red-user-Evison |    1 | CEPHFS      | deleting | False     | ceph01_cephfs   |      | nova              |
+    >   +--------------------------------------+---------------------------+------+-------------+----------+-----------+-----------------+------+-------------------+
+
+    #
+    # We know these will cause conflicts when we deploy the test users.
+    # /deployments/admin/bin/create-ceph-share.sh will check the share status and fail if it is not 'available'.
+    # https://github.com/wfau/gaia-dmp/blob/741f5b79c0d0dfe1ee8e9de6c2e2ed5ec1d52fa0/deployments/admin/bin/create-ceph-share.sh#L102-L107
+    #
+    # From past experience we also know that these 'stuck' shares can't be deleted by us.
+    # The Manila API won't delete a share that is in the 'deleting' state.
+    #
+
+    openstack \
+        --os-cloud "${cloudname:?}" \
+        share delete \
+            '83c55262-46f2-44f5-9c35-f7cb3e4d07d3'
+
+    >   Failed to delete share with name or ID '83c55262-46f2-44f5-9c35-f7cb3e4d07d3': Invalid share: Share status must be one of ('available', 'error', 'inactive'). (HTTP 403) (Request-ID: req-aacba66d-dfdd-499a-b55c-03f76549f7ad)
+    >   1 of 1 shares failed to delete.
+
+    #
+    # We need to log an issue with Cambridge HPC support by sending them an email.
+    #
+
+    To: "Cambridge HPC support" <support@hpc.cam.ac.uk>
+    cc: "gaiadmp-support" <gaiadmp-support@roe.ac.uk>
+    Subject: Stuck Manila CephFS shares on Arcus Openstack
+    Content:
+    We have 2 Manila CephFS shares stuck in the 'deleting' phase on the Arcus Openstack iris-gaia-red project.
+
+    Can you delete them for us.
+
+    Thanks
+    -- Dave
+
+    ```
+    +--------------------------------------+---------------------------+------+-------------+----------+-----------+-----------------+------+-------------------+
+    | ID                                   | Name                      | Size | Share Proto | Status   | Is Public | Share Type Name | Host | Availability Zone |
+    +--------------------------------------+---------------------------+------+-------------+----------+-----------+-----------------+------+-------------------+
+    | 83c55262-46f2-44f5-9c35-f7cb3e4d07d3 | iris-gaia-red-home-Thozzt |    1 | CEPHFS      | deleting | False     | ceph01_cephfs   |      | nova              |
+    | 3321782f-1820-4dae-9ebe-eeb074ab512d | iris-gaia-red-user-Evison |    1 | CEPHFS      | deleting | False     | ceph01_cephfs   |      | nova              |
+    +--------------------------------------+---------------------------+------+-------------+----------+-----------+-----------------+------+-------------------+
+    ```
+
+    #
+    # Check the created ticket and fix the formatting.
+    # https://ucam-rcs.atlassian.net/servicedesk/customer/portal/4/HPCSSUP-66755
+    #
+
+

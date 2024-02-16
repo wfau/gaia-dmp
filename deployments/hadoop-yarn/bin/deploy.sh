@@ -20,9 +20,26 @@
 #
 
 # ----------------------------------------------------------------
+# Add the live system fingerprint to known_hosts.
+# https://github.com/wfau/gaia-dmp/issues/1286
+
+    if [ ! -e "${HOME}/.ssh" ]
+    then
+        mkdir "${HOME}/.ssh"
+    fi
+    if [ ! -e "${HOME}/.ssh/known_hosts" ]
+    then
+        touch "${HOME}/.ssh/known_hosts"
+    fi
+    if [[ $(grep --count 'live.gaia-dmp.uk' "${HOME}/.ssh/known_hosts") == 0 ]]
+    then
+        ssh-keyscan 'live.gaia-dmp.uk' 2>/dev/null >> "${HOME}/.ssh/known_hosts"
+    fi
+
+# ----------------------------------------------------------------
 # Check if we are deleting live, confirm before continuing if yes
 
-    live_hostname=$(ssh  -o "StrictHostKeyChecking no" fedora@live.gaia-dmp.uk 'hostname')
+    live_hostname=$(ssh fedora@live.gaia-dmp.uk 'hostname')
 
     if [ $? -ne 0 ]; then
         echo "Failed to check the live system hostname - exiting ..."

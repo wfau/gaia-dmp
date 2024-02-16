@@ -20,13 +20,37 @@
 #
 
 # ----------------------------------------------------------------
+# Check our cloud credentials match.
+# https://github.com/wfau/gaia-dmp/issues/1282
+# Nicer shell exit:
+# https://stackoverflow.com/a/17153661
+#[root@ansibler]
+
+    source /deployments/openstack/bin/credential-tools.sh
+
+    checkcredentials "${cloudname}"
+    if [ $? -ne 0 ]
+    then
+        kill -INT $$
+    fi
+
+    checkcredentials "iris-gaia-data"
+    if [ $? -ne 0 ]
+    then
+        kill -INT $$
+    fi
+
+
+# ----------------------------------------------------------------
 # Check if we are deleting live, confirm before continuing if yes
+# Nicer shell exit:
+# https://stackoverflow.com/a/17153661
 
     live_hostname=$(ssh  -o "StrictHostKeyChecking no" fedora@live.gaia-dmp.uk 'hostname')
 
     if [ $? -ne 0 ]; then
         echo "Failed to check the live system hostname - exiting ..."
-        exit
+        kill -INT $$
     fi
 
     if [[ "$live_hostname" == *"$cloudname"* ]]; then
@@ -34,7 +58,7 @@
         echo
         if [[ $REPLY != "y" ]];
         then
-            exit
+            kill -INT $$
         fi
     fi
 

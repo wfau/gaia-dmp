@@ -1,0 +1,129 @@
+#
+# <meta:header>
+#   <meta:licence>
+#     Copyright (c) 2023, ROE (http://www.roe.ac.uk/)
+#
+#     This information is free software: you can redistribute it and/or modify
+#     it under the terms of the GNU General Public License as published by
+#     the Free Software Foundation, either version 3 of the License, or
+#     (at your option) any later version.
+#
+#     This information is distributed in the hope that it will be useful,
+#     but WITHOUT ANY WARRANTY; without even the implied warranty of
+#     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#     GNU General Public License for more details.
+#
+#     You should have received a copy of the GNU General Public License
+#     along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#   </meta:licence>
+# </meta:header>
+#
+
+
+
+    Target:
+
+        Investigate and resolve hanging jobs due to losing ceph mounts on Spark workers
+
+    Result:
+
+        Resolved but ceph flakiness remains ..
+
+User reported jobs hanging for hours with no indication of what was wrong.
+Suspected ceph mounts to data cluster failed, and spark attempting to reheal rather than failing. 
+
+Roughly followed notes at https://github.com/wfau/gaia-dmp/blob/6985d50828f76c74cad5df987e11fc572ed9ca53/notes/zrq/2022/20221005-01-cephfs-debug.txt#L37-L154
+
+Followed notes for ssh-agent setup. Remember to add ssh -A to allow key forwarding.
+
+Ssh into fedora and try mounting / unmounting ceph mounts
+
+ssh -A fedora@live.gaia-dmp.uk
+
+cat /etc/fstab | sed -n '/ceph/ p' | cut -d ' ' -f 2
+
+>   /data/gaia/GEDR3_2048
+>   /data/gaia/GDR3_2048
+>   ....
+>   ....
+>   /home/AKrause
+>   /user/AKrause
+
+ for mountpoint in $(
+       cat /etc/fstab | sed -n '/ceph/ p' | cut -d ' ' -f 2
+            )
+ do
+     echo "Mount [${mountpoint}]"
+     sudo umount "${mountpoint}"
+     sudo mount  "${mountpoint}"
+ done
+
+
+>   Mount [/data/gaia/GEDR3_2048]
+>   Mount [/data/gaia/GDR3_2048]
+>   ....
+>   ....
+>   umount: /home/NHambly: target is busy.
+>   mount error 16 = Device or resource busy
+
+mounts appear to be stuck. check the workers and master
+check all up and accessible
+
+machines=(
+            worker01
+            worker02
+            worker03
+            worker04
+            worker05
+            worker06
+            master01
+            )
+
+        for machine in "${machines[@]}"
+        do
+            echo "Machine [${machine}]"
+            ssh "${machine}" \
+                '
+                date
+                hostname
+                '
+        done
+
+iterate through the machines and drop / reraise all the mounts. 
+this can take a long time if ceph is struggling
+
+for machine in "${machines[@]}"
+        do
+            echo
+            echo "Machine [${machine}]"
+            ssh "${machine}" \
+                '
+                date
+                hostname
+                echo
+                for mountpoint in $(
+                    cat /etc/fstab | sed -n "/ceph/ p" | cut -d " " -f 2
+                    )
+                do
+                    echo "Mount [${mountpoint}]"
+                    sudo umount "${mountpoint}"
+                    sudo mount  "${mountpoint}"
+                done
+                '
+        done
+
+restart hdfs
+ssh -A master01         '
+            start-dfs.sh            
+'
+ssh -A master01         '
+     hdfs dfsadmin -report
+'
+
+restart yarn
+sh -A master01         '
+     start-yarn.sh
+ '
+
+restart zeppelin (and spark)
+/home/fedora/zeppelin/bin/zeppelin-daemon.sh restart

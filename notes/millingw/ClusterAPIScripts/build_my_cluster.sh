@@ -9,19 +9,34 @@
 # TODO handle dynamic network creation; if we're using ceph, better to use a preconfigured network cos otherwise its all a bit of a nightmare
 
 # TODO read this all from a yaml config file, instead of specifying it all here!
-export KUBECONFIG=/home/rocky/openstack/k8sdir/config
-export CLUSTER_NAME=iris-gaia-red-ceph
-#export CLUSTER_SPECIFICATION_FILE=capi-iris-gaia-red-ceph.yaml
-#export CLUSTER_SPECIFICATION_FILE=capi-iris-gaia-red-ceph-secret.yaml
-export CLUSTER_SPECIFICATION_FILE=capi-iris-gaia-red-ceph-file-test.yaml
-export CLUSTER_CREDENTIAL_FILE=appcred-iris-gaia-red-fixed-bootstrap.conf
-export CINDER_SECRETS_FILE=cinder-values.yaml
+#export KUBECONFIG=/home/rocky/openstack/k8sdir/config
+#export CLUSTER_NAME=iris-gaia-red-ceph
+##export CLUSTER_SPECIFICATION_FILE=capi-iris-gaia-red-ceph.yaml
+##export CLUSTER_SPECIFICATION_FILE=capi-iris-gaia-red-ceph-secret.yaml
+#export CLUSTER_SPECIFICATION_FILE=capi-iris-gaia-red-ceph-file-test.yaml
+#export CLUSTER_CREDENTIAL_FILE=appcred-iris-gaia-red-fixed-bootstrap.conf
+#export CINDER_SECRETS_FILE=cinder-values.yaml
 
-USE_MANILA=true
-MANILA_PROTOCOLS_FILE=./manila-csi-kubespray/values.yaml
-MANILA_SECRETS_FILE=./manila-csi-kubespray/secrets.yaml
-MANILA_STORAGE_CLASS_FILE=./manila-csi-kubespray/sc.yaml
-DEFAULT_STORAGE_CLASS=manila
+#USE_MANILA=true
+#MANILA_PROTOCOLS_FILE=./manila-csi-kubespray/values.yaml
+#MANILA_SECRETS_FILE=./manila-csi-kubespray/secrets.yaml
+#MANILA_STORAGE_CLASS_FILE=./manila-csi-kubespray/sc.yaml
+#DEFAULT_STORAGE_CLASS=manila
+
+# setup the environment variables for our build
+source cluster_config.rc
+
+echo KUBECONFIG $KUBECONFIG
+echo CLUSTER_NAME $CLUSTER_NAME
+echo CLUSTER_SPECIFICATION_FILE $CLUSTER_SPECIFICATION_FILE
+echo CLUSTER_CREDENTIAL_FILE $CLUSTER_CREDENTIAL_FILE
+echo CINDER_SECRETS_FILE $CINDER_SECRETS_FILE
+
+echo USE_MANILA $USE_MANILA
+echo MANILA_PROTOCOLS_FILE $MANILA_PROTOCOLS_FILE
+echo MANILA_SECRETS_FILE $MANILA_SECRETS_FILE
+echo MANILA_STORAGE_CLASS_FILE $MANILA_STORAGE_CLASS_FILE
+echo DEFAULT_STORAGE_CLASS $DEFAULT_STORAGE_CLASS
 
 # check all our expected environment variables are set
 if [ -z "${KUBECONFIG}" ]; then
@@ -109,7 +124,7 @@ fi
 
 
 # create the cluster via the management cluster
-echo building the cluster ...
+echo building cluster $CLUSTER_NAME
 kubectl apply -f ${CLUSTER_SPECIFICATION_FILE}
 
 # wait a couple of minutes, then loop loooking for the first control plane machine
@@ -122,7 +137,7 @@ until [ $control_plane_status == 'True' ];
 do
   sleep 60
   control_plane_status=$(clusterctl describe cluster ${CLUSTER_NAME} --grouping=false | grep -E "Machine/${CLUSTER_NAME}-control-plane" | awk -v OFS='\t' 'FNR == 1{print $3}') 
-  echo $control_plane_status
+  echo Control plane status: $control_plane_status
 done
 
 # we should be able to get the cluster's KUBECONFIG file now
@@ -137,17 +152,19 @@ control_plane_ready=false
 until [ $control_plane_ready = true ];
 do
   sleep 60
+  echo Polling nodes to check if basic services up yet
   get_nodes=$(kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig get nodes | awk -v OFS='\t' 'FNR == 2{print $3}')
-  echo $get_nodes
+  #echo $get_nodes
 
   # if it's ready, get_nodes should contain 'control-plane', otherwise keep looping
   if [ $get_nodes == 'control-plane' ]; then
     control_plane_ready=true
   fi 
-  echo $control_plane_ready 
+  #echo $control_plane_ready 
+  echo not ready yet, waiting ...
 done
 
-
+echo Nodes responding, installing control layer components
 
 
 # start installing the control layer components
@@ -158,7 +175,7 @@ kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig apply -f calico.yaml
 
 # create ceph secret before we build our worker nodes;
 # config will use this to kernel mount our ceph shares
-kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig apply -f cephx-secret.yaml
+#kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig apply -f cephx-secret.yaml
 
 
 kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig create secret -n kube-system generic cloud-config --from-file=cloud.conf=${CLUSTER_CREDENTIAL_FILE}
@@ -170,9 +187,10 @@ echo waiting for cluster completion
 cluster_status='False'
 until [ $cluster_status == 'True' ];
 do
+  echo polling cluster status ...
   sleep 60
   cluster_status=$( clusterctl describe cluster ${CLUSTER_NAME} --grouping=false | awk -v OFS='\t' 'FNR == 2{print $2}' )
-  echo $cluster_status
+  #echo Cluster status: $cluster_status
 done
 echo Cluster creation complete
 
@@ -215,15 +233,18 @@ echo Manila installation complete
 fi
 
 # TODO - wait for our workers to become available?
+# at this point we should have a functional k8s cluster
+# but it might take some time for all the workers to become available
+# or never, if we asked for too many machines ...
 
-echo Looping till workers are available
+echo Looping till all workers are available
 worker_nodes_status='False'
 until [ $worker_nodes_status == 'True' ];
 do
   sleep 60
   worker_nodes_status=$(clusterctl describe cluster ${CLUSTER_NAME} --grouping=false | grep -E "MachineDeployment" | awk -v OFS='\t' '{print $2}')
-  echo $worker_nodes_status
+  echo worker status: $worker_nodes_status
 done
 
-
+echo Cluster $CLUSTER_NAME creation complete
 

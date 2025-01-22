@@ -1,0 +1,102 @@
+# test access to cephfs service
+We should be able to access ceph shares directly in a pod.  
+However, as of 2025-01-22 this wasn't working!
+
+In Horizon GUI, manually create a share. Create a cephx access rule, then copy the access key and full storage path  
+
+Create a secret containing the access key
+
+ceph-secret.yaml
+```
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ceph-secret
+stringData:
+  key: ****
+```
+kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig apply -f ceph-secret.yaml
+
+Create a test pod that mounts the ceph share as a volume. The ceph share path needs to be separated into a list of monitor addresses and the relative path, eg
+
+pod.yaml
+
+```
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-cephfs-share-pod
+spec:
+  containers:
+    - name: web-server
+      image: nginx
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+        - name: testpvc
+          mountPath: /var/lib/www
+        - name: cephfs
+          mountPath: "/mnt/cephfs"
+  volumes:
+    - name: testpvc
+      persistentVolumeClaim:
+        claimName: test-cephfs-share-pvc
+        readOnly: false
+    - name: cephfs
+      cephfs:
+        monitors:
+        - 10.4.200.9:6789
+        - 10.4.200.13:6789
+        - 10.4.200.17:6789
+        - 10.4.200.25:6789
+        - 10.4.200.26:6789
+        secretRef:
+          name: ceph-secret
+        readOnly: false
+        path: "/volumes/_nogroup/ca890f73-3e33-4e07-879c-f7ec0f5a8a17/52bcd13b-a358-40f0-9ffa-4334eb1e06ae"
+```
+
+Example uses nginx, so install that:
+
+```
+helm install --kubeconfig=./${CLUSTER_NAME}.kubeconfig nginx bitnami/nginx
+```
+
+deploy the pod
+```
+kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig apply -f manila-csi-kubespray/pod.yaml
+```
+
+Inspect the pod to verify that the ceph share was successfully mounted
+
+# test jhub deployment, check where user areas get created
+
+deploy jhub, check where user area is created
+
+```
+helm repo add jupyterhub https://jupyterhub.github.io/helm-chart/
+helm --kubeconfig=./${CLUSTER_NAME}.kubeconfig upgrade --install jhub jupyterhub/jupyterhub --version=3.3.8
+```
+
+# port forward on control VM
+```
+kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig --namespace=default port-forward service/proxy-public 8080:http
+```
+
+# port forward on laptop:
+ssh -i "gaia_jade_test_malcolm.pem" -L 8080:127.0.0.1:8080 rocky@192.41.122.174
+browse to 127.0.0.1:8080 and login, eg as user 'hhh'
+
+# on control VM, list pvs/pvcs
+kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                           STORAGECLASS           VOLUMEATTRIBUTESCLASS   REASON   AGE                         6h56m
+pvc-8b970f5c-440b-48f8-ae19-4fb35d20e85f   10Gi       RWO            Delete           Bound    default/claim-hhh               csi-manila-cephfs      <unset>           6h51m
+pvc-7d104b45-7efe-4250-b9fe-5bf441eb65a9   1Gi        RWO            Delete           Bound    default/hub-db-dir              csi-manila-cephfs      <unset>
+
+kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig get pvc
+NAME                    STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS           VOLUMEATTRIBUTESCLASS   AGE
+claim-hhh               Bound    pvc-8b970f5c-440b-48f8-ae19-4fb35d20e85f   10Gi       RWO            csi-manila-cephfs      <unset>                 6h52m
+hub-db-dir              Bound    pvc-7d104b45-7efe-4250-b9fe-5bf441eb65a9   1Gi        RWO            csi-manila-cephfs      <unset>                 6h58m
+
+
+

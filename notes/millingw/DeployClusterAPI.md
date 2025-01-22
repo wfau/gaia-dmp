@@ -62,11 +62,13 @@ This turns our starting magnum-created kubernetes cluster into a ClusterAPI mana
 clusterctl init --infrastructure openstack
 ```
 
-Our cluster on Somerville is now our management cluster.
+Our cluster on Somerville is now our management cluster. We can use this to deploy and manage multiple OpenStack clusters on different sites.  
+If the management cluster is accidently deleted, then our worker clusters become independent and will still work, but won't be manageable via ClusterAPI.
 
 # Build CAPI image in target OpenStack environment:
 
-Next, we need to build a control image in our target OpenStack environment
+Next, we need to build a control image in our target OpenStack environment. The management cluster will use this image to create clusters in the target project.  
+Prerequisites are an existing Ubuntu image in the target project, and OpenStack credentials with project-level permissions for the target project.
 
 Install Packer on command/control VM:
 
@@ -102,7 +104,7 @@ packer init reqs-build.pkr.hcl
 
 create packer_var_file.json, edited for arcus red project
 
-Note that I had to add packer_build_ingest security group to arcus project to allow ssh access for packer to build image
+Note that I had to add a "packer_build_ingest" security group to the arcus project to allow ssh access for packer to build the image
 "networks" is existing router in OpenStack project, did not have to create this
 CUDN-Internet is existing floating ip pool name in gaia red project
 Had to work out flavor and image name from looking at options in the arcus gaia red OpenStack project and doing some trial VM creations to get good combinations
@@ -169,7 +171,7 @@ Notes assume server certificates saved to arcus-openstack-hpc-cam-ac-uk.pem
 
 Create environment variable script for configuring clusterctl deployment.
 Note that a value must be supplied for OPENSTACK_DNS_NAMESERVERS must be supplied for the config file generation; however, it may be necessary to edit or delete this from the generated config file (see below).
-(We've seen that on Arcus the value is ignored, but on BSC it is used directly)
+(We've seen that on Arcus the value is ignored, but on BSC it is used directly and messes things up)
 
 ```    
 capi-arcus-red-vars.sh:
@@ -216,13 +218,13 @@ export KUBECONFIG=/home/rocky/openstack/k8sdir/config
 
 ## Create ClusterAPI config
 
-# generate a template file for the new cluster using the environment variables we set
-# capi-red.yaml will be an openstack-specific, project specific template file for building a new k8s cluster
-# this does not actually create a cluster, just a new template for building a cluster
+generate a template file for the new cluster using the environment variables we set
+capi-red.yaml will be an openstack-specific, project specific template file for building a new k8s cluster
+Note this does not actually create a cluster, just a new template for building a cluster
 
 clusterctl generate cluster iris-gaia-red > capi-red.yaml
 
-Note that we can't check the generated yaml file into public github, as it contains (base64-encoded) access credentials for OpenStack
+Warning! Note that we can't check the generated yaml file into public github, as it contains (base64-encoded) access credentials for OpenStack
 
 The DNS configuration isn't required although the generate script insists that the environment variable is set. 
 You can remove the dns server reference from the config yaml ("dnsNameservers", see below), if not required. (See above note about BSC)
@@ -376,11 +378,11 @@ Watch progress
 clusterctl describe cluster ${CLUSTER_NAME}
 ```
 
-The cluster initialises with no available storage classes, therefore applications cannot immediately be deployed.
+The cluster initialises with no available storage classes, therefore applications cannot immediately be deployed.  
+We assume OpenStack systems will always provide a Cinder storage service, so install the Cinder storage driver into our new cluster.
 
 # Install cinder driver
 Install the cinder helm chart
-
 
 Edit cinder-values.yaml to match our deployed cluster. We point it at the secret we already created during the calico installation
 
@@ -419,6 +421,10 @@ Note: it should be possible to automate this through the ClusterAPI template, bu
 
 # mount data shares 
 At this point our cluster is ready to use. However, we need to be able to access the GAIA DR3 (and potentially other) data from our services.  
+
+If we used a pre-existing network already configured to use the site-specific storage service network, and configured mount instructions in the worker template, then we shouldn't have anything further to do to access the data. Otherwise, we have some work to do in configuring routers and manually mounting services. 
+
+The following instructions are for Arcus. Other sites will have different requirements.   
 On the arcus deployment, data is held in a separate project ("iris-gaia-data") within the same physical hardware.  
 In the Horizon GUI, select iris-gaia-data in the project list, then navigate to "shares".  
 Identify the required data share, and note the share path and the associated cephx access rule and key.
@@ -459,7 +465,46 @@ Filesystem                                                                      
 10.4.200.9:6789,10.4.200.13:6789,10.4.200.17:6789,10.4.200.25:6789,10.4.200.26:6789:/volumes/_nogroup/fa5309a4-1b69-4713-b298-c8d7a479f86f/d53177c6-c45c-4583-9947-d50ab931445c   10G     0   10G   0% /mnt/cephfs
 ```
 
-Note to self - write a script to automate the above!
+Doing this for each machine in our cluster is clearly not ideal. The ClusterAPI template allows us to specify extended configuration information as follows.  
+Here, before worker machines join our cluster, we install and configure ceph, and create keyring files for our shares, and create mount entries in /etc/fstab  
+Then, we force a remount as the worker joins the cluster. (This does assume the ceph network has already been configured, otherwise the worker will likely fail).
+
+```
+kind: KubeadmConfigTemplate
+metadata:
+  name: iris-gaia-red-ceph-md-0
+  namespace: default
+spec:
+  template:
+    spec:
+      mounts: []
+      preKubeadmCommands: ["apt-get update;", "apt-get install ceph-common -y;", "mkdir -p /mnt/kubernetes_scratch_share", "echo 10.4.200.9:6789,10.4.200.13:67
+89,10.4.200.17:6789,10.4.200.25:6789,10.4.200.26:6789:/volumes/_nogroup/280b44fc-d423-4496-8fb8-79bfc1f58b97/35e407e9-a34b-4c64-b480-3380002d64f8 /mnt/kubernet
+es_scratch_share ceph name=kubernetes-scratch-share,noatime,_netdev 0 2 >> /etc/fstab"]
+      files:
+      - path: /etc/ceph/ceph.conf
+        content: |
+              [global]
+              fsid = a900cf30-f8a3-42bf-98d6-af7ce92f1a1a
+              mon_host = [v2:10.4.200.13:3300/0,v1:10.4.200.13:6789/0] [v2:10.4.200.9:3300/0,v1:10.4.200.9:6789/0] [v2:10.4.200.17:3300/0,v1:10.4.200.17:6789/0
+] [v2:10.4.200.26:3300/0,v1:10.4.200.26:6789/0] [v2:10.4.200.25:3300/0,v1:10.4.200.25:6789/0]
+
+      - path: /etc/ceph/ceph.client.kubernetes-scratch-share.keyring
+        content: |
+          [client.kubernetes-scratch-share]
+          key = REDACTED
+
+      postKubeadmCommands: ["sudo mount -a"]
+
+      joinConfiguration:
+        nodeRegistration:
+          kubeletExtraArgs:
+            cloud-provider: external
+            provider-id: openstack:///'{{ instance_id }}'
+          name: '{{ local_hostname }}'
+```
+
+(It should be possible to configure other storage types, such as nfs, in a similar fashion)  
 
 Now that all our workers have the data share mounted, we can access it via a hostPath mount from our pods, eg
 
@@ -481,7 +526,7 @@ The (read-only) DR3 data should now be accessible in the pod at /mnt/dr3_data_sh
 
 ## rescale cluster
 
-The management cluster is used to view active workers and rescale a running worker cluster, via the machinedeployments class.
+The management cluster can be used to view active workers and rescale a running worker cluster, via the machinedeployments class.
 e.g.
 
 ```
@@ -490,12 +535,16 @@ NAME                      CLUSTER              REPLICAS   READY   UPDATED   UNAV
 bsc-gaia-md-0             bsc-gaia             3          3       3         0             Running   25h    v1.30.2
 iris-gaia-red-ceph-md-0   iris-gaia-red-ceph   4          4       4         0             Running   22d    v1.30.2
 iris-gaia-red-demo-md-0   iris-gaia-red-demo   7          7       7         0             Running   6d2h   v1.30.2
-
-$ kubectl scale machinedeployment iris-gaia-red-demo-md-0 --replicas=9
-
 ```
 
-Note that with our current deployment, new VMs will not automatically get the ceph mounts. This will require manual intervention to perform the ceph configuration
+Increase number of workers for one of our clusters
+
+```
+$ kubectl scale machinedeployment iris-gaia-red-demo-md-0 --replicas=9
+```
+
+If we specified the storage mounts in our cluster template, then these should automatically be applied when the new worker joins the cluster.  
+However, if we created the mounts manually, this will need to be repeated manually for the new worker.
 
 # Deleting a cluster
 
@@ -547,12 +596,11 @@ The deployed clusters will still function independently, assuming we have their 
 However, we should do everything to avoid this happening ...
 
 
-## Ceph and Manila CSI configuration
+## Manila configuration
+On Arcus and Somerville we have access to a Manila service. This effectively acts as a higher level storage service, and supports multiple protocols.
+Currently these sites are configured to support ceph via Manila, so we can install the manila storage driver into our cluster.
 
-Warning! Work in progress from this point ...
-
-
-# install the ceph csi driver
+# First install the ceph csi driver as manila will need it
 # followed notes at https://gitlab.developers.cam.ac.uk/pfb29/manila-csi-kubespray
 
 ```
@@ -629,6 +677,9 @@ parameters:
 kubectl apply --kubeconfig=./${CLUSTER_NAME}.kubeconfig -f sc.yaml
 ```
 
+We now have the manila storage driver installed.
+We can make this the default storage class, so any user volumes are automatically created as ceph shares instead of cinder volumes
+
 # make manila the default storage class
 
 ```
@@ -644,150 +695,11 @@ csi-cinder-sc-retain             cinder.csi.openstack.org          Retain       
 csi-manila-cephfs (default)      cephfs.manila.csi.openstack.org   Delete          Immediate           false                  5d5
 ```
 
-# test access to cephfs service
-In Horizon GUI, manually create a share. Create a cephx access rule, then copy the access key and full storage path  
+At this point our new cluster should be ready to accept kubernetes services in the normal fashion, using the KUBECONFIG file that was generated during the cluster creation.
 
-Create a secret containing the access key
 
-ceph-secret.yaml
-```
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ceph-secret
-stringData:
-  key: ****
-```
-kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig apply -f ceph-secret.yaml
 
-Create a test pod that mounts the ceph share as a volume. The ceph share path needs to be separated into a list of monitor addresses and the relative path, eg
 
-pod.yaml
-
-```
----
-apiVersion: v1
-kind: Pod
-metadata:
-  name: test-cephfs-share-pod
-spec:
-  containers:
-    - name: web-server
-      image: nginx
-      imagePullPolicy: IfNotPresent
-      volumeMounts:
-        - name: testpvc
-          mountPath: /var/lib/www
-        - name: cephfs
-          mountPath: "/mnt/cephfs"
-  volumes:
-    - name: testpvc
-      persistentVolumeClaim:
-        claimName: test-cephfs-share-pvc
-        readOnly: false
-    - name: cephfs
-      cephfs:
-        monitors:
-        - 10.4.200.9:6789
-        - 10.4.200.13:6789
-        - 10.4.200.17:6789
-        - 10.4.200.25:6789
-        - 10.4.200.26:6789
-        secretRef:
-          name: ceph-secret
-        readOnly: false
-        path: "/volumes/_nogroup/ca890f73-3e33-4e07-879c-f7ec0f5a8a17/52bcd13b-a358-40f0-9ffa-4334eb1e06ae"
-```
-
-Example uses nginx, so install that:
-
-```
-helm install --kubeconfig=./${CLUSTER_NAME}.kubeconfig nginx bitnami/nginx
-```
-
-deploy the pod
-```
-kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig apply -f manila-csi-kubespray/pod.yaml
-```
-
-Inspect the pod to verify that the ceph share was successfully mounted
-
-# test jhub deployment, check where user areas get created
-
-deploy jhub, check where user area is created
-
-```
-helm repo add jupyterhub https://jupyterhub.github.io/helm-chart/
-helm --kubeconfig=./${CLUSTER_NAME}.kubeconfig upgrade --install jhub jupyterhub/jupyterhub --version=3.3.8
-```
-
-# port forward on control VM
-```
-kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig --namespace=default port-forward service/proxy-public 8080:http
-```
-
-# port forward on laptop:
-ssh -i "gaia_jade_test_malcolm.pem" -L 8080:127.0.0.1:8080 rocky@192.41.122.174
-browse to 127.0.0.1:8080 and login, eg as user 'hhh'
-
-# on control VM, list pvs/pvcs
-kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig get pv
-NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                           STORAGECLASS           VOLUMEATTRIBUTESCLASS   REASON   AGE                         6h56m
-pvc-8b970f5c-440b-48f8-ae19-4fb35d20e85f   10Gi       RWO            Delete           Bound    default/claim-hhh               csi-manila-cephfs      <unset>           6h51m
-pvc-7d104b45-7efe-4250-b9fe-5bf441eb65a9   1Gi        RWO            Delete           Bound    default/hub-db-dir              csi-manila-cephfs      <unset>
-
-kubectl --kubeconfig=./${CLUSTER_NAME}.kubeconfig get pvc
-NAME                    STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS           VOLUMEATTRIBUTESCLASS   AGE
-claim-hhh               Bound    pvc-8b970f5c-440b-48f8-ae19-4fb35d20e85f   10Gi       RWO            csi-manila-cephfs      <unset>                 6h52m
-hub-db-dir              Bound    pvc-7d104b45-7efe-4250-b9fe-5bf441eb65a9   1Gi        RWO            csi-manila-cephfs      <unset>                 6h58m
-
-## Thoughts on automation and migration
-
-Each system that we deploy to will have different networking setup, storage services, image names, machine flavour. 
-Each system requires that a ClusterAPI image be built in that system from an Ubuntu image already present in that system.
-For each system, we generate a configuration file using clusterctl generate.
-Getting a working generation image and working combinations of images / flavours likely to be a trial and error process, little prospect for automation
-Once we have a working template for a given site, that template can be reused for that site, but that site only.
-Given a particular site with a working template, it should be possibe to automate creation of a cluster at that site.
-Each site will require specific post-creation configuration, e.g. ceph mounts on Arcus, nfs(?) mounts on BSC
-
-Manual stages:
-Install packer, clusterctl, server certificates etc.
-Manually build / test image in target environment, get working combinations of flavours and boot disk sizes. 
-Generate template file, adjust any arguments. 
-Once we've got this far, can automate using the template. 
-Note that we can't check templates into a repo, as they contain security information
-
-Automated stages:
-
-kubectl apply template file
-clusterctl describe until ready
-get kubeconfig file
-apply calico
-use openstack to lookup network id for new network (how do we get cluster name? from environment variable?)
-build application secret conf file 
-build secret in target environment
-complete setup
-install cinder storage classes
-
-do site-specific post-installation:
-get list of worker names via kubectl get nodes
-install ceph client on each worker node
-configure ceph on each worker node
-- mount ceph shares on Arcus. need list of shares to mount, lookup keys and create share mount on each worker VM 
-- attach shared volumes on Somerville, BSC? )
-- modify /etc/fstab rather than configuring from directory?
-
-Things to try:
-Automatic configuration of ceph network on arcus
-attach manila shares to pod instead of using ceph mounts (wont be available at every site)
-
-Generic scripts:
-
-lookup network id, build conf file
-lookup keys for ceph shares
-install list of ceph shares on VMs
-get list of worker node names and ip addresses
 
 
 

@@ -543,7 +543,7 @@ $ kubectl scale machinedeployment iris-gaia-red-demo-md-0 --replicas=9
 If we specified the storage mounts in our cluster template, then these should automatically be applied when the new worker joins the cluster.    
 However, if we created the mounts manually, this will need to be repeated manually for the new worker.  
 
-# Deleting a cluster
+## Deleting a cluster
 
 Before deleting a cluster, note that CAPI struggles to delete resources that were created within the cluster, such as services, load balancers etc.   
 Applications should be deleted in reverse order of creation before trying to delete the cluster, especially those managing load balancers and floating ip addresses.   
@@ -587,7 +587,7 @@ $ kubectl edit openstackcluster bsc-gaia (opens config in vim)
 #replace value for finalisers with [] and save out
 ```
 
-# Management cluster failure / deletion
+## Management cluster failure / deletion
 
 If we lose the management cluster for any reason, its not the end of the world. 
 The deployed clusters will still function independently, assuming we have their KUBECONFIG files.  
@@ -695,7 +695,12 @@ csi-manila-cephfs (default)      cephfs.manila.csi.openstack.org   Delete       
 
 At this point our new cluster should be ready to accept kubernetes services in the normal fashion, using the KUBECONFIG file that was generated during the cluster creation. 
 
+## Known issues / gotchas
 
+We think the default behaviour for creating load balancers is that ClusterAPI will name the load balancer it creates using the name of the OpenStack project and namespace. If you create two clusters in the same project, we've seen that the new cluster will grab the load balancer from the first cluster and break it. Until we've a better understanding of this, best to run with one cluster per project.
+
+Ceph has no tolerance for any mistakes or inconsistencies in names or file paths.  
+Unfortunately it usually reports a very generic error message, which could relate to anything from network connectivity to spelling mistakes in ceph keys ...   
 
 
 

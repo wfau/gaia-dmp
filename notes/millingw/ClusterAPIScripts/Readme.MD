@@ -38,6 +38,8 @@ Cluster creation can be monitored with clusterctl, ie clusterctl describe cluste
 
 Note that a cluster may be ready for use before all workers are ready; the script may loop indefinitely if the target project can't provide the requested number of workers.
 
+On successfull completion of the script, a KUBECONFIG file should be output that can be used to install services on the newly created cluster.
+
 The resulting cluster and KUBECONFIG file can then be used to install kubernetes services in the usual fashion.
   
 The intention is to maintain a set of production scripts for each deployment site, with a separate master configuration file for each site to be sourced by the build script.
